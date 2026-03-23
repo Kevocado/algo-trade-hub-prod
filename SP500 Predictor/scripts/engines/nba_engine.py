@@ -148,6 +148,46 @@ class NBAEngine:
         except Exception:
             return 0.0
 
+    def fetch_upcoming_games(self) -> list:
+        """Fetches NBA games for the next 7 days using nba_api."""
+        try:
+            from nba_api.stats.endpoints import scoreboardv2
+        except ImportError:
+            print("  ⚠️ nba_api not installed.")
+            return []
+            
+        upcoming = []
+        now = datetime.now(timezone.utc)
+        
+        for i in range(1, 8):
+            target_date = now + timedelta(days=i)
+            date_str = target_date.strftime("%Y-%m-%d")
+            try:
+                board = scoreboardv2.ScoreboardV2(game_date=date_str)
+                line_scores = board.line_score.get_data_frame()
+                
+                if line_scores.empty:
+                    continue
+                    
+                for game_id, group in line_scores.groupby('GAME_ID'):
+                    if len(group) >= 2:
+                        away = group.iloc[0]['TEAM_ABBREVIATION']
+                        home = group.iloc[1]['TEAM_ABBREVIATION']
+                        
+                        upcoming.append({
+                            "title": f"NBA: {away} @ {home}",
+                            "edge_type": "SPORTS",
+                            "market_id": f"nba_{game_id}",
+                            "our_prob": 0,
+                            "market_prob": 0,
+                            "raw_payload": {"date": date_str, "away": away, "home": home}
+                        })
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"  ⚠️ nba_api error on {date_str}: {e}")
+                
+        return upcoming
+
     # ─── Feature Engineering ─────────────────────────────────────────────────
 
     def _engineer_features(self, stats_df: pd.DataFrame, stat: str,

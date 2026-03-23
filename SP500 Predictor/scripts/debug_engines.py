@@ -110,26 +110,29 @@ def test_macro():
         console.print(f"[bold red]❌ MacroEngine Error: {e}[/bold red]")
 
 def test_sports():
-    console.print(Panel("[bold bright_blue]Testing Sports Engine (Football Poisson)[/bold bright_blue]"))
+    console.print(Panel("[bold bright_blue]Testing Sports Calendar Fetchers (NBA, F1, NCAA)[/bold bright_blue]"))
     try:
-        engine = FootballKalshiEngine()
-        opportunities = engine.find_opportunities()
+        from scripts.engines.nba_engine import NBAEngine
+        from scripts.engines.f1_engine import F1Engine
+        from scripts.engines.ncaa_engine import NCAAEngine
         
-        table = create_debug_table("⚽ Football Edges (Top 3)")
-        ops = sorted(opportunities, key=lambda x: abs(x.get('edge_pct', 0)), reverse=True)[:3]
-        
-        if not ops:
-            console.print("[yellow]No active football matches found.[/yellow]")
-            return
+        table = create_debug_table("🏀🏎️ Sports Calendars")
+
+        nba_ops = NBAEngine().fetch_upcoming_games()
+        for op in nba_ops[:3]:
+            add_edge_row(table, op.get('title', ''), 0, 0, op.get('market_id', ''))
             
-        for op in ops:
-            add_edge_row(table, op.get('title', op.get('market_id')),
-                         op.get('our_prob', 0),
-                         op.get('market_prob', 0),
-                         "Simulated Poisson Edge")
+        f1_ops = F1Engine().fetch_upcoming_races()
+        if f1_ops:
+            add_edge_row(table, f1_ops[0].get('title', ''), 0, 0, f1_ops[0].get('market_id', ''))
+            
+        ncaa_ops = NCAAEngine().fetch_upcoming_march_madness()
+        for op in ncaa_ops[:3]:
+            add_edge_row(table, op.get('title', ''), 0.5, 0, "March Madness")
+            
         console.print(table)
     except Exception as e:
-        console.print(f"[bold red]❌ FootballEngine Error: {e}[/bold red]")
+        console.print(f"[bold red]❌ Sports Engine Error: {e}[/bold red]")
 
 def test_crypto_quant():
     console.print(Panel("[bold bright_blue]Testing Quant Engine (BTC & ETH)[/bold bright_blue]"))

@@ -90,6 +90,37 @@ class F1Engine:
             print(f"  ⚠️ F1Engine: Schedule load error: {e}")
             return None
 
+    def fetch_upcoming_races(self) -> list:
+        """Returns the next upcoming F1 race as a mock Kalshi edge for the frontend calendar."""
+        if not FASTF1_AVAILABLE:
+            return []
+        
+        try:
+            schedule = fastf1.get_event_schedule(2026)
+            now = datetime.now(timezone.utc)
+            future = schedule[
+                pd.to_datetime(schedule['EventDate'], utc=True) > pd.Timestamp(now)
+            ]
+            if future.empty:
+                return []
+                
+            future = future.sort_values(by="EventDate").iloc[0] # Next race
+            race_name = future["EventName"]
+            race_date = str(future["EventDate"])[:10]
+            round_num = future["RoundNumber"]
+            
+            return [{
+                "title": f"F1: {race_name}",
+                "edge_type": "SPORTS",
+                "market_id": f"f1_race_{round_num}",
+                "our_prob": 0,
+                "market_prob": 0,
+                "raw_payload": {"race": race_name, "date": race_date, "round": f"{round_num}"}
+            }]
+        except Exception as e:
+            print(f"  ⚠️ F1Engine schedule error: {e}")
+            return []
+
     # ─── Feature Engineering ─────────────────────────────────────────────────
 
     def _compute_sector_zscores(self, session) -> pd.DataFrame:
