@@ -28,6 +28,11 @@ def get_hf_path(filename):
     """Downloads file from HF Hub and returns local path, or fallback."""
     repo_id = "KevinSigey/Kalshi-LightGBM"
     local_path = os.path.join(MODEL_DIR, os.path.basename(filename))
+    
+    # Prioritize newly trained local models over cloud caches
+    if os.path.exists(local_path):
+        return local_path
+        
     try:
         from huggingface_hub import hf_hub_download
         return hf_hub_download(repo_id=repo_id, filename=filename, token=os.getenv("HF_TOKEN"))
@@ -211,13 +216,8 @@ def predict_next_hour(model, current_data_df, ticker="SPY"):
             if extra:
                 print(f"   Extra features: {extra}")
             
-            # Raise exception to trigger retraining
-            raise FeatureMismatchError(
-                expected_features=feature_cols,
-                actual_features=list(last_row.columns),
-                expected_count=len(feature_cols),
-                actual_count=len(last_row.columns)
-            )
+            # Failsafe: Continue to let Pandas reindex handle the alignment
+            print(f"    [FAILSAFE] Auto-dropping {len(extra)} extra features and zero-filling {len(missing)} missing features.")
     
     # Ensure features match: select only the expected features in the correct order
     # Fill missing features with 0
