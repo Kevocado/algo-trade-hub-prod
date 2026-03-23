@@ -319,7 +319,7 @@ class WeatherEngine:
                 edge = nws_prob - yes_ask
                 action = 'BUY YES' if edge > 0 else 'BUY NO'
 
-            if edge is not None and abs(edge) > 10:
+            if edge is not None:
                 kalshi_url = get_kalshi_event_url(event_ticker)
                 opportunities.append({
                     'engine': 'Weather',

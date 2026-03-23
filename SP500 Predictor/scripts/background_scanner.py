@@ -129,11 +129,13 @@ def scan_quant_ml():
     for ticker in tickers:
         try:
             df = fetch_data(ticker, period="5d", interval="1h")
+            df = df[0] if isinstance(df, tuple) else df
             model, needs_retrain = load_model(ticker)
 
             if model and not df.empty:
                 df_feat = create_features(df)
-                pred_val = predict_next_hour(model, df_feat, ticker)
+                df_feat_df = df_feat[0] if isinstance(df_feat, tuple) else df_feat
+                pred_val = predict_next_hour(model, df_feat_df, ticker)
                 curr_price = df['Close'].iloc[-1]
                 vol = get_market_volatility(df, window=24)
 
@@ -143,6 +145,8 @@ def scan_quant_ml():
                 }
                 print(f"    ✅ {ticker}: Price={curr_price:.2f}, Pred={pred_val:.2f}, Vol={vol:.6f}")
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"    ⚠️ Skipping {ticker}: {e}")
 
     for ticker in tickers:

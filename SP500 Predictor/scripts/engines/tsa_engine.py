@@ -18,8 +18,10 @@ class TSAEngine:
     def fetch_tsa_data(self):
         """Scrapes daily TSA throughput data."""
         try:
-            # TSA.gov table can be read via pandas read_html
-            tables = pd.read_html(self.tsa_url)
+            # TSA.gov table can be read via pandas read_html but requires User-Agent
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+            resp = requests.get(self.tsa_url, headers=headers)
+            tables = pd.read_html(resp.text)
             if not tables:
                 return None
             

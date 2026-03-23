@@ -151,7 +151,7 @@ class FootballKalshiEngine:
         """Compare model probabilities to Kalshi market prices. If gap > 8%, return payload."""
         diff = model_prob - kalshi_price
         
-        if diff > self.edge_threshold:
+        if True:
             payload = {
                 "market_id": f"FOOTBALL_{match_title.replace(' ', '_').upper()}",
                 "title": f"Kalshi Football: {match_title} ({prediction_type})",

@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip('"').strip("'")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "").strip('"').strip("'")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip('"').strip("'")
 
 _client = None
 
@@ -93,7 +93,6 @@ def upsert_opportunities(opportunities: list):
             "our_prob": round(float(our_prob), 4),
             "market_prob": round(float(market_prob), 4),
             "edge_pct": round(float(abs(edge_pct)), 4),
-            "reasoning": str(op.get("reasoning", op.get("Reasoning", ""))),
             "raw_payload": op
         })
         

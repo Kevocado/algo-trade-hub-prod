@@ -626,8 +626,8 @@ class MacroEngine:
                     if factors_used:
                         reasoning += f" Factors: {', '.join(factors_used)}"
 
-            # Only flag if edge is meaningful
-            if edge is not None and abs(edge) > 8:
+            # Show all tracked markets
+            if edge is not None:
                 kalshi_url = get_kalshi_event_url(event_ticker)
                 expiration = market.get('expiration_time', '')
                 market_date_str = ''
