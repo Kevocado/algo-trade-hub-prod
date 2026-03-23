@@ -67,7 +67,12 @@ def train_daily_model(df, ticker="SPY"):
         print(f"  ⚠️ Insufficient data ({len(df_proc)} rows). Need 50+ for training.")
         return None
 
-    X = df_proc[feature_cols]
+    X = df_proc[feature_cols].copy()
+    
+    # Anti-Leakage: Ensure no Target columns sneak into features
+    leak_cols = [c for c in X.columns if 'Target' in c or 'target' in c]
+    if leak_cols:
+        X = X.drop(columns=leak_cols)
     y_return = df_proc["Target_Return"]
     y_dir = df_proc["Target_Direction"]
 

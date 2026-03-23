@@ -134,7 +134,7 @@ def test_sports():
 def test_crypto_quant():
     console.print(Panel("[bold bright_blue]Testing Quant Engine (BTC & ETH)[/bold bright_blue]"))
     try:
-        tickers = ["BTC", "ETH"]
+        tickers = ["BTC-USD"]
         table = create_debug_table("📈 Crypto Paper Trading ML")
         
         for ticker in tickers:
@@ -156,10 +156,7 @@ def test_crypto_quant():
             curr_price = float(df_cleaned['Close'].iloc[-1])
             vol = get_market_volatility(df_cleaned, window=24)
             
-            # Simple Z-Score mock for debugging display
-            expected_move = vol * curr_price
-            implied_prob = 0.50 + ((pred_val - curr_price) / (expected_move * 2))
-            implied_prob = max(0.01, min(0.99, implied_prob)) * 100
+            implied_prob = pred_val * 100
             
             # Mock Kalshi Ask for educational crypto (usually 50/50 standard deviation)
             kalshi_mock_ask = 50.0

@@ -121,7 +121,7 @@ def scan_quant_ml():
     Returns (snapshot_records, paper_opportunities).
     ⚠️ PAPER TRADING ONLY - no AI validation needed.
     """
-    tickers = ["SPX", "Nasdaq", "BTC", "ETH"]
+    tickers = ["BTC-USD"]
     snapshot_records = []
     paper_opportunities = []
 
@@ -179,7 +179,7 @@ def scan_quant_ml():
 
             title = m.get('title', '')
             is_above = ">" in title or "above" in title.lower()
-            my_prob = calculate_probability(d['price'], d['pred'], strike, d['vol'], hours_left)
+            my_prob = d['pred'] * 100
             if not is_above:
                 my_prob = 100 - my_prob
 

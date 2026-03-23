@@ -78,10 +78,14 @@ def validate_model_features(model, ticker):
         return (False, 0, 0, [])
 
 def get_model_path(ticker, download=False):
+    local_path = os.path.join(MODEL_DIR, f"lgbm_direction_{ticker}.pkl")
+    if os.path.exists(local_path):
+        return local_path
+        
     if download:
-        path = get_hf_path(f"models/lgbm_model_{ticker}.pkl")
+        path = get_hf_path(f"models/lgbm_direction_{ticker}.pkl")
         if path: return path
-    return os.path.join(MODEL_DIR, f"lgbm_model_{ticker}.pkl")
+    return os.path.join(MODEL_DIR, f"lgbm_direction_{ticker}.pkl")
 
 def train_model(df, ticker="SPY"):
     """
@@ -223,8 +227,9 @@ def predict_next_hour(model, current_data_df, ticker="SPY"):
     # Fill missing features with 0
     last_row_aligned = last_row.reindex(columns=feature_cols, fill_value=0)
     
-    prediction = model.predict(last_row_aligned.values)
-    return prediction[0]
+    # OUTPUT CLASSIFIER PROBABILITY (e.g. 0.54 instead of integer 1 or 0)
+    prediction = model.predict_proba(last_row_aligned.values)[0][1]
+    return prediction
 
 def get_market_volatility(df, window=24):
     """

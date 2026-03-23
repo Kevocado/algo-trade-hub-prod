@@ -10,14 +10,14 @@ from src.model_daily import train_daily_model
 
 def train_all_daily():
     # List of tickers to train
-    tickers = ["SPX", "Nasdaq", "BTC", "ETH"]
+    tickers = ["BTC-USD"]
     
     for ticker in tickers:
         print(f"\n=== Training DAILY model for {ticker} ===")
         try:
             # Fetch 2 years of Hourly data
-            # Yahoo Finance allows 730d for 1h interval
-            df = fetch_data(ticker=ticker, period="730d", interval="1h")
+            # Yahoo Finance allows 730d for 1h interval, Tiingo uses 2y
+            df = fetch_data(ticker=ticker, period="2y", interval="1h")
             
             if df.empty:
                 print(f"Skipping {ticker}: No data found.")

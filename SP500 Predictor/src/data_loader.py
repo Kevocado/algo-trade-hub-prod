@@ -205,6 +205,17 @@ def fetch_data(ticker="SPY", period="5d", interval="1m"):
     tiingo_interval_map = {"1m": "1min", "5m": "5min", "1h": "1hour"}
     tiingo_interval = tiingo_interval_map.get(interval, "1min")
 
+    # Special Case: BTC-USD bypass using yfinance
+    if symbol in ["BTC", "BTC-USD"]:
+        import yfinance as yf
+        print(f"  📡 Fetching {symbol} from yfinance (730d, 1h)...")
+        # Hardcoded historical bypass
+        df = yf.download(tickers="BTC-USD", period="730d", interval="1h")
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+        df = df.dropna()
+        return df
+
     # Try Tiingo first (better volume data)
     df = fetch_tiingo(symbol, period, tiingo_interval)
     if not df.empty:
