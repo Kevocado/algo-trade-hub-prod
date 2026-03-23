@@ -1,73 +1,67 @@
 # Algo-Trade-Hub
 
-A unified quantitative trading and sports analytics monorepo. Three sub-systems work together — a prediction market edge-finder, an autonomous paper trading platform, and a sports optimization engine — all sharing a central Supabase database.
+A unified, production-grade quantitative trading and sports analytics monorepo. This system continuously discovers arbitrage edges in prediction markets (Kalshi) by crunching weather data, macroeconomic indicators, crypto momentum, and sports statistics.
 
 > **Full architecture reference:** [`SYSTEM_ARCH.md`](./SYSTEM_ARCH.md)
 
 ---
 
+## Quick Overview: The Hybrid Architecture
+
+Algo-Trade-Hub operates on a separated hybrid model to maximize VPS performance while delivering a lightning-fast React UI.
+
+1. **The Core Engines (VPS / Local):** Python data pipelines running on a continuous daemon (`background_scanner.py`). They pull from NWS, FRED, Kalshi, and Tiingo APIs, calculate mathematical edges, and write heavily normalized JSON data directly to a Supabase PostgreSQL database via a secure Service Role Key.
+2. **The Terminal UI (Vercel):** A dynamic React frontend that acts as a read-only terminal dashboard. Built on modern Vite, it queries Supabase directly without relying on a continuously open Python FastAPI server, separating rendering limits from deep machine learning computation.
+
+---
+
 ## Repository Structure
 
-```
+```text
 Algo-Trade-Hub/
-├── SP500 Predictor/        # Python ML & Kalshi edge-finding backend
-├── market_sentiment_tool/  # React frontend + LangGraph orchestration engine
-├── FPL_Optimizer/          # Python sports optimization backend (FPL, F1, NBA)
+├── SP500 Predictor/        # Python ML & Backend Engines (Run via PM2 VPS)
+├── market_sentiment_tool/  # React/Vite Frontend (Hosted on Vercel)
+├── FPL_Optimizer/          # Legacy Python sports models
+├── ecosystem.config.js     # PM2 Orchestrator config
 ├── SYSTEM_ARCH.md          # ← Master architecture reference (read this first)
 └── README.md
 ```
 
 ---
 
-## Sub-Systems at a Glance
-
-| Sub-System | Stack | Role |
-|---|---|---|
-| `SP500 Predictor` | Python, LightGBM, FinBERT, Alpaca, FRED | Finds edge in Kalshi prediction markets via weather/macro/quant engines |
-| `market_sentiment_tool` | React/Vite, Python, LangGraph, FastMCP, Supabase | Autonomous paper trading dashboard with 3-agent AI swarm |
-| `FPL_Optimizer` | Python, PuLP, Streamlit, Gemini | Sports lineup optimization (FPL, F1, NBA) and chatbot |
-
----
-
 ## Quick Start
 
-### SP500 Predictor (Kalshi Edge Finder)
+### 1. Launching the Backend (VPS or Local)
+Ensure you have created a `.env` in the root mapping your API connections and `SUPABASE_SERVICE_ROLE_KEY`.
+
 ```bash
 cd "SP500 Predictor"
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-streamlit run streamlit_app.py
+
+# Run a single manual scan:
+python scripts/background_scanner.py
+
+# Or launch as a background daemon using PM2:
+pm2 start ../ecosystem.config.js
 ```
 
-### Market Sentiment Tool (Trading Dashboard)
+### 2. Launching the Frontend Dashboard (Local Dev)
+If you want to view the React "Terminal UI" locally before deploying to Vercel. Ensure `market_sentiment_tool/.env` contains your `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+
 ```bash
-# Terminal 1 — Data ingestion
-cd market_sentiment_tool/backend
-python ingestion.py
-
-# Terminal 2 — LangGraph orchestrator
-python orchestrator.py
-
-# Terminal 3 — FastMCP execution bridge
-python mcp_server.py
-
-# Terminal 4 — React frontend
 cd market_sentiment_tool
-npm install && npm run dev
-```
-
-### FPL Optimizer
-```bash
-cd FPL_Optimizer
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run streamlit_app.py
+npm install
+npm run dev
+# The Dashboard will load at http://localhost:5173 
 ```
 
 ---
 
 ## Environment Variables
 
-Each sub-system has its own `.env`. See `SYSTEM_ARCH.md § Environment Variables` for a full key inventory.
+The system relies on a strict split of secrets.
+- **Backend Secrets:** `Algo-Trade-Hub/.env` contains your high-clearance provider tokens and the Supabase Service role key.
+- **Frontend Config:** `Algo-Trade-Hub/market_sentiment_tool/.env` strictly requires public/anon variables (prefixed with `VITE_`).
 
-**Never commit `.env` files or `.pem` keys.**
+**Never commit `.env` files.**
