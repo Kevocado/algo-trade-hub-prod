@@ -28,6 +28,7 @@ from scripts.engines.eia_engine import EIAEngine
 from scripts.engines.nba_engine import NBAEngine
 from scripts.engines.f1_engine import F1Engine
 from scripts.engines.ncaa_engine import NCAAEngine
+from scripts.engines.football_engine import FootballKalshiEngine
 from src.data_loader import fetch_data
 from src.feature_engineering import create_features
 from src.discord_notifier import DiscordNotifier
@@ -134,6 +135,14 @@ def scan_real_edge():
         print(f"  Found {len(ncaa_ops)} NCAA tournament games")
     except Exception as e:
         print(f"  ⚠️ NCAA fetcher failed: {e}")
+
+    print("\n⚽ Running Soccer Engine (Kalshi Premiere League/La Liga/Champions League)...")
+    try:
+        soccer_ops = FootballKalshiEngine().find_opportunities()
+        all_ops.extend(soccer_ops)
+        print(f"  Found {len(soccer_ops)} Soccer upcoming opportunities")
+    except Exception as e:
+        print(f"  ⚠️ Soccer engine failed: {e}")
 
     print(f"\n📊 Total real-edge opportunities: {len(all_ops)} (AI validation available on-demand in UI)")
     return all_ops

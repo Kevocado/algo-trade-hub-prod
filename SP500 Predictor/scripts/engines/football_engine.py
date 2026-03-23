@@ -38,7 +38,7 @@ class FootballKalshiEngine:
         date_from = now.strftime("%Y-%m-%d")
         date_to = (now + timedelta(days=2)).strftime("%Y-%m-%d")
         
-        url = f"https://api.football-data.org/v4/matches?competitions=PL,PD&dateFrom={date_from}&dateTo={date_to}"
+        url = f"https://api.football-data.org/v4/matches?competitions=PL,PD,CL&dateFrom={date_from}&dateTo={date_to}"
         log.info(f"Fetching football fixtures from {date_from} to {date_to}...")
         
         try:
@@ -160,6 +160,7 @@ class FootballKalshiEngine:
                 "market_prob": round(kalshi_price / 100, 4),
                 "edge_pct": round(diff / 100, 4),
                 "raw_payload": {
+                    "subsystem": "SOCCER",
                     "match": match_title,
                     "prediction": prediction_type,
                     "model_probability": round(model_prob, 2),
