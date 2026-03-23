@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.env
+.DS_Store
+model/
+*.pkl
+Data/
+wandb/
+.streamlit/secrets.toml
+kalshi_private_key.pem
+Kalshi Edge Tracker.txt
+
+# F1 data cache — can be gigabytes of telemetry; never commit
+f1_cache/

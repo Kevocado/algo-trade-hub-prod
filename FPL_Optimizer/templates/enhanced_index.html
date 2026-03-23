@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🧠 Advanced FPL Optimizer Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 15px; }
+        
+        .header { 
+            text-align: center; 
+            color: white; 
+            margin-bottom: 25px; 
+            padding: 20px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+        .header h1 { font-size: 2.5em; margin-bottom: 10px; }
+        .header p { font-size: 1.1em; opacity: 0.9; }
+        
+        .controls { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); 
+            gap: 15px; 
+            margin-bottom: 25px; 
+        }
+        .control-panel { 
+            background: white; 
+            padding: 18px; 
+            border-radius: 10px; 
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        }
+        .control-panel h3 { color: #667eea; margin-bottom: 12px; font-size: 1.1em; }
+        
+        input, select, button { 
+            width: 100%; 
+            padding: 10px; 
+            margin: 6px 0; 
+            border: 2px solid #e1e5e9; 
+            border-radius: 8px; 
+            font-size: 13px;
+            transition: all 0.3s ease;
+        }
+        input:focus, select:focus { 
+            border-color: #667eea; 
+            outline: none; 
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        button { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+            color: white; 
+            border: none; 
+            cursor: pointer; 
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 12px;
+        }
+        button:hover { 
+            transform: translateY(-1px); 
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+        button:disabled { 
+            opacity: 0.6; 
+            cursor: not-allowed; 
+            transform: none;
+        }
+        
+        .strategy-buttons {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 5px;
+        }
+        .strategy-btn {
+            padding: 8px;
+            font-size: 11px;
+            margin: 2px 0;
+        }
+        
+        .results { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr)); 
+            gap: 15px; 
+        }
+        .team-display { 
+            background: white; 
+            border-radius: 10px; 
+            padding: 18px; 
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        .team-display h2 { 
+            color: #667eea; 
+            margin-bottom: 15px; 
+            text-align: center;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #f0f0f0;
+            font-size: 1.3em;
+        }
+        
+        .team-stats { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); 
+            gap: 10px; 
+            margin-bottom: 15px; 
+        }
+        .stat-card { 
+            text-align: center; 
+            padding: 12px 8px; 
+            background: #f8f9ff; 
+            border-radius: 8px; 
+            border-left: 4px solid #667eea;
+        }
+        .stat-value { font-size: 1.3em; font-weight: bold; color: #667eea; }
+        .stat-label { font-size: 0.8em; color: #666; margin-top: 3px; }
+        
+        .position-group { margin-bottom: 15px; }
+        .position-title { 
+            font-weight: bold; 
+            color: #667eea; 
+            margin-bottom: 8px; 
+            padding: 8px;
+            background: #f8f9ff;
+            border-radius: 5px;
+            font-size: 0.95em;
+        }
+        .player-card { 
+            display: grid; 
+            grid-template-columns: 2fr 1fr 1fr 1fr 1fr 1fr; 
+            gap: 8px; 
+            padding: 8px; 
+            margin: 4px 0; 
+            background: #fafafa; 
+            border-radius: 5px; 
+            align-items: center;
+            transition: all 0.2s ease;
+            font-size: 0.85em;
+        }
+        .player-card:hover { 
+            background: #f0f0f0; 
+            transform: translateX(3px);
+        }
+        .player-name { font-weight: bold; }
+        .player-team { color: #666; font-size: 0.9em; }
+        .player-stat { text-align: center; font-size: 0.85em; }
+        
+        .transfer-suggestions {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .transfer-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .transfer-item:last-child { border-bottom: none; }
+        .transfer-out { color: #e74c3c; }
+        .transfer-in { color: #27ae60; }
+        
+        .strategy-comparison {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin: 15px 0;
+        }
+        .strategy-card {
+            background: #f8f9ff;
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .strategy-card:hover {
+            background: #e8e9ff;
+            transform: translateY(-2px);
+        }
+        .strategy-name { font-weight: bold; color: #667eea; margin-bottom: 5px; }
+        .strategy-score { font-size: 1.2em; color: #333; }
+        
+        .advanced-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 8px;
+            margin: 10px 0;
+            font-size: 0.8em;
+        }
+        .metric-item {
+            background: #f8f9ff;
+            padding: 6px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .metric-value { font-weight: bold; color: #667eea; }
+        .metric-label { color: #666; }
+        
+        .loading { 
+            text-align: center; 
+            padding: 30px; 
+            color: white; 
+            font-size: 1.1em;
+        }
+        .error { 
+            background: #ff6b6b; 
+            color: white; 
+            padding: 12px; 
+            border-radius: 5px; 
+            margin: 8px 0; 
+        }
+        .success {
+            background: #4CAF50;
+            color: white;
+            padding: 12px;
+            border-radius: 5px;
+            margin: 8px 0;
+        }
+        
+        .tabs {
+            display: flex;
+            margin-bottom: 15px;
+        }
+        .tab {
+            flex: 1;
+            padding: 10px;
+            background: #f0f0f0;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .tab.active {
+            background: #667eea;
+            color: white;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        
+        @media (max-width: 768px) {
+            .controls, .results { grid-template-columns: 1fr; }
+            .player-card { 
+                grid-template-columns: 1fr; 
+                text-align: center; 
+                gap: 3px;
+            }
+            .strategy-buttons { grid-template-columns: 1fr; }
+            .team-stats { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        .chatbot-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 350px;
+            max-height: 500px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            display: flex;
+            flex-direction: column;
+            z-index: 1000;
+        }
+
+        .chatbot-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px;
+            border-radius: 10px 10px 0 0;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chatbot-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+            max-height: 350px;
+        }
+
+        .chat-message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            line-height: 1.5;
+        }
+
+        .chat-message.user {
+            background: #e3f2fd;
+            margin-left: 20px;
+        }
+
+        .chat-message.bot {
+            background: #f5f5f5;
+            margin-right: 20px;
+        }
+
+        .chatbot-input {
+            display: flex;
+            padding: 10px;
+            border-top: 1px solid #ddd;
+        }
+
+        .chatbot-input input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            margin-right: 10px;
+        }
+
+        .chatbot-input button {
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .chatbot-input button:hover {
+            background: #764ba2;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧠 Advanced FPL Optimizer Dashboard</h1>
+            <p>Comprehensive FPL analysis with xG/xA, defensive metrics, fixture difficulty & transfer suggestions</p>
+            <div style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.2); border-radius: 8px; font-size: 0.9em;">
+                <strong>📋 Quick Start:</strong> 1) Load FPL Data → 2) Enter your team URL/ID → 3) Choose optimization strategy → 4) Get recommendations!
+            </div>
+        </div>
+        
+        <div class="controls">
+            <div class="control-panel">
+                <h3>🚀 Initialize System</h3>
+                <button id="initBtn" onclick="initializeData()">Load Enhanced FPL Data</button>
+                <div id="initStatus"></div>
+            </div>
+            
+            <div class="control-panel">
+                <h3>📊 Your FPL Team Analysis</h3>
+                <input type="text" id="teamUrl" placeholder="Paste FPL team URL or Team ID" style="font-size: 11px;">
+                <div style="font-size: 10px; color: #666; margin: 3px 0;">
+                    Example: https://fantasy.premierleague.com/entry/123456/
+                </div>
+                <button id="analyzeBtn" onclick="analyzeTeam()" disabled>Analyze My Team</button>
+            </div>
+            
+            <div class="control-panel">
+                <h3>🎯 Optimization Strategies</h3>
+                <div class="strategy-buttons">
+                    <button class="strategy-btn" onclick="optimizeStrategy('balanced')" disabled>Balanced</button>
+                    <button class="strategy-btn" onclick="optimizeStrategy('form')" disabled>Form</button>
+                    <button class="strategy-btn" onclick="optimizeStrategy('expected')" disabled>xG/xA</button>
+                    <button class="strategy-btn" onclick="optimizeStrategy('fixture')" disabled>Fixtures</button>
+                    <button class="strategy-btn" onclick="optimizeStrategy('differential')" disabled>Differentials</button>
+                    <button class="strategy-btn" onclick="optimizeStrategy('defensive')" disabled>Defensive</button>
+                </div>
+                <button onclick="compareAllStrategies()" disabled id="compareBtn">Compare All Strategies</button>
+            </div>
+            
+            <div class="control-panel">
+                <h3>🔍 Advanced Analysis</h3>
+                <select id="positionFilter">
+                    <option value="">All Positions</option>
+                    <option value="Goalkeeper">Goalkeepers</option>
+                    <option value="Defender">Defenders</option>
+                    <option value="Midfielder">Midfielders</option>
+                    <option value="Forward">Forwards</option>
+                </select>
+                <select id="sortMetric">
+                    <option value="comprehensive_value">Comprehensive Value</option>
+                    <option value="xgi_per_game">xG + xA per Game</option>
+                    <option value="defensive_score">Defensive Score</option>
+                    <option value="fixture_adjusted_score">Fixture Adjusted</option>
+                    <option value="captain_score">Captain Potential</option>
+                </select>
+                <button onclick="showTopPlayers()" disabled id="playersBtn">Show Top Players</button>
+            </div>
+        </div>
+        
+        <div class="results" id="results"></div>
+    </div>
+
+    <!-- Chatbot Interface -->
+    <div id="chatbot-container" class="chatbot-container">
+        <div class="chatbot-header" onclick="toggleChatbot()">
+            <span>🤖 FPL Assistant</span>
+            <span id="chatbot-toggle">▼</span>
+        </div>
+        <div id="chatbot-messages" class="chatbot-messages"></div>
+        <div class="chatbot-input">
+            <input type="text" id="chat-input" placeholder="Ask me anything about FPL..." onkeypress="handleChatKeypress(event)">
+            <button onclick="sendChatMessage()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        let dataInitialized = false;
+        let currentTeamData = null;
+        
+        // Utility function for safe number formatting
+        function safeToFixed(value, decimals = 0, unit = '') {
+            if (typeof value === 'number' && !isNaN(value)) {
+                return value.toFixed(decimals) + unit;
+            }
+            return '0'.padEnd(decimals ? decimals + 2 : 1, '0') + unit;
+        }
+        
+        // Enhanced error handling
+        function showError(message, details = '') {
+            const results = document.getElementById('results');
+            results.innerHTML = `
+                <div class="error">
+                    <strong>❌ Error:</strong> ${message}
+                    ${details ? `<br><small>${details}</small>` : ''}
+                </div>
+            `;
+        }
+        
+        function showSuccess(message) {
+            const results = document.getElementById('results');
+            results.innerHTML = `
+                <div class="success">
+                    <strong>✅ Success:</strong> ${message}
+                </div>
+            `;
+        }
+        
+        function showLoading(message = 'Loading...') {
+            const results = document.getElementById('results');
+            results.innerHTML = `<div class="loading">🔄 ${message}</div>`;
+        }
+
+        
+        async function initializeData() {
+            const btn = document.getElementById('initBtn');
+            const status = document.getElementById('initStatus

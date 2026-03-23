@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚽ FPL Optimizer Pro</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --primary-color: #37003c;
+            --secondary-color: #00ff85;
+            --accent-color: #e90052;
+            --text-color: #333;
+            --bg-color: #f8f9fa;
+            --card-bg: #ffffff;
+            --border-color: #e1e5e9;
+            --success-color: #28a745;
+            --warning-color: #ffc107;
+            --danger-color: #dc3545;
+            --info-color: #17a2b8;
+        }
+        
+        body { 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, var(--primary-color) 0%, #4a148c 100%);
+            min-height: 100vh;
+            color: var(--text-color);
+            line-height: 1.6;
+        }
+        
+        .container { 
+            max-width: 1400px; 
+            margin: 0 auto; 
+            padding: 20px; 
+        }
+        
+        .header { 
+            text-align: center; 
+            color: white; 
+            margin-bottom: 30px; 
+            padding: 30px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        
+        .header h1 { 
+            font-size: 3em; 
+            margin-bottom: 10px; 
+            font-weight: 800;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .header p { 
+            font-size: 1.2em; 
+            opacity: 0.9; 
+            margin-bottom: 20px;
+        }
+        
+        .quick-start {
+            background: rgba(0,255,133,0.1);
+            border: 1px solid var(--secondary-color);
+            border-radius: 12px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+        
+        .quick-start h3 {
+            color: var(--secondary-color);
+            margin-bottom: 10px;
+        }
+        
+        .quick-start ol {
+            text-align: left;
+            display: inline-block;
+            color: white;
+        }
+        
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .control-card { 
+            background: var(--card-bg);
+            padding: 25px; 
+            border-radius: 15px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            border: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+        }
+        
+        .control-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+        }
+        
+        .control-card h3 { 
+            color: var(--primary-color); 
+            margin-bottom: 20px; 
+            font-size: 1.3em;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 500;
+            color: var(--text-color);
+        }
+        
+        input, select, button { 
+            width: 100%; 
+            padding: 12px 15px; 
+            margin: 5px 0; 
+            border: 2px solid var(--border-color); 
+            border-radius: 10px; 
+            font-size: 14px;
+            transition: all 0.3s ease;
+            font-family: inherit;
+        }
+        
+        input:focus, select:focus { 
+            border-color: var(--primary-color); 
+            outline: none; 
+            box-shadow: 0 0 0 3px rgba(55, 0, 60, 0.1);
+        }
+        
+        button { 
+            background: linear-gradient(135deg, var(--primary-color) 0%, #4a148c 100%); 
+            color: white; 
+            border: none; 
+            cursor: pointer; 
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            transition: all 0.3s ease;
+        }
+        
+        button:hover:not(:disabled) { 
+            transform: translateY(-2px); 
+            box-shadow: 0 8px 25px rgba(55, 0, 60, 0.3);
+        }
+        
+        button:disabled { 
+            opacity: 0.6; 
+            cursor: not-allowed; 
+            transform: none;
+        }
+        
+        .btn-secondary {
+            background: linear-gradient(135deg, var(--secondary-color) 0%, #00cc6a 100%);
+            color: var(--primary-color);
+        }
+        
+        .btn-secondary:hover:not(:disabled) {
+            box-shadow: 0 8px 25px rgba(0, 255, 133, 0.3);
+        }
+        
+        .strategy-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .strategy-btn {
+            padding: 10px;
+            font-size: 12px;
+            margin: 2px 0;
+            border-radius: 8px;
+        }
+        
+        .formation-selector {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .formation-btn {
+            padding: 8px;
+            font-size: 11px;
+            border-radius: 6px;
+            background: var(--bg-color);
+            color: var(--text-color);
+            border: 2px solid var(--border-color);
+        }
+        
+        .formation-btn.active {
+            background: var(--primary-color);
+            color: white;
+            border-color: var(--primary-color);
+        }
+        
+        .content-area {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .results-card { 
+            background: var(--card-bg);
+            border-radius: 15px; 
+            padding: 25px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            border: 1px solid var(--border-color);
+            min-height: 400px;
+        }
+        
+        .results-card h2 { 
+            color: var(--primary-color); 
+            margin-bottom: 20px; 
+            text-align: center;
+            padding-bottom: 15px;
+            border-bottom: 2px solid var(--border-color);
+            font-size: 1.5em;
+            font-weight: 600;
+        }
+        
+        .team-stats { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); 
+            gap: 15px; 
+            margin-bottom: 25px; 
+        }
+        
+        .stat-card { 
+            text-align: center; 
+            padding: 20px 15px; 
+            background: linear-gradient(135deg, var(--bg-color) 0%, #f1f3f4 100%);
+            border-radius: 12px; 
+            border-left: 4px solid var(--primary-color);
+            transition: all 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        
+        .stat-value { 
+            font-size: 1.8em; 
+            font-weight: 700; 
+            color: var(--primary-color); 
+            margin-bottom: 5px;
+        }
+        
+        .stat-label { 
+            font-size: 0.9em; 
+            color: #666; 
+            font-weight: 500;
+        }
+        
+        .formation-display {
+            display: grid;
+            grid-template-columns: repeat(11, 1fr);
+            gap: 10px;
+            margin: 20px 0;
+            padding: 20px;
+            background: var(--bg-color);
+            border-radius: 12px;
+            min-height: 200px;
+            align-items: end;
+        }
+        
+        .position-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .position-title {
+            font-weight: 600;
+            color: var(--primary-color);
+            text-align: center;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+        
+        .player-card { 
+            background: var(--card-bg);
+            border: 2px solid var(--border-color);
+            border-radius: 10px; 
+            padding: 12px; 
+            text-align: center;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            position: relative;
+        }
+        
+        .player-card:hover { 
+            border-color: var(--primary-color);
+            transform: translateY(-3px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        
+        .player-card.captain {
+            border-color: var(--accent-color);
+            background: linear-gradient(135deg, #ffe6f0 0%, #fff0f5 100%);
+        }
+        
+        .player-card.vice-captain {
+            border-color: var(--secondary-color);
+            background: linear-gradient(135deg, #e6fff0 0%, #f0fff5 100%);
+        }
+        
+        .player-name { 
+            font-weight: 600; 
+            font-size: 0.9em;
+            margin-bottom: 5px;
+            color: var(--text-color);
+        }
+        
+        .player-team { 
+            color: #666; 
+            font-size: 0.8em; 
+            margin-bottom: 5px;
+        }
+        
+        .player-price { 
+            font-weight: 600; 
+            color: var(--primary-color);
+            font-size: 0.9em;
+        }
+        
+        .captain-badge {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: var(--accent-color);
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: bold;
+        }
+        
+        .vc-badge {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: var(--secondary-color);
+            color: var(--primary-color);
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: bold;
+        }
+        
+        .transfer-suggestions {
+            background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%);
+            border: 2px solid var(--warning-color);
+            border-radius: 12px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        
+        .transfer-suggestions h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .transfer-item {
+            display: grid;
+            grid-template-columns: 1fr auto 1fr;
+            gap: 15px;
+            align-items: center;
+            padding: 15px;
+            background: white;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            border: 1px solid var(--border-color);
+        }
+        
+        .transfer-out { 
+            color: var(--danger-color);
+            font-weight: 600;
+        }
+        
+        .transfer-in { 
+            color: var(--success-color);
+            font-weight: 600;
+        }
+        
+        .transfer-arrow {
+            font-size: 1.5em;
+            color: var(--primary-color);
+        }
+        
+        .transfer-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+        
+        .loading { 
+            text-align: center; 
+            padding: 60px; 
+            color: var(--primary-color); 
+            font-size: 1.2em;
+        }
+        
+        .error { 
+            background: linear-gradient(135deg, #f8d7da 0%, #f5c6cb 100%);
+            color: var(--danger-color);
+            padding: 20px; 
+            border-radius: 12px; 
+            margin: 15px 0;
+            border: 1px solid var(--danger-color);
+        }
+        
+        .success {
+            background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%);
+            color: var(--success-color);
+            padding: 20px;
+            border-radius: 12px;
+            margin: 15px 0;
+            border: 1px solid var(--success-color);
+        }
+        
+        .tabs {
+            display: flex;
+            margin-bottom: 20px;
+            background: var(--bg-color);
+            border-radius: 10px;
+            padding: 5px;
+        }
+        
+        .tab {
+            flex: 1;
+            padding: 12px 20px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+        
+        .tab.active {
+            background: var(--primary-color);
+            color: white;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .recommendation-badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        
+        .recommendation-strong {
+            background: var(--success-color);
+            color: white;
+        }
+        
+        .recommendation-good {
+            background: var(--info-color);
+            color: white;
+        }
+        
+        .recommendation-moderate {
+            background: var(--warning-color);
+            color: var(--text-color);
+        }
+        
+        .recommendation-poor {
+            background: var(--danger-color);
+            color: white;
+        }
+        
+        @media (max-width: 1024px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .formation-display {
+                grid-template-columns: repeat(5, 1fr);
+                gap: 8px;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .strategy-grid, .formation-selector {
+                grid-template-columns: 1fr;
+            }
+            
+            .team-stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .transfer-item {
+                grid-template-columns: 1fr;
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚽ FPL Optimizer Pro</h1>
+            <p>Advanced Fantasy Premier League optimization with AI-powered recommendations</p>
+            <div class="quick-start">
+                <h3>🚀 Quick Start Guide</h3>
+                <ol>
+                    <li>Load FPL Data to initialize the system</li>
+                    <li>Enter your team URL or analyze current team</li>
+                    <li>Choose formation and optimization strategy</li>
+                    <li>Get personalized recommendations!</li>
+                </ol>
+            </div>
+        </div>
+        
+        <div class="main-grid">
+            <div class="sidebar">
+                <div class="control-card">
+                    <h3>🚀 System Control</h3>
+                    <button id="initBtn" onclick="initializeData()" class="btn-secondary">Load FPL Data</button>
+                    <div id="initStatus"></div>
+                </div>
+                
+                <div class="control-card">
+                    <h3>📊 Team Analysis</h3>
+                    <div class="form-group">
+                        <label for="teamUrl">FPL Team URL or ID</label>
+                        <input type="text" id="teamUrl" placeholder="https://fantasy.premierleague.com/entry/123456/">
+                    </div>
+                    <button id="analyzeBtn" onclick="analyzeTeam()" disabled>Analyze My Team</button>
+                </div>
+                
+                <div class="control-card">
+                    <h3>⚽ Formation & Strategy</h3>
+                    <div class="form-group">
+                        <label>Formation</label>
+                        <div class="formation-selector">
+                            <button class="formation-btn active" data-formation="3-4-3">3-4-3</button>
+                            <button class="formation-btn" data-formation="3-5-2">3-5-2</button>
+                            <button class="formation-btn" data-formation="4-3-3">4-3-3</button>
+                            <button class="formation-btn" data-formation="4-4-2">4-4-2</button>
+                            <button class="formation-btn" data-formation="4-5-1">4-5-1</button>
+                            <button class="formation-btn" data-formation="5-3-2">5-3-2</button>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Optimization Strategy</label>
+                        <div class="strategy-grid">
+                            <button class="strategy-btn" onclick="getBest11('balanced')" disabled>Balanced</button>
+                            <button class="strategy-btn" onclick="getBest11('form')" disabled>Form</button>
+                            <button class="strategy-btn" onclick="getBest11('expected')" disabled>xG/xA</button>
+                            <button class="strategy-btn" onclick="getBest11('fixture')" disabled>Fixtures</button>
+                            <button class="strategy-btn" onclick="getBest11('differential')" disabled>Differentials</button>
+                            <button class="strategy-btn" onclick="getBest11('defensive')" disabled>Defensive</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="control-card">
+                    <h3>🔄 Transfer Settings</h3>
+                    <div class="form-group">
+                        <label for="freeTransfers">Free Transfers</label>
+                        <input type="number" id="freeTransfers" value="1" min="0" max="2">
+                    </div>
+                    <div class="form-group">
+                        <label for="maxHits">Max Hits (4pts each)</label>
+                        <input type="number" id="maxHits" value="1" min="0" max="3">
+                    </div>
+                    <div class="form-group">
+                        <label for="currentBank">Current Bank (£M)</label>
+                        <input type="number" id="currentBank" value="0.0" step="0.1" min="0">
+                    </div>
+                    <button onclick="getTransferSuggestions()" disabled id="transferBtn">Get Transfer Suggestions</button>
+                </div>
+            </div>
+            
+            <div class="content-area">
+                <div class="results-card">
+                    <div class="tabs">
+                        <button class="tab active" onclick="switchTab('best11')">Best 11</button>
+                        <button class="tab" onclick="switchTab('transfers')">Transfers</button>
+                        <button class="tab" onclick="switchTab('analysis')">Team Analysis</button>
+                    </div>
+                    
+                    <div id="best11-tab" class="tab-content active">
+                        <h2>🏆 Optimal Starting 11</h2>
+                        <div id="best11-content">
+                            <div class="loading">Select a strategy to see your optimal team</div>
+                        </div>
+                    </div>
+                    
+                    <div id="transfers-tab" class="tab-content">
+                        <h2>🔄 Transfer Recommendations</h2>
+                        <div id="transfers-content">
+                            <div class="loading">Analyze your team to get transfer suggestions</div>
+                        </div>
+                    </div>
+                    
+                    <div id="analysis-tab" class="tab-content">
+                        <h2>📊 Team Analysis</h2>
+                        <div id="analysis-content">
+                            <div class="loading">Enter your team URL to see detailed analysis</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let dataInitialized = false;
+        let currentTeamData = null;
+        let selectedFormation = '3-4-3';
+        
+        // Utility functions
+        function safeToFixed(value, decimals = 0, unit = '') {
+            if (typeof value === 'number' && !isNaN(value)) {
+                return value.toFixed(decimals) + unit;
+            }
+            return '0'.padEnd(decimals ? decimals + 2 : 1, '0') + unit;
+        }
+        
+        function showError(message, details = '') {
+            const content = document.querySelector('.tab-content.active');
+            content.innerHTML = `
+                <div class="error">
+                    <strong>❌ Error:</strong> ${message}
+                    ${details ? `<br><small>${details}</small>` : ''}
+                </div>
+            `;
+        }
+        
+        function showSuccess(message) {
+            const content = document.querySelector('.tab-content.active');
+            content.innerHTML = `
+                <div class="success">
+                    <strong>✅ Success:</strong> ${message}
+                </div>
+            `;
+        }
+        
+        function showLoading(message = 'Loading...') {
+            const content = document.querySelector('.tab-content.active');
+            content.innerHTML = `<div class="loading">🔄 ${message}</div>`;
+        }
+        
+        // Tab switching
+        function switchTab(tabName) {
+            // Remove active class from all tabs and content
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            
+            // Add active class to selected tab and content
+            event.target.classList.add('active');
+            document.getElementById(tabName + '-tab').classList.add('active');
+        }
+        
+        // Formation selection
+        document.querySelectorAll('.formation-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.formation-btn').forEach(b => b.classList.remove('active'));
+                this.classList.add('active');
+                selectedFormation = this.dataset.formation;
+            });
+        });
+        
+        // Initialize data
+        async function initializeData() {
+            const btn = document.getElementById('initBtn');
+            const status = document.getElementById('initStatus');
+            
+            btn.disabled = true;
+            btn.textContent = 'Loading...';
+            status.innerHTML = '<div class="loading">🔄 Fetching FPL data...</div>';
+            
+            try {
+                const response = await fetch('/api/initialize');
+                const result = await response.json();
+                
+                if (result.success) {
+                    status.innerHTML = `<div class="success">✅ Loaded ${result.player_count} players for GW${result.current_gameweek}!</div>`;
+                    dataInitialized = true;
+                    enableButtons();
+                } else {
+                    status.innerHTML = '<div class="error">❌ Failed to load data</div>';
+                }
+            } catch (error) {
+                status.innerHTML = '<div class="error">❌ Error: ' + error.message + '</div>';
+            }
+            
+            btn.disabled = false;
+            btn.textContent = 'Reload Data';
+        }
+        
+        function enableButtons() {
+            document.getElementById('analyzeBtn').disabled = false;
+            document.querySelectorAll('.strategy-btn').forEach(btn => btn.disabled = false);
+            document.getElementById('transferBtn').disabled = false;
+        }
+        
+        // Team analysis
+        async function analyzeTeam() {
+            const teamUrlOrId = document.getElementById('teamUrl').value.trim();
+            if (!teamUrlOrId) {
+                showError('Please enter your FPL Team URL or ID');
+                return;
+            }
+            
+            if (!dataInitialized) {
+                showError('Please initialize the system first');
+                return;
+            }
+            
+            showLoading('Analyzing your team...');
+            
+            try {
+                const response = await fetch(`/api/analyze_team?team_url_or_id=${encodeURIComponent(teamUrlOrId)}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError(data.error, 'Please check your team URL/ID');
+                    return;
+                }
+                
+                currentTeamData = data;
+                displayTeamAnalysis(data);
+            } catch (error) {
+                showError('Failed to analyze team', error.message);
+            }
+        }
+        
+        // Get best 11
+        async function getBest11(strategy) {
+            if (!dataInitialized) {
+                showError('Please initialize the system first');
+                return;
+            }
+            
+            showLoading(`Getting optimal ${selectedFormation} team with ${strategy} strategy...`);
+            
+            try {
+                const response = await fetch(`/api/best_11?formation=${selectedFormation}&strategy=${strategy}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+                
+                displayBest11(data);
+            } catch (error) {
+                showError('Failed to get best 11', error.message);
+            }
+        }
+        
+        // Get transfer suggestions
+        async function getTransferSuggestions() {
+            if (!currentTeamData) {
+                showError('Please analyze your team first');
+                return;
+            }
+            
+            const freeTransfers = document.getElementById('freeTransfers').value;
+            const maxHits = document.getElementById('maxHits').value;
+            const currentBank = document.getElementById('currentBank').value;
+            
+            showLoading('Calculating transfer recommendations...');
+            
+            try {
+                const currentTeamIds = currentTeamData.current_team.map(p => p.id).join(',');
+                const response = await fetch(`/api/transfer_suggestions?current_team_ids=${currentTeamIds}&free_transfers=${freeTransfers}&max_hits=${maxHits}&current_bank=${currentBank}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    showError(data.error);
+                    return;
+                }
+                
+                displayTransferSuggestions(data);
+            } catch (error) {
+                showError('Failed to get transfer suggestions', error.message);
+            }
+        }
+        
+        // Display functions
+        function displayBest11(data) {
+            const content = document.getElementById('best11-content');
+            
+            let html = `
+                <div class="team-stats">
+                    <div class="stat-card">
+                        <div class="stat-value">${data.formation}</div>
+                        <div class="stat-label">Formation</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">£${data.total_cost}M</div>
+                        <div class="stat-label">Total Cost</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${safeToFixed(data.total_value, 2)}</div>
+                        <div class="stat-label">Total Value</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${data.captaincy?.captain?.split(' ').slice(-1)[0] || 'N/A'}</div>
+                        <div class="stat-label">Captain</div>
+                    </div>
+                </div>
+                
+                <div class="formation-display">
+            `;
+            
+            // Group players by position
+            const playersByPosition = {};
+            data.starting_11.forEach(player => {
+                if (!playersByPosition[player.position]) {
+                    playersByPosition[player.position] = [];
+                }
+                playersByPosition[player.position].push(player);
+            });
+            
+            // Display in formation order
+            const formationOrder = ['Goalkeeper', 'Defender', 'Midfielder', 'Forward'];
+            formationOrder.forEach(position => {
+                if (playersByPosition[position]) {
+                    html += `<div class="position-group">`;
+                    html += `<div class="position-title">${position}s</div>`;
+                    
+                    playersByPosition[position].forEach(player => {
+                        const isCaptain = data.captaincy?.captain === player.name;
+                        const isViceCaptain = data.captaincy?.vice_captain === player.name;
+                        
+                        html += `
+                            <div class="player-card ${isCaptain ? 'captain' : isViceCaptain ? 'vice-captain' : ''}">
+                                ${isCaptain ? '<div class="captain-badge">C</div>' : ''}
+                                ${isViceCaptain ? '<div class="vc-badge">VC</div>' : ''}
+                                <div class="player-name">${player.name}</div>
+                                <div class="player-team">${player.team}</div>
+                                <div class="player-price">£${player.price}M</div>
+                            </div>
+                        `;
+                    });
+                    
+                    html += `</div>`;
+                }
+            });
+            
+            html += `</div>`;
+            
+            content.innerHTML = html;
+        }
+        
+        function displayTransferSuggestions(data) {
+            const content = document.getElementById('transfers-content');
+            
+            if (!data.transfers || data.transfers.length === 0) {
+                content.innerHTML = '<div class="success">✅ Your team is already well optimized!</div>';
+                return;
+            }
+            
+            let html = `
+                <div class="transfer-suggestions">
+                    <h3>🔄 Transfer Recommendations</h3>
+                    <div class="transfer-meta">
+                        <strong>Summary:</strong> ${data.summary.total_transfers} transfers, 
+                        ${data.summary.free_transfers_used} free, ${data.summary.hits_taken} hits, 
+                        ${data.summary.total_cost} points cost, +${safeToFixed(data.summary.total_expected_gain, 1)} expected gain
+                        <span class="recommendation-badge ${getRecommendationClass(data.summary.net_benefit)}">
+                            ${getRecommendationText(data.summary.net_benefit)}
+                        </span>
+                    </div>
+                    <p><strong>Recommendation:</strong> ${data.summary.recommendation}</p>
+                </div>
+            `;
+            
+            data.transfers.forEach(transfer => {
+                const benefitClass = transfer.net_benefit > 0 ? 'success' : 'error';
+                html += `
+                    <div class="transfer-item">
+                        <div class="transfer-out">
+                            <strong>OUT:</strong> ${transfer.transfer_out.name}<br>
+                            <small>${transfer.transfer_out.team} • £${transfer.transfer_out.price}M</small>
+                        </div>
+                        <div class="transfer-arrow">→</div>
+                        <div class="transfer-in">
+                            <strong>IN:</strong> ${transfer.transfer_in.name}<br>
+                            <small>${transfer.transfer_in.team} • £${transfer.transfer_in.price}M</small>
+                        </div>
+                    </div>
+                    <div class="transfer-meta">
+                        <span>Cost: ${transfer.cost_difference > 0 ? '+' : ''}£${transfer.cost_difference}M</span>
+                        <span>${transfer.is_free_transfer ? 'Free Transfer' : '4pt Hit'}</span>
+                        <span>Expected Gain: ${transfer.expected_points_gain > 0 ? '+' : ''}${transfer.expected_points_gain}pts</span>
+                        <span class="${benefitClass}">Net: ${transfer.net_benefit > 0 ? '+' : ''}${transfer.net_benefit}pts</span>
+                    </div>
+                `;
+            });
+            
+            content.innerHTML = html;
+        }
+        
+        function displayTeamAnalysis(data) {
+            const content = document.getElementById('analysis-content');
+            
+            let html = `
+                <div class="success">
+                    ✅ <strong>${data.team_info?.name || 'Unknown Team'}</strong> (ID: ${data.extracted_team_id}) | 
+                    Overall Rank: ${data.team_info?.summary_overall_rank?.toLocaleString() || 'N/A'} | 
+                    Total Points: ${data.team_info?.summary_overall_points || 0}
+                </div>
+                
+                <div class="team-stats">
+                    <div class="stat-card">
+                        <div class="stat-value">£${data.total_cost || 0}M</div>
+                        <div class="stat-label">Total Cost</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${data.total_points || 0}</div>
+                        <div class="stat-label">Total Points</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${safeToFixed(data.team_analysis?.total_xg, 1)}</div>
+                        <div class="stat-label">Total xG</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${safeToFixed(data.team_analysis?.total_xa, 1)}</div>
+                        <div class="stat-label">Total xA</div>
+                    </div>
+                </div>
+            `;
+            
+            // Display team by position
+            if (data.team_by_position) {
+                const positionOrder = ['Goalkeeper', 'Defender', 'Midfielder', 'Forward'];
+                positionOrder.forEach(position => {
+                    if (data.team_by_position[position] && data.team_by_position[position].length > 0) {
+                        html += `
+                            <div class="position-group">
+                                <div class="position-title">${position}s (${data.team_by_position[position].length})</div>
+                                ${data.team_by_position[position].map(player => `
+                                    <div class="player-card">
+                                        <div class="player-name">${player.name}${player.is_captain ? ' (C)' : ''}${player.is_vice_captain ? ' (VC)' : ''}</div>
+                                        <div class="player-team">${player.team}</div>
+                                        <div class="player-price">£${player.price}M • ${player.total_points}pts</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        `;
+                    }
+                });
+            }
+            
+            content.innerHTML = html;
+        }
+        
+        function getRecommendationClass(netBenefit) {
+            if (netBenefit > 10) return 'recommendation-strong';
+            if (netBenefit > 5) return 'recommendation-good';
+            if (netBenefit > 0) return 'recommendation-moderate';
+            return 'recommendation-poor';
+        }
+        
+        function getRecommendationText(netBenefit) {
+            if (netBenefit > 10) return 'Strong';
+            if (netBenefit > 5) return 'Good';
+            if (netBenefit > 0) return 'Moderate';
+            return 'Poor';
+        }
+        
+        // Auto-initialize on page load
+        window.addEventListener('load', function() {
+            setTimeout(() => {
+                if (!dataInitialized) {
+                    initializeData();
+                }
+            }, 500);
+        });
+    </script>
+</body>
+</html>

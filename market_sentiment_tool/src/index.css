@@ -1,0 +1,144 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 20% 7%;
+    --foreground: 210 20% 90%;
+
+    --card: 220 18% 10%;
+    --card-foreground: 210 20% 90%;
+
+    --popover: 220 18% 10%;
+    --popover-foreground: 210 20% 90%;
+
+    --primary: 142 72% 50%;
+    --primary-foreground: 220 20% 7%;
+
+    --secondary: 220 16% 16%;
+    --secondary-foreground: 210 20% 80%;
+
+    --muted: 220 14% 14%;
+    --muted-foreground: 215 12% 50%;
+
+    --accent: 38 92% 55%;
+    --accent-foreground: 220 20% 7%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 220 14% 18%;
+    --input: 220 14% 18%;
+    --ring: 142 72% 50%;
+
+    --radius: 0.5rem;
+
+    --profit: 142 72% 50%;
+    --loss: 0 72% 55%;
+    --warn: 38 92% 55%;
+    --info: 210 80% 60%;
+    --terminal-bg: 220 22% 5%;
+    --purple: 270 70% 60%;
+
+    --sidebar-background: 220 18% 10%;
+    --sidebar-foreground: 210 20% 90%;
+    --sidebar-primary: 142 72% 50%;
+    --sidebar-primary-foreground: 220 20% 7%;
+    --sidebar-accent: 220 16% 16%;
+    --sidebar-accent-foreground: 210 20% 80%;
+    --sidebar-border: 220 14% 18%;
+    --sidebar-ring: 142 72% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}
+
+@layer utilities {
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .font-sans {
+    font-family: 'Inter', sans-serif;
+  }
+
+  .text-profit {
+    color: hsl(var(--profit));
+  }
+
+  .text-loss {
+    color: hsl(var(--loss));
+  }
+
+  .text-warn {
+    color: hsl(var(--warn));
+  }
+
+  .text-info {
+    color: hsl(var(--info));
+  }
+
+  .bg-terminal {
+    background-color: hsl(var(--terminal-bg));
+  }
+
+  .text-purple {
+    color: hsl(var(--purple));
+  }
+
+  .bg-purple {
+    background-color: hsl(var(--purple));
+  }
+
+  .glow-profit {
+    text-shadow: 0 0 20px hsl(142 72% 50% / 0.4);
+  }
+
+  .glow-loss {
+    text-shadow: 0 0 20px hsl(0 72% 55% / 0.4);
+  }
+
+  .glow-purple {
+    text-shadow: 0 0 20px hsl(270 70% 60% / 0.4);
+  }
+
+  .glow-warn {
+    text-shadow: 0 0 20px hsl(38 92% 55% / 0.4);
+  }
+
+  .border-glow-profit {
+    box-shadow: 0 0 15px -3px hsl(142 72% 50% / 0.15);
+  }
+
+  .border-glow-loss {
+    box-shadow: 0 0 15px -3px hsl(0 72% 55% / 0.15);
+  }
+
+  .border-glow-warn {
+    box-shadow: 0 0 15px -3px hsl(38 92% 55% / 0.25);
+  }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 3px;
+  }
+}

@@ -1,0 +1,51 @@
+name: Background Market Scanner
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # Run every 30 minutes
+  workflow_dispatch:  # Manual trigger from GitHub Actions tab
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Background Scanner
+        env:
+          # Alpaca (Paper Trading)
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          ALPACA_API_KEY: ${{ secrets.APCA_API_KEY_ID }}
+          ALPACA_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+
+          # Azure Storage
+          AZURE_CONNECTION_STRING: ${{ secrets.AZURE_CONNECTION_STRING }}
+
+          # Kalshi
+          KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+
+          # FRED (Federal Reserve Economic Data)
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+
+          # Gemini (AI Validator)
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+          # Hugging Face (Model Downloads)
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python -u scripts/background_scanner.py

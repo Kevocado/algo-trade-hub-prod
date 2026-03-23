@@ -1,0 +1,15 @@
+fastmcp
+langgraph
+lightgbm
+alpaca-py
+supabase
+python-dotenv
+aiohttp
+numpy
+pandas
+scipy
+chromadb
+sentence-transformers
+feedparser
+beautifulsoup4
+requests
