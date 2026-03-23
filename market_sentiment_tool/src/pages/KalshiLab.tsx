@@ -19,7 +19,7 @@ export default function KalshiLab() {
   };
 
   const processedEdges = useMemo(() => {
-    let result = [...edges];
+    let result = edges.filter(e => ['WEATHER', 'MACRO', 'CRYPTO'].includes(e.edge_type?.toUpperCase()));
     if (activeFilter) {
       result = result.filter(e => e.edge_type.toUpperCase() === activeFilter.toUpperCase());
     }
@@ -50,7 +50,7 @@ export default function KalshiLab() {
       </div>
 
       <FilterBar 
-        options={["WEATHER", "MACRO", "SPORTS"]} 
+        options={["WEATHER", "MACRO", "CRYPTO"]} 
         activeFilter={activeFilter} 
         onFilterChange={setActiveFilter} 
       />

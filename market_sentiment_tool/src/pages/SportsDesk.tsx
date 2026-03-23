@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FilterBar } from "@/components/FilterBar";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 // Robust JSON visualizer
 const SquadVisualizer = ({ payload, sport }: { payload: any, sport: string }) => {
@@ -121,13 +122,13 @@ export default function SportsDesk() {
               {footballEdges.map((opt) => (
                 <Card key={opt.id} className="overflow-hidden border-border shadow-sm">
                   <CardHeader className="bg-primary/5 pb-4"><CardTitle className="text-lg">{opt.title || opt.market_title}</CardTitle></CardHeader>
-                  <SquadVisualizer sport="FOOTBALL" payload={opt.raw_payload} />
+                  <ErrorBoundary><SquadVisualizer sport="FOOTBALL" payload={opt.raw_payload} /></ErrorBoundary>
                 </Card>
               ))}
               {fplData.map((opt) => (
                 <Card key={opt.id} className="overflow-hidden border-border shadow-sm">
                   <CardHeader className="bg-primary/5 pb-4"><CardTitle className="text-lg">FPL Optimizer ({opt.strategy})</CardTitle></CardHeader>
-                  <SquadVisualizer sport="FOOTBALL" payload={opt.squad_json} />
+                  <ErrorBoundary><SquadVisualizer sport="FOOTBALL" payload={opt.squad_json} /></ErrorBoundary>
                 </Card>
               ))}
             </>
@@ -170,7 +171,7 @@ export default function SportsDesk() {
         {edges.map(opt => (
            <Card key={opt.id} className="overflow-hidden shadow-sm">
              <CardHeader className="bg-primary/5 pb-4"><CardTitle className="text-lg">{opt.title}</CardTitle></CardHeader>
-             <SquadVisualizer sport={sport} payload={opt.raw_payload} />
+             <ErrorBoundary><SquadVisualizer sport={sport} payload={opt.raw_payload} /></ErrorBoundary>
            </Card>
         ))}
       </div>
