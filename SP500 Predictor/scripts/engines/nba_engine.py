@@ -406,22 +406,29 @@ class NBAEngine:
 
                 # Only add if there's a Kalshi market with edge, OR injury flag
                 if (edge_pct is not None and abs(edge_pct) >= self.min_edge_pct) or injury_flag:
-                    signals.append({
-                        "player":      player_name,
-                        "team":        team_abbr,
-                        "stat":        stat,
-                        "line":        line,
-                        "model_prob_over": model_prob,
-                        "features":    features,
-                        "kalshi_ticker": kalshi_mkt.get("ticker") if kalshi_mkt else None,
-                        "kalshi_yes_ask": kalshi_price,
-                        "edge_pct":    round(edge_pct, 1) if edge_pct else None,
-                        "action":      action,
-                        "injury_flag": injury_flag,
-                        "injury_status": injury_status,
-                        "is_b2b":      is_b2b,
-                        "detected_at": datetime.now(timezone.utc).isoformat(),
-                    })
+                    # INSTANTIATE NEW DICTIONARY (Fixes Loop Bug)
+                    opportunity = {
+                        "engine": "NBA",
+                        "asset": player_name,
+                        "market_title": f"NBA Prop: {player_name} {stat.capitalize()} (O/U {line})",
+                        "market_id": f"nba_prop_{stat}_{player_name.replace(' ', '_').upper()}",
+                        "action": action if action else "MONITOR",
+                        "edge": abs(edge_pct) if edge_pct else 0.0,
+                        "confidence": model_prob,
+                        "reasoning": f"Model forecasts {model_prob}% probability of OVER {line} {stat}. " + 
+                                     (f"Kalshi price: {kalshi_price}¢." if kalshi_price else "No live price.") +
+                                     (f" ⚠️ INJURY STATUS: {injury_status}" if injury_flag else ""),
+                        "data_source": "BallDontLie + Gaussian Regression",
+                        "ui_reasoning": False,
+                        "raw_payload": {
+                            "player": player_name,
+                            "stat": stat,
+                            "line": line,
+                            "injury_flag": injury_flag,
+                            "is_b2b": is_b2b
+                        }
+                    }
+                    signals.append(opportunity)
 
                 time.sleep(0.1)  # Rate limit BallDontLie
 

@@ -35,21 +35,6 @@ class WeatherEngine:
             'Miami': {'office': 'MFL', 'gridX': 110, 'gridY': 50},
         }
 
-        self.conn_str = os.getenv("AZURE_CONNECTION_STRING", "").strip('"').strip("'")
-        self.blob_service = None
-        self.container_name = "weather-forecasts"
-        
-        if self.conn_str:
-            try:
-                from azure.storage.blob import BlobServiceClient
-                self.blob_service = BlobServiceClient.from_connection_string(self.conn_str, connection_timeout=10, read_timeout=10)
-                try:
-                    self.blob_service.create_container(self.container_name, connection_timeout=10, read_timeout=10)
-                except Exception:
-                    pass
-            except Exception as e:
-                print(f"    ⚠️ failed to initialize blob service in WeatherEngine: {e}")
-
     def get_nws_forecast(self, city):
         """
         Fetch NWS hourly forecast and extract high temp predictions.
@@ -171,43 +156,6 @@ class WeatherEngine:
         self._full_forecasts = full_forecasts
         return forecasts
 
-    def check_for_forecast_changes(self, city, new_forecasts):
-        """ Compare new daily highs against stored daily highs. Alert on change. """
-        if not self.blob_service:
-            return
-            
-        import json
-        blob_name = f"forecasts_{city}.json"
-        blob_client = self.blob_service.get_blob_client(container=self.container_name, blob=blob_name)
-        
-        try:
-            old_data = blob_client.download_blob().readall()
-            old_forecasts = json.loads(old_data)
-            
-            changes = []
-            for date, temp in new_forecasts.items():
-                if date in old_forecasts:
-                    old_temp = old_forecasts[date]
-                    if old_temp != temp:
-                        changes.append(f"• {date}: **{old_temp}°F** ➡️ **{temp}°F**")
-            
-            if changes:
-                from src.discord_notifier import DiscordNotifier
-                notifier = DiscordNotifier()
-                if notifier.is_enabled():
-                    payload = {
-                        "content": f"🚨 **NWS Forecast Changed for {city}!** Check your Kalshi positions.\n" + "\n".join(changes)
-                    }
-                    requests.post(notifier.webhook_url, json=payload)
-                    print(f"    🔔 Sent Weather Change Alert for {city}")
-        except Exception:
-            pass # Blob doesn't exist yet
-            
-        try:
-            blob_client.upload_blob(json.dumps(new_forecasts), overwrite=True)
-        except Exception as e:
-            print(f"    ⚠️ Failed to sync weather cache for {city}: {e}")
-
     def find_opportunities(self, kalshi_markets=None):
         """
         Compare NWS forecasts to Kalshi temperature markets.
@@ -232,7 +180,6 @@ class WeatherEngine:
             if highs:
                 forecasts[city] = highs
                 print(f"    📡 NWS {city}: {highs}")
-                self.check_for_forecast_changes(city, highs)
 
         # Match against Kalshi markets
         now = datetime.now()

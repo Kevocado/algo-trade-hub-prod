@@ -3,9 +3,8 @@ import { supabase } from "@/lib/supabase";
 
 export interface KalshiEdge {
   id: string;
-  partition_key: string;
-  row_key: string;
-  edge_type: string;
+  market_id: string;
+  edge_type: 'WEATHER' | 'MACRO' | 'SPORTS' | 'CRYPTO';
   title?: string;
   market_title?: string;
   market_prob: number;
@@ -13,7 +12,8 @@ export interface KalshiEdge {
   edge_pct: number;
   discovered_at: string;
   raw_payload: any;
-  team_logos?: { home?: string, away?: string }; // extracted for sports
+  ui_reasoning?: boolean;
+  ai_summary?: string;
 }
 
 export const useMarketEdges = () => {

@@ -31,6 +31,7 @@ class KalshiPortfolio:
     def __init__(self):
         self.api_key_id = os.getenv("KALSHI_API_KEY_ID", "")
         private_key_pem = os.getenv("KALSHI_API_KEY", "")
+        self.key_file_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
 
         if not self.api_key_id:
             raise ValueError(
@@ -46,11 +47,11 @@ class KalshiPortfolio:
             pem_bytes = None
 
             # Method 1: KALSHI_API_KEY is a file path to a .pem file
-            key_path = os.getenv("KALSHI_KEY_FILE", "")
+            key_path = self.key_file_path or os.getenv("KALSHI_KEY_FILE", "")
             if key_path and os.path.isfile(key_path):
                 with open(key_path, 'rb') as f:
                     pem_bytes = f.read()
-            elif os.path.isfile(private_key_pem.strip()):
+            elif private_key_pem and os.path.isfile(private_key_pem.strip()):
                 with open(private_key_pem.strip(), 'rb') as f:
                     pem_bytes = f.read()
 

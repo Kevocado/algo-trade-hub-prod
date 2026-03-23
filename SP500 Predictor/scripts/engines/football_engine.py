@@ -10,6 +10,14 @@ from datetime import datetime, timedelta, timezone
 from scipy.stats import poisson
 from understatapi import UnderstatClient
 
+import sys
+import os
+from pathlib import Path
+# Add project root to path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.append(os.getcwd())
+
 from shared import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [FOOTBALL-ENGINE] %(levelname)s %(message)s")
@@ -175,39 +183,62 @@ class FootballKalshiEngine:
         opportunities = []
         fixtures = self.fetch_fixtures()
         
-        # Limit to 3 matches per run during testing to prevent massive delays
-        for match in fixtures[:3]:
-            home_team = match["homeTeam"]["name"]
-            away_team = match["awayTeam"]["name"]
-            league = match["competition"]["code"]
-            
-            home_stats = self.fetch_xpts_data(home_team, league)
-            away_stats = self.fetch_xpts_data(away_team, league)
-            
-            # Expected Goals for this specific matchup (simplified model)
-            # A full model would use League Avg xG, Home Attack Strength, Away Defense Strength
-            match_home_xg = (home_stats["xG"] + away_stats["xGA"]) / 2
-            match_away_xg = (away_stats["xG"] + home_stats["xGA"]) / 2
-            
-            probs = self.calculate_poisson_edge(match_home_xg, match_away_xg)
-            
-            log.info(f"{home_team} vs {away_team} -> Expected Home Win: {probs['HOME_WIN']:.1f}%")
-            
-            # --- STUB: Fetching Live Kalshi Price ---
-            # Standard implementation calls Kalshi API. For now we use a dummy price showing retail inefficiency.
-            # E.g. retail underprices a strong home team due to recent bad luck (which xPTS proves false)
-            live_kalshi_home_win_price = 40.0  # retail thinks 40%
-            
-            edge_payload = self.evaluate_market(
-                match_title=f"{home_team} vs {away_team}",
-                prediction_type="HOME_WIN",
-                model_prob=probs['HOME_WIN'],
-                kalshi_price=live_kalshi_home_win_price
-            )
-            
-            if edge_payload:
-                opportunities.append(edge_payload)
-                log.info(f"🚨 FOUND EDGE: {edge_payload['title']} (Edge: {edge_payload['edge_pct']*100:.1f}%)")
+        # Limit to 10 matches per run (expanded from 3)
+        for match in fixtures[:10]:
+            try:
+                # INSTANTIATE A NEW DICTIONARY FOR EACH GAME (Fixes Loop Bug)
+                match_data = {}
+                
+                home_team = match["homeTeam"]["name"]
+                away_team = match["awayTeam"]["name"]
+                league = match["competition"]["code"]
+                match_id = match.get("id")
+                
+                home_stats = self.fetch_xpts_data(home_team, league)
+                away_stats = self.fetch_xpts_data(away_team, league)
+                
+                # Expected Goals for this specific matchup (simplified model)
+                match_home_xg = (home_stats["xG"] + away_stats["xGA"]) / 2
+                match_away_xg = (away_stats["xG"] + home_stats["xGA"]) / 2
+                
+                probs = self.calculate_poisson_edge(match_home_xg, match_away_xg)
+                
+                # Standardize Title & ID for Kalshi Matching
+                match_title = f"{home_team} vs {away_team}"
+                
+                # STUB: Fetching Live Kalshi Price (to be replaced by real kalshi_feed data)
+                live_price = 45.0  # Placeholder for retail sentiment
+                
+                # Calculate edge for HOME_WIN
+                model_prob = probs['HOME_WIN']
+                edge = model_prob - live_price
+                
+                # Build the Opportunity Object (NEW DICT)
+                opportunity = {
+                    "engine": "Soccer",
+                    "asset": f"{home_team} vs {away_team}",
+                    "market_title": f"Soccer: {match_title} (Home Win)",
+                    "market_id": f"soccer_{league}_{match_id if match_id else match_title.replace(' ', '_')}",
+                    "action": "BUY YES" if edge > 0 else "BUY NO",
+                    "edge": abs(edge),
+                    "confidence": model_prob,
+                    "reasoning": f"Poisson model projects {match_home_xg:.1f} xG for {home_team} vs {match_away_xg:.1f} for {away_team}. Pr(Home Win) = {model_prob:.1f}%.",
+                    "data_source": "Understat xG + Poisson Simulation",
+                    "ui_reasoning": False, # Default to False, updated by background_scanner for top 3
+                    "raw_payload": {
+                        "home_xg": match_home_xg,
+                        "away_xg": match_away_xg,
+                        "league": league
+                    }
+                }
+                
+                if abs(edge) >= self.edge_threshold:
+                    opportunities.append(opportunity)
+                    log.info(f"🚨 FOUND EDGE: {opportunity['market_title']} ({edge:.1f}%)")
+                    
+            except Exception as e:
+                log.error(f"Error processing match loop: {e}")
+                continue
                 
         return opportunities
 

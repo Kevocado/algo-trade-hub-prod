@@ -263,6 +263,68 @@ Rules: Block only for: exchange hack, {symbol.replace('USDT','')} regulatory act
         }
 
 
+    def validate_top_edges(self, top_edges):
+        """
+        Takes a list of top 3 edges and returns a single summary reasoning.
+        """
+        if not top_edges:
+            return "No edges to summarize."
+
+        self.gemini_calls += 1
+        
+        edges_str = ""
+        for i, op in enumerate(top_edges):
+            edges_str += f"\nEDGE #{i+1}:\n"
+            edges_str += f"- Engine: {op.get('engine', op.get('edge_type', 'Unknown'))}\n"
+            edges_str += f"- Market: {op.get('market_title', op.get('Market', 'Unknown'))}\n"
+            edges_str += f"- Action: {op.get('action', op.get('Action', 'Unknown'))}\n"
+            edges_str += f"- Edge: {op.get('edge', op.get('Edge', 0)):.1f}%\n"
+            edges_str += f"- Reasoning: {op.get('reasoning', op.get('ModelPred', 'N/A'))}\n"
+
+        prompt = f"""
+        You are a Top Tier Quantitative Meta-Analyst. Summarize these top 3 trading opportunities into a concise "War Room" executive summary.
+        
+        TOP EDGES:
+        {edges_str}
+        
+        TASK:
+        1. For each edge, provide a 1-sentence "Scrutinizer Verdict".
+        2. Provide a final overall "Confidence Score" for the portfolio (1-100).
+        3. Format as a strictly valid JSON.
+        
+        OUTPUT FORMAT:
+        {{
+            "summary": "Overall war room summary text here...",
+            "individual_verdicts": [
+                "Verdict 1",
+                "Verdict 2",
+                "Verdict 3"
+            ],
+            "confidence_score": 85
+        }}
+        """
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
+            text = response.text
+            if '```json' in text:
+                text = text.split('```json')[1].split('```')[0]
+            elif '```' in text:
+                text = text.split('```')[1].split('```')[0]
+            
+            return json.loads(text.strip())
+        except Exception as e:
+            print(f"Bulk AI validation error: {e}")
+            return {
+                "summary": "AI Summarization unavailable.",
+                "individual_verdicts": ["Math only validation."] * len(top_edges),
+                "confidence_score": 50
+            }
+
+
 if __name__ == "__main__":
     print("Testing AI Validator...")
     try:

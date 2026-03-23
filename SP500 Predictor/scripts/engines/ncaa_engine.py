@@ -27,37 +27,47 @@ class NCAAEngine:
                     data = r.json()
                     games = data.get("games", [])
                     for game in games:
-                        game_id = game.get("game", {}).get("gameID", "")
-                        if not game_id: continue
-                        
-                        away_team = game.get("game", {}).get("away", {})
-                        home_team = game.get("game", {}).get("home", {})
-                        
-                        away_name = away_team.get("names", {}).get("short", away_team.get("nameSEO", "Away"))
-                        home_name = home_team.get("names", {}).get("short", home_team.get("nameSEO", "Home"))
-                        
-                        away_slug = away_team.get("nameSEO", "")
-                        home_slug = home_team.get("nameSEO", "")
-                        
-                        game_time = game.get("game", {}).get("startTime", "")
-                        
-                        away_logo = f"{NCAA_BASE_URL}/logo/{away_slug}.svg" if away_slug else ""
-                        home_logo = f"{NCAA_BASE_URL}/logo/{home_slug}.svg" if home_slug else ""
-                        
-                        upcoming.append({
-                            "title": f"NCAA: {away_name} vs {home_name}",
-                            "edge_type": "SPORTS",
-                            "market_id": f"ncaa_basketball_{game_id}",
-                            "our_prob": 0.5,
-                            "market_prob": 0.0,
-                            "raw_payload": {
-                                "away": away_name,
-                                "home": home_name,
-                                "away_logo": away_logo,
-                                "home_logo": home_logo,
-                                "date": game_time
+                        try:
+                            # INSTANTIATE NEW DICTIONARY PER GAME
+                            game_obj = game.get("game", {})
+                            game_id = game_obj.get("gameID", "")
+                            if not game_id: continue
+                            
+                            away_team = game_obj.get("away", {})
+                            home_team = game_obj.get("home", {})
+                            
+                            away_name = away_team.get("names", {}).get("short", away_team.get("nameSEO", "Away"))
+                            home_name = home_team.get("names", {}).get("short", home_team.get("nameSEO", "Home"))
+                            
+                            away_slug = away_team.get("nameSEO", "")
+                            home_slug = home_team.get("nameSEO", "")
+                            
+                            game_time = game_obj.get("startTime", "")
+                            
+                            away_logo = f"{NCAA_BASE_URL}/logo/{away_slug}.svg" if away_slug else ""
+                            home_logo = f"{NCAA_BASE_URL}/logo/{home_slug}.svg" if home_slug else ""
+                            
+                            opportunity = {
+                                "engine": "NCAA",
+                                "asset": f"{away_name} vs {home_name}",
+                                "market_title": f"NCAA Basketball: {away_name} vs {home_name}",
+                                "market_id": f"ncaa_bb_{game_id}",
+                                "action": "STAY", # Schedule only for now
+                                "edge": 0.0,
+                                "confidence": 50,
+                                "reasoning": f"March Madness Matchup: {away_name} vs {home_name} scheduled for {game_time}.",
+                                "data_source": "NCAA Official API",
+                                "ui_reasoning": False,
+                                "raw_payload": {
+                                    "away_logo": away_logo,
+                                    "home_logo": home_logo,
+                                    "date": game_time
+                                }
                             }
-                        })
+                            upcoming.append(opportunity)
+                        except Exception as game_err:
+                            print(f"    ⚠️ Skipping individual NCAA game: {game_err}")
+                            continue
                 time.sleep(0.5)
             except Exception as e:
                 print(f"  ⚠️ NCAA API Error on {date_str}: {e}")

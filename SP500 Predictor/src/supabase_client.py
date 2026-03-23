@@ -64,15 +64,15 @@ def upsert_opportunities(opportunities: list):
     if not opportunities:
         return
     client = get_client()
-    rows = []
+    # De-duplicate rows by market_id to avoid Supabase 500 error
+    unique_rows = {}
     for op in opportunities:
-        # Standardize the mapping from our various python engine schemas to kalshi_edges schema
+        # Standardize the mapping
         title = op.get("market_title") or op.get("Market") or "Unknown Market"
+        market_id = op.get("market_ticker", op.get("RowKey", f"GEN_{title.replace(' ','_').upper()}"))[:50]
         
         # Determine market probabilities
-        # Some engines use MarketPrice, MarketYesAsk, some use kalshi_price
         market_prob = op.get("market_price", op.get("MarketYesAsk", op.get("kalshi_price", 50)))
-        # Make sure it's 0-1 scale if it's currently 0-100
         if market_prob > 1: market_prob = market_prob / 100.0
         
         our_prob = op.get("model_probability", op.get("ModelPred", op.get("model_prob", 50)))
@@ -81,23 +81,22 @@ def upsert_opportunities(opportunities: list):
         edge_pct = op.get("edge", op.get("Edge", op.get("edge_pct", 0)))
         if edge_pct > 1 or edge_pct < -1: edge_pct = edge_pct / 100.0
         
-        # Enforce edge_type constraints
         edge_type = op.get("edge_type", "MACRO").upper()
         if edge_type not in ["WEATHER", "MACRO", "SPORTS", "CRYPTO"]:
             edge_type = "MACRO"
             
-        rows.append({
-            "market_id": op.get("market_ticker", op.get("RowKey", f"GEN_{title.replace(' ','_').upper()}[:30]")),
+        unique_rows[market_id] = {
+            "market_id": market_id,
             "title": title,
             "edge_type": edge_type,
             "our_prob": round(float(our_prob), 4),
             "market_prob": round(float(market_prob), 4),
             "edge_pct": round(float(abs(edge_pct)), 4),
             "raw_payload": op
-        })
+        }
         
     try:
-        # We can perform an upsert if market_id is unique
+        rows = list(unique_rows.values())
         client.table("kalshi_edges").upsert(rows, on_conflict="market_id").execute()
     except Exception as e:
         print(f"Failed to upsert kalshi_edges: {e}")
@@ -149,6 +148,29 @@ def insert_trade_log(log: dict):
         "brier_score": log.get("brier_score"),
         "pnl_cents": log.get("pnl_cents"),
     }).execute()
+
+def upsert_kalshi_portfolio(summary: dict):
+    """Upsert Kalshi portfolio summary into Supabase."""
+    if not summary:
+        return
+    client = get_client()
+    
+    row = {
+        "id": "MAIN_ACCOUNT", # Hardcoded for now as we likely have one main account
+        "balance": summary.get("balance", 0),
+        "portfolio_value": summary.get("portfolio_value", 0),
+        "total_invested": summary.get("total_invested", 0),
+        "total_pnl": summary.get("total_pnl", 0),
+        "wins": summary.get("wins", 0),
+        "losses": summary.get("losses", 0),
+        "open_positions": summary.get("positions", []),
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    try:
+        client.table("kalshi_portfolio").upsert(row, on_conflict="id").execute()
+    except Exception as e:
+        print(f"Failed to upsert kalshi_portfolio: {e}")
 
 
 def get_trade_history(ticker=None, limit=200):

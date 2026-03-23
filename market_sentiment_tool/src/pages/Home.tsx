@@ -2,7 +2,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { TrendingUp, Wallet, ArrowUpRight, Activity } from "lucide-react";
+import { TrendingUp, Wallet, ArrowUpRight, Activity, Loader2, Brain } from "lucide-react";
+import { usePortfolio } from "@/hooks/usePortfolio";
+import { useMarketEdges } from "@/hooks/useMarketEdges";
 
 // Mock Data for Equity Curve
 const chartData = [
@@ -12,68 +14,113 @@ const chartData = [
   { day: "30", equity: 15400 }
 ];
 
-// Mock Data for Open Positions
-const openPositions = [
-  { id: 1, market: "Will Bitcoin exceed $100k by March?", type: "CRYPTO", side: "YES", shares: 450, avg: 41, cur: 58, pnl: "+$76.50", status: "Winning" },
-  { id: 2, market: "Will the Fed cut rates in May?", type: "MACRO", side: "NO", shares: 1200, avg: 22, cur: 18, pnl: "-$48.00", status: "Losing" },
-  { id: 3, market: "Will Miami hit 90°F this week?", type: "WEATHER", side: "YES", shares: 300, avg: 65, cur: 80, pnl: "+$45.00", status: "Winning" },
-  { id: 4, market: "Lakers vs Celtics (Spread -4.5)", type: "SPORTS", side: "YES", shares: 80, avg: 50, cur: 50, pnl: "$0.00", status: "Neutral" },
-];
-
 export default function Home() {
-  return (
-    <div className="p-8 max-w-[1400px] mx-auto space-y-8 animate-in fade-in duration-500">
-      
-      <div className="flex flex-col gap-1">
-        <h1 className="text-3xl font-bold tracking-tight text-slate-900">Portfolio Overview</h1>
-        <p className="text-slate-500">Welcome back. Your automated engines are currently tracking 4 active partitions.</p>
+  const { portfolio, loading: pLoading } = usePortfolio();
+  const { edges, loading: eLoading } = useMarketEdges();
+
+  const loading = pLoading || eLoading;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full bg-slate-950">
+        <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
       </div>
+    );
+  }
+
+  const balance = portfolio?.balance ?? 0;
+  const portfolioValue = portfolio?.portfolio_value ?? 0;
+  const totalPnL = portfolio?.total_pnl ?? 0;
+  const positions = portfolio?.open_positions ?? [];
+
+  // Top 3 edges with AI summary
+  const topEdges = edges
+    .filter(e => e.ui_reasoning && e.ai_summary)
+    .slice(0, 3);
+
+  return (
+    <div className="p-8 max-w-[1400px] mx-auto space-y-8 animate-in fade-in duration-500 bg-slate-950 min-h-screen text-slate-100">
+      
+      <div className="flex flex-col gap-1 border-b border-slate-900 pb-6 mb-2">
+        <h1 className="text-4xl font-black tracking-tight text-white uppercase italic">War Room HQ</h1>
+        <p className="text-slate-400 font-medium">Aggregating cross-engine alpha & real-time Kalshi telemetry.</p>
+      </div>
+
+      {/* AI War Room Section */}
+      {topEdges.length > 0 && (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+             <Brain className="w-5 h-5 text-emerald-400" />
+             <h2 className="text-lg font-bold uppercase tracking-widest text-emerald-500">AI High-Conviction Edges</h2>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {topEdges.map((edge) => (
+              <Card key={edge.id} className="bg-emerald-500/5 border-emerald-500/20 shadow-xl backdrop-blur-md">
+                <CardHeader className="pb-2">
+                  <div className="flex justify-between items-start">
+                    <Badge className="bg-emerald-500 text-emerald-950 text-[10px] font-bold">{edge.edge_type}</Badge>
+                    <span className="text-xl font-black text-emerald-400">+{edge.edge_pct.toFixed(1)}%</span>
+                  </div>
+                  <CardTitle className="text-sm font-bold text-white mt-2 line-clamp-1">{edge.market_title}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-xs text-slate-300 leading-relaxed italic border-l-2 border-emerald-500/30 pl-3 py-1">
+                    "{edge.ai_summary}"
+                  </p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Top Row: Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card className="shadow-sm border-slate-200">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 bg-slate-50/50">
-            <CardTitle className="text-sm font-semibold text-slate-500 uppercase tracking-wider">Total Value</CardTitle>
+        <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
+          <CardHeader className="flex flex-row items-center justify-between pb-2 bg-slate-900/20">
+            <CardTitle className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Total Portfolio Value</CardTitle>
             <Wallet className="h-4 w-4 text-emerald-500" />
           </CardHeader>
           <CardContent className="pt-4">
-            <div className="text-3xl font-bold tracking-tight text-slate-900">$15,400.00</div>
+            <div className="text-3xl font-bold tracking-tight text-white">${portfolioValue.toLocaleString()}</div>
             <p className="text-sm text-slate-500 mt-2 flex items-center gap-1">
-              <span className="text-emerald-500 font-medium flex items-center"><ArrowUpRight className="h-3 w-3 mr-0.5"/> 24%</span> from last month
+              Live account value from Kalshi API
             </p>
           </CardContent>
         </Card>
-        <Card className="shadow-sm border-slate-200">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 bg-slate-50/50">
-            <CardTitle className="text-sm font-semibold text-slate-500 uppercase tracking-wider">Daily PnL</CardTitle>
+        <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
+          <CardHeader className="flex flex-row items-center justify-between pb-2 bg-slate-900/20">
+            <CardTitle className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Settled P&L</CardTitle>
             <TrendingUp className="h-4 w-4 text-emerald-500" />
           </CardHeader>
           <CardContent className="pt-4">
-            <div className="text-3xl font-bold tracking-tight text-emerald-500">+$342.50</div>
+            <div className={`text-3xl font-bold tracking-tight ${totalPnL >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+              {totalPnL >= 0 ? '+' : ''}${totalPnL.toLocaleString()}
+            </div>
             <p className="text-sm text-slate-500 mt-2 flex items-center gap-1">
-              Live unrealized gains across 4 open markets
+              Wins: {portfolio?.wins} | Losses: {portfolio?.losses}
             </p>
           </CardContent>
         </Card>
-        <Card className="shadow-sm border-slate-200">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 bg-slate-50/50">
-            <CardTitle className="text-sm font-semibold text-slate-500 uppercase tracking-wider">Available Cash</CardTitle>
+        <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
+          <CardHeader className="flex flex-row items-center justify-between pb-2 bg-slate-900/20">
+            <CardTitle className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Available Cash</CardTitle>
             <Activity className="h-4 w-4 text-emerald-500" />
           </CardHeader>
           <CardContent className="pt-4">
-            <div className="text-3xl font-bold tracking-tight text-slate-900">$2,100.00</div>
+            <div className="text-3xl font-bold tracking-tight text-white">${balance.toLocaleString()}</div>
             <p className="text-sm text-slate-500 mt-2">
-              Ready to deploy. Searching for edges...
+              Liquid capital ready for deployment
             </p>
           </CardContent>
         </Card>
       </div>
 
       {/* Middle Row: Equity Curve */}
-      <Card className="shadow-sm border-slate-200">
-        <CardHeader className="bg-slate-50/50 border-b border-slate-100">
-          <CardTitle>30-Day Equity Curve</CardTitle>
-          <CardDescription>Simulated backtest combined with live forward-tracking.</CardDescription>
+      <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
+        <CardHeader className="bg-slate-900/20 border-b border-slate-800">
+          <CardTitle className="text-white">Growth Trajectory</CardTitle>
+          <CardDescription className="text-slate-400">Aggregated account performance history.</CardDescription>
         </CardHeader>
         <CardContent className="pt-6 h-[400px]">
           <ResponsiveContainer width="100%" height="100%">
@@ -84,13 +131,13 @@ export default function Home() {
                   <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-              <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{fill: '#64748b'}} dy={10} />
-              <YAxis axisLine={false} tickLine={false} tickFormatter={(val) => `$${val/1000}k`} tick={{fill: '#64748b'}} dx={-10} />
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
+              <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{fill: '#94a3b8'}} dy={10} />
+              <YAxis axisLine={false} tickLine={false} tickFormatter={(val) => `$${val/1000}k`} tick={{fill: '#94a3b8'}} dx={-10} />
               <Tooltip 
-                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)' }}
+                contentStyle={{ backgroundColor: '#0f172a', borderRadius: '8px', border: '1px solid #1e293b', boxShadow: 'none' }}
                 formatter={(value: number) => [`$${value.toLocaleString()}`, "Equity"]}
-                labelStyle={{ color: '#64748b', fontWeight: 600, marginBottom: '4px' }}
+                labelStyle={{ color: '#94a3b8', fontWeight: 600, marginBottom: '4px' }}
               />
               <Area 
                 type="monotone" 
@@ -106,46 +153,44 @@ export default function Home() {
       </Card>
 
       {/* Bottom Row: Open Positions */}
-      <Card className="shadow-sm border-slate-200">
-        <CardHeader className="bg-slate-50/50 border-b border-slate-100">
-          <CardTitle>Live Open Positions</CardTitle>
-          <CardDescription>Active Kalshi contracts managed by the automated engine.</CardDescription>
+      <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
+        <CardHeader className="bg-slate-900/20 border-b border-slate-800">
+          <CardTitle className="text-white">Live Operations</CardTitle>
+          <CardDescription className="text-slate-400">Active Kalshi contracts currently managed by the Hub.</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
-            <TableHeader className="bg-slate-50/50">
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="w-[300px] pl-6">Market</TableHead>
-                <TableHead>Subsystem</TableHead>
-                <TableHead>Side</TableHead>
-                <TableHead className="text-right">Shares</TableHead>
-                <TableHead className="text-right">Avg Price</TableHead>
-                <TableHead className="text-right">Current</TableHead>
-                <TableHead className="text-right pr-6">Unrealized PnL</TableHead>
+            <TableHeader className="bg-slate-900/50">
+              <TableRow className="hover:bg-transparent border-slate-800">
+                <TableHead className="w-[300px] pl-6 text-slate-400">Position Ticker</TableHead>
+                <TableHead className="text-slate-400 text-right">Quantity</TableHead>
+                <TableHead className="text-slate-400 text-right">Avg Entry</TableHead>
+                <TableHead className="text-slate-400 text-right">Current Price</TableHead>
+                <TableHead className="text-slate-400 text-right pr-6">Cost Basis</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {openPositions.map((pos) => (
-                <TableRow key={pos.id} className="cursor-pointer hover:bg-slate-50 transition-colors">
-                  <TableCell className="font-semibold text-slate-900 pl-6">{pos.market}</TableCell>
-                  <TableCell>
-                    <Badge variant="secondary" className="bg-slate-100 text-slate-600 hover:bg-slate-200">
-                      {pos.type}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <Badge className={pos.side === "YES" ? "bg-emerald-500 hover:bg-emerald-600" : "bg-rose-500 hover:bg-rose-600"}>
-                      {pos.side}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right font-medium">{pos.shares.toLocaleString()}</TableCell>
-                  <TableCell className="text-right text-slate-600 font-medium">{pos.avg}¢</TableCell>
-                  <TableCell className="text-right font-bold text-slate-900">{pos.cur}¢</TableCell>
-                  <TableCell className={`text-right pr-6 font-bold ${pos.status === 'Winning' ? 'text-emerald-500' : pos.status === 'Losing' ? 'text-rose-500' : 'text-slate-400'}`}>
-                    {pos.pnl}
-                  </TableCell>
+              {positions.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center py-10 text-slate-500">No active positions detected in Kalshi account.</TableCell>
                 </TableRow>
-              ))}
+              ) : (
+                positions.map((pos, idx) => (
+                  <TableRow key={idx} className="border-slate-800 hover:bg-slate-800/30 transition-colors">
+                    <TableCell className="font-semibold text-white pl-6">{pos.ticker}</TableCell>
+                    <TableCell className="text-right font-medium text-slate-300">
+                      <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
+                        {pos.position > 0 ? 'YES' : 'NO'} {Math.abs(pos.position)}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right text-slate-400 font-medium">{pos.average_price}¢</TableCell>
+                    <TableCell className="text-right font-bold text-white">{pos.current_price ? pos.current_price + '¢' : '—'}</TableCell>
+                    <TableCell className="text-right pr-6 font-bold text-slate-300">
+                      ${(pos.total_traded / 100).toFixed(2)}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
             </TableBody>
           </Table>
         </CardContent>
