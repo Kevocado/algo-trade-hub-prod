@@ -377,10 +377,12 @@ if __name__ == "__main__":
     signals = engine.get_latest_signals()
     print(f"\n✅ Signals found: {len(signals)}")
     for s in signals[:5]:
+        edge_val = s.get('edge_pct')
+        edge_str = f"+{edge_val:.1f}%" if edge_val else "no mkt"
         print(
             f"  {s['driver']} {s['signal_type']} | "
             f"Model: {s['model_prob']:.1f}% | "
             f"Kalshi: {s.get('kalshi_yes_ask', 'N/A')}¢ | "
-            f"Edge: {f'+{s[\"edge_pct\"]:.1f}%' if s.get('edge_pct') else 'no mkt'} | "
+            f"Edge: {edge_str} | "
             f"{s.get('key_metric', '')}"
         )
