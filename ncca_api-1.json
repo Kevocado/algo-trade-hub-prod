@@ -1,0 +1,921 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "NCAA API",
+    "description": "API to return consumable data from ncaa.com. You can also [host your own deployment](https://github.com/henrygd/ncaa-api#deployment).\n\nThe public API is limited to 5 requests per second per IP.\n\nhttps://github.com/henrygd/ncaa-api\n\nhttps://buymeacoffee.com/henrygd",
+    "version": "3.2.0",
+    "license": {
+      "name": "MIT",
+      "url": "https://github.com/henrygd/ncaa-api/blob/master/LICENSE"
+    },
+    "contact": {
+      "name": "henrygd",
+      "url": "https://github.com/henrygd/ncaa-api"
+    }
+  },
+  "paths": {
+    "/scoreboard/{sport}/{path}": {
+      "get": {
+        "responses": {},
+        "summary": "Scoreboard",
+        "description": "Scores for a given sport and division. Most sports use `YYYY/MM/DD`, but football uses `YYYY/WK`.\n\nOmitting the date will return scores for today or the previous game date.\n\nhttps://www.ncaa.com/scoreboard/football/fbs\n\nhttps://www.ncaa.com/scoreboard/football/fbs/2025/01/all-conf",
+        "parameters": [
+          {
+            "name": "sport",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "football"
+              },
+              "1": {
+                "value": "fieldhockey"
+              },
+              "2": {
+                "value": "soccer-men"
+              },
+              "3": {
+                "value": "soccer-women"
+              },
+              "4": {
+                "value": "volleyball-women"
+              },
+              "5": {
+                "value": "waterpolo-men"
+              },
+              "6": {
+                "value": "basketball-men"
+              },
+              "7": {
+                "value": "basketball-women"
+              },
+              "8": {
+                "value": "icehockey-men"
+              },
+              "9": {
+                "value": "icehockey-women"
+              },
+              "10": {
+                "value": "baseball"
+              },
+              "11": {
+                "value": "lacrosse-men"
+              },
+              "12": {
+                "value": "lacrosse-women"
+              },
+              "13": {
+                "value": "softball"
+              },
+              "14": {
+                "value": "volleyball-men"
+              },
+              "15": {
+                "value": "waterpolo-women"
+              }
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "fbs"
+              },
+              "1": {
+                "value": "fbs/2025/01/all-conf"
+              },
+              "2": {
+                "value": "d1/2024/01/all-conf"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/game/{id}": {
+      "get": {
+        "responses": {},
+        "summary": "Game information",
+        "description": "General information about a game.\n\nhttps://www.ncaa.com/game/6459218",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "schema": {
+              "type": "number"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "6459218"
+              },
+              "1": {
+                "value": "6305900"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/game/{id}/boxscore": {
+      "get": {
+        "responses": {},
+        "summary": "Game boxscore",
+        "description": "Due to upstream changes, some seasons may not return data for game subroutes. Please open an issue if you encounter this.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "schema": {
+              "type": "number"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "6459218"
+              },
+              "1": {
+                "value": "6305900"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/game/{id}/play-by-play": {
+      "get": {
+        "responses": {},
+        "summary": "Game play by play",
+        "description": "Due to upstream changes, some seasons may not return data for game subroutes. Please open an issue if you encounter this.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "schema": {
+              "type": "number"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "6459218"
+              },
+              "1": {
+                "value": "6305900"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/game/{id}/scoring-summary": {
+      "get": {
+        "responses": {},
+        "summary": "Game scoring summary",
+        "description": "Due to upstream changes, some seasons may not return data for game subroutes. Please open an issue if you encounter this."
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "schema": {
+            "type": "number"
+          },
+          "required": true,
+          "examples": {
+            "0": {
+              "value": "6459218"
+            },
+            "1": {
+              "value": "6305900"
+            }
+          }
+        }
+      ]
+    },
+    "/game/{id}/team-stats": {
+      "get": {
+        "responses": {},
+        "summary": "Game team stats",
+        "description": "Due to upstream changes, some seasons may not return data for game subroutes. Please open an issue if you encounter this."
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "schema": {
+            "type": "number"
+          },
+          "required": true,
+          "examples": {
+            "0": {
+              "value": "6459218"
+            },
+            "1": {
+              "value": "6305900"
+            }
+          }
+        }
+      ]
+    },
+    "/stats/{sport}/{division}/{year}/{path}": {
+      "get": {
+        "responses": {},
+        "summary": "Stats",
+        "description": "Stats for a given sport and division.\n\nhttps://www.ncaa.com/stats/football/fbs/current/individual/20\n\nhttps://www.ncaa.com/stats/football/fbs/2024/team/28",
+        "parameters": [
+          {
+            "name": "sport",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "football"
+              },
+              "1": {
+                "value": "fieldhockey"
+              },
+              "2": {
+                "value": "soccer-men"
+              },
+              "3": {
+                "value": "soccer-women"
+              },
+              "4": {
+                "value": "volleyball-women"
+              },
+              "5": {
+                "value": "waterpolo-men"
+              },
+              "6": {
+                "value": "basketball-men"
+              },
+              "7": {
+                "value": "basketball-women"
+              },
+              "8": {
+                "value": "icehockey-men"
+              },
+              "9": {
+                "value": "icehockey-women"
+              },
+              "10": {
+                "value": "baseball"
+              },
+              "11": {
+                "value": "lacrosse-men"
+              },
+              "12": {
+                "value": "lacrosse-women"
+              },
+              "13": {
+                "value": "softball"
+              },
+              "14": {
+                "value": "volleyball-men"
+              },
+              "15": {
+                "value": "waterpolo-women"
+              }
+            }
+          },
+          {
+            "name": "division",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "fbs"
+              },
+              "1": {
+                "value": "fcs"
+              },
+              "2": {
+                "value": "d1"
+              },
+              "3": {
+                "value": "d2"
+              },
+              "4": {
+                "value": "d3"
+              }
+            }
+          },
+          {
+            "name": "year",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "current"
+              }
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "individual/20"
+              },
+              "1": {
+                "value": "team/28"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/standings/{sport}/{path}": {
+      "get": {
+        "responses": {},
+        "summary": "Standings",
+        "description": "Standings for a given sport and division.\n\nhttps://www.ncaa.com/standings/football/fbs\n\nhttps://www.ncaa.com/standings/basketball-women/d1/asun",
+        "parameters": [
+          {
+            "name": "sport",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "football"
+              },
+              "1": {
+                "value": "fieldhockey"
+              },
+              "2": {
+                "value": "soccer-men"
+              },
+              "3": {
+                "value": "soccer-women"
+              },
+              "4": {
+                "value": "volleyball-women"
+              },
+              "5": {
+                "value": "waterpolo-men"
+              },
+              "6": {
+                "value": "basketball-men"
+              },
+              "7": {
+                "value": "basketball-women"
+              },
+              "8": {
+                "value": "icehockey-men"
+              },
+              "9": {
+                "value": "icehockey-women"
+              },
+              "10": {
+                "value": "baseball"
+              },
+              "11": {
+                "value": "lacrosse-men"
+              },
+              "12": {
+                "value": "lacrosse-women"
+              },
+              "13": {
+                "value": "softball"
+              },
+              "14": {
+                "value": "volleyball-men"
+              },
+              "15": {
+                "value": "waterpolo-women"
+              }
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "fbs"
+              },
+              "1": {
+                "value": "fbs/big-ten"
+              },
+              "2": {
+                "value": "d1/asun"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/history/{path}": {
+      "get": {
+        "responses": {},
+        "summary": "History",
+        "description": "Championship history for a given sport.\n\nhttps://www.ncaa.com/history/bowling/nc",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "bowling/nc"
+              },
+              "1": {
+                "value": "basketball-women/d1"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/rankings/{path}": {
+      "get": {
+        "responses": {},
+        "summary": "Rankings",
+        "description": "Rankings for a given sport.\n\nhttps://www.ncaa.com/rankings/football/fbs/associated-press",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "football/fbs/associated-press"
+              },
+              "1": {
+                "value": "basketball-women/d1/associated-press"
+              },
+              "2": {
+                "value": "soccer-men/d1/united-soccer-coaches"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/brackets/{sport}/{division}/{year}": {
+      "get": {
+        "responses": {},
+        "summary": "Brackets",
+        "description": "Tournament bracket for a given sport, division, and year.\n\nThis endpoint is experimental does not include FBS football brackets prior to 2025.\n\nhttps://www.ncaa.com/brackets/basketball-men/d1/2024",
+        "parameters": [
+          {
+            "name": "sport",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "basketball-men"
+              },
+              "1": {
+                "value": "basketball-women"
+              },
+              "2": {
+                "value": "football"
+              },
+              "3": {
+                "value": "baseball-men"
+              },
+              "4": {
+                "value": "softball"
+              },
+              "5": {
+                "value": "icehockey-men"
+              },
+              "6": {
+                "value": "icehockey-women"
+              },
+              "7": {
+                "value": "soccer-men"
+              },
+              "8": {
+                "value": "soccer-women"
+              },
+              "9": {
+                "value": "volleyball-men"
+              },
+              "10": {
+                "value": "volleyball-women"
+              },
+              "11": {
+                "value": "fieldhockey-men"
+              },
+              "12": {
+                "value": "fieldhockey-women"
+              },
+              "13": {
+                "value": "lacrosse-men"
+              },
+              "14": {
+                "value": "lacrosse-women"
+              }
+            }
+          },
+          {
+            "name": "division",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "d1"
+              },
+              "1": {
+                "value": "d2"
+              },
+              "2": {
+                "value": "d3"
+              },
+              "3": {
+                "value": "fbs"
+              },
+              "4": {
+                "value": "fcs"
+              }
+            }
+          },
+          {
+            "name": "year",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "2025"
+              },
+              "1": {
+                "value": "2024"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/news/{sport}/{division}": {
+      "get": {
+        "responses": {},
+        "summary": "News",
+        "description": "News articles and videos for a given sport and division. Returns parsed RSS feed data in JSON format.\n\nhttps://www.ncaa.com/news/basketball-men/d1/rss.xml",
+        "parameters": [
+          {
+            "name": "sport",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "basketball-men"
+              },
+              "1": {
+                "value": "basketball-women"
+              },
+              "2": {
+                "value": "football"
+              },
+              "3": {
+                "value": "volleyball-women"
+              }
+            }
+          },
+          {
+            "name": "division",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "d1"
+              },
+              "1": {
+                "value": "d2"
+              },
+              "2": {
+                "value": "d3"
+              },
+              "3": {
+                "value": "fbs"
+              },
+              "4": {
+                "value": "fcs"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/schedule/{sport}/{division}/{path}": {
+      "get": {
+        "responses": {},
+        "summary": "Schedule",
+        "description": "Game dates for a given sport and division. Most sports use `YYYY/MM`, but football uses `YYYY`.",
+        "parameters": [
+          {
+            "name": "sport",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "football"
+              },
+              "1": {
+                "value": "fieldhockey"
+              },
+              "2": {
+                "value": "soccer-men"
+              },
+              "3": {
+                "value": "soccer-women"
+              },
+              "4": {
+                "value": "volleyball-women"
+              },
+              "5": {
+                "value": "waterpolo-men"
+              },
+              "6": {
+                "value": "basketball-men"
+              },
+              "7": {
+                "value": "basketball-women"
+              },
+              "8": {
+                "value": "icehockey-men"
+              },
+              "9": {
+                "value": "icehockey-women"
+              },
+              "10": {
+                "value": "baseball"
+              },
+              "11": {
+                "value": "lacrosse-men"
+              },
+              "12": {
+                "value": "lacrosse-women"
+              },
+              "13": {
+                "value": "softball"
+              },
+              "14": {
+                "value": "volleyball-men"
+              },
+              "15": {
+                "value": "waterpolo-women"
+              }
+            }
+          },
+          {
+            "name": "division",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "fbs"
+              },
+              "1": {
+                "value": "fcs"
+              },
+              "2": {
+                "value": "d1"
+              },
+              "3": {
+                "value": "d2"
+              },
+              "4": {
+                "value": "d3"
+              }
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "examples": {
+              "0": {
+                "value": "2025"
+              },
+              "1": {
+                "value": "2024/01"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "/schedule-alt/{sport}/{division}/{year}": {
+      "get": {
+        "responses": {},
+        "summary": "Schedule (alt)",
+        "description": "Game dates for a given sport and division and year"
+      },
+      "parameters": [
+        {
+          "name": "sport",
+          "in": "path",
+          "schema": {
+            "type": "string"
+          },
+          "required": true,
+          "examples": {
+            "0": {
+              "value": "football"
+            },
+            "1": {
+              "value": "fieldhockey"
+            },
+            "2": {
+              "value": "soccer-men"
+            },
+            "3": {
+              "value": "soccer-women"
+            },
+            "4": {
+              "value": "volleyball-women"
+            },
+            "5": {
+              "value": "waterpolo-men"
+            },
+            "6": {
+              "value": "basketball-men"
+            },
+            "7": {
+              "value": "basketball-women"
+            },
+            "8": {
+              "value": "icehockey-men"
+            },
+            "9": {
+              "value": "icehockey-women"
+            },
+            "10": {
+              "value": "baseball"
+            },
+            "11": {
+              "value": "lacrosse-men"
+            },
+            "12": {
+              "value": "lacrosse-women"
+            },
+            "13": {
+              "value": "softball"
+            },
+            "14": {
+              "value": "volleyball-men"
+            },
+            "15": {
+              "value": "waterpolo-women"
+            }
+          }
+        },
+        {
+          "name": "division",
+          "in": "path",
+          "schema": {
+            "type": "string"
+          },
+          "required": true,
+          "examples": {
+            "0": {
+              "value": "fbs"
+            },
+            "1": {
+              "value": "fcs"
+            },
+            "2": {
+              "value": "d1"
+            },
+            "3": {
+              "value": "d2"
+            },
+            "4": {
+              "value": "d3"
+            }
+          }
+        },
+        {
+          "name": "year",
+          "in": "path",
+          "schema": {
+            "type": "string"
+          },
+          "required": true,
+          "examples": {
+            "0": {
+              "value": "2025"
+            },
+            "1": {
+              "value": "2024"
+            }
+          }
+        }
+      ]
+    },
+    "/schools-index": {
+      "get": {
+        "responses": {},
+        "summary": "Schools index",
+        "description": "Returns a list of all schools with slug, name, and long name.\n\nhttps://www.ncaa.com/schools-index"
+      }
+    },
+    "/logo/{school}.svg": {
+      "get": {
+        "responses": {},
+        "summary": "Logos",
+        "description": "Logos for all NCAA schools. Use the school `slug` or `team_seo` property."
+      },
+      "parameters": [
+        {
+          "name": "school",
+          "in": "path",
+          "schema": {
+            "type": "string"
+          },
+          "required": true,
+          "examples": {
+            "0": {
+              "value": "michigan"
+            },
+            "1": {
+              "value": "slippery-rock"
+            },
+            "2": {
+              "value": "iowa"
+            }
+          }
+        },
+        {
+          "name": "dark",
+          "in": "query",
+          "schema": {
+            "type": "boolean"
+          },
+          "required": false,
+          "examples": {
+            "0": {
+              "value": "false"
+            },
+            "1": {
+              "value": "true"
+            }
+          },
+          "description": "Set to `true` to get a version of the logo that works better on dark backgrounds."
+        }
+      ]
+    }
+  },
+  "components": {
+    "schemas": {}
+  }
+}

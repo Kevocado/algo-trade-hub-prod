@@ -8,6 +8,7 @@ import requests
 from scipy.stats import norm
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+from datetime import datetime, timezone, timedelta
 
 MODEL_DIR = "model"
 
@@ -26,208 +27,142 @@ class FeatureMismatchError(Exception):
 
 def get_hf_path(filename):
     """Downloads file from HF Hub and returns local path, or fallback."""
-    repo_id = "KevinSigey/Kalshi-LightGBM"
+    repo_id = "Kevocado/algo-trade-hub"
     local_path = os.path.join(MODEL_DIR, os.path.basename(filename))
     
-    # Prioritize newly trained local models over cloud caches
-    if os.path.exists(local_path):
-        return local_path
-        
+    # Temporarily ignore local check to force HF pull for latest .pkl
+    # because trainer.py runs hourly on HF space.
     try:
         from huggingface_hub import hf_hub_download
-        return hf_hub_download(repo_id=repo_id, filename=filename, token=os.getenv("HF_TOKEN"))
+        return hf_hub_download(repo_id=repo_id, filename=filename, repo_type="space", token=os.getenv("HF_TOKEN"))
     except Exception as e:
         print(f"HF Hub Pull Failed for {filename}: {e}")
         if os.path.exists(local_path):
             return local_path
     return None
 
+def fetch_live_btc_alpaca():
+    """Fetches the last 5 days of hourly BTC-USD data from Alpaca Data API"""
+    import os
+    API_KEY = os.getenv("ALPACA_API_KEY")
+    SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+    
+    url = "https://data.alpaca.markets/v1beta3/crypto/us/bars"
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=5)
+    
+    headers = {
+        "accept": "application/json",
+        "APCA-API-KEY-ID": API_KEY,
+        "APCA-API-SECRET-KEY": SECRET_KEY
+    }
+    
+    params = {
+        "symbols": "BTC/USD",
+        "timeframe": "1Hour",
+        "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    
+    res = requests.get(url, headers=headers, params=params)
+    if res.status_code == 200:
+        data = res.json()
+        bars = data.get("bars", {}).get("BTC/USD", [])
+        if not bars:
+            return pd.DataFrame()
+            
+        df = pd.DataFrame(bars)
+        df['timestamp'] = pd.to_datetime(df['t'])
+        df.set_index('timestamp', inplace=True)
+        df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close', 'v': 'Volume'}, inplace=True)
+        return df
+    else:
+        print(f"Alpaca API Error: {res.text}")
+        return pd.DataFrame()
+
+def create_walk_forward_features(df):
+    """Exact match of the Walk-Forward trainer's feature set."""
+    df = df.copy()
+    df['log_ret'] = pd.Series(df['Close']).pct_change()
+    for lag in [1, 2, 3, 5, 12, 24, 48]:
+        df[f'lag_ret_{lag}'] = df['log_ret'].shift(lag)
+        
+    df['price_velocity'] = df['Close'].diff(1)
+    df['price_acceleration'] = df['price_velocity'].diff(1)
+    df['volatility_30'] = df['log_ret'].rolling(30).std()
+    df['hour'] = df.index.hour
+    df['dayofweek'] = df.index.dayofweek
+    
+    return df.dropna()
+
 def validate_model_features(model, ticker):
-    """
-    Validates that the model's expected features match the saved feature list.
-    
-    Args:
-        model: Trained LightGBM model.
-        ticker (str): Ticker name.
-        
-    Returns:
-        tuple: (is_valid, expected_count, actual_count, feature_list)
-    """
-    feature_names_path = get_hf_path(f"models/features_{ticker}.pkl")
-    
-    if not feature_names_path or not os.path.exists(feature_names_path):
-        print(f"⚠️ Feature list not found for {ticker} on HF or locally. Cannot validate.")
-        return (False, 0, 0, [])
-    
-    try:
-        saved_features = joblib.load(feature_names_path)
-        # LightGBM models have num_feature() method
-        model_feature_count = model.num_feature()
-        saved_feature_count = len(saved_features)
-        
-        is_valid = (model_feature_count == saved_feature_count)
-        
-        if not is_valid:
-            print(f"⚠️ Feature count mismatch for {ticker}:")
-            print(f"   Model expects: {model_feature_count} features")
-            print(f"   Saved list has: {saved_feature_count} features")
-        
-        return (is_valid, model_feature_count, saved_feature_count, saved_features)
-    except Exception as e:
-        print(f"❌ Error validating features for {ticker}: {e}")
-        return (False, 0, 0, [])
+    # Deprecated for Walk-Forward model.
+    return True, 0, 0, []
 
 def get_model_path(ticker, download=False):
-    local_path = os.path.join(MODEL_DIR, f"lgbm_direction_{ticker}.pkl")
-    if os.path.exists(local_path):
+    if ticker == "BTC-USD":
+        local_path = os.path.join(MODEL_DIR, "btc_hourly_model.pkl")
+        if download:
+            path = get_hf_path("models/btc_hourly_model.pkl")
+            if path: return path
         return local_path
-        
+    
+    local_path = os.path.join(MODEL_DIR, f"lgbm_direction_{ticker}.pkl")
     if download:
         path = get_hf_path(f"models/lgbm_direction_{ticker}.pkl")
         if path: return path
-    return os.path.join(MODEL_DIR, f"lgbm_direction_{ticker}.pkl")
+    return local_path
 
 def train_model(df, ticker="SPY"):
-    """
-    Trains a LightGBM model to predict next hour close.
-    
-    Args:
-        df (pd.DataFrame): Dataframe with features and target 'target_next_hour'.
-        ticker (str): Ticker name to save model for.
-    """
-    save_path = get_model_path(ticker)
-    # Define features and target
-    target_col = 'target_next_hour'
-    drop_cols = [target_col, 'cum_vol', 'cum_vol_price'] # Drop intermediate calc cols if any
-    
-    # Filter only numeric columns for features
-    feature_cols = [c for c in df.columns if c not in drop_cols and pd.api.types.is_numeric_dtype(df[c])]
-    
-    X = df[feature_cols]
-    y = df[target_col]
-    
-    print(f"Training on {len(X)} samples with {len(feature_cols)} features.")
-    
-    # Time Series Split for validation
-    tscv = TimeSeriesSplit(n_splits=5)
-    
-    params = {
-        'objective': 'regression',
-        'metric': 'rmse',
-        'boosting_type': 'gbdt',
-        'num_leaves': 31,
-        'learning_rate': 0.05,
-        'feature_fraction': 0.9
-    }
-    
-    fold = 1
-    for train_index, val_index in tscv.split(X):
-        X_train, X_val = X.iloc[train_index], X.iloc[val_index]
-        y_train, y_val = y.iloc[train_index], y.iloc[val_index]
-        
-        train_data = lgb.Dataset(X_train, label=y_train)
-        val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
-        
-        bst = lgb.train(params, train_data, num_boost_round=100, valid_sets=[val_data], 
-                        callbacks=[lgb.early_stopping(stopping_rounds=10), lgb.log_evaluation(0)])
-        
-        preds = bst.predict(X_val, num_iteration=bst.best_iteration)
-        rmse = np.sqrt(mean_squared_error(y_val, preds))
-        print(f"Fold {fold} RMSE: {rmse:.4f}")
-        fold += 1
-        
-    # Train on all data
-    print("Retraining on full dataset...")
-    full_train_data = lgb.Dataset(X, label=y)
-    final_model = lgb.train(params, full_train_data, num_boost_round=100)
-    
-    # Save model
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    joblib.dump(final_model, save_path)
-    print(f"Model saved to {save_path}")
-    
-    # Save feature names to ensure consistency during inference
-    joblib.dump(feature_cols, os.path.join(os.path.dirname(save_path), f"features_{ticker}.pkl"))
-    
-    return final_model
+    pass # Deprecated by HF Space Trainer
 
 def load_model(ticker="SPY"):
-    """
-    Loads the trained model for the given ticker.
-    Also validates that the model's feature count matches the saved feature list.
-    
-    Returns:
-        tuple: (model, needs_retraining) where needs_retraining is True if feature mismatch detected
-    """
+    """Loads the trained model for the given ticker."""
     model_path = get_model_path(ticker, download=True)
     if not model_path or not os.path.exists(model_path):
         print(f"Model file {model_path} not found.")
-        return None, True  # Model missing, needs training
+        return None, True
     
     try:
-        model = joblib.load(model_path)
-        
-        # Validate features
-        is_valid, expected, actual, _ = validate_model_features(model, ticker)
-        
-        if not is_valid:
-            print(f"⚠️ Model for {ticker} has feature mismatch. Retraining recommended.")
-            return model, True  # Return model but flag for retraining
-        
-        return model, False  # Model is valid
+        data = joblib.load(model_path)
+        # Walk-forward models save a dict: {"model": model, "features": [...] }
+        if isinstance(data, dict) and "model" in data and "features" in data:
+            return data, False
+        else:
+            # Legacy model format
+            return data, False
     except Exception as e:
         print(f"❌ Error loading model for {ticker}: {e}")
         return None, True
 
-def predict_next_hour(model, current_data_df, ticker="SPY"):
+def predict_next_hour(model_data, current_data_df, ticker="SPY"):
     """
-    Predicts the next hour close given the latest data.
-    
-    Args:
-        model: Trained LightGBM model.
-        current_data_df (pd.DataFrame): Dataframe containing the latest data points (needs history for features).
-        ticker (str): Ticker to load feature names for.
-        
-    Returns:
-        float: Predicted price.
-        
-    Raises:
-        FeatureMismatchError: If the data features don't match model expectations.
+    Predicts the next hour direction probability given the latest data.
     """
-    # Load feature names dynamically from HF Hub
-    feature_names_path = get_hf_path(f"models/features_{ticker}.pkl")
-    if feature_names_path and os.path.exists(feature_names_path):
-        feature_cols = joblib.load(feature_names_path)
+    if isinstance(model_data, dict):
+        model = model_data["model"]
+        feature_cols = model_data["features"]
     else:
-        raise FileNotFoundError(f"Feature list not found for {ticker} on HF Hub. Train model first.")
+        # Legacy fallback
+        model = model_data
+        feature_names_path = get_hf_path(f"models/features_{ticker}.pkl")
+        if feature_names_path and os.path.exists(feature_names_path):
+            feature_cols = joblib.load(feature_names_path)
+        else:
+            raise FileNotFoundError(f"Feature list not found for {ticker}")
 
-    # Get the last row of features
     last_row = current_data_df.iloc[[-1]]
-    
-    # Get available features in the dataframe
     available_features = set(last_row.columns)
     expected_features = set(feature_cols)
     
-    # Check for feature mismatch
     if len(available_features & expected_features) != len(expected_features):
         missing = expected_features - available_features
         extra = available_features - expected_features
-        
         if missing or extra:
             print(f"⚠️ Feature alignment issue for {ticker}:")
-            if missing:
-                print(f"   Missing features: {missing}")
-            if extra:
-                print(f"   Extra features: {extra}")
-            
-            # Failsafe: Continue to let Pandas reindex handle the alignment
             print(f"    [FAILSAFE] Auto-dropping {len(extra)} extra features and zero-filling {len(missing)} missing features.")
     
-    # Ensure features match: select only the expected features in the correct order
-    # Fill missing features with 0
     last_row_aligned = last_row.reindex(columns=feature_cols, fill_value=0)
-    
-    # OUTPUT CLASSIFIER PROBABILITY (e.g. 0.54 instead of integer 1 or 0)
     prediction = model.predict_proba(last_row_aligned.values)[0][1]
     return prediction
 

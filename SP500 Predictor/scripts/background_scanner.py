@@ -145,10 +145,12 @@ def scan_real_edge():
 
 def scan_quant_ml():
     """
-    Quant ML scanner for SPX/Nasdaq/BTC/ETH.
+    Quant ML scanner for BTC-USD (Walk-Forward).
     Returns (snapshot_records, paper_opportunities).
     ⚠️ PAPER TRADING ONLY - no AI validation needed.
     """
+    from scripts.engines.quant_engine import fetch_live_btc_alpaca, create_walk_forward_features
+    
     tickers = ["BTC-USD"]
     snapshot_records = []
     paper_opportunities = []
@@ -156,14 +158,17 @@ def scan_quant_ml():
     data_cache = {}
     for ticker in tickers:
         try:
-            df = fetch_data(ticker, period="5d", interval="1h")
-            df = df[0] if isinstance(df, tuple) else df
+            print(f"    📡 Fetching live {ticker} from Alpaca API...")
+            df = fetch_live_btc_alpaca()
+            if df.empty:
+                print(f"    ⚠️ Alpaca fetch failed or returned empty for {ticker}")
+                continue
+                
             model, needs_retrain = load_model(ticker)
 
             if model and not df.empty:
-                df_feat = create_features(df)
-                df_feat_df = df_feat[0] if isinstance(df_feat, tuple) else df_feat
-                pred_val = predict_next_hour(model, df_feat_df, ticker)
+                df_feat = create_walk_forward_features(df)
+                pred_val = predict_next_hour(model, df_feat, ticker)
                 curr_price = df['Close'].iloc[-1]
                 vol = get_market_volatility(df, window=24)
 
@@ -171,7 +176,7 @@ def scan_quant_ml():
                     "df": df, "model": model, "vol": vol,
                     "price": curr_price, "pred": pred_val,
                 }
-                print(f"    ✅ {ticker}: Price={curr_price:.2f}, Pred={pred_val:.2f}, Vol={vol:.6f}")
+                print(f"    ✅ {ticker}: Price={curr_price:.2f}, Pred UP={pred_val*100:.1f}%, Vol={vol:.6f}")
         except Exception as e:
             import traceback
             traceback.print_exc()

@@ -85,18 +85,20 @@ export default function SportsDesk() {
   const footballEdges = sportsEdges.filter(e => e.edge_type === 'SPORTS' && (e.title?.includes("Football") || e.title?.includes("Premier League")));
   const nbaEdges = sportsEdges.filter(e => e.edge_type === 'SPORTS' && e.title?.includes("NBA"));
   const f1Edges = sportsEdges.filter(e => e.edge_type === 'SPORTS' && e.title?.includes("F1"));
+  const ncaaEdges = sportsEdges.filter(e => e.edge_type === 'SPORTS' && e.title?.includes("NCAA"));
 
   return (
     <div className="p-8 max-w-[1400px] mx-auto space-y-8">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Sports Analytics Desk</h1>
-        <p className="text-muted-foreground mt-2">Robust multi-model parsing for Football, NBA, and F1 props.</p>
+        <p className="text-muted-foreground mt-2">Robust multi-model parsing for Football, NBA, NCAA, and F1 props.</p>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className="mb-4">
           <TabsTrigger value="FOOTBALL">Football (Poison/FPL)</TabsTrigger>
           <TabsTrigger value="NBA">Basketball (NBA Props)</TabsTrigger>
+          <TabsTrigger value="NCAA">March Madness</TabsTrigger>
           <TabsTrigger value="F1">Motorsport (F1 Telemetry)</TabsTrigger>
         </TabsList>
 
@@ -108,10 +110,7 @@ export default function SportsDesk() {
 
         <TabsContent value="FOOTBALL" className="space-y-6">
           {fplLoading || edgesLoading ? (
-            <div className="space-y-4">
-              <Skeleton className="h-[300px] w-full rounded-xl" />
-              <Skeleton className="h-[300px] w-full rounded-xl" />
-            </div>
+             <Skeleton className="h-[300px] w-full rounded-xl" />
           ) : fplData.length === 0 && footballEdges.length === 0 ? (
             <div className="flex flex-col h-64 items-center justify-center text-muted-foreground border rounded-lg border-dashed bg-muted/10">
               <AlertCircle className="w-8 h-8 mb-4 opacity-50" />
@@ -136,29 +135,27 @@ export default function SportsDesk() {
         </TabsContent>
 
         <TabsContent value="NBA" className="space-y-6">
-          {edgesLoading ? (
-            <Skeleton className="h-[300px] w-full rounded-xl" />
-          ) : nbaEdges.length === 0 ? (
+          {edgesLoading ? <Skeleton className="h-[300px] w-full rounded-xl" /> : nbaEdges.length === 0 ? (
              <div className="flex flex-col h-64 items-center justify-center text-muted-foreground border rounded-lg border-dashed bg-muted/10">
-              <AlertCircle className="w-8 h-8 mb-4 opacity-50" />
                <p>No active NBA player prop edges found.</p>
             </div>
-          ) : (
-            gridOrList(nbaEdges, "NBA")
-          )}
+          ) : gridOrList(nbaEdges, "NBA")}
+        </TabsContent>
+
+        <TabsContent value="NCAA" className="space-y-6">
+          {edgesLoading ? <Skeleton className="h-[300px] w-full rounded-xl" /> : ncaaEdges.length === 0 ? (
+             <div className="flex flex-col h-64 items-center justify-center text-muted-foreground border rounded-lg border-dashed bg-muted/10">
+               <p>No active NCAA tournament games found.</p>
+            </div>
+          ) : gridOrList(ncaaEdges, "NCAA")}
         </TabsContent>
 
         <TabsContent value="F1" className="space-y-6">
-           {edgesLoading ? (
-            <Skeleton className="h-[300px] w-full rounded-xl" />
-          ) : f1Edges.length === 0 ? (
+           {edgesLoading ? <Skeleton className="h-[300px] w-full rounded-xl" /> : f1Edges.length === 0 ? (
              <div className="flex flex-col h-64 items-center justify-center text-muted-foreground border rounded-lg border-dashed bg-muted/10">
-              <AlertCircle className="w-8 h-8 mb-4 opacity-50" />
                <p>No active F1 telemetry signals generated.</p>
             </div>
-          ) : (
-            gridOrList(f1Edges, "F1")
-          )}
+          ) : gridOrList(f1Edges, "F1")}
         </TabsContent>
 
       </Tabs>
@@ -167,13 +164,53 @@ export default function SportsDesk() {
 
   function gridOrList(edges: any[], sport: string) {
     return (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {edges.map(opt => (
-           <Card key={opt.id} className="overflow-hidden shadow-sm">
-             <CardHeader className="bg-primary/5 pb-4"><CardTitle className="text-lg">{opt.title}</CardTitle></CardHeader>
+      <div className="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-6">
+        {edges.map(opt => {
+           const hasMarket = opt.market_prob > 0;
+           return (
+           <Card key={opt.id} className="overflow-hidden shadow-sm flex flex-col hover:border-primary/50 transition-colors">
+             <CardHeader className="bg-muted/10 pb-4 border-b">
+                <div className="flex justify-between items-start mb-2">
+                    <Badge variant="outline" className="text-[10px] tracking-wider font-bold uppercase">{sport}</Badge>
+                    <div className="text-right">
+                        <div className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">Model Win Prob</div>
+                        <div className="font-bold text-primary text-2xl leading-none mt-1">{(opt.our_prob * 100).toFixed(1)}%</div>
+                    </div>
+                </div>
+                <CardTitle className="text-lg leading-tight mt-2">{opt.title || opt.market_title}</CardTitle>
+             </CardHeader>
+             
+             <CardContent className="pt-5 flex-1 space-y-4">
+                {opt.raw_payload?.away_logo && opt.raw_payload?.home_logo && (
+                    <div className="flex justify-center items-center gap-6 py-2">
+                        <img src={opt.raw_payload.away_logo} className="w-16 h-16 object-contain drop-shadow-md" alt="Away Logo" />
+                        <span className="text-muted-foreground/50 font-black italic text-xl">VS</span>
+                        <img src={opt.raw_payload.home_logo} className="w-16 h-16 object-contain drop-shadow-md" alt="Home Logo" />
+                    </div>
+                )}
+                
+                {!hasMarket ? (
+                    <div className="w-full text-center p-4 mt-2 bg-muted/30 border border-dashed border-muted-foreground/30 rounded-lg text-muted-foreground text-sm font-semibold tracking-wide uppercase">
+                        ⏳ Awaiting Kalshi Market
+                    </div>
+                ) : (
+                    <div className="space-y-2 mt-2 p-4 bg-muted/10 rounded-lg border">
+                        <div className="flex justify-between text-xs font-bold mb-1 uppercase tracking-wider">
+                            <span className="text-primary">Model: {(opt.our_prob * 100).toFixed(1)}%</span>
+                            <span className="text-slate-500">Market: {(opt.market_prob * 100).toFixed(1)}¢</span>
+                        </div>
+                        <div className="relative h-2.5 rounded-full w-full bg-secondary overflow-hidden shadow-inner">
+                           <div className="absolute top-0 left-0 h-full bg-slate-400/50" style={{ width: `${opt.market_prob * 100}%` }} />
+                           <div className="absolute top-0 left-0 h-full bg-primary shadow-[0_0_10px_rgba(255,255,255,0.3)] transition-all" style={{ width: `${opt.our_prob * 100}%` }} />
+                        </div>
+                    </div>
+                )}
+             </CardContent>
+             
              <ErrorBoundary><SquadVisualizer sport={sport} payload={opt.raw_payload} /></ErrorBoundary>
            </Card>
-        ))}
+           );
+        })}
       </div>
     );
   }
