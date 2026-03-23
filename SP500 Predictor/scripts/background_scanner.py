@@ -68,6 +68,7 @@ def scan_real_edge():
     try:
         weather_engine = WeatherEngine()
         weather_ops = weather_engine.find_opportunities()
+        for op in weather_ops: op["edge_type"] = "WEATHER"
         print(f"  Found {len(weather_ops)} weather opportunities")
         all_ops.extend(weather_ops)
     except Exception as e:
@@ -78,6 +79,7 @@ def scan_real_edge():
     try:
         macro_engine = MacroEngine()
         macro_ops = macro_engine.find_opportunities()
+        for op in macro_ops: op["edge_type"] = "MACRO"
         print(f"  Found {len(macro_ops)} macro opportunities")
         all_ops.extend(macro_ops)
     except Exception as e:
@@ -88,6 +90,7 @@ def scan_real_edge():
     try:
         tsa_engine = TSAEngine()
         tsa_ops = tsa_engine.find_opportunities()
+        for op in tsa_ops: op["edge_type"] = "MACRO"
         print(f"  Found {len(tsa_ops)} TSA opportunities")
         all_ops.extend(tsa_ops)
     except Exception as e:
@@ -98,6 +101,7 @@ def scan_real_edge():
     try:
         eia_engine = EIAEngine()
         eia_ops = eia_engine.find_opportunities()
+        for op in eia_ops: op["edge_type"] = "MACRO"
         print(f"  Found {len(eia_ops)} EIA opportunities")
         all_ops.extend(eia_ops)
     except Exception as e:
@@ -192,9 +196,11 @@ def scan_quant_ml():
 
             if abs(edge) > EDGE_THRESHOLD and bet_size > 0:
                 action = "BUY YES" if edge > 0 else "BUY NO"
+                edge_type = "CRYPTO" if ticker in ["BTC", "ETH"] else "MACRO"
                 paper_opportunities.append({
                     "PartitionKey": "Paper",
                     "RowKey": f"{ticker}_{m.get('market_id', strike)}".replace(" ", ""),
+                    "edge_type": edge_type,
                     "Asset": ticker, "Market": title[:200], "Strike": str(strike),
                     "Confidence": float(round(my_prob, 1)),
                     "Edge": float(round(edge, 1)), "Action": action,
@@ -378,9 +384,14 @@ def run_scan():
     # ── Also write to Supabase (dual-write during migration) ──
     try:
         from src.supabase_client import upsert_opportunities
-        all_opps = real_edge_ops + paper_ops_raw if 'paper_ops_raw' in dir() else real_edge_ops
+        all_opps = real_edge_ops + (paper_ops if 'paper_ops' in locals() else [])
+        
+        from collections import Counter
+        count_dict = dict(Counter(op.get('edge_type', 'UNKNOWN') for op in all_opps))
+        print(f"Pushing to Supabase kalshi_edges: {count_dict}")
+        
         upsert_opportunities(all_opps)
-        print(f"  ✅ Also saved to Supabase")
+        print(f"  ✅ Also saved to Supabase kalshi_edges")
     except Exception as e:
         print(f"  ⚠️ Supabase write skipped: {e}")
 

@@ -59,6 +59,50 @@ def insert_opportunities(run_id: str, opportunities: list):
         })
     client.table("live_opportunities").insert(rows).execute()
 
+def upsert_opportunities(opportunities: list):
+    """Upsert opportunities into the new unified kalshi_edges Supabase table."""
+    if not opportunities:
+        return
+    client = get_client()
+    rows = []
+    for op in opportunities:
+        # Standardize the mapping from our various python engine schemas to kalshi_edges schema
+        title = op.get("market_title") or op.get("Market") or "Unknown Market"
+        
+        # Determine market probabilities
+        # Some engines use MarketPrice, MarketYesAsk, some use kalshi_price
+        market_prob = op.get("market_price", op.get("MarketYesAsk", op.get("kalshi_price", 50)))
+        # Make sure it's 0-1 scale if it's currently 0-100
+        if market_prob > 1: market_prob = market_prob / 100.0
+        
+        our_prob = op.get("model_probability", op.get("ModelPred", op.get("model_prob", 50)))
+        if our_prob > 1: our_prob = our_prob / 100.0
+        
+        edge_pct = op.get("edge", op.get("Edge", op.get("edge_pct", 0)))
+        if edge_pct > 1 or edge_pct < -1: edge_pct = edge_pct / 100.0
+        
+        # Enforce edge_type constraints
+        edge_type = op.get("edge_type", "MACRO").upper()
+        if edge_type not in ["WEATHER", "MACRO", "SPORTS", "CRYPTO"]:
+            edge_type = "MACRO"
+            
+        rows.append({
+            "market_id": op.get("market_ticker", op.get("RowKey", f"GEN_{title.replace(' ','_').upper()}[:30]")),
+            "title": title,
+            "edge_type": edge_type,
+            "our_prob": round(float(our_prob), 4),
+            "market_prob": round(float(market_prob), 4),
+            "edge_pct": round(float(abs(edge_pct)), 4),
+            "reasoning": str(op.get("reasoning", op.get("Reasoning", ""))),
+            "raw_payload": op
+        })
+        
+    try:
+        # We can perform an upsert if market_id is unique
+        client.table("kalshi_edges").upsert(rows, on_conflict="market_id").execute()
+    except Exception as e:
+        print(f"Failed to upsert kalshi_edges: {e}")
+
 
 def get_latest_opportunities(limit=50):
     """Fetch the most recent opportunities."""
