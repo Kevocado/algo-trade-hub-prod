@@ -13,6 +13,12 @@ import logging
 import requests
 from datetime import datetime, timezone
 from supabase import create_client
+import sys
+import os
+
+# Add "SP500 Predictor" to sys.path so we can import its scripts module despite the space in the folder name
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'SP500 Predictor')))
+from scripts.engines.football_engine import FootballKalshiEngine
 
 from shared import config
 
@@ -86,11 +92,30 @@ def fetch_and_store_kalshi_macro():
     except Exception as e:
         log.error(f"Failed to fetch Kalshi MACRO markets: {e}")
 
+def fetch_and_store_football():
+    """Runs the Football Kalshi Engine to detect sports edges."""
+    if not config.FOOTBALL_DATA_API_KEY:
+        log.warning("No FOOTBALL_DATA_API_KEY. Skipping Football Engine.")
+        return
+        
+    try:
+        log.info("Running Football Engine...")
+        engine = FootballKalshiEngine()
+        ops = engine.find_opportunities()
+        
+        for op in ops:
+            supa.table("kalshi_edges").insert(op).execute()
+            
+        log.info(f"Football scan complete. Found {len(ops)} edges.")
+    except Exception as e:
+        log.error(f"Failed to run Football Engine: {e}")
+
 def main_loop():
     log.info("Starting slow scanner (10-minute loop)...")
     while True:
         fetch_and_store_fred()
         fetch_and_store_kalshi_macro()
+        fetch_and_store_football()
         time.sleep(600)  # 10 minutes
 
 if __name__ == "__main__":
