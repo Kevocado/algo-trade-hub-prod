@@ -6,8 +6,11 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Index from "./pages/Index";
+import KalshiLab from "./pages/KalshiLab";
+import SportsDesk from "./pages/SportsDesk";
 import Auth from "./pages/Auth";
 import NotFound from "./pages/NotFound";
+import { Layout } from "@/components/Layout";
 
 const queryClient = new QueryClient();
 
@@ -20,7 +23,9 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/auth" element={<Auth />} />
-            <Route path="/" element={<ProtectedRoute><Index /></ProtectedRoute>} />
+            <Route path="/" element={<ProtectedRoute><Layout><Index /></Layout></ProtectedRoute>} />
+            <Route path="/kalshi" element={<ProtectedRoute><Layout><KalshiLab /></Layout></ProtectedRoute>} />
+            <Route path="/sports" element={<ProtectedRoute><Layout><SportsDesk /></Layout></ProtectedRoute>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

@@ -170,3 +170,61 @@ export function useUserSettings() {
 
   return { settings, loading, toggleAutoTrade };
 }
+
+export function useKalshiEdges() {
+  const [edges, setEdges] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchEdges = async () => {
+      const { data } = await supabase
+        .from("kalshi_edges" as any)
+        .select("*")
+        .order("discovered_at", { ascending: false })
+        .limit(20);
+      if (data) setEdges(data);
+      setLoading(false);
+    };
+    fetchEdges();
+
+    const channel = supabase
+      .channel("kalshi_edges_changes")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "kalshi_edges" }, (payload) => {
+        setEdges((prev) => [payload.new, ...prev].slice(0, 50));
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  return { edges, loading };
+}
+
+export function useFPLOptimizations() {
+  const [optimizations, setOptimizations] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchOpts = async () => {
+      const { data } = await supabase
+        .from("fpl_optimizations" as any)
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(20);
+      if (data) setOptimizations(data);
+      setLoading(false);
+    };
+    fetchOpts();
+
+    const channel = supabase
+      .channel("fpl_opts_changes")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "fpl_optimizations" }, (payload) => {
+        setOptimizations((prev) => [payload.new, ...prev].slice(0, 50));
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  return { optimizations, loading };
+}
