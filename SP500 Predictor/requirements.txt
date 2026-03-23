@@ -42,3 +42,6 @@ websockets>=12.0
 python-telegram-bot>=21.0
 understatapi>=0.6.1
 soccerdata>=1.4.0
+
+# --- Terminal Debugger ---
+rich>=13.0.0
