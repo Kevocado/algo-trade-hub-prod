@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from collections import defaultdict
 from typing import Dict, List
-from models import EnhancedPlayerData
+from FPL_Optimizer.models import EnhancedPlayerData
 from functools import lru_cache
 import time 
 

@@ -22,10 +22,9 @@ import pandas as pd
 from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from supabase import create_client, Client as SupabaseClient
-import chromadb
-from chromadb.utils import embedding_functions
 
 from quant_engine import analyze_all_symbols
+from news_rag import query_news  # pgvector-backed semantic search
 
 # ── Load .env from project root (one directory up from /backend) ──
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +37,7 @@ LOCAL_LLM_ENDPOINT = os.getenv("LOCAL_LLM_ENDPOINT", "http://127.0.0.1:8080/v1")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL_NAME", "GLM-5-MXFP4")
 HEARTBEAT_SECONDS = 10  # How often the orchestrator polls for new ticks
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local_ticks.sqlite3")
-CHROMA_DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma_db")
+
 
 # ── Logging ──
 logging.basicConfig(
@@ -51,15 +50,7 @@ log = logging.getLogger(__name__)
 supa: SupabaseClient | None = None
 USER_ID = None
 
-# ── Chroma DB Client (RAG context) ──
-news_collection = None
-try:
-    chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
-    sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
-    news_collection = chroma_client.get_collection(name="financial_news", embedding_function=sentence_transformer_ef)
-    log.info("ChromaDB Vector Store connected.")
-except Exception as exc:
-    log.warning("ChromaDB not initialized or empty: %s", exc)
+# ── pgvector RAG is handled via news_rag.query_news() — no local DB client needed ──
 
 try:
     supa = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -299,14 +290,13 @@ def macro_sentiment(state: AgentState) -> dict:
     symbols = list(market.keys())[:5]
     
     news_context = "No recent specific news found."
-    if news_collection is not None:
-        try:
-            query_str = f"Market conditions, interest rates, and news for {', '.join(symbols)}"
-            results = news_collection.query(query_texts=[query_str], n_results=3)
-            if results and results.get("documents") and results["documents"][0]:
-                news_context = "\n".join([f"- {doc}" for doc in results["documents"][0]])
-        except Exception as e:
-            log.warning("ChromaDB query failed: %s", e)
+    try:
+        query_str = f"Market conditions, interest rates, and news for {', '.join(symbols)}"
+        docs = query_news(query_str, n_results=3)
+        if docs:
+            news_context = "\n".join([f"- {doc}" for doc in docs])
+    except Exception as e:
+        log.warning("pgvector RAG query failed: %s", e)
     
     prompt = (
         "You are an elite Macroeconomic Sentiment Analyst. "
