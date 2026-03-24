@@ -56,3 +56,54 @@ export function usePortfolio() {
 
   return { portfolio, loading };
 }
+
+export interface PortfolioMetrics {
+  id: number;
+  total_value: number;
+  daily_pnl: number;
+  cash_balance: number;
+  updated_at: string;
+}
+
+export function usePortfolioMetrics() {
+  const [metrics, setMetrics] = useState<PortfolioMetrics | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function fetchMetrics() {
+      const { data, error } = await supabase
+        .from("portfolio_metrics")
+        .select("*")
+        .eq("id", 1)
+        .single();
+
+      if (error) {
+        console.error("Error fetching portfolio metrics:", error);
+      } else {
+        setMetrics(data);
+      }
+      setLoading(false);
+    }
+
+    fetchMetrics();
+
+    const channel = supabase
+      .channel("portfolio_metrics_changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "portfolio_metrics" },
+        (payload) => {
+          if (payload.new && (payload.new as PortfolioMetrics).id === 1) {
+            setMetrics(payload.new as PortfolioMetrics);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  return { metrics, loading };
+}

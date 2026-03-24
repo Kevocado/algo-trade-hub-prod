@@ -173,6 +173,22 @@ def upsert_kalshi_portfolio(summary: dict):
         print(f"Failed to upsert kalshi_portfolio: {e}")
 
 
+def upsert_portfolio_metrics(metrics: dict):
+    """Upsert live portfolio metrics into portfolio_metrics table (id=1)."""
+    client = get_client()
+    row = {
+        "id": 1,
+        "total_value": metrics.get("total_value", 0),
+        "daily_pnl": metrics.get("daily_pnl", 0),
+        "cash_balance": metrics.get("cash_balance", 0),
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    try:
+        client.table("portfolio_metrics").upsert(row).execute()
+    except Exception as e:
+        print(f"Failed to upsert portfolio_metrics: {e}")
+
+
 def get_trade_history(ticker=None, limit=200):
     """Fetch trade history, optionally filtered by ticker."""
     client = get_client()

@@ -43,11 +43,36 @@ from src.ai_validator import AIValidator
 from src.news_analyzer import NewsAnalyzer
 from src.predictit_engine import PredictItEngine
 from src.kalshi_feed import get_real_kalshi_markets
-from src.supabase_client import get_client, insert_paper_signal, upsert_opportunities
+from src.supabase_client import get_client, insert_paper_signal, upsert_opportunities, upsert_portfolio_metrics
+from src.kalshi_portfolio import KalshiPortfolio
 
 # ─── Environment ─────────────────────────────────────────────────────
 load_dotenv()
 EDGE_THRESHOLD = 5.0
+
+# ─── Portfolio Sync ──────────────────────────────────────────────────
+
+def update_live_portfolio():
+    """Fetch live Kalshi balance and sync to Supabase."""
+    print("\n💰 Syncing Live Kalshi Portfolio...")
+    try:
+        kp = KalshiPortfolio()
+        summary = kp.get_portfolio_summary()
+        
+        if summary.get('error'):
+            print(f"  ⚠️ Kalshi Portfolio Error: {summary['error']}")
+            return
+
+        metrics = {
+            "total_value": summary.get("portfolio_value", 0),
+            "daily_pnl": summary.get("total_pnl", 0),
+            "cash_balance": summary.get("balance", 0)
+        }
+        
+        upsert_portfolio_metrics(metrics)
+        print(f"  ✅ Portfolio Updated: ${metrics['total_value']:.2f} (PnL: ${metrics['daily_pnl']:.2f})")
+    except Exception as e:
+        print(f"  ⚠️ Portfolio Sync failed: {e}")
 
 # ═════════════════════════════════════════════════════════════════════
 # TIER 1: REAL EDGE — Weather + Macro
@@ -331,4 +356,16 @@ def run_scan():
 
 
 if __name__ == "__main__":
-    run_scan()
+    import time
+    while True:
+        try:
+            update_live_portfolio()
+            run_scan()
+        except KeyboardInterrupt:
+            print("\n👋 Scanner stopped by user")
+            break
+        except Exception as e:
+            print(f"\n❌ Critical Error in scanner loop: {e}")
+            
+        print("\n⏳ Sleeping 15 minutes...")
+        time.sleep(15 * 60)

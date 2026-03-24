@@ -3,8 +3,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { TrendingUp, Wallet, ArrowUpRight, Activity, Loader2, Brain } from "lucide-react";
-import { usePortfolio } from "@/hooks/usePortfolio";
+import { usePortfolio, usePortfolioMetrics } from "@/hooks/usePortfolio";
 import { useMarketEdges } from "@/hooks/useMarketEdges";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // Mock Data for Equity Curve
 const chartData = [
@@ -15,23 +16,34 @@ const chartData = [
 ];
 
 export default function Home() {
+  const { metrics, loading: mLoading } = usePortfolioMetrics();
   const { portfolio, loading: pLoading } = usePortfolio();
   const { edges, loading: eLoading } = useMarketEdges();
 
-  const loading = pLoading || eLoading;
+  const loading = mLoading || pLoading || eLoading;
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-full bg-slate-950">
-        <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
+      <div className="p-8 max-w-[1400px] mx-auto space-y-8 bg-slate-950">
+        <div className="flex flex-col gap-1 border-b border-slate-900 pb-6 mb-2">
+           <Skeleton className="h-10 w-64 bg-slate-900" />
+           <Skeleton className="h-4 w-96 bg-slate-900 mt-2" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <Skeleton className="h-32 bg-slate-900" />
+          <Skeleton className="h-32 bg-slate-900" />
+          <Skeleton className="h-32 bg-slate-900" />
+        </div>
       </div>
     );
   }
 
-  const balance = portfolio?.balance ?? 0;
-  const portfolioValue = portfolio?.portfolio_value ?? 0;
-  const totalPnL = portfolio?.total_pnl ?? 0;
+  const balance = metrics?.cash_balance ?? 0;
+  const portfolioValue = metrics?.total_value ?? 0;
+  const dailyPnL = metrics?.daily_pnl ?? 0;
   const positions = portfolio?.open_positions ?? [];
+
+  const isPnLPositive = dailyPnL >= 0;
 
   // Top 3 edges with AI summary
   const topEdges = edges
@@ -55,10 +67,10 @@ export default function Home() {
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {topEdges.map((edge) => (
-              <Card key={edge.id} className="bg-emerald-500/5 border-emerald-500/20 shadow-xl backdrop-blur-md">
+              <Card key={edge.id} className="bg-emerald-500/5 border-emerald-500/20 shadow-xl backdrop-blur-md hover:border-emerald-500/40 transition-all duration-300">
                 <CardHeader className="pb-2">
                   <div className="flex justify-between items-start">
-                    <Badge className="bg-emerald-500 text-emerald-950 text-[10px] font-bold">{edge.edge_type}</Badge>
+                    <Badge className="bg-emerald-500 text-emerald-950 text-[10px] font-bold uppercase tracking-tighter">{edge.edge_type}</Badge>
                     <span className="text-xl font-black text-emerald-400">+{edge.edge_pct.toFixed(1)}%</span>
                   </div>
                   <CardTitle className="text-sm font-bold text-white mt-2 line-clamp-1">{edge.market_title}</CardTitle>
@@ -76,42 +88,48 @@ export default function Home() {
 
       {/* Top Row: Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 bg-slate-900/20">
-            <CardTitle className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Total Portfolio Value</CardTitle>
-            <Wallet className="h-4 w-4 text-emerald-500" />
-          </CardHeader>
-          <CardContent className="pt-4">
-            <div className="text-3xl font-bold tracking-tight text-white">${portfolioValue.toLocaleString()}</div>
-            <p className="text-sm text-slate-500 mt-2 flex items-center gap-1">
-              Live account value from Kalshi API
-            </p>
-          </CardContent>
-        </Card>
-        <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 bg-slate-900/20">
-            <CardTitle className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Settled P&L</CardTitle>
-            <TrendingUp className="h-4 w-4 text-emerald-500" />
-          </CardHeader>
-          <CardContent className="pt-4">
-            <div className={`text-3xl font-bold tracking-tight ${totalPnL >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-              {totalPnL >= 0 ? '+' : ''}${totalPnL.toLocaleString()}
+        <Card className="bg-slate-900/40 border-slate-800 shadow-xl overflow-hidden group hover:border-slate-700 transition-all">
+          <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
+            <Activity className="w-12 h-12 text-slate-400" />
+          </div>
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-widest">
+              <TrendingUp className="w-4 h-4 text-emerald-500" /> Total Value
             </div>
-            <p className="text-sm text-slate-500 mt-2 flex items-center gap-1">
-              Wins: {portfolio?.wins} | Losses: {portfolio?.losses}
-            </p>
+            <CardTitle className="text-3xl font-black text-white tracking-tight">
+              ${portfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-xs text-slate-500 font-medium uppercase tracking-tight">Live equity + settled cash across all markets.</p>
           </CardContent>
         </Card>
-        <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
-          <CardHeader className="flex flex-row items-center justify-between pb-2 bg-slate-900/20">
-            <CardTitle className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Available Cash</CardTitle>
-            <Activity className="h-4 w-4 text-emerald-500" />
+
+        <Card className={`bg-slate-900/40 border-slate-800 shadow-xl overflow-hidden group hover:border-slate-700 transition-all border-l-4 ${isPnLPositive ? 'border-l-emerald-500' : 'border-l-rose-500'}`}>
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-widest">
+              <ArrowUpRight className={`w-4 h-4 ${isPnLPositive ? 'text-emerald-500' : 'text-rose-500'}`} /> Daily PnL
+            </div>
+            <CardTitle className={`text-3xl font-black tracking-tight ${isPnLPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {isPnLPositive ? '+' : ''}${dailyPnL.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </CardTitle>
           </CardHeader>
-          <CardContent className="pt-4">
-            <div className="text-3xl font-bold tracking-tight text-white">${balance.toLocaleString()}</div>
-            <p className="text-sm text-slate-500 mt-2">
-              Liquid capital ready for deployment
-            </p>
+          <CardContent>
+            <p className="text-xs text-slate-500 font-medium uppercase tracking-tight">Real-time profit/loss for the current 24h cycle.</p>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-slate-900/40 border-slate-800 shadow-xl overflow-hidden group hover:border-slate-700 transition-all">
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-widest">
+              <Wallet className="w-4 h-4 text-amber-500" /> Available Cash
+            </div>
+            <CardTitle className="text-3xl font-black text-white tracking-tight">
+              ${balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-xs text-slate-500 font-medium uppercase tracking-tight">Liquid purchasing power ready for immediate deployment.</p>
           </CardContent>
         </Card>
       </div>

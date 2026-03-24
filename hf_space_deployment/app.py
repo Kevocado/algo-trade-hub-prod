@@ -95,6 +95,16 @@ m4.markdown(f"<div class='metric-box'><div class='metric-title'>Current BTC Pric
 
 st.markdown(f"<p style='color: #8b949e; font-size: 0.85rem; margin-top: 12px;'>Last Updated: {status_data.get('last_update', 'N/A')}</p>", unsafe_allow_html=True)
 
+# ── Metric Definitions ──
+st.markdown("### 📊 Metric Definitions")
+colA, colB = st.columns(2)
+with colA:
+    st.markdown("**OOS Accuracy**: Percentage of correct directional predictions on the rolling 720h validation window (unseen data).")
+    st.markdown("**Brier Score**: Evaluates probability calibration. Lower is better (0 = Perfect certainty, 1 = Max error).")
+with colB:
+    st.markdown("**Live Upward Edge**: The raw probability (0-100%) that BTC-USD will close higher in the next 60 minutes.")
+    st.markdown("**Current BTC Price**: Live hourly close price used as the baseline for the next inference cycle.")
+
 # ── Details ──
 st.markdown("### 🧩 Model Configuration")
 st.json({
