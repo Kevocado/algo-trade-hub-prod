@@ -342,6 +342,8 @@ WEATHER_SERIES = {
     'NYC': 'KXHIGHNY',
     'Chicago': 'KXHIGHCHI',
     'Miami': 'KXHIGHMIA',
+    'Austin': 'KXHIGHAUS',
+    'Denver': 'KXHIGHDEN',
 }
 
 # Extended weather series — all climate events Kalshi offers

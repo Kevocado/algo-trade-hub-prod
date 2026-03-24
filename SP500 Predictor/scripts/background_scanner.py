@@ -163,6 +163,9 @@ def scan_real_edge():
         print(f"  ⚠️ Soccer engine failed: {e}")
 
     print(f"\n📊 Total real-edge opportunities: {len(all_ops)}")
+    if all_ops:
+        for op in all_ops:
+            print(f"  ✨ Edge: {op.get('market_title')} ({op.get('edge', 0):.1f}%)")
     return all_ops
 
 

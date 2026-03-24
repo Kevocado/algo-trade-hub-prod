@@ -44,7 +44,7 @@ class FootballKalshiEngine:
             
         now = datetime.now(timezone.utc)
         date_from = now.strftime("%Y-%m-%d")
-        date_to = (now + timedelta(days=2)).strftime("%Y-%m-%d")
+        date_to = (now + timedelta(days=7)).strftime("%Y-%m-%d")
         
         url = f"https://api.football-data.org/v4/matches?competitions=PL,PD,CL&dateFrom={date_from}&dateTo={date_to}"
         log.info(f"Fetching football fixtures from {date_from} to {date_to}...")

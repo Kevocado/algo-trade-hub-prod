@@ -33,6 +33,8 @@ class WeatherEngine:
             'NYC': {'office': 'OKX', 'gridX': 33, 'gridY': 37},
             'Chicago': {'office': 'LOT', 'gridX': 76, 'gridY': 74},
             'Miami': {'office': 'MFL', 'gridX': 110, 'gridY': 50},
+            'Austin': {'office': 'EWX', 'gridX': 155, 'gridY': 90},
+            'Denver': {'office': 'BOU', 'gridX': 62, 'gridY': 61},
         }
 
     def get_nws_forecast(self, city):

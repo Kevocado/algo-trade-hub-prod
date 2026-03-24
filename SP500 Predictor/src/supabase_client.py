@@ -68,8 +68,9 @@ def upsert_opportunities(opportunities: list):
     unique_rows = {}
     for op in opportunities:
         # Standardize the mapping
-        title = op.get("market_title") or op.get("Market") or "Unknown Market"
-        market_id = op.get("market_ticker", op.get("RowKey", f"GEN_{title.replace(' ','_').upper()}"))[:50]
+        title = op.get("market_title") or op.get("Market") or op.get("title") or "Unknown Market"
+        market_id = op.get("market_id") or op.get("market_ticker") or op.get("RowKey") or f"GEN_{title.replace(' ','_').upper()}"
+        market_id = str(market_id)[:50]
         
         # Determine market probabilities
         market_prob = op.get("market_price", op.get("MarketYesAsk", op.get("kalshi_price", 50)))

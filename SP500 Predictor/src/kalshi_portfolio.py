@@ -22,7 +22,8 @@ from pathlib import Path
 root_dir = Path(__file__).parent.parent
 load_dotenv(dotenv_path=root_dir / '.env', override=True)
 
-KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://demo-api.kalshi.co").strip('"').strip("'")
+KALSHI_BASE_URL = f"{KALSHI_API_BASE}/trade-api/v2"
 
 
 class KalshiPortfolio:
@@ -38,77 +39,57 @@ class KalshiPortfolio:
                 "KALSHI_API_KEY_ID not found in .env. "
                 "Get it from Kalshi → Settings → API Keys."
             )
-        if not private_key_pem:
-            raise ValueError("KALSHI_API_KEY (RSA private key) not found in .env.")
+        if not private_key_pem and not self.key_file_path:
+            raise ValueError("KALSHI_API_KEY or KALSHI_PRIVATE_KEY_PATH (RSA private key) not found in .env.")
 
         # Load the RSA private key
-        # Supports: (1) file path, (2) multi-line PEM string, (3) single-line PEM from .env
         try:
             pem_bytes = None
 
-            # Method 1: KALSHI_API_KEY is a file path to a .pem file
+            # Method 1: Check if a path is provided and valid
             key_path = self.key_file_path or os.getenv("KALSHI_KEY_FILE", "")
-            if key_path and os.path.isfile(key_path):
-                with open(key_path, 'rb') as f:
-                    pem_bytes = f.read()
-            elif private_key_pem and os.path.isfile(private_key_pem.strip()):
-                with open(private_key_pem.strip(), 'rb') as f:
-                    pem_bytes = f.read()
+            if key_path:
+                potential_path = Path(key_path)
+                if potential_path.is_file():
+                    pem_bytes = potential_path.read_bytes()
+                elif (root_dir / key_path).is_file():
+                    pem_bytes = (root_dir / key_path).read_bytes()
 
-            # Method 2: Check for a .pem file next to .env
+            # Method 2: Check default filenames in root_dir
             if pem_bytes is None:
-                default_paths = [
-                    root_dir / 'Kalshi Edge Tracker.txt',
-                    root_dir / 'kalshi_private_key.pem',
-                    root_dir / 'kalshi_key.pem',
-                    root_dir / '.kalshi_key.pem',
-                ]
-                for p in default_paths:
+                for fname in ['kalshi_private_key.pem', 'kalshi_key.pem', '.kalshi_key.pem', 'Kalshi Edge Tracker.txt']:
+                    p = root_dir / fname
                     if p.is_file():
-                        with open(p, 'rb') as f:
-                            pem_bytes = f.read()
+                        pem_bytes = p.read_bytes()
                         break
 
-            # Method 3: Inline PEM in env var (has newlines already)
-            if pem_bytes is None and '\n' in private_key_pem:
-                pem_bytes = private_key_pem.encode()
-
-            # Method 4: Single-line PEM from .env — reconstruct
-            if pem_bytes is None:
-                pem = private_key_pem.strip()
-                pem_body = pem.replace('-----BEGIN RSA PRIVATE KEY-----', '') \
-                              .replace('-----END RSA PRIVATE KEY-----', '') \
-                              .replace('-----BEGIN PRIVATE KEY-----', '') \
-                              .replace('-----END PRIVATE KEY-----', '') \
-                              .replace(' ', '')
-
-                # Fix base64 padding
-                pem_body = pem_body.rstrip('=')
-                pad = (4 - len(pem_body) % 4) % 4
-                pem_body += '=' * pad
-
-                if 'RSA PRIVATE KEY' in private_key_pem:
-                    header = '-----BEGIN RSA PRIVATE KEY-----'
-                    footer = '-----END RSA PRIVATE KEY-----'
+            # Method 3: Fallback to KALSHI_API_KEY environment variable
+            if pem_bytes is None and private_key_pem:
+                if 'BEGIN' in private_key_pem:
+                    pem_bytes = private_key_pem.encode()
                 else:
-                    header = '-----BEGIN PRIVATE KEY-----'
-                    footer = '-----END PRIVATE KEY-----'
+                    # Generic reconstruction for single-line PEMs
+                    body = private_key_pem.strip().replace(' ', '').replace('\\n', '\n')
+                    if 'BEGIN' not in body:
+                        # Add headers if missing
+                        body = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----"
+                    pem_bytes = body.encode()
 
-                lines = [pem_body[i:i+64] for i in range(0, len(pem_body), 64)]
-                pem_str = header + '\n' + '\n'.join(lines) + '\n' + footer
-                pem_bytes = pem_str.encode()
+            if pem_bytes is None:
+                raise ValueError("No private key found (checked paths and env)")
 
+            # Final Cleanup: Remove any non-printable chars or weird whitespace that might break base64
+            # We preserve newlines as they are ignored by PEM loaders
+            clean_pem = b""
+            for b in pem_bytes:
+                if b in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=-\n\r " or b == ord('-'):
+                    clean_pem += bytes([b])
+            
             self.private_key = serialization.load_pem_private_key(
-                pem_bytes, password=None
+                clean_pem, password=None
             )
         except Exception as e:
-            raise ValueError(
-                f"Failed to load RSA private key: {e}\n\n"
-                f"💡 Recommended fix: Save your private key as a .pem FILE:\n"
-                f"   1. Create a file called 'kalshi_private_key.pem' in your project root\n"
-                f"   2. Paste the full RSA private key (with proper line breaks) into it\n"
-                f"   3. The app will auto-detect the file"
-            )
+            raise ValueError(f"Failed to load RSA private key: {e}")
 
     def _sign_request(self, method, path):
         """
