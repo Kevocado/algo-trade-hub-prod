@@ -1,0 +1,11 @@
+ipykernel
+vectorbt
+shap
+lightgbm
+yfinance
+pandas
+plotly
+matplotlib
+ta
+meteostat
+pytz
