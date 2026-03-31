@@ -58,49 +58,71 @@ def place_order(ticker: str, side: str, count: int, price: int):
 
 # === ENGINE ===
 def trade_cycle():
-    logger.info("⏰ Cycle triggered. Discovering markets...")
+    logger.info("⏰ Hour mark reached. Discovering latest markets...")
     
-    # Discovery
-    path = "/trade-api/v2/markets?limit=20&status=open&ticker_prefix=BTC,ETH"
-    res = requests.get(BASE_URL + path, headers=get_auth_headers("GET", path))
-    if res.status_code != 200: return
-
-    # Filter for Hourly tickers
-    markets = [m for m in res.json().get('markets', []) if "Hourly" in m.get('title', '')]
+    # 1. Fetch ALL open BTC and ETH markets
+    # We use a broad prefix to catch everything currently active
+    path = "/trade-api/v2/markets?limit=50&status=open&ticker_prefix=BTC,ETH"
+    headers = get_auth_headers("GET", path)
     
-    if not markets:
-        logger.warning("No active hourly markets found.")
-        return
+    try:
+        res = requests.get(BASE_URL + path, headers=headers, timeout=10)
+        if res.status_code != 200:
+            logger.error(f"Market fetch failed: {res.status_code}")
+            return
 
-    # Heavy imports inside cycle to keep VPS RAM low
-    import pandas as pd
-    import yfinance as yf
-
-    for m in markets:
-        ticker = m['ticker']
-        asset = 'BTC' if 'BTC' in ticker else 'ETH'
+        all_markets = res.json().get('markets', [])
         
-        # 1. Get Quote
-        best_ask = get_quote(ticker)
-        if best_ask is None: continue
+        # 2. Filter for 'Hourly' markets and sort by expiration (latest first)
+        # Kalshi usually has the 'latest' market as the one ending soonest
+        hourly_markets = [m for m in all_markets if "Hourly" in m.get('title', '')]
         
-        # 2. Get Model Probability (Placeholder for your inference logic)
-        try:
-            with open(MODELS_PATHS[asset], "rb") as f:
-                model = pickle.load(f)
-            # prob = model.predict(your_features)
-            prob = 0.75 # Hardcoded for testing
-        except: continue
+        # Sort by 'close_time' so we are always looking at the most immediate opportunity
+        hourly_markets.sort(key=lambda x: x.get('close_time', ''))
 
-        # 3. Calculate Edge
-        market_prob = best_ask / 100
-        edge = prob - market_prob
+        # Map to find the "Top" one for each asset
+        targets = {'BTC': None, 'ETH': None}
+        for m in hourly_markets:
+            asset = 'BTC' if 'BTC' in m['ticker'] else 'ETH'
+            if not targets[asset]:
+                targets[asset] = m['ticker']
+
+        if not targets['BTC'] and not targets['ETH']:
+            logger.warning("No active hourly markets discovered.")
+            return
+
+        # 3. Import heavy libs ONLY if we found targets
+        import pandas as pd
+        import yfinance as yf
+
+        for asset, ticker in targets.items():
+            if not ticker: continue
+            
+            # 4. Get the real-time Quote
+            price = get_quote(ticker)
+            if price is None: continue
+            
+            # 5. Run your Model Inference (Logic placeholder)
+            # This is where you'd call: prob = model.predict(get_features(asset))
+            model_prob = 0.75 
+            market_prob = price / 100
+            edge = model_prob - market_prob
+            
+            logger.info(f"Analysis: {ticker} | Price: {price}c | Prob: {model_prob:.2f} | Edge: {edge:.2f}")
+
+            # 6. Telegram Alert
+            if edge > 0.05:
+                msg = (f"🎯 *Edge Found: {asset}*\n"
+                       f"Ticker: `{ticker}`\n"
+                       f"Price: `{price}¢` ({market_prob:.1%})\n"
+                       f"Model: `{model_prob:.1%}`\n"
+                       f"🔥 **Edge: {edge:.1%}**")
+                send_tg(msg)
+                
+    except Exception as e:
+        logger.error(f"Trade cycle crashed: {e}")
+        send_tg(f"🚨 *Cycle Crash:* {e}")
         
-        if edge > 0.05:
-            send_tg(f"🎯 *Edge Detected!* \nTicker: `{ticker}`\nPrice: `{best_ask}c` \nEdge: `{edge:.1%}`")
-            # To go live, uncomment below:
-            # place_order(ticker, 'yes', 1, best_ask)
-
 if __name__ == "__main__":
     print("🚀 SCRIPT STARTING...")
     try:
