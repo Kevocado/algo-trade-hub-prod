@@ -92,30 +92,38 @@ def fetch_and_store_kalshi_macro():
     except Exception as e:
         log.error(f"Failed to fetch Kalshi MACRO markets: {e}")
 
-def fetch_and_store_football():
-    """Runs the Football Kalshi Engine to detect sports edges."""
-    if not config.FOOTBALL_DATA_API_KEY:
-        log.warning("No FOOTBALL_DATA_API_KEY. Skipping Football Engine.")
-        return
-        
-    try:
-        log.info("Running Football Engine...")
-        engine = FootballKalshiEngine()
-        ops = engine.find_opportunities()
-        
-        for op in ops:
-            supa.table("kalshi_edges").insert(op).execute()
-            
-        log.info(f"Football scan complete. Found {len(ops)} edges.")
-    except Exception as e:
-        log.error(f"Failed to run Football Engine: {e}")
+# This dictionary represents backtested "Green Islands" (Win Rate > 60%, Trades > 20)
+# Format: {day_index: [list_of_profitable_hours]}
+# day_index: 0=Monday, 6=Sunday
+PROFITABLE_MATRIX = {
+    1: [22],             # Tuesday: 22:00 (Asia Open transition)
+    4: [16],             # Friday: 16:00 (NY Close / Start of Retail Window)
+    5: [16, 20, 22, 23], # Saturday: The absolute sweet spot for your bot
+    6: [0, 22]           # Sunday: 00:00 & 22:00 (Weekend transitions)
+}
+
+def is_profitable_regime(dt_now):
+    """
+    Checks if current time is inside a high-conviction backtested window.
+    """
+    day = dt_now.weekday() 
+    hour = dt_now.hour
+    
+    if day in PROFITABLE_MATRIX:
+        return hour in PROFITABLE_MATRIX[day]
+    return False
 
 def main_loop():
     log.info("Starting slow scanner (10-minute loop)...")
     while True:
-        fetch_and_store_fred()
-        fetch_and_store_kalshi_macro()
-        fetch_and_store_football()
+        now = datetime.now(timezone.utc)
+        if not is_profitable_regime(now):
+            log.info(f"💤 Sleep Mode: {now.strftime('%A %H:00')} is a Danger Zone. Skipping trade scan.")
+        else:
+            fetch_and_store_fred()
+            fetch_and_store_kalshi_macro()
+            fetch_and_store_football()
+        
         time.sleep(600)  # 10 minutes
 
 if __name__ == "__main__":
