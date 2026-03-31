@@ -1,158 +1,117 @@
-import logging
-import time
-import base64
-import pickle
-import uuid
-import requests
+import logging, time, base64, pickle, uuid, requests
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-# ============================================================================
-# CONFIGURATION (Absolute Paths for VPS)
-# ============================================================================
+# === CONFIG ===
 API_KEY_ID = "4d2e8dc4-7ed7-45ec-9133-f6d1f0ea02c8"
 KEY_FILE_PATH = '/root/Kalshi API Trading Bot.txt'
-MODELS_PATHS = {
-    'BTC': '/root/kalshibot/btc_retail_sniper_v1.pkl',
-    'ETH': '/root/kalshibot/eth_sniper.pkl'
-}
-
+MODELS_PATHS = {'BTC': '/root/kalshibot/btc_retail_sniper_v1.pkl', 'ETH': '/root/kalshibot/eth_sniper.pkl'}
 TELEGRAM_TOKEN = "8328470668:AAH-C-1SrNqyxzmzewCQvGWlDzQxuWuY4rk"
 TELEGRAM_CHAT_ID = "5876085554"
-BASE_URL = "https://demo-api.kalshi.co"
+BASE_URL = "https://demo-api.kalshi.co" # Change to api.kalshi.com for live
 
-# Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("/root/kalshibot/trades.log"), logging.StreamHandler()]
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger("KalshiBot")
 
-# ============================================================================
-# CORE UTILITIES
-# ============================================================================
-
+# === UTILS ===
 def send_tg(msg: str):
-    """Sends a notification to your Telegram bot."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload, timeout=10)
-    except Exception as e:
-        logger.error(f"Telegram failed: {e}")
+    try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"}, timeout=10)
+    except: pass
 
-def get_auth_headers(method: str, path: str) -> Dict[str, str]:
-    """Generates the RSA-PSS signed headers required for Kalshi V2."""
-    try:
-        with open(KEY_FILE_PATH, "rb") as f:
-            private_key = serialization.load_pem_private_key(f.read(), password=None)
-        
-        timestamp = str(int(time.time() * 1000))
-        msg = timestamp + method + path
-        
-        signature = private_key.sign(
-            msg.encode('utf-8'),
-            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-            hashes.SHA256()
-        )
-        
-        return {
-            "KALSHI-ACCESS-KEY": API_KEY_ID,
-            "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode('utf-8'),
-            "KALSHI-ACCESS-TIMESTAMP": timestamp,
-            "Content-Type": "application/json"
-        }
-    except Exception as e:
-        logger.error(f"Auth Header Generation Failed: {e}")
-        return {}
+def get_auth_headers(method: str, path: str):
+    with open(KEY_FILE_PATH, "rb") as f:
+        private_key = serialization.load_pem_private_key(f.read(), password=None)
+    ts = str(int(time.time() * 1000))
+    signature = private_key.sign((ts + method + path).encode(), padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH), hashes.SHA256())
+    return {"KALSHI-ACCESS-KEY": API_KEY_ID, "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode(), "KALSHI-ACCESS-TIMESTAMP": ts, "Content-Type": "application/json"}
 
-# ============================================================================
-# TRADING ENGINE (Lazy Imports to Save RAM)
-# ============================================================================
+# === QUOTING & EXECUTION ===
+def get_quote(ticker: str):
+    path = f"/trade-api/v2/markets/{ticker}/orderbook"
+    res = requests.get(BASE_URL + path, headers=get_auth_headers("GET", path))
+    if res.status_code == 200:
+        asks = res.json().get('orderbook', {}).get('yes', [])
+        return asks[0][0] if asks else None
+    return None
 
+def place_order(ticker: str, side: str, count: int, price: int):
+    """Place a limit order on Kalshi."""
+    path = "/trade-api/v2/portfolio/orders"
+    payload = {
+        "ticker": ticker,
+        "action": "buy",
+        "type": "limit",
+        "side": side, # 'yes' or 'no'
+        "count": count,
+        "yes_price": price,
+        "client_order_id": str(uuid.uuid4())
+    }
+    res = requests.post(BASE_URL + path, json=payload, headers=get_auth_headers("POST", path))
+    if res.status_code == 201:
+        logger.info(f"✅ Order Placed: {ticker} at {price}c")
+        return res.json()
+    logger.error(f"❌ Order Failed: {res.text}")
+    return None
+
+# === ENGINE ===
 def trade_cycle():
-    """Runs at the top of the hour. Only loads heavy libs when needed."""
-    logger.info("--- 🏁 Starting Trade Cycle (Loading Libraries) ---")
+    logger.info("⏰ Cycle triggered. Discovering markets...")
     
-    try:
-        import yfinance as yf
-        import pandas as pd
-        import ta
-        import numpy as np
-    except ImportError as e:
-        send_tg(f"❌ *Import Error:* {e}")
-        return
-
-    # 1. Ticker Discovery
+    # Discovery
     path = "/trade-api/v2/markets?limit=20&status=open&ticker_prefix=BTC,ETH"
-    headers = get_auth_headers("GET", path)
-    res = requests.get(BASE_URL + path, headers=headers)
-    
-    if res.status_code != 200:
-        logger.error(f"Market fetch failed: {res.text}")
-        return
+    res = requests.get(BASE_URL + path, headers=get_auth_headers("GET", path))
+    if res.status_code != 200: return
 
+    # Filter for Hourly tickers
     markets = [m for m in res.json().get('markets', []) if "Hourly" in m.get('title', '')]
     
+    if not markets:
+        logger.warning("No active hourly markets found.")
+        return
+
+    # Heavy imports inside cycle to keep VPS RAM low
+    import pandas as pd
+    import yfinance as yf
+
     for m in markets:
         ticker = m['ticker']
         asset = 'BTC' if 'BTC' in ticker else 'ETH'
-        logger.info(f"Analyzing {ticker}...")
-
-        # 2. Load Model
+        
+        # 1. Get Quote
+        best_ask = get_quote(ticker)
+        if best_ask is None: continue
+        
+        # 2. Get Model Probability (Placeholder for your inference logic)
         try:
             with open(MODELS_PATHS[asset], "rb") as f:
                 model = pickle.load(f)
-        except Exception as e:
-            logger.error(f"Model Load Failed for {asset}: {e}")
-            continue
+            # prob = model.predict(your_features)
+            prob = 0.75 # Hardcoded for testing
+        except: continue
 
-        # 3. Get Price/Inference (Logic Placeholder)
-        # Note: You'll integrate your specific technical_feature_engine here
-        prob = 0.65 # Dummy probability for logic test
+        # 3. Calculate Edge
+        market_prob = best_ask / 100
+        edge = prob - market_prob
         
-        # 4. Check Orderbook & Trade
-        ob_path = f"/trade-api/v2/markets/{ticker}/orderbook"
-        ob_res = requests.get(BASE_URL + ob_path, headers=get_auth_headers("GET", ob_path))
-        
-        if ob_res.status_code == 200:
-            asks = ob_res.json().get('orderbook', {}).get('yes', [])
-            if asks:
-                best_ask = asks[0][0]
-                edge = prob - (best_ask / 100)
-                
-                if edge > 0.05:
-                    send_tg(f"🚀 *Opportunity Found:* `{ticker}`\nEdge: `{edge:.2f}`\nPrice: `{best_ask}¢`")
-                    # (Insert POST /orders logic here)
-
-# ============================================================================
-# MAIN ENTRY POINT (Instant Startup)
-# ============================================================================
+        if edge > 0.05:
+            send_tg(f"🎯 *Edge Detected!* \nTicker: `{ticker}`\nPrice: `{best_ask}c` \nEdge: `{edge:.1%}`")
+            # To go live, uncomment below:
+            # place_order(ticker, 'yes', 1, best_ask)
 
 if __name__ == "__main__":
     print("🚀 SCRIPT STARTING...")
-    # Test Auth Immediately
     try:
         path = "/trade-api/v2/portfolio/balance"
         res = requests.get(BASE_URL + path, headers=get_auth_headers("GET", path))
         if res.status_code == 200:
-            balance = res.json().get('balance', 0)
-            send_tg(f"🤖 *Kalshi Multi-Bot Online*\nMode: `Lazy (Low RAM)`\nAuth: `SUCCESS`\nBalance: `${balance / 100:.2f}`")
-        else:
-            send_tg(f"❌ *Bot Startup Auth Failure:* {res.status_code}")
+            bal = res.json().get('balance', 0)
+            send_tg(f"🤖 *KalshiBot Online*\nAuth: `SUCCESS`\nBalance: `${bal/100:.2f}`")
     except Exception as e:
-        send_tg(f"🚨 *Critical Startup Error:* {e}")
+        send_tg(f"🚨 Startup Error: {e}")
 
-    # Start Scheduler
     scheduler = BlockingScheduler()
     scheduler.add_job(trade_cycle, 'cron', minute=1, second=0)
-    
-    try:
-        logger.info("Bot Initialized. Waiting for next hour...")
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Shutdown signal received.")
+    scheduler.start()
