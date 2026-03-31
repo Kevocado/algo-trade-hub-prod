@@ -134,6 +134,7 @@ def trade_cycle():
 # ============================================================================
 
 if __name__ == "__main__":
+    print("🚀 SCRIPT STARTING...")
     # Test Auth Immediately
     try:
         path = "/trade-api/v2/portfolio/balance"
