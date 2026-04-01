@@ -47,9 +47,9 @@ def get_quote(ticker):
     return None
 
 def trade_cycle():
-    logger.info("⏰ Cycle triggered. Searching for active markets...")
+    logger.info("⏰ Cycle triggered. Performing 2026 Series Scan...")
     
-    # 1. Fetch 100 markets to ensure we capture the new 'KX' series
+    # 1. Fetch 100 markets to see the new KX prefixes
     path = "/trade-api/v2/markets?limit=100&status=open"
     headers = get_auth_headers("GET", path)
     
@@ -61,30 +61,40 @@ def trade_cycle():
 
         all_markets = res.json().get('markets', [])
         
-        # 2. Robust Filtering: Look for 'BTC/ETH' and 'Hourly' markers
-        # This catches 'KXBTC', 'BTC', and the 'price today at' format
+        # 2. 2026 Filter: Look for 'KXBTC' / 'KXETH' 
+        # and titles like "Bitcoin price today at..."
         hourly_markets = [
             m for m in all_markets 
-            if ("price today at" in m.get('title', '').lower() or "Hourly" in m.get('title', ''))
-            and any(asset in m.get('ticker', '') for asset in ['BTC', 'ETH'])
+            if ("today at" in m.get('title', '').lower())
+            and ("KXBTC" in m.get('ticker', '') or "KXETH" in m.get('ticker', ''))
+            and ("15 min" not in m.get('title', '').lower()) # Exclude 15m scalps
         ]
         
-        # Sort by those closing soonest (the current active hour)
+        # Sort by closing soonest
         hourly_markets.sort(key=lambda x: x.get('close_time', ''))
         
-        # Map targets: 1 BTC and 1 ETH market
         targets = {'BTC': None, 'ETH': None}
         for m in hourly_markets:
-            asset = 'BTC' if 'BTC' in m['ticker'] else 'ETH'
+            asset = 'BTC' if 'KXBTC' in m['ticker'] else 'ETH'
             if not targets[asset]:
                 targets[asset] = m['ticker']
-                print(f"✅ Target Locked: {asset} -> {m['ticker']}")
+                print(f"✅ Series Locked: {asset} -> {m['ticker']} ({m['title']})")
 
         if not any(targets.values()):
-            print("⚠️ No hourly crypto markets found in the top 100 results.")
+            print("⚠️ No KX-Series hourly markets found. Checking standard BTC/ETH tickers...")
+            # Fallback for standard tickers
+            for asset in ['BTC', 'ETH']:
+                standard = [m for m in all_markets if asset in m['ticker'] and "Hourly" in m['title']]
+                if standard:
+                    standard.sort(key=lambda x: x['close_time'])
+                    targets[asset] = standard[0]['ticker']
+                    print(f"✅ Fallback Locked: {asset} -> {targets[asset]}")
+
+        if not any(targets.values()):
+            print("❌ Discovery Failed. Ticker formats have likely changed again.")
             return
 
-        # 3. Model Logic (Inference)
+        # 3. Model Logic
         import pandas as pd
         for asset, ticker in targets.items():
             if not ticker: continue
@@ -92,26 +102,20 @@ def trade_cycle():
             price = get_quote(ticker)
             if price is None: continue
             
-            model_prob = 0.75 # Placeholder for your .pkl
-            market_prob = price / 100
-            edge = model_prob - market_prob
+            model_prob = 0.75 
+            edge = model_prob - (price/100)
             
             print(f"📊 {ticker} | Price: {price}c | Edge: {edge:.2%}")
 
-            # 4. Gemini Analyst & Telegram
             if edge > 0.05:
                 analysis = get_gemini_opinion(asset, ticker, model_prob, price)
-                msg = (f"🎯 *Edge Found: {asset}*\n"
-                       f"Ticker: `{ticker}`\n"
-                       f"Price: `{price}¢` | Edge: `{edge:.1%}`\n\n"
-                       f"🤖 *Gemini Analyst:* \n{analysis}")
-                send_tg(msg)
-                
+                send_tg(f"🎯 *Edge Found: {asset}*\nTicker: `{ticker}`\nPrice: `{price}¢` | Edge: `{edge:.1%}`\n\n🤖 *Analyst:* {analysis}")
+
     except Exception as e:
-        logger.error(f"Trade cycle crashed: {e}")
+        logger.error(f"Cycle crashed: {e}")
         send_tg(f"🚨 *Cycle Crash:* {e}")
 
-        
+
 if __name__ == "__main__":
     print("🚀 SCRIPT STARTING...")
     send_tg("🤖 *Kalshi Intelligence Online*")
