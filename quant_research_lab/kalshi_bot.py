@@ -47,30 +47,75 @@ def get_quote(ticker):
     return None
 
 def trade_cycle():
-    logger.info("⏰ Cycle triggered...")
-    path = "/trade-api/v2/markets?limit=50&status=open&ticker_prefix=BTC,ETH"
-    res = requests.get(BASE_URL + path, headers=get_auth_headers("GET", path))
-    if res.status_code != 200: return
-
-    markets = [m for m in res.json().get('markets', []) if "Hourly" in m.get('title', '')]
-    markets.sort(key=lambda x: x.get('close_time', ''))
+    logger.info("⏰ Cycle triggered. Searching for active crypto markets...")
     
-    # Discovery: Pick the closest BTC and ETH hourly
-    targets = {'BTC': next((m['ticker'] for m in markets if 'BTC' in m['ticker']), None),
-               'ETH': next((m['ticker'] for m in markets if 'ETH' in m['ticker']), None)}
+    # 1. Broad Discovery: Fetching 100 markets to ensure we don't miss new prefixes
+    path = "/trade-api/v2/markets?limit=100&status=open"
+    headers = get_auth_headers("GET", path)
+    
+    try:
+        res = requests.get(BASE_URL + path, headers=headers, timeout=10)
+        if res.status_code != 200:
+            logger.error(f"Market fetch failed: {res.status_code}")
+            return
 
-    import pandas as pd # Lazy Load
-    for asset, ticker in targets.items():
-        if not ticker: continue
-        price = get_quote(ticker)
-        if price is None: continue
+        all_markets = res.json().get('markets', [])
         
-        model_prob = 0.75 # Placeholder
-        edge = model_prob - (price/100)
+        # 2. Filter for Hourly Crypto Markets (Case-insensitive)
+        # We look for "Hourly" in the title and "BTC/ETH" in the ticker
+        hourly_markets = [
+            m for m in all_markets 
+            if "Hourly" in m.get('title', '') 
+            and any(asset in m.get('ticker', '') for asset in ['BTC', 'ETH'])
+        ]
         
-        if edge > 0.05:
-            analysis = get_gemini_opinion(asset, ticker, model_prob, price)
-            send_tg(f"🎯 *Edge Found: {asset}*\nPrice: `{price}¢` | Edge: `{edge:.1%}`\n\n🤖 *Analyst:* {analysis}")
+        # Sort by expiration (closest to settlement first)
+        hourly_markets.sort(key=lambda x: x.get('close_time', ''))
+        
+        # Map to find the primary target for BTC and ETH
+        targets = {'BTC': None, 'ETH': None}
+        for m in hourly_markets:
+            asset = 'BTC' if 'BTC' in m['ticker'] else 'ETH'
+            if not targets[asset]:
+                targets[asset] = m['ticker']
+
+        if not any(targets.values()):
+            logger.warning("No active hourly BTC/ETH markets found in this window.")
+            return
+
+        # 3. Model Inference & Quote Logic
+        import pandas as pd # Lazy Load
+        for asset, ticker in targets.items():
+            if not ticker: continue
+            
+            price = get_quote(ticker)
+            if price is None: continue
+            
+            # --- REPLACE WITH YOUR .PKL INFERENCE ---
+            model_prob = 0.75 
+            market_prob = price / 100
+            edge = model_prob - market_prob
+            
+            logger.info(f"📊 Analyzing {ticker} | Price: {price}¢ | Edge: {edge:.1%}")
+
+            # 4. Intelligence Filter (The Gemini Analyst)
+            if edge > 0.05:
+                # Get Second Opinion from Gemini 1.5 Flash
+                analysis = get_gemini_opinion(asset, ticker, model_prob, price)
+                
+                msg = (f"🎯 *Edge Found: {asset}*\n"
+                       f"Ticker: `{ticker}`\n"
+                       f"Price: `{price}¢` | Edge: `{edge:.1%}`\n\n"
+                       f"🤖 *Gemini Analyst:* \n{analysis}")
+                
+                send_tg(msg)
+                
+                # OPTIONAL: pull the trigger
+                # place_order(ticker, 'yes', 1, price)
+                
+    except Exception as e:
+        logger.error(f"Trade cycle crashed: {e}")
+        send_tg(f"🚨 *Cycle Crash:* {e}")
 
 if __name__ == "__main__":
     print("🚀 SCRIPT STARTING...")
