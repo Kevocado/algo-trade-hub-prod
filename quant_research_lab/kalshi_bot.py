@@ -47,9 +47,9 @@ def get_quote(ticker):
     return None
 
 def trade_cycle():
-    logger.info("⏰ Cycle triggered. Searching for active crypto markets...")
+    logger.info("⏰ Cycle triggered. Searching for active markets...")
     
-    # 1. Broad Discovery: Fetching 100 markets to ensure we don't miss new prefixes
+    # 1. Fetch a broader batch of open markets to bypass prefix issues
     path = "/trade-api/v2/markets?limit=100&status=open"
     headers = get_auth_headers("GET", path)
     
@@ -61,62 +61,56 @@ def trade_cycle():
 
         all_markets = res.json().get('markets', [])
         
-        # 2. Filter for Hourly Crypto Markets (Case-insensitive)
-        # We look for "Hourly" in the title and "BTC/ETH" in the ticker
+        # 2. Robust Filtering: Look for "Hourly" and "BTC/ETH" anywhere in ticker or title
+        # This catches KXBTC, BTC, and title-based matches
         hourly_markets = [
             m for m in all_markets 
-            if "Hourly" in m.get('title', '') 
-            and any(asset in m.get('ticker', '') for asset in ['BTC', 'ETH'])
+            if ("Hourly" in m.get('title', '') or "price today at" in m.get('title', '').lower())
+            and any(x in m.get('ticker', '') for x in ['BTC', 'ETH'])
         ]
         
-        # Sort by expiration (closest to settlement first)
+        # Sort by those closing soonest (the current active hour)
         hourly_markets.sort(key=lambda x: x.get('close_time', ''))
         
-        # Map to find the primary target for BTC and ETH
+        # Map targets: 1 BTC and 1 ETH market
         targets = {'BTC': None, 'ETH': None}
         for m in hourly_markets:
             asset = 'BTC' if 'BTC' in m['ticker'] else 'ETH'
             if not targets[asset]:
                 targets[asset] = m['ticker']
+                print(f"✅ Target Locked: {asset} -> {m['ticker']}")
 
         if not any(targets.values()):
-            logger.warning("No active hourly BTC/ETH markets found in this window.")
+            print("⚠️ No hourly crypto markets found in the current 100-market batch.")
             return
 
-        # 3. Model Inference & Quote Logic
-        import pandas as pd # Lazy Load
+        # 3. Import and Inference
+        import pandas as pd
         for asset, ticker in targets.items():
             if not ticker: continue
             
             price = get_quote(ticker)
             if price is None: continue
             
-            # --- REPLACE WITH YOUR .PKL INFERENCE ---
-            model_prob = 0.75 
+            # --- MODEL INFERENCE ---
+            model_prob = 0.75 # Your placeholder
             market_prob = price / 100
             edge = model_prob - market_prob
             
-            logger.info(f"📊 Analyzing {ticker} | Price: {price}¢ | Edge: {edge:.1%}")
+            logger.info(f"📊 {ticker} | Price: {price}c | Edge: {edge:.2%}")
 
-            # 4. Intelligence Filter (The Gemini Analyst)
+            # 4. Gemini Analyst & Telegram
             if edge > 0.05:
-                # Get Second Opinion from Gemini 1.5 Flash
                 analysis = get_gemini_opinion(asset, ticker, model_prob, price)
-                
                 msg = (f"🎯 *Edge Found: {asset}*\n"
                        f"Ticker: `{ticker}`\n"
                        f"Price: `{price}¢` | Edge: `{edge:.1%}`\n\n"
                        f"🤖 *Gemini Analyst:* \n{analysis}")
-                
                 send_tg(msg)
-                
-                # OPTIONAL: pull the trigger
-                # place_order(ticker, 'yes', 1, price)
                 
     except Exception as e:
         logger.error(f"Trade cycle crashed: {e}")
         send_tg(f"🚨 *Cycle Crash:* {e}")
-
 if __name__ == "__main__":
     print("🚀 SCRIPT STARTING...")
     send_tg("🤖 *Kalshi Intelligence Online*")
