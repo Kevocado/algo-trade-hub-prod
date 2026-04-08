@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import os
 import sys
 import time
@@ -217,15 +218,18 @@ class TelegramNotifier:
         if not self.supabase_url or not self.supabase_service_role_key:
             return []
         session = await self._ensure_session()
-        async with session.get(
-            f"{self.supabase_url}/rest/v1/{table}",
-            params=params,
-            headers=self._supabase_headers(),
-        ) as response:
-            if response.status >= 300:
-                return []
-            payload = await response.json()
-            return payload if isinstance(payload, list) else []
+        try:
+            async with session.get(
+                f"{self.supabase_url}/rest/v1/{table}",
+                params=params,
+                headers=self._supabase_headers(),
+            ) as response:
+                if response.status >= 300:
+                    return []
+                payload = await response.json()
+                return payload if isinstance(payload, list) else []
+        except Exception:
+            return []
 
     def _load_private_key(self):
         if self._private_key is not None:
@@ -254,14 +258,17 @@ class TelegramNotifier:
     async def _kalshi_get(self, endpoint: str, *, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
         session = await self._ensure_session()
         path = f"/trade-api/v2{endpoint}"
-        async with session.get(
-            f"{self.kalshi_base_url}{endpoint}",
-            params=params,
-            headers=self._kalshi_headers("GET", path),
-        ) as response:
-            if response.status >= 300:
-                return None
-            return await response.json()
+        try:
+            async with session.get(
+                f"{self.kalshi_base_url}{endpoint}",
+                params=params,
+                headers=self._kalshi_headers("GET", path),
+            ) as response:
+                if response.status >= 300:
+                    return None
+                return await response.json()
+        except Exception:
+            return None
 
     async def _get_crypto_status(self) -> str:
         user_settings = await self._supabase_select(
@@ -418,7 +425,11 @@ class TelegramNotifier:
                 text = message.get("text", "")
                 from_chat = str(message.get("chat", {}).get("id", ""))
                 if text.startswith("/"):
-                    await self._handle_command(text, from_chat)
+                    try:
+                        await self._handle_command(text, from_chat)
+                    except Exception:
+                        with contextlib.suppress(Exception):
+                            await self.send_message("⚠️ Command failed. Try again in a few seconds.")
             await asyncio.sleep(POLL_INTERVAL)
 
 

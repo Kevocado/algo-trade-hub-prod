@@ -585,6 +585,21 @@ def _load_pickle_model(path: Path) -> Any:
             return pickle.load(f)
 
 
+def _suppress_lightgbm_runtime_warnings(model: Any) -> Any:
+    try:
+        if hasattr(model, "set_params"):
+            model.set_params(verbose=-1, verbosity=-1)
+    except Exception:
+        pass
+    try:
+        booster = getattr(model, "_Booster", None)
+        if booster is not None and hasattr(booster, "reset_parameter"):
+            booster.reset_parameter({"verbosity": -1, "verbose": -1})
+    except Exception:
+        pass
+    return model
+
+
 def _resolve_model_path(explicit: Optional[str], candidates: list[str], label: str) -> Path:
     if explicit and explicit.strip():
         p = Path(explicit)
@@ -644,9 +659,9 @@ def load_crypto_models() -> tuple[Any, Any]:
     )
 
     log.info("Loading BTC model: %s", btc_path)
-    _BTC_MODEL = _load_pickle_model(btc_path)
+    _BTC_MODEL = _suppress_lightgbm_runtime_warnings(_load_pickle_model(btc_path))
     log.info("Loading ETH model: %s", eth_path)
-    _ETH_MODEL = _load_pickle_model(eth_path)
+    _ETH_MODEL = _suppress_lightgbm_runtime_warnings(_load_pickle_model(eth_path))
 
     return _BTC_MODEL, _ETH_MODEL
 
