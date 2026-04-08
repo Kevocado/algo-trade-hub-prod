@@ -6,6 +6,8 @@ supabase
 python-dotenv
 aiohttp
 websockets
+joblib
+scikit-learn
 numpy
 pandas
 scipy
