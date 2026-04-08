@@ -94,6 +94,7 @@ def reset_crypto_state(monkeypatch):
     orchestrator._FEATURE_SNAPSHOT_LAST_HOUR.clear()
     monkeypatch.setattr(orchestrator, "supa", None)
     monkeypatch.setattr(orchestrator, "log_to_supabase", lambda *args, **kwargs: None)
+    monkeypatch.setattr(orchestrator, "CRYPTO_ALPACA_VOLUME_MULTIPLIER", 1.0)
 
 
 def test_resolve_kalshi_market_picks_nearest_hourly_bucket_and_nearest_strike(monkeypatch):
@@ -595,6 +596,59 @@ def test_fetch_alpaca_crypto_bars_backfills_when_live_history_short(monkeypatch)
 
     assert len(merged) >= orchestrator.CRYPTO_MIN_FEATURE_BARS
     assert merged.index.max() == live_frame.index.max()
+
+
+def test_fetch_alpaca_crypto_bars_applies_volume_multiplier(monkeypatch):
+    index = pd.date_range("2026-01-01", periods=220, freq="h", tz="UTC")
+    live_frame = pd.DataFrame(
+        {
+            "Open": np.linspace(90000.0, 92000.0, len(index)),
+            "High": np.linspace(90050.0, 92050.0, len(index)),
+            "Low": np.linspace(89950.0, 91950.0, len(index)),
+            "Close": np.linspace(90025.0, 92025.0, len(index)),
+            "Volume": np.linspace(10.0, 20.0, len(index)),
+        },
+        index=index,
+    )
+
+    monkeypatch.setattr(orchestrator, "ALPACA_API_KEY", "key")
+    monkeypatch.setattr(orchestrator, "ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setattr(orchestrator, "CRYPTO_ALPACA_VOLUME_MULTIPLIER", 1000.0)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "bars": {
+                    "BTC/USD": [
+                        {
+                            "t": ts.isoformat(),
+                            "o": float(row.Open),
+                            "h": float(row.High),
+                            "l": float(row.Low),
+                            "c": float(row.Close),
+                            "v": float(row.Volume),
+                        }
+                        for ts, row in live_frame.iterrows()
+                    ]
+                }
+            }
+
+    class FakeRequests:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return FakeResponse()
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "requests", FakeRequests)
+
+    scaled = orchestrator._fetch_alpaca_crypto_bars("BTC", lookback_hours=200)
+
+    assert scaled.iloc[0]["Volume"] == pytest.approx(live_frame.iloc[0]["Volume"] * 1000.0)
+    assert scaled.iloc[-1]["Volume"] == pytest.approx(live_frame.iloc[-1]["Volume"] * 1000.0)
 
 
 def test_fetch_yfinance_crypto_bars_raises_clear_error_when_dependency_missing(monkeypatch):

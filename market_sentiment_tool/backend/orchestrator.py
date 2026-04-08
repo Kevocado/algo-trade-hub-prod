@@ -81,6 +81,7 @@ CRYPTO_MIN_FEATURE_BARS = int(os.getenv("CRYPTO_MIN_FEATURE_BARS", "205"))
 CRYPTO_OPPORTUNITY_ALERT_DEDUPE_S = int(os.getenv("CRYPTO_OPPORTUNITY_ALERT_DEDUPE_S", "300"))
 CRYPTO_NEAR_MISS_ALERT_DEDUPE_S = int(os.getenv("CRYPTO_NEAR_MISS_ALERT_DEDUPE_S", "600"))
 CRYPTO_INFERENCE_HEARTBEAT_EVERY = int(os.getenv("CRYPTO_INFERENCE_HEARTBEAT_EVERY", "100"))
+CRYPTO_ALPACA_VOLUME_MULTIPLIER = float(os.getenv("CRYPTO_ALPACA_VOLUME_MULTIPLIER", "1.0"))
 
 # Optional explicit model paths (otherwise auto-discover).
 BTC_MODEL_PATH = os.getenv("BTC_MODEL_PATH") or os.getenv("KALSHI_BTC_MODEL_PATH")
@@ -805,6 +806,10 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
     for column in required_cols:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame = frame[required_cols].dropna()
+    if CRYPTO_ALPACA_VOLUME_MULTIPLIER <= 0:
+        raise ValueError("CRYPTO_ALPACA_VOLUME_MULTIPLIER must be positive.")
+    if CRYPTO_ALPACA_VOLUME_MULTIPLIER != 1.0:
+        frame["Volume"] = frame["Volume"] * CRYPTO_ALPACA_VOLUME_MULTIPLIER
     if len(frame) < CRYPTO_MIN_FEATURE_BARS:
         log.info(
             "[CRYPTO EDGE] Alpaca returned only %s hourly bars for %s; attempting yfinance backfill to reach %s bars.",
