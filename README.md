@@ -70,9 +70,18 @@ The system relies on a strict split of secrets.
 
 - The crypto runtime reads the canonical backend env from repo root: `Algo-Trade-Hub/.env`. `market_sentiment_tool/.env` is only a fallback if the root file is missing.
 - Required backend vars: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `KALSHI_ENV`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`, `BTC_MODEL_PATH`, `ETH_MODEL_PATH`.
+- Install the crypto backend runtime dependencies into the PM2 interpreter environment before starting the worker:
+
+```bash
+cd /root/kalshibot
+/root/kalshibot/.venv/bin/pip install -r market_sentiment_tool/backend/requirements.txt
+/root/kalshibot/.venv/bin/python -c "import yfinance; print(yfinance.__version__)"
+```
+
 - `KALSHI_ENV=demo` uses `https://demo-api.kalshi.co/trade-api/v2` and `wss://demo-api.kalshi.co/trade-api/ws/v2`.
 - `KALSHI_ENV=live` uses `https://api.elections.kalshi.com/trade-api/v2` and `wss://api.elections.kalshi.com/trade-api/ws/v2`.
 - The Kalshi private key file must exist on the VPS filesystem and match `KALSHI_PRIVATE_KEY_PATH`.
+- Live/latest crypto bars come from Alpaca; `yfinance` is used only to backfill older hourly bars when Alpaca does not yet have enough history for the long-window model features.
 
 Start or restart on VPS:
 
@@ -87,4 +96,6 @@ Healthy startup should show:
 - repo-root `.env` loaded,
 - Supabase service-role client initialized,
 - Kalshi WS listener using the canonical host for the selected `KALSHI_ENV`,
-- `Kalshi WS connected; subscribing to ticker`.
+- `Kalshi WS connected; subscribing to ticker`,
+- either direct inference or a yfinance backfill log instead of repeated `Need at least 205 hourly bars...` errors,
+- `[CRYPTO EDGE] ... P(YES)=...` once markets begin streaming.

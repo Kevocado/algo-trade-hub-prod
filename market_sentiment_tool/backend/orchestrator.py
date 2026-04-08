@@ -675,7 +675,12 @@ def _fetch_yfinance_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEAT
     if not symbol:
         raise ValueError(f"Unsupported crypto asset for yfinance backfill: {asset}")
 
-    import yfinance as yf
+    try:
+        import yfinance as yf
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "yfinance is required for crypto historical backfill; install market_sentiment_tool/backend/requirements.txt into the PM2 interpreter environment."
+        ) from exc
 
     period_days = max(int(np.ceil(lookback_hours / 24)) + 5, 14)
     frame = yf.download(symbol, period=f"{period_days}d", interval="1h", progress=False, auto_adjust=False)
@@ -746,6 +751,12 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame = frame[required_cols].dropna()
     if len(frame) < CRYPTO_MIN_FEATURE_BARS:
+        log.info(
+            "[CRYPTO EDGE] Alpaca returned only %s hourly bars for %s; attempting yfinance backfill to reach %s bars.",
+            len(frame),
+            symbol,
+            CRYPTO_MIN_FEATURE_BARS,
+        )
         try:
             historical = _fetch_yfinance_crypto_bars(asset, lookback_hours=lookback_hours)
             merged = _merge_crypto_bar_sources(frame, historical, required_bars=max(lookback_hours, CRYPTO_MIN_FEATURE_BARS))
@@ -757,6 +768,12 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
                     len(merged),
                 )
                 return merged
+            log.warning(
+                "[CRYPTO EDGE] yfinance backfill for %s completed but merged history is still short (%s < %s bars).",
+                symbol,
+                len(merged),
+                CRYPTO_MIN_FEATURE_BARS,
+            )
         except Exception as exc:
             log.warning("[CRYPTO EDGE] Failed to backfill %s hourly bars via yfinance: %s", symbol, exc)
         raise ValueError(f"Need at least {CRYPTO_MIN_FEATURE_BARS} hourly bars for {symbol}; received {len(frame)}")

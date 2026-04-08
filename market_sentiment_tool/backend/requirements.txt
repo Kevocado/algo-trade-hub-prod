@@ -12,3 +12,4 @@ numpy
 pandas
 scipy
 requests
+yfinance>=0.2.28

@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -482,6 +483,90 @@ def test_fetch_alpaca_crypto_bars_backfills_when_live_history_short(monkeypatch)
 
     assert len(merged) >= orchestrator.CRYPTO_MIN_FEATURE_BARS
     assert merged.index.max() == live_frame.index.max()
+
+
+def test_fetch_yfinance_crypto_bars_raises_clear_error_when_dependency_missing(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "yfinance":
+            raise ModuleNotFoundError("No module named 'yfinance'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(ModuleNotFoundError, match="yfinance is required for crypto historical backfill"):
+        orchestrator._fetch_yfinance_crypto_bars("BTC")
+
+
+def test_fetch_alpaca_crypto_bars_logs_when_merged_history_still_short(monkeypatch, caplog):
+    short_index = pd.date_range("2026-01-01", periods=168, freq="h", tz="UTC")
+    live_close = np.linspace(90000.0, 92000.0, len(short_index))
+    historical_index = pd.date_range("2025-12-25", periods=20, freq="h", tz="UTC")
+    historical_close = np.linspace(85000.0, 85500.0, len(historical_index))
+
+    live_frame = pd.DataFrame(
+        {
+            "Open": live_close - 25.0,
+            "High": live_close + 40.0,
+            "Low": live_close - 40.0,
+            "Close": live_close,
+            "Volume": np.linspace(1000.0, 3000.0, len(short_index)),
+        },
+        index=short_index,
+    )
+    historical_frame = pd.DataFrame(
+        {
+            "Open": historical_close - 25.0,
+            "High": historical_close + 40.0,
+            "Low": historical_close - 40.0,
+            "Close": historical_close,
+            "Volume": np.linspace(500.0, 700.0, len(historical_index)),
+        },
+        index=historical_index,
+    )
+
+    monkeypatch.setattr(orchestrator, "ALPACA_API_KEY", "key")
+    monkeypatch.setattr(orchestrator, "ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setattr(orchestrator, "_fetch_yfinance_crypto_bars", lambda asset, lookback_hours=orchestrator.CRYPTO_FEATURE_LOOKBACK_HOURS: historical_frame)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "bars": {
+                    "BTC/USD": [
+                        {
+                            "t": ts.isoformat(),
+                            "o": float(row.Open),
+                            "h": float(row.High),
+                            "l": float(row.Low),
+                            "c": float(row.Close),
+                            "v": float(row.Volume),
+                        }
+                        for ts, row in live_frame.iterrows()
+                    ]
+                }
+            }
+
+    class FakeRequests:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setitem(sys.modules, "requests", FakeRequests)
+
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(ValueError, match="Need at least"):
+            orchestrator._fetch_alpaca_crypto_bars("BTC", lookback_hours=220)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Alpaca returned only 168 hourly bars for BTC/USD" in message for message in messages)
+    assert any("merged history is still short" in message for message in messages)
 
 
 def test_evaluate_crypto_edge_skips_on_feature_inference_failure(monkeypatch):
