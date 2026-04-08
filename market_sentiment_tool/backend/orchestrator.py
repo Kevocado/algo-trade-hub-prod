@@ -36,6 +36,11 @@ requirements set on CPU-only VPS hosts.
 """
 from shared.kalshi_ws import connect_and_listen as kalshi_connect_and_listen
 from shared.kalshi_ws import sign_kalshi_message
+from shared.crypto_features import (
+    CANONICAL_CRYPTO_FEATURES,
+    build_features,
+    feature_dict_from_row,
+)
 from market_sentiment_tool.backend.runtime_bootstrap import (
     RuntimeBootstrapError,
     critical_var_presence,
@@ -830,61 +835,8 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
     return frame
 
 
-def _build_crypto_feature_frame(bars: pd.DataFrame) -> pd.DataFrame:
-    import ta
-
-    df = bars.copy().sort_index()
-    df["rsi_5_raw"] = ta.momentum.rsi(df["Close"], window=5)
-    df["rsi_7_raw"] = ta.momentum.rsi(df["Close"], window=7)
-    df["rsi_14_raw"] = ta.momentum.rsi(df["Close"], window=14)
-
-    atr = ta.volatility.average_true_range(df["High"], df["Low"], df["Close"], window=14)
-    rolling_std_24 = df["Close"].pct_change().rolling(window=24).std()
-    rolling_std_168 = df["Close"].pct_change().rolling(window=168).std()
-
-    df["hour"] = df.index.hour
-    df["dayofweek"] = df.index.dayofweek
-    df["is_weekend"] = (df["dayofweek"] >= 5).astype(int)
-    df["is_retail_window"] = (df["dayofweek"] >= 4).astype(int)
-    df["is_us_session"] = ((df["hour"] >= 14) & (df["hour"] <= 21)).astype(int)
-    df["sin_hour"] = np.sin(2 * np.pi * df["hour"] / 24)
-    df["cos_hour"] = np.cos(2 * np.pi * df["hour"] / 24)
-    df["midnight_signal"] = (df["hour"] == 0).astype(int)
-
-    df["vol_ratio_raw"] = rolling_std_24 / (rolling_std_168 + 1e-6)
-    df["dist_ma200_raw"] = (df["Close"] - df["Close"].rolling(200).mean()) / (df["Close"].rolling(200).std() + 1e-6)
-    df["force_idx_raw"] = df["Close"].diff(1) * df["Volume"]
-    df["rsi_slope"] = df["rsi_7_raw"].diff(3)
-    df["price_slope"] = df["Close"].diff(3)
-    df["rsi_div_raw"] = ((df["rsi_slope"] < 0) & (df["price_slope"] > 0)).astype(int)
-
-    for raw_column in (
-        "rsi_5_raw",
-        "rsi_7_raw",
-        "rsi_14_raw",
-        "vol_ratio_raw",
-        "dist_ma200_raw",
-        "force_idx_raw",
-        "rsi_div_raw",
-    ):
-        df[raw_column.replace("_raw", "")] = df[raw_column].shift(1)
-
-    df["ret_1h_z"] = (df["Close"].pct_change(1) / (rolling_std_24 + 1e-6)).shift(1)
-    df["ret_4h"] = df["Close"].pct_change(4).shift(1)
-    df["rsi_z"] = ((df["rsi_7_raw"] - df["rsi_7_raw"].rolling(24).mean()) / (df["rsi_7_raw"].rolling(24).std() + 1e-6)).shift(1)
-    df["z_score_24h"] = ((df["Close"] - df["Close"].rolling(24).mean()) / (df["Close"].rolling(24).std() + 1e-6)).shift(1)
-    df["vol_adj_ret"] = (df["Close"].pct_change() / (atr / df["Close"] + 1e-6)).shift(1)
-    df["relative_vol"] = (df["Volume"] / (df["Volume"].rolling(24).mean() + 1e-6)).shift(1)
-    df["vol_pressure"] = df["relative_vol"] / (df["vol_ratio_raw"].shift(1) + 1e-6)
-    df["vol_spike"] = (df["Volume"] > df["Volume"].rolling(24).mean()).astype(int).shift(1)
-    df["retail_rsi"] = df["rsi_z"] * df["is_retail_window"]
-
-    plus_dm = df["High"].diff().clip(lower=0)
-    minus_dm = df["Low"].diff().clip(upper=0).abs()
-    df["trend_bias"] = ((plus_dm.rolling(14).mean() - minus_dm.rolling(14).mean()) / (atr + 1e-6)).shift(1)
-
-    cols_to_drop = [column for column in df.columns if "_raw" in column or "slope" in column]
-    return df.drop(columns=cols_to_drop).dropna()
+def _build_crypto_feature_frame(bars: pd.DataFrame, *, is_live_inference: bool = True) -> pd.DataFrame:
+    return build_features(bars, is_live_inference=is_live_inference)
 
 
 def _latest_crypto_feature_row(asset: str, model: Any) -> pd.DataFrame:
@@ -895,15 +847,16 @@ def _latest_crypto_feature_row(asset: str, model: Any) -> pd.DataFrame:
         return cached[1]
 
     feature_names = _model_feature_names(model)
+    if list(feature_names) != list(CANONICAL_CRYPTO_FEATURES):
+        raise ValueError(
+            f"Model feature contract mismatch for {asset}: expected canonical crypto features, got {feature_names}"
+        )
     bars = _fetch_alpaca_crypto_bars(asset)
-    features = _build_crypto_feature_frame(bars)
+    features = build_features(bars, is_live_inference=True)
     if features.empty:
         raise ValueError(f"No usable crypto features generated for {asset}")
 
     last_row = features.tail(1).reindex(columns=feature_names)
-    missing_features = [name for name in feature_names if name not in last_row.columns]
-    if missing_features:
-        raise ValueError(f"Crypto feature pipeline missing model columns for {asset}: {missing_features}")
     if last_row.isnull().any(axis=None):
         bad_columns = last_row.columns[last_row.isnull().any()].tolist()
         raise ValueError(f"Crypto feature row contains NaN values for {asset}: {bad_columns}")
@@ -1011,6 +964,13 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
         log.error("[CRYPTO EDGE] %s feature inference failed: %s", market_ticker, exc)
         return {"trade_signal": None}
 
+    _log_hourly_feature_snapshot(
+        asset=asset,
+        source_market_ticker=market_ticker,
+        feature_row=feature_row,
+        probability_yes=float(prob_yes),
+    )
+
     side: Optional[str] = None
     classification = "dead_zone"
     if prob_yes >= CRYPTO_SIGNAL_YES_THRESHOLD:
@@ -1071,6 +1031,7 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
 _KALSHI_REST_PRIVATE_KEY: Any | None = None
 _TRADED_TICKER_LAST_TS: dict[str, float] = {}
 _INFERENCE_EVAL_COUNTER: dict[str, int] = {}
+_FEATURE_SNAPSHOT_LAST_HOUR: dict[str, str] = {}
 
 
 def _kalshi_load_rest_key():
@@ -1502,6 +1463,35 @@ def _should_record_inference_heartbeat(asset: str) -> bool:
     _INFERENCE_EVAL_COUNTER[asset] = count
     interval = max(1, CRYPTO_INFERENCE_HEARTBEAT_EVERY)
     return count % interval == 0
+
+
+def _log_hourly_feature_snapshot(
+    *,
+    asset: str,
+    source_market_ticker: str,
+    feature_row: pd.DataFrame,
+    probability_yes: float,
+) -> None:
+    row_timestamp = feature_row.index[-1].astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
+    snapshot_key = f"{asset}:{row_timestamp}"
+    if _FEATURE_SNAPSHOT_LAST_HOUR.get(asset) == row_timestamp:
+        return
+    _FEATURE_SNAPSHOT_LAST_HOUR[asset] = row_timestamp
+    feature_payload = feature_dict_from_row(feature_row)
+    log_to_supabase(
+        "orchestrator.crypto_feature_snapshot",
+        f"asset={asset} source={source_market_ticker} p_yes={probability_yes:.3f}",
+        level="INFO",
+        context={
+            "asset": asset,
+            "source_market_ticker": source_market_ticker,
+            "snapshot_hour_utc": row_timestamp,
+            "model_probability_yes": probability_yes,
+            "feature_names": list(CANONICAL_CRYPTO_FEATURES),
+            "feature_vector": feature_payload,
+            "dedupe_key": snapshot_key,
+        },
+    )
 
 
 def _load_async_telegram_notifier():

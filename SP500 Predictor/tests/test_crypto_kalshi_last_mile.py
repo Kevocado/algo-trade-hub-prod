@@ -16,6 +16,7 @@ if REPO_ROOT not in sys.path:
 
 from market_sentiment_tool.backend import mcp_server, orchestrator
 from market_sentiment_tool.backend import runtime_bootstrap
+from shared.crypto_features import CANONICAL_CRYPTO_FEATURES, build_features
 
 CRYPTO_MODEL_FEATURES = [
     "Close",
@@ -90,6 +91,7 @@ def _future_time(hours: int) -> str:
 def reset_crypto_state(monkeypatch):
     orchestrator._TRADED_TICKER_LAST_TS.clear()
     orchestrator._INFERENCE_EVAL_COUNTER.clear()
+    orchestrator._FEATURE_SNAPSHOT_LAST_HOUR.clear()
     monkeypatch.setattr(orchestrator, "supa", None)
     monkeypatch.setattr(orchestrator, "log_to_supabase", lambda *args, **kwargs: None)
 
@@ -359,8 +361,59 @@ def test_build_crypto_feature_frame_produces_expected_columns():
     features = orchestrator._build_crypto_feature_frame(bars)
     assert not features.empty
     assert "target" not in features.columns
-    assert len(features.columns) == len(CRYPTO_MODEL_FEATURES)
-    assert all(name in features.columns for name in CRYPTO_MODEL_FEATURES)
+    assert list(features.columns) == list(CANONICAL_CRYPTO_FEATURES)
+
+
+def test_build_features_training_mode_can_include_target():
+    index = pd.date_range("2026-01-01", periods=260, freq="h", tz="UTC")
+    close = np.linspace(90000.0, 93000.0, len(index))
+    bars = pd.DataFrame(
+        {
+            "Open": close - 25.0,
+            "High": close + 40.0,
+            "Low": close - 40.0,
+            "Close": close,
+            "Volume": np.linspace(1000.0, 3000.0, len(index)),
+        },
+        index=index,
+    )
+
+    features = build_features(bars, is_live_inference=False, include_target=True)
+
+    assert list(features.columns[:-1]) == list(CANONICAL_CRYPTO_FEATURES)
+    assert features.columns[-1] == "target"
+    assert set(features["target"].unique()).issubset({0, 1})
+
+
+def test_build_features_preserves_canonical_volume_derived_values():
+    index = pd.date_range("2026-01-01", periods=260, freq="h", tz="UTC")
+    close = np.linspace(90000.0, 93000.0, len(index))
+    volume = np.linspace(1000.0, 3000.0, len(index))
+    bars = pd.DataFrame(
+        {
+            "Open": close - 25.0,
+            "High": close + 40.0,
+            "Low": close - 40.0,
+            "Close": close,
+            "Volume": volume,
+        },
+        index=index,
+    )
+
+    features = build_features(bars, is_live_inference=True)
+    expected_force_idx = (bars["Close"].diff() * bars["Volume"]).shift(1)
+    expected_relative_vol = (bars["Volume"] / (bars["Volume"].rolling(24).mean() + 1e-6)).shift(1)
+    rolling_std_24 = bars["Close"].pct_change().rolling(window=24).std()
+    rolling_std_168 = bars["Close"].pct_change().rolling(window=168).std()
+    expected_vol_ratio = (rolling_std_24 / (rolling_std_168 + 1e-6)).shift(1)
+    expected_vol_pressure = expected_relative_vol / (expected_vol_ratio + 1e-6)
+
+    latest_ts = features.index[-1]
+    latest_row = features.loc[latest_ts]
+
+    assert latest_row["force_idx"] == pytest.approx(float(expected_force_idx.loc[latest_ts]))
+    assert latest_row["relative_vol"] == pytest.approx(float(expected_relative_vol.loc[latest_ts]))
+    assert latest_row["vol_pressure"] == pytest.approx(float(expected_vol_pressure.loc[latest_ts]))
 
 
 def test_latest_crypto_feature_row_aligns_to_model(monkeypatch):
@@ -388,6 +441,61 @@ def test_latest_crypto_feature_row_aligns_to_model(monkeypatch):
     assert list(feature_row.columns) == FakeModel.feature_name_
     assert feature_row.shape == (1, len(FakeModel.feature_name_))
     assert not feature_row.isnull().any(axis=None)
+
+
+def test_latest_crypto_feature_row_fails_on_model_contract_mismatch(monkeypatch):
+    index = pd.date_range("2026-01-01", periods=260, freq="h", tz="UTC")
+    close = np.linspace(2500.0, 3100.0, len(index))
+    bars = pd.DataFrame(
+        {
+            "Open": close - 3.0,
+            "High": close + 6.0,
+            "Low": close - 6.0,
+            "Close": close,
+            "Volume": np.linspace(500.0, 1500.0, len(index)),
+        },
+        index=index,
+    )
+
+    class FakeModel:
+        feature_name_ = CRYPTO_MODEL_FEATURES[:-1]
+
+    orchestrator._CRYPTO_FEATURE_ROW_CACHE.clear()
+    monkeypatch.setattr(orchestrator, "_fetch_alpaca_crypto_bars", lambda asset: bars)
+
+    with pytest.raises(ValueError, match="Model feature contract mismatch"):
+        orchestrator._latest_crypto_feature_row("ETH", FakeModel())
+
+
+def test_log_hourly_feature_snapshot_throttles_once_per_hour(monkeypatch):
+    recorded_logs = []
+    timestamp = pd.Timestamp("2026-01-01T12:00:00Z")
+    feature_row = pd.DataFrame(
+        [[float(index) for index in range(len(CANONICAL_CRYPTO_FEATURES))]],
+        columns=CANONICAL_CRYPTO_FEATURES,
+        index=[timestamp],
+    )
+
+    monkeypatch.setattr(orchestrator, "log_to_supabase", lambda *args, **kwargs: recorded_logs.append((args, kwargs)))
+
+    orchestrator._log_hourly_feature_snapshot(
+        asset="BTC",
+        source_market_ticker="KXBTC-TEST",
+        feature_row=feature_row,
+        probability_yes=0.61,
+    )
+    orchestrator._log_hourly_feature_snapshot(
+        asset="BTC",
+        source_market_ticker="KXBTC-TEST",
+        feature_row=feature_row,
+        probability_yes=0.62,
+    )
+
+    assert len(recorded_logs) == 1
+    args, kwargs = recorded_logs[0]
+    assert args[0] == "orchestrator.crypto_feature_snapshot"
+    assert kwargs["context"]["feature_names"] == list(CANONICAL_CRYPTO_FEATURES)
+    assert kwargs["context"]["model_probability_yes"] == 0.61
 
 
 def test_merge_crypto_bar_sources_prefers_primary_on_overlap():
@@ -607,7 +715,12 @@ def test_evaluate_crypto_edge_logs_dead_zone_and_samples_sparse_heartbeat(monkey
     recorded_events = []
 
     monkeypatch.setattr(orchestrator, "load_crypto_models", lambda: (object(), object()))
-    monkeypatch.setattr(orchestrator, "_latest_crypto_feature_row", lambda *_args, **_kwargs: pd.DataFrame([[1.0]]))
+    feature_row = pd.DataFrame(
+        [[float(index) for index in range(len(CANONICAL_CRYPTO_FEATURES))]],
+        columns=CANONICAL_CRYPTO_FEATURES,
+        index=[pd.Timestamp("2026-01-01T12:00:00Z")],
+    )
+    monkeypatch.setattr(orchestrator, "_latest_crypto_feature_row", lambda *_args, **_kwargs: feature_row)
     monkeypatch.setattr(orchestrator, "_model_yes_probability", lambda *_args, **_kwargs: 0.50)
     monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
     monkeypatch.setattr(orchestrator, "CRYPTO_INFERENCE_HEARTBEAT_EVERY", 2)
