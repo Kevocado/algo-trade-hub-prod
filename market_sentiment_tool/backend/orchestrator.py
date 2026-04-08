@@ -24,7 +24,6 @@ from typing import Any, Optional, TypedDict
 import aiohttp
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv, dotenv_values
 from langgraph.graph import StateGraph, START, END
 from supabase import create_client, Client as SupabaseClient
 
@@ -35,50 +34,18 @@ requirements set on CPU-only VPS hosts.
 """
 from shared.kalshi_ws import connect_and_listen as kalshi_connect_and_listen
 from shared.kalshi_ws import sign_kalshi_message
+from market_sentiment_tool.backend.runtime_bootstrap import (
+    RuntimeBootstrapError,
+    critical_var_presence,
+    load_canonical_env,
+    resolve_kalshi_runtime_settings,
+    validate_runtime_env,
+)
 
-# ── Load .env from project root (one directory up from /backend) ──
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV_PATH = os.path.join(ROOT_DIR, ".env")
-# In PM2/systemd environments, empty vars may already exist; override ensures
-# the file-backed values are actually applied.
-load_dotenv(ENV_PATH, override=True)
-
-_ENV_FILE_VALUES: dict[str, str] = {}
-try:
-    if os.path.isfile(ENV_PATH):
-        _ENV_FILE_VALUES = {k: str(v) for k, v in (dotenv_values(ENV_PATH) or {}).items() if k and v is not None}  # type: ignore[arg-type]
-except Exception:
-    _ENV_FILE_VALUES = {}
-
-
-def _ensure_env_from_file(key: str) -> None:
-    """
-    Belt-and-suspenders env loading.
-
-    Some process managers can inject empty env vars (e.g., KEY=""), which would
-    otherwise "win" over the .env value in unexpected ways.
-    """
-    cur = os.getenv(key)
-    if cur is not None and str(cur) != "":
-        return
-    val = _ENV_FILE_VALUES.get(key)
-    if val is None or str(val) == "":
-        return
-    os.environ[key] = str(val)
-
-
-for _k in (
-    "SUPABASE_URL",
-    "SUPABASE_SERVICE_ROLE_KEY",
-    "KALSHI_API_KEY_ID",
-    "KALSHI_PRIVATE_KEY_PATH",
-    "KALSHI_API_BASE",
-    "KALSHI_DEMO_API_BASE",
-    "KALSHI_WS_URL",
-    "ALPACA_API_KEY",
-    "ALPACA_SECRET_KEY",
-):
-    _ensure_env_from_file(_k)
+# ── Runtime bootstrap ──
+ENV_BOOTSTRAP = load_canonical_env(__file__)
+ENV_PATH = str(ENV_BOOTSTRAP.env_path) if ENV_BOOTSTRAP.env_path else "<missing>"
+KALSHI_RUNTIME = resolve_kalshi_runtime_settings()
 
 # ── Config ──
 SUPABASE_URL = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
@@ -101,36 +68,11 @@ CRYPTO_SIGNAL_NO_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_NO_THRESHOLD", "0.35
 BTC_MODEL_PATH = os.getenv("BTC_MODEL_PATH") or os.getenv("KALSHI_BTC_MODEL_PATH")
 ETH_MODEL_PATH = os.getenv("ETH_MODEL_PATH") or os.getenv("KALSHI_ETH_MODEL_PATH")
 
-# Kalshi REST (Demo) for market discovery / pricing / execution
-_KALSHI_API_BASE_RAW = (
-    os.getenv("KALSHI_API_BASE", "")
-    or os.getenv("KALSHI_DEMO_API_BASE", "")
-    # Official demo host is demo-api.kalshi.co (note: not .com)
-    or "https://demo-api.kalshi.co"
-)
-_KALSHI_API_BASE_RAW = _KALSHI_API_BASE_RAW.strip().strip('"').strip("'")
-_KALSHI_WS_URL_RAW = os.getenv("KALSHI_WS_URL", "").strip().strip('"').strip("'")
-
-
-def _normalize_kalshi_api_base(raw: str) -> tuple[str, str]:
-    raw = (raw or "").strip().strip('"').strip("'").rstrip("/")
-    if not raw:
-        raw = "https://demo-api.kalshi.co"
-    marker = "/trade-api/v2"
-    if marker in raw:
-        host = raw.split(marker, 1)[0]
-        trade_base = f"{host}{marker}"
-        return host, trade_base
-    return raw, f"{raw}{marker}"
-
-
-KALSHI_API_BASE, KALSHI_TRADE_API_V2_BASE = _normalize_kalshi_api_base(_KALSHI_API_BASE_RAW)
-if _KALSHI_WS_URL_RAW:
-    KALSHI_WS_URL = _KALSHI_WS_URL_RAW
-else:
-    # Derive a sane WS default from whichever host the REST base points to, so
-    # demo vs live cannot accidentally drift.
-    KALSHI_WS_URL = KALSHI_API_BASE.replace("https://", "wss://").replace("http://", "ws://").rstrip("/") + "/trade-api/ws/v2"
+# Kalshi runtime selection
+KALSHI_ENV = KALSHI_RUNTIME.mode
+KALSHI_API_BASE = KALSHI_RUNTIME.api_base.rsplit("/trade-api/v2", 1)[0]
+KALSHI_TRADE_API_V2_BASE = KALSHI_RUNTIME.api_base
+KALSHI_WS_URL = KALSHI_RUNTIME.ws_url
 KALSHI_ORDER_COUNT = int(os.getenv("KALSHI_ORDER_COUNT", "1"))
 ALPACA_DATA_API_BASE = os.getenv("ALPACA_DATA_API_BASE", "https://data.alpaca.markets").strip('"').strip("'")
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
@@ -143,56 +85,75 @@ logging.basicConfig(
     format="%(asctime)s  [ORCHESTRATOR]  %(levelname)s  %(message)s",
 )
 log = logging.getLogger(__name__)
-log.info(
-    "Env loaded from %s (SUPABASE_URL_set=%s SUPABASE_SERVICE_ROLE_KEY_set=%s SUPABASE_SERVICE_ROLE_KEY_len=%s envfile_SUPABASE_SERVICE_ROLE_KEY_set=%s envfile_SUPABASE_SERVICE_ROLE_KEY_len=%s KALSHI_API_KEY_ID_set=%s KALSHI_PRIVATE_KEY_PATH_set=%s)",
-    ENV_PATH,
-    bool(SUPABASE_URL),
-    bool(SUPABASE_SERVICE_ROLE_KEY),
-    len(SUPABASE_SERVICE_ROLE_KEY or ""),
-    bool(_ENV_FILE_VALUES.get("SUPABASE_SERVICE_ROLE_KEY", "")),
-    len(_ENV_FILE_VALUES.get("SUPABASE_SERVICE_ROLE_KEY", "") or ""),
-    bool(os.getenv("KALSHI_API_KEY_ID", "")),
-    bool(os.getenv("KALSHI_PRIVATE_KEY_PATH", "")),
+_critical_presence = critical_var_presence(
+    (
+        "SUPABASE_URL",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "KALSHI_API_KEY_ID",
+        "KALSHI_PRIVATE_KEY_PATH",
+    ),
+    ENV_BOOTSTRAP.parsed_values,
 )
-if "api.kalshi.com" in KALSHI_API_BASE or "demo-api.kalshi.com" in KALSHI_API_BASE:
-    log.warning(
-        "KALSHI_API_BASE looks misconfigured (%s). Kalshi canonical hosts are api.elections.kalshi.com (prod) and demo-api.kalshi.co (demo).",
-        KALSHI_API_BASE,
-    )
+log.info(
+    "Env loaded from %s (source=%s SUPABASE_URL_set=%s SUPABASE_SERVICE_ROLE_KEY_set=%s KALSHI_API_KEY_ID_set=%s KALSHI_PRIVATE_KEY_PATH_set=%s KALSHI_ENV=%s)",
+    ENV_PATH,
+    ENV_BOOTSTRAP.source_label,
+    _critical_presence["SUPABASE_URL"],
+    _critical_presence["SUPABASE_SERVICE_ROLE_KEY"],
+    _critical_presence["KALSHI_API_KEY_ID"],
+    _critical_presence["KALSHI_PRIVATE_KEY_PATH"],
+    KALSHI_ENV,
+)
+for _env_error in ENV_BOOTSTRAP.syntax_errors:
+    log.error("Env syntax error: %s", _env_error)
+for _kalshi_error in KALSHI_RUNTIME.errors:
+    log.error("Kalshi config error: %s", _kalshi_error)
 
 # ── Supabase Client (Service Role — bypasses RLS) ──
 supa: SupabaseClient | None = None
 USER_ID = None
+_RUNTIME_VALIDATED = False
 
 # ── pgvector RAG is handled via news_rag.query_news() — no local DB client needed ──
 
-try:
+def validate_runtime_bootstrap(*, require_supabase: bool = True, require_kalshi: bool = True) -> None:
+    errors = validate_runtime_env(
+        env_bootstrap=ENV_BOOTSTRAP,
+        kalshi=KALSHI_RUNTIME,
+        require_supabase=require_supabase,
+        require_kalshi=require_kalshi,
+    )
+    if errors:
+        raise RuntimeBootstrapError("Runtime bootstrap validation failed:\n- " + "\n- ".join(errors))
+
+
+def initialize_runtime_clients(*, require_supabase: bool = True, require_kalshi: bool = True) -> None:
+    global supa, USER_ID, _RUNTIME_VALIDATED
+    validate_runtime_bootstrap(require_supabase=require_supabase, require_kalshi=require_kalshi)
+    if _RUNTIME_VALIDATED:
+        return
+
     if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
         supa = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
         log.info("Supabase service-role client initialized.")
     else:
-        log.warning("Supabase not configured (missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY).")
-    
-    # ── Fetch User ID for RLS Bypass ──
-    # The frontend logs in as sigey2@illinois.edu. We need this UUID to insert rows
-    # so they pass Row Level Security (RLS) policies and appear in the UI.
-    if supa is not None:
-        TARGET_EMAIL = "sigey2@illinois.edu"
-        try:
-            users = supa.auth.admin.list_users()
-            for u in users:
-                if u.email == TARGET_EMAIL:
-                    USER_ID = u.id
-                    log.info("Found USER_ID for %s: %s", TARGET_EMAIL, USER_ID)
-                    break
-            
-            if not USER_ID:
-                log.warning("User %s not found. Inserts will lack user_id and may be hidden by RLS.", TARGET_EMAIL)
-        except Exception as e:
-            log.error("Failed to query user UUID: %s", e)
+        raise RuntimeBootstrapError("Runtime bootstrap validation passed unexpectedly without Supabase credentials.")
 
-except Exception as exc:
-    log.warning("Supabase client init failed: %s", exc)
+    TARGET_EMAIL = "sigey2@illinois.edu"
+    try:
+        users = supa.auth.admin.list_users()
+        for u in users:
+            if u.email == TARGET_EMAIL:
+                USER_ID = u.id
+                log.info("Found USER_ID for %s: %s", TARGET_EMAIL, USER_ID)
+                break
+
+        if not USER_ID:
+            log.warning("User %s not found. Inserts will lack user_id and may be hidden by RLS.", TARGET_EMAIL)
+    except Exception as exc:
+        log.error("Failed to query user UUID: %s", exc)
+
+    _RUNTIME_VALIDATED = True
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1319,6 +1280,7 @@ async def crypto_worker_loop() -> None:
     Persistent, autonomous worker: await Kalshi WS ticker messages forever and
     run the LangGraph evaluation pipeline per message.
     """
+    initialize_runtime_clients(require_supabase=True, require_kalshi=True)
     crypto_tick_queue: asyncio.Queue = asyncio.Queue(maxsize=5000)
 
     # Load models once at startup; keep them in memory for the lifetime of the worker.
@@ -1403,6 +1365,7 @@ async def heartbeat_loop():
     Main orchestration loop. Polls SQLite for new ticks every HEARTBEAT_SECONDS.
     If new data arrives, runs the full LangGraph pipeline.
     """
+    initialize_runtime_clients(require_supabase=True, require_kalshi=False)
     graph = build_graph()
     cycle = 0
 
@@ -1549,12 +1512,16 @@ async def heartbeat_loop():
 # ═══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    log.info("Starting Orchestrator (mode=%s)…", ORCHESTRATOR_MODE)
     try:
+        initialize_runtime_clients(require_supabase=True, require_kalshi=(ORCHESTRATOR_MODE != "market_sentiment"))
+        log.info("Starting Orchestrator (mode=%s)…", ORCHESTRATOR_MODE)
         if ORCHESTRATOR_MODE == "market_sentiment":
             asyncio.run(heartbeat_loop())
         else:
             asyncio.run(crypto_worker_loop())
+    except RuntimeBootstrapError as exc:
+        log.critical("%s", exc)
+        raise SystemExit(1) from exc
     except KeyboardInterrupt:
         log.info("Orchestrator shutting down gracefully.")
         log_to_supabase("orchestrator", "Shutdown (KeyboardInterrupt).", level="WARN")

@@ -11,6 +11,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from market_sentiment_tool.backend import mcp_server, orchestrator
+from market_sentiment_tool.backend import runtime_bootstrap
 
 
 class FakeQuery:
@@ -214,3 +215,88 @@ def test_market_resolution_calls_plain_submit_helper(monkeypatch):
     assert submitted["payload"]["action"] == "buy"
     assert submitted["payload"]["count"] == orchestrator.KALSHI_ORDER_COUNT
     assert submitted["payload"]["limit_price_dollars"] == "0.5500"
+
+
+def test_load_canonical_env_prefers_repo_root(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    backend_dir = repo_root / "market_sentiment_tool" / "backend"
+    backend_dir.mkdir(parents=True)
+    module_file = backend_dir / "fake_module.py"
+    module_file.write_text("# test module\n", encoding="utf-8")
+
+    (repo_root / ".env").write_text("SUPABASE_SERVICE_ROLE_KEY=root-key\n", encoding="utf-8")
+    (repo_root / "market_sentiment_tool" / ".env").write_text("SUPABASE_SERVICE_ROLE_KEY=service-key\n", encoding="utf-8")
+
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    bootstrap = runtime_bootstrap.load_canonical_env(str(module_file))
+
+    assert bootstrap.env_path == repo_root / ".env"
+    assert bootstrap.source_label == "repo_root"
+    assert os.getenv("SUPABASE_SERVICE_ROLE_KEY") == "root-key"
+
+
+def test_load_canonical_env_reports_syntax_error(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    backend_dir = repo_root / "market_sentiment_tool" / "backend"
+    backend_dir.mkdir(parents=True)
+    module_file = backend_dir / "fake_module.py"
+    module_file.write_text("# test module\n", encoding="utf-8")
+
+    (repo_root / ".env").write_text("SUPABASE_URL=https://example.supabase.co\nthis is not valid\n", encoding="utf-8")
+
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    bootstrap = runtime_bootstrap.load_canonical_env(str(module_file))
+
+    assert bootstrap.env_path == repo_root / ".env"
+    assert bootstrap.syntax_errors
+    assert "invalid dotenv syntax" in bootstrap.syntax_errors[0]
+
+
+def test_resolve_kalshi_settings_uses_mode_and_rejects_invalid_legacy_host(monkeypatch):
+    monkeypatch.setenv("KALSHI_ENV", "demo")
+    monkeypatch.setenv("KALSHI_DEMO_API_BASE", "https://demo-api.kalshi.co/trade-api/v2")
+    monkeypatch.setenv("KALSHI_API_BASE", "https://api.kalshi.com/trade-api/v2")
+    monkeypatch.setenv("KALSHI_WS_URL", "wss://demo-api.kalshi.co/trade-api/ws/v2")
+
+    settings = runtime_bootstrap.resolve_kalshi_runtime_settings()
+
+    assert settings.mode == "demo"
+    assert settings.api_base == "https://demo-api.kalshi.co/trade-api/v2"
+    assert settings.ws_url == "wss://demo-api.kalshi.co/trade-api/ws/v2"
+    assert any("KALSHI_API_BASE points to unsupported Kalshi host" in error for error in settings.errors)
+
+
+def test_validate_runtime_env_requires_supabase_and_private_key(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    backend_dir = repo_root / "market_sentiment_tool" / "backend"
+    backend_dir.mkdir(parents=True)
+    module_file = backend_dir / "fake_module.py"
+    module_file.write_text("# test module\n", encoding="utf-8")
+
+    (repo_root / ".env").write_text(
+        "\n".join(
+            [
+                "SUPABASE_URL=https://example.supabase.co",
+                "KALSHI_ENV=demo",
+                "KALSHI_API_KEY_ID=test-key",
+                "KALSHI_PRIVATE_KEY_PATH=/tmp/missing.pem",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    for key in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "KALSHI_ENV", "KALSHI_API_KEY_ID", "KALSHI_PRIVATE_KEY_PATH"):
+        monkeypatch.delenv(key, raising=False)
+
+    bootstrap = runtime_bootstrap.load_canonical_env(str(module_file))
+    settings = runtime_bootstrap.resolve_kalshi_runtime_settings()
+    errors = runtime_bootstrap.validate_runtime_env(
+        env_bootstrap=bootstrap,
+        kalshi=settings,
+        require_supabase=True,
+        require_kalshi=True,
+    )
+
+    assert any("Missing required env var: SUPABASE_SERVICE_ROLE_KEY" in error for error in errors)
+    assert any("KALSHI_PRIVATE_KEY_PATH is invalid" in error for error in errors)

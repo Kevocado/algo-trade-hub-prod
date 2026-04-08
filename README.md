@@ -65,3 +65,26 @@ The system relies on a strict split of secrets.
 - **Frontend Config:** `Algo-Trade-Hub/market_sentiment_tool/.env` strictly requires public/anon variables (prefixed with `VITE_`).
 
 **Never commit `.env` files.**
+
+### Crypto Orchestrator VPS Runbook
+
+- The crypto runtime reads the canonical backend env from repo root: `Algo-Trade-Hub/.env`. `market_sentiment_tool/.env` is only a fallback if the root file is missing.
+- Required backend vars: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `KALSHI_ENV`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`, `BTC_MODEL_PATH`, `ETH_MODEL_PATH`.
+- `KALSHI_ENV=demo` uses `https://demo-api.kalshi.co/trade-api/v2` and `wss://demo-api.kalshi.co/trade-api/ws/v2`.
+- `KALSHI_ENV=live` uses `https://api.elections.kalshi.com/trade-api/v2` and `wss://api.elections.kalshi.com/trade-api/ws/v2`.
+- The Kalshi private key file must exist on the VPS filesystem and match `KALSHI_PRIVATE_KEY_PATH`.
+
+Start or restart on VPS:
+
+```bash
+cd /root/kalshibot
+PYTHONPATH=/root/kalshibot pm2 start /root/kalshibot/market_sentiment_tool/backend/orchestrator.py --name crypto-sniper --interpreter /root/kalshibot/.venv/bin/python
+pm2 restart crypto-sniper --update-env
+pm2 logs crypto-sniper --lines 80
+```
+
+Healthy startup should show:
+- repo-root `.env` loaded,
+- Supabase service-role client initialized,
+- Kalshi WS listener using the canonical host for the selected `KALSHI_ENV`,
+- `Kalshi WS connected; subscribing to ticker`.

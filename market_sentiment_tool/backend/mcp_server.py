@@ -15,17 +15,21 @@ import base64
 import time
 import uuid
 
-from dotenv import load_dotenv
 from fastmcp import FastMCP
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from supabase import create_client, Client as SupabaseClient
 from shared.kalshi_ws import sign_kalshi_message
+from market_sentiment_tool.backend.runtime_bootstrap import (
+    critical_var_presence,
+    load_canonical_env,
+    resolve_kalshi_runtime_settings,
+)
 
-# ── Load .env from project root (one directory up from /backend) ──
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(os.path.join(ROOT_DIR, ".env"))
+# ── Runtime bootstrap ──
+ENV_BOOTSTRAP = load_canonical_env(__file__)
+KALSHI_RUNTIME = resolve_kalshi_runtime_settings()
 
 # ── Logging ──
 logging.basicConfig(
@@ -39,35 +43,27 @@ ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-
-# Kalshi (Demo) execution
-_KALSHI_API_BASE_RAW = (
-    os.getenv("KALSHI_API_BASE", "")
-    or os.getenv("KALSHI_DEMO_API_BASE", "")
-    or "https://demo-api.kalshi.co"
+_critical_presence = critical_var_presence(
+    ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "KALSHI_API_KEY_ID", "KALSHI_PRIVATE_KEY_PATH"),
+    ENV_BOOTSTRAP.parsed_values,
 )
-_KALSHI_API_BASE_RAW = _KALSHI_API_BASE_RAW.strip().strip('"').strip("'")
+log.info(
+    "Env loaded from %s (source=%s SUPABASE_URL_set=%s SUPABASE_SERVICE_ROLE_KEY_set=%s KALSHI_API_KEY_ID_set=%s KALSHI_PRIVATE_KEY_PATH_set=%s KALSHI_ENV=%s)",
+    str(ENV_BOOTSTRAP.env_path) if ENV_BOOTSTRAP.env_path else "<missing>",
+    ENV_BOOTSTRAP.source_label,
+    _critical_presence["SUPABASE_URL"],
+    _critical_presence["SUPABASE_SERVICE_ROLE_KEY"],
+    _critical_presence["KALSHI_API_KEY_ID"],
+    _critical_presence["KALSHI_PRIVATE_KEY_PATH"],
+    KALSHI_RUNTIME.mode,
+)
+for _env_error in ENV_BOOTSTRAP.syntax_errors:
+    log.error("Env syntax error: %s", _env_error)
+for _kalshi_error in KALSHI_RUNTIME.errors:
+    log.error("Kalshi config error: %s", _kalshi_error)
 
-
-def _normalize_kalshi_api_base(raw: str) -> tuple[str, str]:
-    """
-    Accept either:
-    - https://demo-api.kalshi.co
-    - https://demo-api.kalshi.co/trade-api/v2
-    and return (api_host, trade_api_v2_base).
-    """
-    raw = (raw or "").strip().strip('"').strip("'").rstrip("/")
-    if not raw:
-        raw = "https://demo-api.kalshi.co"
-    marker = "/trade-api/v2"
-    if marker in raw:
-        host = raw.split(marker, 1)[0]
-        trade_base = f"{host}{marker}"
-        return host, trade_base
-    return raw, f"{raw}{marker}"
-
-
-KALSHI_API_BASE, KALSHI_TRADE_API_V2_BASE = _normalize_kalshi_api_base(_KALSHI_API_BASE_RAW)
+KALSHI_API_BASE = KALSHI_RUNTIME.api_base.rsplit("/trade-api/v2", 1)[0]
+KALSHI_TRADE_API_V2_BASE = KALSHI_RUNTIME.api_base
 KALSHI_API_KEY_ID = os.getenv("KALSHI_API_KEY_ID", "")
 KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
 
@@ -293,6 +289,13 @@ def submit_kalshi_order(
     limit_price_dollars: str,
 ) -> dict:
     """Submit a strict-limit Kalshi REST order for internal callers and MCP wrappers."""
+    bootstrap_errors = [*ENV_BOOTSTRAP.syntax_errors, *KALSHI_RUNTIME.errors]
+    if bootstrap_errors:
+        return {
+            "status": "error",
+            "detail": "Kalshi runtime bootstrap invalid: " + " | ".join(bootstrap_errors),
+        }
+
     side_l = (side or "").lower().strip()
     action_l = (action or "").lower().strip()
 
