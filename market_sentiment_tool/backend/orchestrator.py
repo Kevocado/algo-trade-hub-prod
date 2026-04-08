@@ -42,7 +42,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(ROOT_DIR, ".env"))
 
 # ── Config ──
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 LOCAL_LLM_ENDPOINT = os.getenv("LOCAL_LLM_ENDPOINT", "http://127.0.0.1:8080/v1")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL_NAME", "GLM-5-MXFP4")
@@ -63,8 +63,27 @@ BTC_MODEL_PATH = os.getenv("BTC_MODEL_PATH") or os.getenv("KALSHI_BTC_MODEL_PATH
 ETH_MODEL_PATH = os.getenv("ETH_MODEL_PATH") or os.getenv("KALSHI_ETH_MODEL_PATH")
 
 # Kalshi REST (Demo) for market discovery / pricing / execution
-KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://demo-api.kalshi.co").strip('"').strip("'")
-KALSHI_TRADE_API_V2_BASE = f"{KALSHI_API_BASE}/trade-api/v2"
+_KALSHI_API_BASE_RAW = (
+    os.getenv("KALSHI_API_BASE", "")
+    or os.getenv("KALSHI_DEMO_API_BASE", "")
+    or "https://demo-api.kalshi.co"
+)
+_KALSHI_API_BASE_RAW = _KALSHI_API_BASE_RAW.strip().strip('"').strip("'")
+
+
+def _normalize_kalshi_api_base(raw: str) -> tuple[str, str]:
+    raw = (raw or "").strip().strip('"').strip("'").rstrip("/")
+    if not raw:
+        raw = "https://demo-api.kalshi.co"
+    marker = "/trade-api/v2"
+    if marker in raw:
+        host = raw.split(marker, 1)[0]
+        trade_base = f"{host}{marker}"
+        return host, trade_base
+    return raw, f"{raw}{marker}"
+
+
+KALSHI_API_BASE, KALSHI_TRADE_API_V2_BASE = _normalize_kalshi_api_base(_KALSHI_API_BASE_RAW)
 KALSHI_ORDER_COUNT = int(os.getenv("KALSHI_ORDER_COUNT", "1"))
 ALPACA_DATA_API_BASE = os.getenv("ALPACA_DATA_API_BASE", "https://data.alpaca.markets").strip('"').strip("'")
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
@@ -85,8 +104,11 @@ USER_ID = None
 # ── pgvector RAG is handled via news_rag.query_news() — no local DB client needed ──
 
 try:
-    supa = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-    log.info("Supabase service-role client initialized.")
+    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+        supa = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        log.info("Supabase service-role client initialized.")
+    else:
+        log.warning("Supabase not configured (missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY).")
     
     # ── Fetch User ID for RLS Bypass ──
     # The frontend logs in as sigey2@illinois.edu. We need this UUID to insert rows
