@@ -143,10 +143,13 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 log.info(
-    "Env loaded from %s (SUPABASE_URL_set=%s SUPABASE_SERVICE_ROLE_KEY_set=%s KALSHI_API_KEY_ID_set=%s KALSHI_PRIVATE_KEY_PATH_set=%s)",
+    "Env loaded from %s (SUPABASE_URL_set=%s SUPABASE_SERVICE_ROLE_KEY_set=%s SUPABASE_SERVICE_ROLE_KEY_len=%s envfile_SUPABASE_SERVICE_ROLE_KEY_set=%s envfile_SUPABASE_SERVICE_ROLE_KEY_len=%s KALSHI_API_KEY_ID_set=%s KALSHI_PRIVATE_KEY_PATH_set=%s)",
     ENV_PATH,
     bool(SUPABASE_URL),
     bool(SUPABASE_SERVICE_ROLE_KEY),
+    len(SUPABASE_SERVICE_ROLE_KEY or ""),
+    bool(_ENV_FILE_VALUES.get("SUPABASE_SERVICE_ROLE_KEY", "")),
+    len(_ENV_FILE_VALUES.get("SUPABASE_SERVICE_ROLE_KEY", "") or ""),
     bool(os.getenv("KALSHI_API_KEY_ID", "")),
     bool(os.getenv("KALSHI_PRIVATE_KEY_PATH", "")),
 )
