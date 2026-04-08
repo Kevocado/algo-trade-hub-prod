@@ -69,6 +69,7 @@ _KALSHI_API_BASE_RAW = (
     or "https://demo-api.kalshi.co"
 )
 _KALSHI_API_BASE_RAW = _KALSHI_API_BASE_RAW.strip().strip('"').strip("'")
+KALSHI_WS_URL = os.getenv("KALSHI_WS_URL", "wss://demo-api.kalshi.co/trade-api/ws/v2").strip().strip('"').strip("'")
 
 
 def _normalize_kalshi_api_base(raw: str) -> tuple[str, str]:
@@ -113,19 +114,20 @@ try:
     # ── Fetch User ID for RLS Bypass ──
     # The frontend logs in as sigey2@illinois.edu. We need this UUID to insert rows
     # so they pass Row Level Security (RLS) policies and appear in the UI.
-    TARGET_EMAIL = "sigey2@illinois.edu"
-    try:
-        users = supa.auth.admin.list_users()
-        for u in users:
-            if u.email == TARGET_EMAIL:
-                USER_ID = u.id
-                log.info("Found USER_ID for %s: %s", TARGET_EMAIL, USER_ID)
-                break
-        
-        if not USER_ID:
-            log.warning("User %s not found. Inserts will lack user_id and may be hidden by RLS.", TARGET_EMAIL)
-    except Exception as e:
-        log.error("Failed to query user UUID: %s", e)
+    if supa is not None:
+        TARGET_EMAIL = "sigey2@illinois.edu"
+        try:
+            users = supa.auth.admin.list_users()
+            for u in users:
+                if u.email == TARGET_EMAIL:
+                    USER_ID = u.id
+                    log.info("Found USER_ID for %s: %s", TARGET_EMAIL, USER_ID)
+                    break
+            
+            if not USER_ID:
+                log.warning("User %s not found. Inserts will lack user_id and may be hidden by RLS.", TARGET_EMAIL)
+        except Exception as e:
+            log.error("Failed to query user UUID: %s", e)
 
 except Exception as exc:
     log.warning("Supabase client init failed: %s", exc)
@@ -1270,18 +1272,28 @@ async def crypto_worker_loop() -> None:
     listener_task = asyncio.create_task(
         kalshi_connect_and_listen(
             crypto_tick_queue,
+            ws_url=KALSHI_WS_URL,
             min_backoff_s=CRYPTO_MIN_BACKOFF_S,
             max_backoff_s=CRYPTO_MAX_BACKOFF_S,
             jitter_s=CRYPTO_JITTER_S,
         )
     )
+    log.info("Kalshi WS listener task started (ws_url=%s)", KALSHI_WS_URL)
 
     graph = build_crypto_graph()
     log.info("Crypto worker started; awaiting Kalshi ticker updates…")
 
     try:
         while True:
-            ticker_message = await crypto_tick_queue.get()
+            try:
+                ticker_message = await asyncio.wait_for(crypto_tick_queue.get(), timeout=30.0)
+            except asyncio.TimeoutError:
+                if listener_task.done():
+                    exc = listener_task.exception()
+                    raise RuntimeError(f"Kalshi WS listener exited: {exc}") from exc
+                log.info("No Kalshi ticks yet (ws_url=%s)", KALSHI_WS_URL)
+                continue
+
             initial_state: CryptoAgentState = {
                 "ticker": ticker_message,
                 "trade_signal": None,
