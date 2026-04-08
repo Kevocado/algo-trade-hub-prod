@@ -468,6 +468,70 @@ def test_latest_crypto_feature_row_fails_on_model_contract_mismatch(monkeypatch)
         orchestrator._latest_crypto_feature_row("ETH", FakeModel())
 
 
+def test_load_crypto_models_does_not_mutate_loaded_models(monkeypatch):
+    class FakeModel:
+        feature_name_ = CRYPTO_MODEL_FEATURES
+
+        def predict_proba(self, _x):
+            return [[0.4, 0.6]]
+
+        def set_params(self, **_kwargs):
+            raise AssertionError("load_crypto_models should not mutate deserialized models")
+
+    paths = iter(["/tmp/btc.pkl", "/tmp/eth.pkl"])
+    loads = []
+
+    monkeypatch.setattr(orchestrator, "_BTC_MODEL", None)
+    monkeypatch.setattr(orchestrator, "_ETH_MODEL", None)
+    monkeypatch.setattr(orchestrator, "_resolve_model_path", lambda *_args, **_kwargs: next(paths))
+    monkeypatch.setattr(orchestrator, "_load_pickle_model", lambda path: loads.append(str(path)) or FakeModel())
+
+    btc_model, eth_model = orchestrator.load_crypto_models()
+
+    assert isinstance(btc_model, FakeModel)
+    assert isinstance(eth_model, FakeModel)
+    assert loads == ["/tmp/btc.pkl", "/tmp/eth.pkl"]
+
+
+def test_load_crypto_models_validates_feature_contract(monkeypatch):
+    class FakeModel:
+        feature_name_ = CRYPTO_MODEL_FEATURES[:-1]
+
+        def predict_proba(self, _x):
+            return [[0.4, 0.6]]
+
+    paths = iter(["/tmp/btc.pkl", "/tmp/eth.pkl"])
+
+    monkeypatch.setattr(orchestrator, "_BTC_MODEL", None)
+    monkeypatch.setattr(orchestrator, "_ETH_MODEL", None)
+    monkeypatch.setattr(orchestrator, "_resolve_model_path", lambda *_args, **_kwargs: next(paths))
+    monkeypatch.setattr(orchestrator, "_load_pickle_model", lambda _path: FakeModel())
+
+    with pytest.raises(ValueError, match="feature contract mismatch"):
+        orchestrator.load_crypto_models()
+
+
+def test_run_crypto_model_smoke_test_loads_and_exits(monkeypatch):
+    class FakeModel:
+        feature_name_ = CRYPTO_MODEL_FEATURES
+
+        def predict_proba(self, _x):
+            return [[0.4, 0.6]]
+
+    initialized = []
+    monkeypatch.setattr(orchestrator, "_BTC_MODEL", None)
+    monkeypatch.setattr(orchestrator, "_ETH_MODEL", None)
+    monkeypatch.setattr(
+        orchestrator,
+        "initialize_runtime_clients",
+        lambda require_supabase, require_kalshi: initialized.append((require_supabase, require_kalshi)),
+    )
+    monkeypatch.setattr(orchestrator, "load_crypto_models", lambda: (FakeModel(), FakeModel()))
+
+    assert orchestrator.run_crypto_model_smoke_test() == 0
+    assert initialized == [(True, True)]
+
+
 def test_log_hourly_feature_snapshot_throttles_once_per_hour(monkeypatch):
     recorded_logs = []
     timestamp = pd.Timestamp("2026-01-01T12:00:00Z")

@@ -9,6 +9,7 @@ Boot order: Step 4 (after ingestion.py is streaming).
 """
 
 import asyncio
+import argparse
 import contextlib
 import base64
 import io
@@ -591,21 +592,6 @@ def _load_pickle_model(path: Path) -> Any:
             return pickle.load(f)
 
 
-def _suppress_lightgbm_runtime_warnings(model: Any) -> Any:
-    try:
-        if hasattr(model, "set_params"):
-            model.set_params(verbose=-1, verbosity=-1)
-    except Exception:
-        pass
-    try:
-        booster = getattr(model, "_Booster", None)
-        if booster is not None and hasattr(booster, "reset_parameter"):
-            booster.reset_parameter({"verbosity": -1, "verbose": -1})
-    except Exception:
-        pass
-    return model
-
-
 def _resolve_model_path(explicit: Optional[str], candidates: list[str], label: str) -> Path:
     if explicit and explicit.strip():
         p = Path(explicit)
@@ -635,8 +621,6 @@ def load_crypto_models() -> tuple[Any, Any]:
     if _BTC_MODEL is not None and _ETH_MODEL is not None:
         return _BTC_MODEL, _ETH_MODEL
 
-    # The user mentioned /root/kalshibot, but this repo also contains models under ./model/
-    # and ./quant_research_lab/models/. We search both families.
     btc_path = _resolve_model_path(
         BTC_MODEL_PATH,
         candidates=[
@@ -664,12 +648,47 @@ def load_crypto_models() -> tuple[Any, Any]:
         label="ETH",
     )
 
+    log.info("Resolved BTC model path: %s", btc_path)
     log.info("Loading BTC model: %s", btc_path)
-    _BTC_MODEL = _suppress_lightgbm_runtime_warnings(_load_pickle_model(btc_path))
+    try:
+        _BTC_MODEL = _load_pickle_model(btc_path)
+    except Exception:
+        log.exception("BTC model deserialization failed: %s", btc_path)
+        raise
+    log.info("BTC model deserialized successfully.")
+    _validate_loaded_crypto_model("BTC", _BTC_MODEL)
+
+    log.info("Resolved ETH model path: %s", eth_path)
     log.info("Loading ETH model: %s", eth_path)
-    _ETH_MODEL = _suppress_lightgbm_runtime_warnings(_load_pickle_model(eth_path))
+    try:
+        _ETH_MODEL = _load_pickle_model(eth_path)
+    except Exception:
+        log.exception("ETH model deserialization failed: %s", eth_path)
+        raise
+    log.info("ETH model deserialized successfully.")
+    _validate_loaded_crypto_model("ETH", _ETH_MODEL)
 
     return _BTC_MODEL, _ETH_MODEL
+
+
+def _validate_loaded_crypto_model(label: str, model: Any) -> None:
+    if not (hasattr(model, "predict_proba") or hasattr(model, "predict")):
+        raise TypeError(f"{label} model does not expose predict or predict_proba.")
+    feature_names = _model_feature_names(model)
+    if list(feature_names) != list(CANONICAL_CRYPTO_FEATURES):
+        raise ValueError(
+            f"{label} model feature contract mismatch: expected {list(CANONICAL_CRYPTO_FEATURES)}, got {feature_names}"
+        )
+
+
+def run_crypto_model_smoke_test() -> int:
+    initialize_runtime_clients(require_supabase=True, require_kalshi=True)
+    log.info("Starting crypto model smoke test.")
+    btc_model, eth_model = load_crypto_models()
+    log.info("BTC smoke test model class: %s", type(btc_model).__name__)
+    log.info("ETH smoke test model class: %s", type(eth_model).__name__)
+    log.info("Crypto model smoke test passed (feature_count=%s).", len(CANONICAL_CRYPTO_FEATURES))
+    return 0
 
 
 def _extract_yes_mid_dollars(ticker_message: dict) -> Optional[float]:
@@ -2370,13 +2389,23 @@ async def heartbeat_loop():
 # ═══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the market orchestrator.")
+    parser.add_argument(
+        "--smoke-test-models",
+        action="store_true",
+        help="Load and validate BTC/ETH crypto models, then exit without starting services.",
+    )
+    args = parser.parse_args()
     try:
-        initialize_runtime_clients(require_supabase=True, require_kalshi=(ORCHESTRATOR_MODE != "market_sentiment"))
-        log.info("Starting Orchestrator (mode=%s)…", ORCHESTRATOR_MODE)
-        if ORCHESTRATOR_MODE == "market_sentiment":
-            asyncio.run(heartbeat_loop())
+        if args.smoke_test_models:
+            raise SystemExit(run_crypto_model_smoke_test())
         else:
-            asyncio.run(run_crypto_services())
+            initialize_runtime_clients(require_supabase=True, require_kalshi=(ORCHESTRATOR_MODE != "market_sentiment"))
+            log.info("Starting Orchestrator (mode=%s)…", ORCHESTRATOR_MODE)
+            if ORCHESTRATOR_MODE == "market_sentiment":
+                asyncio.run(heartbeat_loop())
+            else:
+                asyncio.run(run_crypto_services())
     except RuntimeBootstrapError as exc:
         log.critical("%s", exc)
         raise SystemExit(1) from exc
