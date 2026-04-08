@@ -21,8 +21,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from supabase import create_client, Client as SupabaseClient
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
+from shared.kalshi_ws import sign_kalshi_message
 
 # ── Load .env from project root (one directory up from /backend) ──
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -148,14 +147,7 @@ def _kalshi_signed_headers(method: str, path: str) -> dict[str, str]:
     private_key = _load_kalshi_private_key()
     ts = str(int(time.time() * 1000))
     msg = f"{ts}{method.upper()}{path.split('?')[0]}"
-    signature = private_key.sign(
-        msg.encode("utf-8"),
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.DIGEST_LENGTH,
-        ),
-        hashes.SHA256(),
-    )
+    signature = sign_kalshi_message(private_key=private_key, message=msg.encode("utf-8"))
     return {
         "Content-Type": "application/json",
         "KALSHI-ACCESS-KEY": KALSHI_API_KEY_ID,

@@ -34,12 +34,12 @@ their node functions so `ORCHESTRATOR_MODE=crypto` can run with a minimal
 requirements set on CPU-only VPS hosts.
 """
 from shared.kalshi_ws import connect_and_listen as kalshi_connect_and_listen
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding
+from shared.kalshi_ws import sign_kalshi_message
 
 # ── Load .env from project root (one directory up from /backend) ──
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-load_dotenv(os.path.join(ROOT_DIR, ".env"))
+ENV_PATH = os.path.join(ROOT_DIR, ".env")
+load_dotenv(ENV_PATH)
 
 # ── Config ──
 SUPABASE_URL = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
@@ -97,6 +97,14 @@ logging.basicConfig(
     format="%(asctime)s  [ORCHESTRATOR]  %(levelname)s  %(message)s",
 )
 log = logging.getLogger(__name__)
+log.info(
+    "Env loaded from %s (SUPABASE_URL_set=%s SUPABASE_SERVICE_ROLE_KEY_set=%s KALSHI_API_KEY_ID_set=%s KALSHI_PRIVATE_KEY_PATH_set=%s)",
+    ENV_PATH,
+    bool(SUPABASE_URL),
+    bool(SUPABASE_SERVICE_ROLE_KEY),
+    bool(os.getenv("KALSHI_API_KEY_ID", "")),
+    bool(os.getenv("KALSHI_PRIVATE_KEY_PATH", "")),
+)
 
 # ── Supabase Client (Service Role — bypasses RLS) ──
 supa: SupabaseClient | None = None
@@ -748,14 +756,7 @@ def _kalshi_rest_headers(method: str, path: str) -> dict[str, str]:
     private_key = _kalshi_load_rest_key()
     ts = str(int(time.time() * 1000))
     msg = f"{ts}{method.upper()}{path.split('?')[0]}"
-    signature = private_key.sign(
-        msg.encode("utf-8"),
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.DIGEST_LENGTH,
-        ),
-        hashes.SHA256(),
-    )
+    signature = sign_kalshi_message(private_key=private_key, message=msg.encode("utf-8"))
 
     return {
         "Content-Type": "application/json",

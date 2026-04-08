@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import padding, rsa, ed25519
 
 log = logging.getLogger(__name__)
 
@@ -84,14 +84,7 @@ def build_ws_auth_headers(
     ts = timestamp_ms or str(int(time.time() * 1000))
     msg = f"{ts}GET{_KALSHI_WS_PATH_TO_SIGN}"
 
-    signature = private_key.sign(
-        msg.encode("utf-8"),
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.DIGEST_LENGTH,
-        ),
-        hashes.SHA256(),
-    )
+    signature = sign_kalshi_message(private_key=private_key, message=msg.encode("utf-8"))
     sig_b64 = base64.b64encode(signature).decode("utf-8")
 
     return {
@@ -99,6 +92,27 @@ def build_ws_auth_headers(
         "KALSHI-ACCESS-SIGNATURE": sig_b64,
         "KALSHI-ACCESS-TIMESTAMP": ts,
     }
+
+
+def sign_kalshi_message(*, private_key, message: bytes) -> bytes:
+    """
+    Kalshi signing helper.
+
+    - RSA keys: RSA-PSS(SHA256)
+    - Ed25519 keys: Ed25519 raw signature
+    """
+    if isinstance(private_key, rsa.RSAPrivateKey):
+        return private_key.sign(
+            message,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.DIGEST_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+    if isinstance(private_key, ed25519.Ed25519PrivateKey):
+        return private_key.sign(message)
+    raise TypeError(f"Unsupported private key type for Kalshi signing: {type(private_key)}")
 
 
 async def subscribe_ticker(ws, *, request_id: int = 1) -> None:
@@ -204,4 +218,3 @@ async def connect_and_listen(
             sleep_s = min(backoff_s, max_backoff_s) + (random.random() * jitter_s if jitter_s else 0.0)
             await asyncio.sleep(sleep_s)
             backoff_s = min(backoff_s * 2.0, max_backoff_s)
-
