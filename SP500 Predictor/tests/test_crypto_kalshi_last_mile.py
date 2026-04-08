@@ -4,6 +4,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import numpy as np
+import pandas as pd
 import pytest
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -12,6 +14,39 @@ if REPO_ROOT not in sys.path:
 
 from market_sentiment_tool.backend import mcp_server, orchestrator
 from market_sentiment_tool.backend import runtime_bootstrap
+
+CRYPTO_MODEL_FEATURES = [
+    "Close",
+    "High",
+    "Low",
+    "Open",
+    "Volume",
+    "hour",
+    "dayofweek",
+    "is_weekend",
+    "is_retail_window",
+    "is_us_session",
+    "sin_hour",
+    "cos_hour",
+    "midnight_signal",
+    "rsi_5",
+    "rsi_7",
+    "rsi_14",
+    "vol_ratio",
+    "dist_ma200",
+    "force_idx",
+    "rsi_div",
+    "ret_1h_z",
+    "ret_4h",
+    "rsi_z",
+    "z_score_24h",
+    "vol_adj_ret",
+    "relative_vol",
+    "vol_pressure",
+    "vol_spike",
+    "retail_rsi",
+    "trend_bias",
+]
 
 
 class FakeQuery:
@@ -300,3 +335,74 @@ def test_validate_runtime_env_requires_supabase_and_private_key(tmp_path, monkey
 
     assert any("Missing required env var: SUPABASE_SERVICE_ROLE_KEY" in error for error in errors)
     assert any("KALSHI_PRIVATE_KEY_PATH is invalid" in error for error in errors)
+
+
+def test_build_crypto_feature_frame_produces_expected_columns():
+    index = pd.date_range("2026-01-01", periods=260, freq="h", tz="UTC")
+    close = np.linspace(90000.0, 93000.0, len(index))
+    bars = pd.DataFrame(
+        {
+            "Open": close - 25.0,
+            "High": close + 40.0,
+            "Low": close - 40.0,
+            "Close": close,
+            "Volume": np.linspace(1000.0, 3000.0, len(index)),
+        },
+        index=index,
+    )
+
+    features = orchestrator._build_crypto_feature_frame(bars)
+    assert not features.empty
+    assert "target" not in features.columns
+    assert len(features.columns) == len(CRYPTO_MODEL_FEATURES)
+    assert all(name in features.columns for name in CRYPTO_MODEL_FEATURES)
+
+
+def test_latest_crypto_feature_row_aligns_to_model(monkeypatch):
+    index = pd.date_range("2026-01-01", periods=260, freq="h", tz="UTC")
+    close = np.linspace(2500.0, 3100.0, len(index))
+    bars = pd.DataFrame(
+        {
+            "Open": close - 3.0,
+            "High": close + 6.0,
+            "Low": close - 6.0,
+            "Close": close,
+            "Volume": np.linspace(500.0, 1500.0, len(index)),
+        },
+        index=index,
+    )
+
+    class FakeModel:
+        feature_name_ = CRYPTO_MODEL_FEATURES
+
+    orchestrator._CRYPTO_FEATURE_ROW_CACHE.clear()
+    monkeypatch.setattr(orchestrator, "_fetch_alpaca_crypto_bars", lambda asset: bars)
+
+    feature_row = orchestrator._latest_crypto_feature_row("ETH", FakeModel())
+
+    assert list(feature_row.columns) == FakeModel.feature_name_
+    assert feature_row.shape == (1, len(FakeModel.feature_name_))
+    assert not feature_row.isnull().any(axis=None)
+
+
+def test_evaluate_crypto_edge_skips_on_feature_inference_failure(monkeypatch):
+    ticker_message = {
+        "msg": {
+            "market_ticker": "KXBTC-DUMMY",
+            "yes_bid_dollars": 0.49,
+            "yes_ask_dollars": 0.51,
+        }
+    }
+
+    monkeypatch.setattr(orchestrator, "load_crypto_models", lambda: (object(), object()))
+    monkeypatch.setattr(
+        orchestrator,
+        "_latest_crypto_feature_row",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad features")),
+    )
+
+    result = orchestrator.evaluate_crypto_edge(
+        {"ticker": ticker_message, "trade_signal": None, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    )
+
+    assert result == {"trade_signal": None}

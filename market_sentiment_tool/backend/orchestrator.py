@@ -63,6 +63,8 @@ CRYPTO_JITTER_S = float(os.getenv("CRYPTO_JITTER_S", "0.25"))
 CRYPTO_TRADE_COOLDOWN_S = int(os.getenv("CRYPTO_TRADE_COOLDOWN_S", "600"))
 CRYPTO_SIGNAL_YES_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_YES_THRESHOLD", "0.65"))
 CRYPTO_SIGNAL_NO_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_NO_THRESHOLD", "0.35"))
+CRYPTO_FEATURE_LOOKBACK_HOURS = int(os.getenv("CRYPTO_FEATURE_LOOKBACK_HOURS", "400"))
+CRYPTO_FEATURE_CACHE_TTL_S = float(os.getenv("CRYPTO_FEATURE_CACHE_TTL_S", "30"))
 
 # Optional explicit model paths (otherwise auto-discover).
 BTC_MODEL_PATH = os.getenv("BTC_MODEL_PATH") or os.getenv("KALSHI_BTC_MODEL_PATH")
@@ -525,6 +527,7 @@ def execute_trade(state: AgentState) -> dict:
 
 _BTC_MODEL: Any | None = None
 _ETH_MODEL: Any | None = None
+_CRYPTO_FEATURE_ROW_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 
 
 def _repo_root() -> Path:
@@ -636,12 +639,162 @@ def _extract_yes_mid_dollars(ticker_message: dict) -> Optional[float]:
     return None
 
 
-def _model_yes_probability(model: Any, price_dollars: float) -> float:
+def _alpaca_crypto_symbol(asset: str) -> Optional[str]:
+    return {"BTC": "BTC/USD", "ETH": "ETH/USD"}.get(asset.upper())
+
+
+def _model_feature_names(model: Any) -> list[str]:
+    names = getattr(model, "feature_name_", None)
+    if names is None:
+        names = getattr(model, "feature_names_in_", None)
+    if names is None:
+        raise TypeError("Model is missing feature names; cannot align live crypto inference features.")
+    return [str(name) for name in names]
+
+
+def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATURE_LOOKBACK_HOURS) -> pd.DataFrame:
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        raise RuntimeError("Missing Alpaca API credentials for crypto feature fetch.")
+
+    symbol = _alpaca_crypto_symbol(asset)
+    if not symbol:
+        raise ValueError(f"Unsupported crypto asset: {asset}")
+
+    import requests
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(hours=max(lookback_hours, 240))
+    url = f"{ALPACA_DATA_API_BASE}/v1beta3/crypto/us/bars"
+    response = requests.get(
+        url,
+        headers={
+            "accept": "application/json",
+            "APCA-API-KEY-ID": ALPACA_API_KEY,
+            "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+        },
+        params={
+            "symbols": symbol,
+            "timeframe": "1Hour",
+            "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "limit": max(lookback_hours + 24, 300),
+            "sort": "asc",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    bars = (payload.get("bars") or {}).get(symbol) or []
+    if not bars:
+        raise ValueError(f"Alpaca returned no hourly crypto bars for {symbol}")
+
+    frame = pd.DataFrame(bars)
+    rename_map = {"t": "timestamp", "o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume"}
+    frame = frame.rename(columns=rename_map)
+    if "timestamp" not in frame.columns:
+        raise ValueError(f"Alpaca bar payload missing timestamp for {symbol}")
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    frame = frame.set_index("timestamp").sort_index()
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+    missing_cols = [column for column in required_cols if column not in frame.columns]
+    if missing_cols:
+        raise ValueError(f"Alpaca bar payload missing required columns for {symbol}: {missing_cols}")
+    for column in required_cols:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame[required_cols].dropna()
+    if len(frame) < 240:
+        raise ValueError(f"Need at least 240 hourly bars for {symbol}; received {len(frame)}")
+    return frame
+
+
+def _build_crypto_feature_frame(bars: pd.DataFrame) -> pd.DataFrame:
+    import ta
+
+    df = bars.copy().sort_index()
+    df["rsi_5_raw"] = ta.momentum.rsi(df["Close"], window=5)
+    df["rsi_7_raw"] = ta.momentum.rsi(df["Close"], window=7)
+    df["rsi_14_raw"] = ta.momentum.rsi(df["Close"], window=14)
+
+    atr = ta.volatility.average_true_range(df["High"], df["Low"], df["Close"], window=14)
+    rolling_std_24 = df["Close"].pct_change().rolling(window=24).std()
+    rolling_std_168 = df["Close"].pct_change().rolling(window=168).std()
+
+    df["hour"] = df.index.hour
+    df["dayofweek"] = df.index.dayofweek
+    df["is_weekend"] = (df["dayofweek"] >= 5).astype(int)
+    df["is_retail_window"] = (df["dayofweek"] >= 4).astype(int)
+    df["is_us_session"] = ((df["hour"] >= 14) & (df["hour"] <= 21)).astype(int)
+    df["sin_hour"] = np.sin(2 * np.pi * df["hour"] / 24)
+    df["cos_hour"] = np.cos(2 * np.pi * df["hour"] / 24)
+    df["midnight_signal"] = (df["hour"] == 0).astype(int)
+
+    df["vol_ratio_raw"] = rolling_std_24 / (rolling_std_168 + 1e-6)
+    df["dist_ma200_raw"] = (df["Close"] - df["Close"].rolling(200).mean()) / (df["Close"].rolling(200).std() + 1e-6)
+    df["force_idx_raw"] = df["Close"].diff(1) * df["Volume"]
+    df["rsi_slope"] = df["rsi_7_raw"].diff(3)
+    df["price_slope"] = df["Close"].diff(3)
+    df["rsi_div_raw"] = ((df["rsi_slope"] < 0) & (df["price_slope"] > 0)).astype(int)
+
+    for raw_column in (
+        "rsi_5_raw",
+        "rsi_7_raw",
+        "rsi_14_raw",
+        "vol_ratio_raw",
+        "dist_ma200_raw",
+        "force_idx_raw",
+        "rsi_div_raw",
+    ):
+        df[raw_column.replace("_raw", "")] = df[raw_column].shift(1)
+
+    df["ret_1h_z"] = (df["Close"].pct_change(1) / (rolling_std_24 + 1e-6)).shift(1)
+    df["ret_4h"] = df["Close"].pct_change(4).shift(1)
+    df["rsi_z"] = ((df["rsi_7_raw"] - df["rsi_7_raw"].rolling(24).mean()) / (df["rsi_7_raw"].rolling(24).std() + 1e-6)).shift(1)
+    df["z_score_24h"] = ((df["Close"] - df["Close"].rolling(24).mean()) / (df["Close"].rolling(24).std() + 1e-6)).shift(1)
+    df["vol_adj_ret"] = (df["Close"].pct_change() / (atr / df["Close"] + 1e-6)).shift(1)
+    df["relative_vol"] = (df["Volume"] / (df["Volume"].rolling(24).mean() + 1e-6)).shift(1)
+    df["vol_pressure"] = df["relative_vol"] / (df["vol_ratio_raw"].shift(1) + 1e-6)
+    df["vol_spike"] = (df["Volume"] > df["Volume"].rolling(24).mean()).astype(int).shift(1)
+    df["retail_rsi"] = df["rsi_z"] * df["is_retail_window"]
+
+    plus_dm = df["High"].diff().clip(lower=0)
+    minus_dm = df["Low"].diff().clip(upper=0).abs()
+    df["trend_bias"] = ((plus_dm.rolling(14).mean() - minus_dm.rolling(14).mean()) / (atr + 1e-6)).shift(1)
+
+    cols_to_drop = [column for column in df.columns if "_raw" in column or "slope" in column]
+    return df.drop(columns=cols_to_drop).dropna()
+
+
+def _latest_crypto_feature_row(asset: str, model: Any) -> pd.DataFrame:
+    cache_key = asset.upper()
+    cached = _CRYPTO_FEATURE_ROW_CACHE.get(cache_key)
+    now_ts = time.time()
+    if cached and (now_ts - cached[0]) < CRYPTO_FEATURE_CACHE_TTL_S:
+        return cached[1]
+
+    feature_names = _model_feature_names(model)
+    bars = _fetch_alpaca_crypto_bars(asset)
+    features = _build_crypto_feature_frame(bars)
+    if features.empty:
+        raise ValueError(f"No usable crypto features generated for {asset}")
+
+    last_row = features.tail(1).reindex(columns=feature_names)
+    missing_features = [name for name in feature_names if name not in last_row.columns]
+    if missing_features:
+        raise ValueError(f"Crypto feature pipeline missing model columns for {asset}: {missing_features}")
+    if last_row.isnull().any(axis=None):
+        bad_columns = last_row.columns[last_row.isnull().any()].tolist()
+        raise ValueError(f"Crypto feature row contains NaN values for {asset}: {bad_columns}")
+
+    _CRYPTO_FEATURE_ROW_CACHE[cache_key] = (now_ts, last_row)
+    return last_row
+
+
+def _model_yes_probability(model: Any, feature_frame: pd.DataFrame) -> float:
     """
     Adapter for common sklearn/lightgbm-style models.
-    Contract: feed current price, get P(YES).
+    Contract: feed aligned live feature row, get P(YES).
     """
-    x = np.array([[float(price_dollars)]], dtype=float)
+    x = feature_frame
 
     if hasattr(model, "predict_proba"):
         probs = model.predict_proba(x)
@@ -716,7 +869,12 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
     else:
         return {"trade_signal": None}
 
-    prob_yes = _model_yes_probability(model, price)
+    try:
+        feature_row = _latest_crypto_feature_row(asset, model)
+        prob_yes = _model_yes_probability(model, feature_row)
+    except Exception as exc:
+        log.error("[CRYPTO EDGE] %s feature inference failed: %s", market_ticker, exc)
+        return {"trade_signal": None}
 
     side: Optional[str] = None
     if prob_yes >= CRYPTO_SIGNAL_YES_THRESHOLD:
