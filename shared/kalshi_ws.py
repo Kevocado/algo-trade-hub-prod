@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa, ed25519
 
 log = logging.getLogger(__name__)
 
-KALSHI_DEMO_WS_URL = "wss://demo-api.kalshi.com/trade-api/ws/v2"
+KALSHI_DEMO_WS_URL = "wss://demo-api.kalshi.co/trade-api/ws/v2"
 _KALSHI_WS_PATH_TO_SIGN = "/trade-api/ws/v2"
 
 

@@ -105,7 +105,8 @@ ETH_MODEL_PATH = os.getenv("ETH_MODEL_PATH") or os.getenv("KALSHI_ETH_MODEL_PATH
 _KALSHI_API_BASE_RAW = (
     os.getenv("KALSHI_API_BASE", "")
     or os.getenv("KALSHI_DEMO_API_BASE", "")
-    or "https://demo-api.kalshi.com"
+    # Official demo host is demo-api.kalshi.co (note: not .com)
+    or "https://demo-api.kalshi.co"
 )
 _KALSHI_API_BASE_RAW = _KALSHI_API_BASE_RAW.strip().strip('"').strip("'")
 _KALSHI_WS_URL_RAW = os.getenv("KALSHI_WS_URL", "").strip().strip('"').strip("'")
@@ -114,7 +115,7 @@ _KALSHI_WS_URL_RAW = os.getenv("KALSHI_WS_URL", "").strip().strip('"').strip("'"
 def _normalize_kalshi_api_base(raw: str) -> tuple[str, str]:
     raw = (raw or "").strip().strip('"').strip("'").rstrip("/")
     if not raw:
-        raw = "https://demo-api.kalshi.com"
+        raw = "https://demo-api.kalshi.co"
     marker = "/trade-api/v2"
     if marker in raw:
         host = raw.split(marker, 1)[0]
@@ -153,6 +154,11 @@ log.info(
     bool(os.getenv("KALSHI_API_KEY_ID", "")),
     bool(os.getenv("KALSHI_PRIVATE_KEY_PATH", "")),
 )
+if "api.kalshi.com" in KALSHI_API_BASE or "demo-api.kalshi.com" in KALSHI_API_BASE:
+    log.warning(
+        "KALSHI_API_BASE looks misconfigured (%s). Kalshi canonical hosts are api.elections.kalshi.com (prod) and demo-api.kalshi.co (demo).",
+        KALSHI_API_BASE,
+    )
 
 # ── Supabase Client (Service Role — bypasses RLS) ──
 supa: SupabaseClient | None = None
