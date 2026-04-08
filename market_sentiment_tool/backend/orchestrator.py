@@ -65,6 +65,7 @@ CRYPTO_SIGNAL_YES_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_YES_THRESHOLD", "0.
 CRYPTO_SIGNAL_NO_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_NO_THRESHOLD", "0.35"))
 CRYPTO_FEATURE_LOOKBACK_HOURS = int(os.getenv("CRYPTO_FEATURE_LOOKBACK_HOURS", "400"))
 CRYPTO_FEATURE_CACHE_TTL_S = float(os.getenv("CRYPTO_FEATURE_CACHE_TTL_S", "30"))
+CRYPTO_MIN_FEATURE_BARS = int(os.getenv("CRYPTO_MIN_FEATURE_BARS", "205"))
 
 # Optional explicit model paths (otherwise auto-discover).
 BTC_MODEL_PATH = os.getenv("BTC_MODEL_PATH") or os.getenv("KALSHI_BTC_MODEL_PATH")
@@ -643,6 +644,10 @@ def _alpaca_crypto_symbol(asset: str) -> Optional[str]:
     return {"BTC": "BTC/USD", "ETH": "ETH/USD"}.get(asset.upper())
 
 
+def _yfinance_crypto_symbol(asset: str) -> Optional[str]:
+    return {"BTC": "BTC-USD", "ETH": "ETH-USD"}.get(asset.upper())
+
+
 def _model_feature_names(model: Any) -> list[str]:
     names = getattr(model, "feature_name_", None)
     if names is None:
@@ -650,6 +655,44 @@ def _model_feature_names(model: Any) -> list[str]:
     if names is None:
         raise TypeError("Model is missing feature names; cannot align live crypto inference features.")
     return [str(name) for name in names]
+
+
+def _merge_crypto_bar_sources(primary: pd.DataFrame, backfill: pd.DataFrame, *, required_bars: int) -> pd.DataFrame:
+    frames = [frame for frame in (backfill, primary) if not frame.empty]
+    if not frames:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
+
+    merged = pd.concat(frames).sort_index()
+    merged = merged[~merged.index.duplicated(keep="last")]
+    merged = merged[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    if required_bars > 0 and len(merged) > required_bars:
+        return merged.tail(required_bars)
+    return merged
+
+
+def _fetch_yfinance_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATURE_LOOKBACK_HOURS) -> pd.DataFrame:
+    symbol = _yfinance_crypto_symbol(asset)
+    if not symbol:
+        raise ValueError(f"Unsupported crypto asset for yfinance backfill: {asset}")
+
+    import yfinance as yf
+
+    period_days = max(int(np.ceil(lookback_hours / 24)) + 5, 14)
+    frame = yf.download(symbol, period=f"{period_days}d", interval="1h", progress=False, auto_adjust=False)
+    if frame.empty:
+        raise ValueError(f"yfinance returned no hourly bars for {symbol}")
+    if isinstance(frame.columns, pd.MultiIndex):
+        frame.columns = frame.columns.get_level_values(0)
+
+    frame.index = pd.to_datetime(frame.index, utc=True)
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+    missing_cols = [column for column in required_cols if column not in frame.columns]
+    if missing_cols:
+        raise ValueError(f"yfinance payload missing required columns for {symbol}: {missing_cols}")
+    frame = frame[required_cols].copy()
+    for column in required_cols:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame.dropna().sort_index()
 
 
 def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATURE_LOOKBACK_HOURS) -> pd.DataFrame:
@@ -702,8 +745,21 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
     for column in required_cols:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame = frame[required_cols].dropna()
-    if len(frame) < 240:
-        raise ValueError(f"Need at least 240 hourly bars for {symbol}; received {len(frame)}")
+    if len(frame) < CRYPTO_MIN_FEATURE_BARS:
+        try:
+            historical = _fetch_yfinance_crypto_bars(asset, lookback_hours=lookback_hours)
+            merged = _merge_crypto_bar_sources(frame, historical, required_bars=max(lookback_hours, CRYPTO_MIN_FEATURE_BARS))
+            if len(merged) >= CRYPTO_MIN_FEATURE_BARS:
+                log.info(
+                    "[CRYPTO EDGE] Backfilled %s hourly bars via yfinance (%s Alpaca + %s merged).",
+                    symbol,
+                    len(frame),
+                    len(merged),
+                )
+                return merged
+        except Exception as exc:
+            log.warning("[CRYPTO EDGE] Failed to backfill %s hourly bars via yfinance: %s", symbol, exc)
+        raise ValueError(f"Need at least {CRYPTO_MIN_FEATURE_BARS} hourly bars for {symbol}; received {len(frame)}")
     return frame
 
 

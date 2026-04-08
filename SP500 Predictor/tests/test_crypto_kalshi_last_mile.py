@@ -385,6 +385,105 @@ def test_latest_crypto_feature_row_aligns_to_model(monkeypatch):
     assert not feature_row.isnull().any(axis=None)
 
 
+def test_merge_crypto_bar_sources_prefers_primary_on_overlap():
+    primary_index = pd.date_range("2026-01-05", periods=3, freq="h", tz="UTC")
+    backfill_index = pd.date_range("2026-01-04 22:00:00+00:00", periods=5, freq="h", tz="UTC")
+
+    primary = pd.DataFrame(
+        {
+            "Open": [10.0, 11.0, 12.0],
+            "High": [11.0, 12.0, 13.0],
+            "Low": [9.0, 10.0, 11.0],
+            "Close": [10.5, 11.5, 12.5],
+            "Volume": [100.0, 110.0, 120.0],
+        },
+        index=primary_index,
+    )
+    backfill = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "High": [1.5, 2.5, 3.5, 4.5, 5.5],
+            "Low": [0.5, 1.5, 2.5, 3.5, 4.5],
+            "Close": [1.2, 2.2, 3.2, 4.2, 5.2],
+            "Volume": [10.0, 20.0, 30.0, 40.0, 50.0],
+        },
+        index=backfill_index,
+    )
+
+    merged = orchestrator._merge_crypto_bar_sources(primary, backfill, required_bars=10)
+
+    assert len(merged) == 5
+    assert merged.loc[primary_index[0], "Close"] == 10.5
+    assert merged.loc[primary_index[-1], "Volume"] == 120.0
+
+
+def test_fetch_alpaca_crypto_bars_backfills_when_live_history_short(monkeypatch):
+    short_index = pd.date_range("2026-01-01", periods=168, freq="h", tz="UTC")
+    live_close = np.linspace(90000.0, 92000.0, len(short_index))
+    historical_index = pd.date_range("2025-12-20", periods=260, freq="h", tz="UTC")
+    historical_close = np.linspace(85000.0, 91000.0, len(historical_index))
+
+    live_frame = pd.DataFrame(
+        {
+            "Open": live_close - 25.0,
+            "High": live_close + 40.0,
+            "Low": live_close - 40.0,
+            "Close": live_close,
+            "Volume": np.linspace(1000.0, 3000.0, len(short_index)),
+        },
+        index=short_index,
+    )
+    historical_frame = pd.DataFrame(
+        {
+            "Open": historical_close - 25.0,
+            "High": historical_close + 40.0,
+            "Low": historical_close - 40.0,
+            "Close": historical_close,
+            "Volume": np.linspace(500.0, 2500.0, len(historical_index)),
+        },
+        index=historical_index,
+    )
+
+    monkeypatch.setattr(orchestrator, "ALPACA_API_KEY", "key")
+    monkeypatch.setattr(orchestrator, "ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setattr(orchestrator, "_fetch_yfinance_crypto_bars", lambda asset, lookback_hours=orchestrator.CRYPTO_FEATURE_LOOKBACK_HOURS: historical_frame)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "bars": {
+                    "BTC/USD": [
+                        {
+                            "t": ts.isoformat(),
+                            "o": float(row.Open),
+                            "h": float(row.High),
+                            "l": float(row.Low),
+                            "c": float(row.Close),
+                            "v": float(row.Volume),
+                        }
+                        for ts, row in live_frame.iterrows()
+                    ]
+                }
+            }
+
+    class FakeRequests:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return FakeResponse()
+
+    import sys
+
+    monkeypatch.setitem(sys.modules, "requests", FakeRequests)
+
+    merged = orchestrator._fetch_alpaca_crypto_bars("BTC", lookback_hours=220)
+
+    assert len(merged) >= orchestrator.CRYPTO_MIN_FEATURE_BARS
+    assert merged.index.max() == live_frame.index.max()
+
+
 def test_evaluate_crypto_edge_skips_on_feature_inference_failure(monkeypatch):
     ticker_message = {
         "msg": {
