@@ -76,12 +76,14 @@ The system relies on a strict split of secrets.
 cd /root/kalshibot
 /root/kalshibot/.venv/bin/pip install -r market_sentiment_tool/backend/requirements.txt
 /root/kalshibot/.venv/bin/python -c "import yfinance; print(yfinance.__version__)"
+/root/kalshibot/.venv/bin/python -c "import ta; print(ta.__version__ if hasattr(ta, '__version__') else 'ta-ok')"
 ```
 
 - `KALSHI_ENV=demo` uses `https://demo-api.kalshi.co/trade-api/v2` and `wss://demo-api.kalshi.co/trade-api/ws/v2`.
 - `KALSHI_ENV=live` uses `https://api.elections.kalshi.com/trade-api/v2` and `wss://api.elections.kalshi.com/trade-api/ws/v2`.
 - The Kalshi private key file must exist on the VPS filesystem and match `KALSHI_PRIVATE_KEY_PATH`.
 - Live/latest crypto bars come from Alpaca; `yfinance` is used only to backfill older hourly bars when Alpaca does not yet have enough history for the long-window model features.
+- The crypto feature builder also requires the `ta` package inside the same PM2 interpreter environment; if it is missing, inference will fail after backfill.
 
 Start or restart on VPS:
 
