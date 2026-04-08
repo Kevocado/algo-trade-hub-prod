@@ -5,11 +5,8 @@ alpaca-py
 supabase
 python-dotenv
 aiohttp
+websockets
 numpy
 pandas
 scipy
-chromadb
-sentence-transformers
-feedparser
-beautifulsoup4
 requests

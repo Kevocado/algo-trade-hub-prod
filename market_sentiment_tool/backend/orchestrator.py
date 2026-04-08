@@ -28,12 +28,11 @@ from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from supabase import create_client, Client as SupabaseClient
 
-try:
-    from .quant_engine import analyze_all_symbols
-    from .news_rag import query_news  # pgvector-backed semantic search
-except ImportError:
-    from quant_engine import analyze_all_symbols
-    from news_rag import query_news  # pgvector-backed semantic search
+"""
+Note: keep heavy / optional dependencies (RAG, vector DB) imported lazily inside
+their node functions so `ORCHESTRATOR_MODE=crypto` can run with a minimal
+requirements set on CPU-only VPS hosts.
+"""
 from shared.kalshi_ws import connect_and_listen as kalshi_connect_and_listen
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -263,6 +262,11 @@ def quantitative_analysis(state: AgentState) -> dict:
     Outputs purely mathematical recommendation based on ticks.
     """
     raw_ticks = state.get("raw_ticks", [])
+    try:
+        from .quant_engine import analyze_all_symbols
+    except ImportError:
+        from quant_engine import analyze_all_symbols
+
     quant_result = analyze_all_symbols(raw_ticks)
     aggregate = quant_result.get("aggregate", {})
     signal = aggregate.get("signal", 0.0)
@@ -325,6 +329,11 @@ def macro_sentiment(state: AgentState) -> dict:
     news_context = "No recent specific news found."
     try:
         query_str = f"Market conditions, interest rates, and news for {', '.join(symbols)}"
+        try:
+            from .news_rag import query_news  # pgvector-backed semantic search
+        except ImportError:
+            from news_rag import query_news  # pgvector-backed semantic search
+
         docs = query_news(query_str, n_results=3)
         if docs:
             news_context = "\n".join([f"- {doc}" for doc in docs])
