@@ -9,12 +9,17 @@ Boot order: Step 4 (after ingestion.py is streaming).
 """
 
 import asyncio
+import contextlib
+import base64
 import json
 import os
+import re
 import sqlite3
 import logging
-from datetime import datetime, timezone
-from typing import TypedDict
+import time
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, Optional, TypedDict
 
 import aiohttp
 import numpy as np
@@ -25,6 +30,9 @@ from supabase import create_client, Client as SupabaseClient
 
 from quant_engine import analyze_all_symbols
 from news_rag import query_news  # pgvector-backed semantic search
+from shared.kalshi_ws import connect_and_listen as kalshi_connect_and_listen
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
 
 # ── Load .env from project root (one directory up from /backend) ──
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -37,6 +45,23 @@ LOCAL_LLM_ENDPOINT = os.getenv("LOCAL_LLM_ENDPOINT", "http://127.0.0.1:8080/v1")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL_NAME", "GLM-5-MXFP4")
 HEARTBEAT_SECONDS = 10  # How often the orchestrator polls for new ticks
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local_ticks.sqlite3")
+
+# Crypto worker config (Kalshi WS + model inference)
+ORCHESTRATOR_MODE = os.getenv("ORCHESTRATOR_MODE", "crypto").strip().lower()
+CRYPTO_MIN_BACKOFF_S = float(os.getenv("CRYPTO_MIN_BACKOFF_S", "1.0"))
+CRYPTO_MAX_BACKOFF_S = float(os.getenv("CRYPTO_MAX_BACKOFF_S", "60.0"))
+CRYPTO_JITTER_S = float(os.getenv("CRYPTO_JITTER_S", "0.25"))
+CRYPTO_SIGNAL_YES_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_YES_THRESHOLD", "0.65"))
+CRYPTO_SIGNAL_NO_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_NO_THRESHOLD", "0.35"))
+
+# Optional explicit model paths (otherwise auto-discover).
+BTC_MODEL_PATH = os.getenv("BTC_MODEL_PATH") or os.getenv("KALSHI_BTC_MODEL_PATH")
+ETH_MODEL_PATH = os.getenv("ETH_MODEL_PATH") or os.getenv("KALSHI_ETH_MODEL_PATH")
+
+# Kalshi REST (Demo) for market discovery / pricing / execution
+KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://demo-api.kalshi.co").strip('"').strip("'")
+KALSHI_TRADE_API_V2_BASE = f"{KALSHI_API_BASE}/trade-api/v2"
+KALSHI_ORDER_COUNT = int(os.getenv("KALSHI_ORDER_COUNT", "1"))
 
 
 # ── Logging ──
@@ -431,6 +456,575 @@ def execute_trade(state: AgentState) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Crypto Models + Kalshi WS Edge Evaluation
+# ═══════════════════════════════════════════════════════════════════
+
+_BTC_MODEL: Any | None = None
+_ETH_MODEL: Any | None = None
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _load_pickle_model(path: Path) -> Any:
+    """
+    Load a model once at startup. Prefer joblib if available, otherwise pickle.
+    """
+    try:
+        import joblib  # type: ignore
+
+        return joblib.load(path)
+    except Exception:
+        import pickle
+
+        with path.open("rb") as f:
+            return pickle.load(f)
+
+
+def _resolve_model_path(explicit: Optional[str], candidates: list[str], label: str) -> Path:
+    if explicit and explicit.strip():
+        p = Path(explicit)
+        if not p.is_absolute():
+            p = _repo_root() / p
+        if p.is_file():
+            return p
+        raise FileNotFoundError(f"{label} model not found at explicit path: {p}")
+
+    searched: list[str] = []
+    for c in candidates:
+        p = Path(c)
+        if not p.is_absolute():
+            p = _repo_root() / p
+        searched.append(str(p))
+        if p.is_file():
+            return p
+
+    raise FileNotFoundError(f"{label} model not found. Searched: {searched}")
+
+
+def load_crypto_models() -> tuple[Any, Any]:
+    """
+    Load BTC/ETH models into memory once. Subsequent calls return cached models.
+    """
+    global _BTC_MODEL, _ETH_MODEL
+    if _BTC_MODEL is not None and _ETH_MODEL is not None:
+        return _BTC_MODEL, _ETH_MODEL
+
+    # The user mentioned /root/kalshibot, but this repo also contains models under ./model/
+    # and ./quant_research_lab/models/. We search both families.
+    btc_path = _resolve_model_path(
+        BTC_MODEL_PATH,
+        candidates=[
+            "/root/kalshibot/btc_model.pkl",
+            "models/btc_model.pkl",
+            "quant_research_lab/models/btc_model.pkl",
+            "model/btc_model.pkl",
+            "model/lgbm_model_BTC.pkl",
+            "quant_research_lab/models/btc_sniper.pkl",
+            "btc_sniper.pkl",
+        ],
+        label="BTC",
+    )
+    eth_path = _resolve_model_path(
+        ETH_MODEL_PATH,
+        candidates=[
+            "/root/kalshibot/eth_model.pkl",
+            "models/eth_model.pkl",
+            "quant_research_lab/models/eth_model.pkl",
+            "model/eth_model.pkl",
+            "model/lgbm_model_ETH.pkl",
+            "quant_research_lab/models/eth_sniper.pkl",
+            "eth_sniper.pkl",
+        ],
+        label="ETH",
+    )
+
+    log.info("Loading BTC model: %s", btc_path)
+    _BTC_MODEL = _load_pickle_model(btc_path)
+    log.info("Loading ETH model: %s", eth_path)
+    _ETH_MODEL = _load_pickle_model(eth_path)
+
+    return _BTC_MODEL, _ETH_MODEL
+
+
+def _extract_yes_mid_dollars(ticker_message: dict) -> Optional[float]:
+    """
+    Extract a usable "current price" in dollars from a Kalshi `type="ticker"` message.
+    Prefers mid = (yes_bid_dollars + yes_ask_dollars) / 2 when both are present.
+    """
+    msg = ticker_message.get("msg") or {}
+    try:
+        bid = msg.get("yes_bid_dollars")
+        ask = msg.get("yes_ask_dollars")
+
+        bid_f = float(bid) if bid is not None else None
+        ask_f = float(ask) if ask is not None else None
+
+        if bid_f is not None and ask_f is not None and bid_f > 0 and ask_f > 0:
+            return (bid_f + ask_f) / 2.0
+        if ask_f is not None and ask_f > 0:
+            return ask_f
+        if bid_f is not None and bid_f > 0:
+            return bid_f
+    except Exception:
+        return None
+    return None
+
+
+def _model_yes_probability(model: Any, price_dollars: float) -> float:
+    """
+    Adapter for common sklearn/lightgbm-style models.
+    Contract: feed current price, get P(YES).
+    """
+    x = np.array([[float(price_dollars)]], dtype=float)
+
+    if hasattr(model, "predict_proba"):
+        probs = model.predict_proba(x)
+        try:
+            return float(probs[0][1])
+        except Exception:
+            return float(probs[0])
+
+    if hasattr(model, "predict"):
+        pred = model.predict(x)
+        pred_val = float(pred[0]) if isinstance(pred, (list, tuple, np.ndarray)) else float(pred)
+        if 0.0 <= pred_val <= 1.0:
+            return pred_val
+        return 1.0 if pred_val > 0 else 0.0
+
+    if callable(model):
+        pred_val = float(model(price_dollars))
+        return max(0.0, min(1.0, pred_val))
+
+    raise TypeError("Unsupported model type (no predict/predict_proba and not callable).")
+
+
+class TradeSignal(TypedDict):
+    asset: str
+    market_ticker: str
+    side: str  # "YES" or "NO"
+    probability_yes: float
+    price_dollars: float
+    created_at: str
+    raw: dict
+
+
+class CryptoAgentState(TypedDict):
+    ticker: dict
+    trade_signal: Optional[TradeSignal]
+    resolved_market_ticker: Optional[str]
+    final_edge: Optional[float]
+    execution_result: Optional[dict]
+
+
+def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
+    """
+    Node: evaluate_crypto_edge
+
+    When a BTC/ETH ticker update arrives, run the corresponding in-memory model.
+    Emit a TRADE_SIGNAL when:
+      - P(YES) >= 0.65  => YES signal
+      - P(YES) <= 0.35  => NO signal
+    """
+    btc_model, eth_model = load_crypto_models()
+
+    ticker_message = state.get("ticker") or {}
+    msg = ticker_message.get("msg") or {}
+    market_ticker = str(msg.get("market_ticker") or "")
+    if not market_ticker:
+        return {"trade_signal": None}
+
+    price = _extract_yes_mid_dollars(ticker_message)
+    if price is None:
+        return {"trade_signal": None}
+
+    mt = market_ticker.upper()
+    if "BTC" in mt:
+        model = btc_model
+        asset = "BTC"
+    elif "ETH" in mt:
+        model = eth_model
+        asset = "ETH"
+    else:
+        return {"trade_signal": None}
+
+    prob_yes = _model_yes_probability(model, price)
+
+    side: Optional[str] = None
+    if prob_yes >= CRYPTO_SIGNAL_YES_THRESHOLD:
+        side = "YES"
+    elif prob_yes <= CRYPTO_SIGNAL_NO_THRESHOLD:
+        side = "NO"
+
+    if side is None:
+        return {"trade_signal": None}
+
+    signal: TradeSignal = {
+        "asset": asset,
+        "market_ticker": market_ticker,
+        "side": side,
+        "probability_yes": float(prob_yes),
+        "price_dollars": float(price),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "raw": ticker_message,
+    }
+
+    log.info("[CRYPTO EDGE] %s %s P(YES)=%.3f price=$%.4f", market_ticker, side, prob_yes, price)
+    return {"trade_signal": signal}
+
+
+_KALSHI_REST_PRIVATE_KEY: Any | None = None
+_TRADED_TICKER_LAST_TS: dict[str, float] = {}
+
+
+def _kalshi_load_rest_key():
+    global _KALSHI_REST_PRIVATE_KEY
+    if _KALSHI_REST_PRIVATE_KEY is not None:
+        return _KALSHI_REST_PRIVATE_KEY
+
+    private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
+    if not private_key_path:
+        raise ValueError("Missing KALSHI_PRIVATE_KEY_PATH for Kalshi REST signing.")
+
+    from shared.kalshi_ws import load_rsa_private_key
+
+    _KALSHI_REST_PRIVATE_KEY = load_rsa_private_key(private_key_path)
+    return _KALSHI_REST_PRIVATE_KEY
+
+
+def _kalshi_rest_headers(method: str, path: str) -> dict[str, str]:
+    api_key_id = os.getenv("KALSHI_API_KEY_ID", "")
+    if not api_key_id:
+        raise ValueError("Missing KALSHI_API_KEY_ID for Kalshi REST signing.")
+
+    private_key = _kalshi_load_rest_key()
+    ts = str(int(time.time() * 1000))
+    msg = f"{ts}{method.upper()}{path.split('?')[0]}"
+    signature = private_key.sign(
+        msg.encode("utf-8"),
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.DIGEST_LENGTH,
+        ),
+        hashes.SHA256(),
+    )
+
+    return {
+        "Content-Type": "application/json",
+        "KALSHI-ACCESS-KEY": api_key_id,
+        "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode("utf-8"),
+        "KALSHI-ACCESS-TIMESTAMP": ts,
+    }
+
+
+def _kalshi_get(path: str, params: dict | None = None) -> dict:
+    import requests
+
+    url = f"{KALSHI_TRADE_API_V2_BASE}{path}"
+    headers = _kalshi_rest_headers("GET", f"/trade-api/v2{path}")
+    resp = requests.get(url, headers=headers, params=params, timeout=12)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _kalshi_extract_strike_price(market: dict) -> Optional[float]:
+    for k in ("strike_price", "strike", "floor_strike", "cap_strike"):
+        v = market.get(k)
+        if v is None:
+            continue
+        try:
+            return float(str(v).replace(",", ""))
+        except Exception:
+            pass
+
+    for k in ("functional_strike", "custom_strike", "subtitle", "title"):
+        s = market.get(k)
+        if not s:
+            continue
+        m = re.search(r"(\d{1,3}(?:,\d{3})*(?:\.\d+)?)", str(s))
+        if m:
+            try:
+                return float(m.group(1).replace(",", ""))
+            except Exception:
+                pass
+    return None
+
+
+def resolve_kalshi_market(*, asset: str, spot_price: float) -> Optional[str]:
+    """
+    Discover active hourly Kalshi markets for `asset` and choose the strike closest to `spot_price`.
+
+    Requirement: find all active 'H2200' BTC markets and select ATM.
+    """
+    if asset.upper() != "BTC":
+        return None
+
+    best_ticker: Optional[str] = None
+    best_dist: float = float("inf")
+
+    cursor: Optional[str] = None
+    pages = 0
+
+    while pages < 10:
+        pages += 1
+        params: dict[str, Any] = {"status": "open", "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+
+        data = _kalshi_get("/markets", params=params)
+        markets = data.get("markets", []) or []
+        cursor = data.get("cursor")
+
+        for market in markets:
+            ticker = str(market.get("ticker") or "")
+            title = str(market.get("title") or "")
+            if not ticker:
+                continue
+
+            combined = f"{ticker} {title}".upper()
+            if "BTC" not in combined:
+                continue
+            if "H2200" not in combined:
+                continue
+
+            strike = _kalshi_extract_strike_price(market)
+            if strike is None:
+                continue
+
+            dist = abs(strike - float(spot_price))
+            if dist < best_dist:
+                best_dist = dist
+                best_ticker = ticker
+
+        if not cursor:
+            break
+
+    return best_ticker
+
+
+def _kalshi_orderbook_bbo_dollars(market_ticker: str) -> dict[str, Optional[float]]:
+    """
+    Returns best bid and implied best ask in dollars for YES/NO.
+
+    Per Kalshi docs: orderbook endpoint returns bids for yes_dollars/no_dollars.
+    Asks are derived:
+      yes_ask = 1 - no_bid
+      no_ask  = 1 - yes_bid
+    """
+    data = _kalshi_get(f"/markets/{market_ticker}/orderbook")
+    ob = data.get("orderbook_fp") or data.get("orderbook") or {}
+
+    yes = ob.get("yes_dollars") or ob.get("yes") or []
+    no = ob.get("no_dollars") or ob.get("no") or []
+
+    def _best_price(levels: Any) -> Optional[float]:
+        try:
+            if not levels:
+                return None
+            return float(levels[0][0])
+        except Exception:
+            return None
+
+    yes_bid = _best_price(yes)
+    no_bid = _best_price(no)
+    yes_ask = (1.0 - no_bid) if (no_bid is not None) else None
+    no_ask = (1.0 - yes_bid) if (yes_bid is not None) else None
+
+    return {"yes_bid": yes_bid, "yes_ask": yes_ask, "no_bid": no_bid, "no_ask": no_ask}
+
+
+def _cooldown_allows_trade(ticker_id: str) -> bool:
+    now = time.time()
+    last = _TRADED_TICKER_LAST_TS.get(ticker_id)
+    if last and (now - last) < 3600:
+        return False
+
+    if supa is None:
+        return True
+
+    cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    try:
+        res = (
+            supa.table("agent_logs")
+            .select("id")
+            .eq("module", "orchestrator.crypto_trade")
+            .gte("timestamp", cutoff_iso)
+            .ilike("message", f"%{ticker_id}%")
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return False
+    except Exception:
+        return True
+
+    return True
+
+
+def market_resolution(state: CryptoAgentState) -> dict:
+    """
+    Resolve a generated crypto signal into an actionable Kalshi market + safe execution.
+
+    Requirements:
+    - Market discovery: find active hourly BTC markets ("H2200") and pick ATM strike.
+    - Edge calculation: edge = P(outcome) - price_to_pay.
+    - Safe execution: if edge > 5%, place a trade via the execution bridge in mcp_server.py.
+    - Persistence: log ticker_id + confidence + timestamp to agent_logs (Supabase).
+    - Cooldown: don't trade the same ticker_id more than once per hour.
+    """
+    signal = state.get("trade_signal")
+    if not signal:
+        return {"resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+
+    asset = str(signal.get("asset") or "").upper()
+    if asset != "BTC":
+        return {"resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+
+    spot_price = float(signal.get("price_dollars", 0.0))
+    prob_yes = float(signal.get("probability_yes", 0.0))
+    desired_side = str(signal.get("side") or "").upper()  # YES or NO
+
+    resolved_ticker = resolve_kalshi_market(asset="BTC", spot_price=spot_price)
+    if not resolved_ticker:
+        log.warning("[RESOLUTION] No matching BTC H2200 market found (spot=%.2f)", spot_price)
+        return {"resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+
+    if not _cooldown_allows_trade(resolved_ticker):
+        log.info("[COOLDOWN] Skipping %s (already traded within 1h)", resolved_ticker)
+        return {"resolved_market_ticker": resolved_ticker, "final_edge": None, "execution_result": None}
+
+    bbo = _kalshi_orderbook_bbo_dollars(resolved_ticker)
+
+    if desired_side == "YES":
+        price_to_pay = bbo.get("yes_ask") or bbo.get("yes_bid")
+        prob_outcome = prob_yes
+        kalshi_side = "yes"
+    else:
+        price_to_pay = bbo.get("no_ask") or bbo.get("no_bid")
+        prob_outcome = 1.0 - prob_yes
+        kalshi_side = "no"
+
+    if price_to_pay is None:
+        log.warning("[RESOLUTION] Missing orderbook prices for %s", resolved_ticker)
+        return {"resolved_market_ticker": resolved_ticker, "final_edge": None, "execution_result": None}
+
+    final_edge = float(prob_outcome) - float(price_to_pay)
+    log.info(
+        "[RESOLUTION] %s side=%s prob=%.3f price=$%.4f edge=%.3f",
+        resolved_ticker,
+        desired_side,
+        prob_outcome,
+        float(price_to_pay),
+        final_edge,
+    )
+
+    if final_edge <= 0.05:
+        return {"resolved_market_ticker": resolved_ticker, "final_edge": final_edge, "execution_result": None}
+
+    try:
+        from market_sentiment_tool.backend.mcp_server import execute_kalshi_order  # type: ignore
+
+        exec_res = execute_kalshi_order(
+            ticker=resolved_ticker,
+            side=kalshi_side,
+            action="buy",
+            count=KALSHI_ORDER_COUNT,
+            limit_price_dollars=f"{float(price_to_pay):.4f}",
+        )
+    except Exception as exc:
+        log.error("Kalshi execution bridge call failed: %s", exc)
+        return {
+            "resolved_market_ticker": resolved_ticker,
+            "final_edge": final_edge,
+            "execution_result": {"status": "error", "detail": str(exc)},
+        }
+
+    status = str(exec_res.get("status") or "").lower()
+    if status not in ("ok", "open", "resting", "filled", "accepted", "success"):
+        return {"resolved_market_ticker": resolved_ticker, "final_edge": final_edge, "execution_result": exec_res}
+
+    _TRADED_TICKER_LAST_TS[resolved_ticker] = time.time()
+
+    confidence = float(prob_outcome)
+    log_to_supabase(
+        "orchestrator.crypto_trade",
+        f"KALSHI_TRADE_PLACED ticker_id={resolved_ticker} side={desired_side} edge={final_edge:.3f}",
+        level="INFO",
+        context={
+            "ticker_id": resolved_ticker,
+            "signal_confidence": confidence,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "edge": final_edge,
+            "spot_price": spot_price,
+            "kalshi_price_dollars": float(price_to_pay),
+            "model_probability_yes": prob_yes,
+            "desired_side": desired_side,
+            "execution_result": exec_res,
+        },
+    )
+
+    return {"resolved_market_ticker": resolved_ticker, "final_edge": final_edge, "execution_result": exec_res}
+
+
+def build_crypto_graph():
+    workflow = StateGraph(CryptoAgentState)
+    workflow.add_node("evaluate_crypto_edge", evaluate_crypto_edge)
+    workflow.add_node("market_resolution", market_resolution)
+
+    workflow.add_edge(START, "evaluate_crypto_edge")
+    workflow.add_edge("evaluate_crypto_edge", "market_resolution")
+    workflow.add_edge("market_resolution", END)
+
+    return workflow.compile()
+
+
+async def crypto_worker_loop() -> None:
+    """
+    Persistent, autonomous worker: await Kalshi WS ticker messages forever and
+    run the LangGraph evaluation pipeline per message.
+    """
+    crypto_tick_queue: asyncio.Queue = asyncio.Queue(maxsize=5000)
+
+    # Load models once at startup; keep them in memory for the lifetime of the worker.
+    load_crypto_models()
+
+    listener_task = asyncio.create_task(
+        kalshi_connect_and_listen(
+            crypto_tick_queue,
+            min_backoff_s=CRYPTO_MIN_BACKOFF_S,
+            max_backoff_s=CRYPTO_MAX_BACKOFF_S,
+            jitter_s=CRYPTO_JITTER_S,
+        )
+    )
+
+    graph = build_crypto_graph()
+    log.info("Crypto worker started; awaiting Kalshi ticker updates…")
+
+    try:
+        while True:
+            ticker_message = await crypto_tick_queue.get()
+            initial_state: CryptoAgentState = {
+                "ticker": ticker_message,
+                "trade_signal": None,
+                "resolved_market_ticker": None,
+                "final_edge": None,
+                "execution_result": None,
+            }
+
+            final_state: dict = {}
+            for output in graph.stream(initial_state):
+                final_state.update(output)
+
+            # market_resolution will be implemented next; for now we just keep the signal in state.
+            _ = final_state
+    finally:
+        listener_task.cancel()
+        with contextlib.suppress(Exception):
+            await listener_task
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Build the LangGraph Swarm
 # ═══════════════════════════════════════════════════════════════════
 
@@ -611,9 +1205,12 @@ async def heartbeat_loop():
 # ═══════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    log.info("Starting Orchestrator…")
+    log.info("Starting Orchestrator (mode=%s)…", ORCHESTRATOR_MODE)
     try:
-        asyncio.run(heartbeat_loop())
+        if ORCHESTRATOR_MODE == "market_sentiment":
+            asyncio.run(heartbeat_loop())
+        else:
+            asyncio.run(crypto_worker_loop())
     except KeyboardInterrupt:
         log.info("Orchestrator shutting down gracefully.")
         log_to_supabase("orchestrator", "Shutdown (KeyboardInterrupt).", level="WARN")

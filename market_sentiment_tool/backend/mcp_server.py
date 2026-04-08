@@ -11,6 +11,9 @@ Boot order: Step 2 (after the local LLM server).
 import os
 import logging
 from datetime import datetime, timezone
+import base64
+import time
+import uuid
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -18,6 +21,8 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
 from supabase import create_client, Client as SupabaseClient
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
 
 # ── Load .env from project root (one directory up from /backend) ──
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -36,8 +41,14 @@ ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
+# Kalshi (Demo) execution
+KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://demo-api.kalshi.co").strip('"').strip("'")
+KALSHI_API_KEY_ID = os.getenv("KALSHI_API_KEY_ID", "")
+KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
+
 alpaca: TradingClient | None = None
 supa: SupabaseClient | None = None
+_KALSHI_PRIVATE_KEY = None
 
 try:
     alpaca = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
@@ -88,6 +99,40 @@ def log_to_supabase(module: str, message: str, level: str = "INFO", context: dic
         }).execute()
     except Exception as exc:
         log.error("Failed to write agent_log: %s", exc)
+
+
+def _load_kalshi_private_key():
+    global _KALSHI_PRIVATE_KEY
+    if _KALSHI_PRIVATE_KEY is not None:
+        return _KALSHI_PRIVATE_KEY
+    if not KALSHI_PRIVATE_KEY_PATH:
+        raise ValueError("KALSHI_PRIVATE_KEY_PATH is missing (required for Kalshi execution).")
+    from shared.kalshi_ws import load_rsa_private_key
+
+    _KALSHI_PRIVATE_KEY = load_rsa_private_key(KALSHI_PRIVATE_KEY_PATH)
+    return _KALSHI_PRIVATE_KEY
+
+
+def _kalshi_signed_headers(method: str, path: str) -> dict[str, str]:
+    if not KALSHI_API_KEY_ID:
+        raise ValueError("KALSHI_API_KEY_ID is missing (required for Kalshi execution).")
+    private_key = _load_kalshi_private_key()
+    ts = str(int(time.time() * 1000))
+    msg = f"{ts}{method.upper()}{path.split('?')[0]}"
+    signature = private_key.sign(
+        msg.encode("utf-8"),
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.DIGEST_LENGTH,
+        ),
+        hashes.SHA256(),
+    )
+    return {
+        "Content-Type": "application/json",
+        "KALSHI-ACCESS-KEY": KALSHI_API_KEY_ID,
+        "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode("utf-8"),
+        "KALSHI-ACCESS-TIMESTAMP": ts,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -189,6 +234,93 @@ def execute_paper_trade(symbol: str, qty: float, side: str) -> dict:
         return {"status": "error", "detail": str(exc)}
 
 
+@mcp.tool()
+def execute_kalshi_order(
+    ticker: str,
+    side: str,
+    action: str,
+    count: int,
+    limit_price_dollars: str,
+) -> dict:
+    """
+    Places a *demo* Kalshi order using the REST API.
+
+    Required:
+    - side: "yes" or "no"
+    - action: "buy" or "sell"
+    - count: whole contracts (>= 1)
+    - limit_price_dollars: string price like "0.5600"
+
+    Notes:
+    - Uses RSA-PSS signing headers (same pattern as other Kalshi REST endpoints).
+    - Asserts the kill-switch BEFORE any execution.
+    """
+    side_l = (side or "").lower().strip()
+    action_l = (action or "").lower().strip()
+
+    if side_l not in ("yes", "no"):
+        return {"status": "rejected", "reason": "side must be 'yes' or 'no'."}
+    if action_l not in ("buy", "sell"):
+        return {"status": "rejected", "reason": "action must be 'buy' or 'sell'."}
+    if not ticker:
+        return {"status": "rejected", "reason": "ticker is required."}
+    if not isinstance(count, int) or count < 1:
+        return {"status": "rejected", "reason": "count must be an integer >= 1."}
+
+    # ── Kill-Switch Check ──
+    if not assert_kill_switch():
+        msg = f"BLOCKED: Kill switch is OFF. Kalshi order {action_l} {side_l} {count} {ticker} rejected."
+        log.warning(msg)
+        log_to_supabase("mcp_server", msg, level="WARN")
+        return {"status": "blocked", "reason": "auto_trade_enabled is False (kill switch)."}
+
+    try:
+        px = float(limit_price_dollars)
+        px_cents = int(round(px * 100))
+        if px_cents < 1 or px_cents > 99:
+            return {"status": "rejected", "reason": "limit_price_dollars must map to 0.01..0.99"}
+    except Exception:
+        return {"status": "rejected", "reason": "limit_price_dollars must be a numeric string like '0.5600'."}
+
+    body: dict = {
+        "ticker": ticker,
+        "side": side_l,
+        "action": action_l,
+        "type": "limit",
+        "count": int(count),
+        "client_order_id": str(uuid.uuid4()),
+    }
+    if side_l == "yes":
+        body["yes_price"] = px_cents
+    else:
+        body["no_price"] = px_cents
+
+    path = "/trade-api/v2/orders"
+    url = f"{KALSHI_API_BASE}{path}"
+
+    try:
+        import requests
+
+        headers = _kalshi_signed_headers("POST", path)
+        resp = requests.post(url, headers=headers, json=body, timeout=15)
+        if resp.status_code >= 300:
+            msg = f"Kalshi order failed: {resp.status_code} {resp.text[:300]}"
+            log.error(msg)
+            log_to_supabase("mcp_server.kalshi", msg, level="ERROR", context={"ticker": ticker, "body": body})
+            return {"status": "error", "code": resp.status_code, "detail": resp.text}
+
+        payload = resp.json()
+        log.info("Kalshi order placed: %s %s %s x%d @ %s", action_l, side_l, ticker, count, limit_price_dollars)
+        log_to_supabase("mcp_server.kalshi", f"Kalshi order placed: {action_l} {side_l} {ticker} x{count}", context=payload)
+        # Normalize status for orchestrator
+        payload.setdefault("status", "ok")
+        return payload
+    except Exception as exc:
+        log.error("Kalshi order exception: %s", exc)
+        log_to_supabase("mcp_server.kalshi", f"Kalshi order exception: {exc}", level="ERROR", context={"ticker": ticker, "body": body})
+        return {"status": "error", "detail": str(exc)}
+
+
 if __name__ == "__main__":
     log.info("Starting FastMCP server on 127.0.0.1:5100 …")
     mcp.run(transport="stdio")
@@ -250,4 +382,3 @@ def close_position(trade_id: str) -> dict:
     except Exception as exc:
         log.error("close_position failed: %s", exc)
         return {"status": "error", "reason": str(exc)}
-
