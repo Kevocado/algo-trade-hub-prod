@@ -212,7 +212,7 @@ class TestTelegramCommands:
         tn._get_trades_text = fake_text
         tn._get_crypto_scan_text = fake_text
 
-        for cmd in ["/help", "/crypto_status", "/cryptostatus", "/balance", "/positions", "/trades", "/crypto_scan"]:
+        for cmd in ["/help", "/crypto_status", "/cryptostatus", "/balance", "/positions", "/trades", "/crypto_scan", "/cryptoscan"]:
             asyncio.run(tn._handle_command(cmd, "12345"))
 
     def test_unknown_command_sends_help(self):

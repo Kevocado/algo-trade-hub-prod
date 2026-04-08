@@ -391,7 +391,7 @@ class TelegramNotifier:
                         "/balance",
                         "/positions",
                         "/trades",
-                        "/crypto_scan *(signals + near misses)*",
+                        "/crypto_scan *(or /cryptoscan; signals + near misses)*",
                         "/help",
                     ]
                 )
@@ -404,7 +404,7 @@ class TelegramNotifier:
             await self.send_message(await self._get_positions_text())
         elif cmd == "/trades":
             await self.send_message(await self._get_trades_text())
-        elif cmd in {"/crypto_scan", "/scan"}:
+        elif cmd in {"/crypto_scan", "/cryptoscan", "/scan"}:
             await self.send_message(await self._get_crypto_scan_text())
         else:
             await self.send_message(f"❓ Unknown command: `{cmd}`\nSend */help* for the list.")

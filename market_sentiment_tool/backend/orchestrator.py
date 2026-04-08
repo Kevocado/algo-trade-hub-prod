@@ -11,6 +11,7 @@ Boot order: Step 4 (after ingestion.py is streaming).
 import asyncio
 import contextlib
 import base64
+import io
 import json
 import os
 import re
@@ -904,14 +905,16 @@ def _model_yes_probability(model: Any, feature_frame: pd.DataFrame) -> float:
     x = feature_frame
 
     if hasattr(model, "predict_proba"):
-        probs = model.predict_proba(x)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            probs = model.predict_proba(x)
         try:
             return float(probs[0][1])
         except Exception:
             return float(probs[0])
 
     if hasattr(model, "predict"):
-        pred = model.predict(x)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            pred = model.predict(x)
         pred_val = float(pred[0]) if isinstance(pred, (list, tuple, np.ndarray)) else float(pred)
         if 0.0 <= pred_val <= 1.0:
             return pred_val
@@ -2127,7 +2130,7 @@ async def crypto_worker_loop(notifier: Any | None = None) -> None:
             await _dispatch_crypto_notifications(notifier, final_state)
     finally:
         listener_task.cancel()
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await listener_task
 
 
@@ -2161,17 +2164,17 @@ async def run_crypto_services() -> None:
         for pending_task in pending:
             pending_task.cancel()
         for pending_task in pending:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await pending_task
     finally:
         for task in tasks:
             if not task.done():
                 task.cancel()
         for task in tasks:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         if notifier is not None:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await notifier.close()
 
 
