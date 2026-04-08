@@ -95,6 +95,10 @@ def reset_crypto_state(monkeypatch):
     monkeypatch.setattr(orchestrator, "supa", None)
     monkeypatch.setattr(orchestrator, "log_to_supabase", lambda *args, **kwargs: None)
     monkeypatch.setattr(orchestrator, "CRYPTO_ALPACA_VOLUME_MULTIPLIER", 1.0)
+    monkeypatch.setattr(orchestrator, "CRYPTO_BTC_YES_THRESHOLD", 0.5751)
+    monkeypatch.setattr(orchestrator, "CRYPTO_BTC_NO_THRESHOLD", 0.4249)
+    monkeypatch.setattr(orchestrator, "CRYPTO_ETH_YES_THRESHOLD", 0.551)
+    monkeypatch.setattr(orchestrator, "CRYPTO_ETH_NO_THRESHOLD", 0.449)
 
 
 def test_resolve_kalshi_market_picks_nearest_hourly_bucket_and_nearest_strike(monkeypatch):
@@ -855,7 +859,51 @@ def test_evaluate_crypto_edge_logs_dead_zone_and_samples_sparse_heartbeat(monkey
     assert second == {"trade_signal": None}
     assert len(recorded_events) == 1
     assert recorded_events[0]["status"] == "inference_heartbeat"
+    assert recorded_events[0]["payload"]["decision_stage"] == "dead_zone"
+    assert recorded_events[0]["payload"]["yes_threshold"] == pytest.approx(0.5751)
+    assert recorded_events[0]["payload"]["no_threshold"] == pytest.approx(0.4249)
     assert any("classification=dead_zone" in record.getMessage() for record in caplog.records)
+    assert any("[CRYPTO DECISION]" in record.getMessage() and "status=DEAD_ZONE" in record.getMessage() for record in caplog.records)
+
+
+def test_evaluate_crypto_edge_uses_asset_specific_thresholds(monkeypatch, caplog):
+    ticker_message = {
+        "msg": {
+            "market_ticker": "KXBTC-DUMMY",
+            "yes_bid_dollars": 0.49,
+            "yes_ask_dollars": 0.51,
+        }
+    }
+    recorded_events = []
+
+    monkeypatch.setattr(orchestrator, "load_crypto_models", lambda: (object(), object()))
+    feature_row = pd.DataFrame(
+        [[float(index) for index in range(len(CANONICAL_CRYPTO_FEATURES))]],
+        columns=CANONICAL_CRYPTO_FEATURES,
+        index=[pd.Timestamp("2026-01-01T12:00:00Z")],
+    )
+    monkeypatch.setattr(orchestrator, "_latest_crypto_feature_row", lambda *_args, **_kwargs: feature_row)
+    monkeypatch.setattr(orchestrator, "_model_yes_probability", lambda *_args, **_kwargs: 0.58)
+    monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
+
+    with caplog.at_level(logging.INFO):
+        result = orchestrator.evaluate_crypto_edge(
+            {"ticker": ticker_message, "trade_signal": None, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+        )
+
+    assert result["trade_signal"]["side"] == "YES"
+    assert recorded_events[0]["status"] == "signal_detected"
+    assert recorded_events[0]["payload"]["decision_stage"] == "signal_passed_threshold"
+    assert recorded_events[0]["payload"]["yes_threshold"] == pytest.approx(0.5751)
+    assert recorded_events[0]["payload"]["no_threshold"] == pytest.approx(0.4249)
+    assert any("[CRYPTO DECISION]" in record.getMessage() and "status=PASSED -> Checking Edge" in record.getMessage() for record in caplog.records)
+
+
+def test_validate_crypto_threshold_config_rejects_invalid_thresholds(monkeypatch):
+    monkeypatch.setattr(orchestrator, "CRYPTO_BTC_YES_THRESHOLD", 0.50)
+
+    with pytest.raises(orchestrator.RuntimeBootstrapError, match="BTC YES threshold must be > 0.5"):
+        orchestrator._validate_crypto_threshold_config()
 
 
 def test_evaluate_crypto_edge_records_no_usable_price_skip(monkeypatch):
@@ -916,7 +964,7 @@ def test_market_resolution_emits_deduped_cooldown_opportunity(monkeypatch):
     assert any(event["alert_kind"] == "opportunity" and event["alert_sent"] is True for event in recorded_events if "alert_kind" in event)
 
 
-def test_market_resolution_records_near_miss_and_dedupes_alert(monkeypatch):
+def test_market_resolution_records_near_miss_and_dedupes_alert(monkeypatch, caplog):
     markets = [
         {
             "ticker": "KXBTC-NEXT-60000",
@@ -953,14 +1001,19 @@ def test_market_resolution_records_near_miss_and_dedupes_alert(monkeypatch):
         "raw": {},
     }
 
-    result = orchestrator.market_resolution(
-        {"ticker": {}, "trade_signal": signal, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
-    )
+    with caplog.at_level(logging.INFO):
+        result = orchestrator.market_resolution(
+            {"ticker": {}, "trade_signal": signal, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+        )
 
     assert result["execution_result"]["status"] == "skipped"
+    assert result["execution_result"]["decision_stage"] == "killed_by_edge"
+    assert result["execution_result"]["required_edge"] == pytest.approx(0.05)
+    assert result["execution_result"]["probability_used"] == pytest.approx(0.71)
     assert "notifications" not in result["execution_result"]
     assert any(event["status"] == "near_miss" and event["alert_sent"] is False for event in recorded_events)
     assert any(event["status"] == "near_miss" and event["skip_reason"] == "edge_below_threshold" for event in recorded_events)
+    assert any("[CRYPTO DECISION]" in record.getMessage() and "status=KILLED_BY_EDGE" in record.getMessage() for record in caplog.records)
 
 
 def test_market_resolution_flags_insufficient_funds_and_records_failure(monkeypatch):

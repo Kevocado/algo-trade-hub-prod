@@ -74,8 +74,10 @@ CRYPTO_MIN_BACKOFF_S = float(os.getenv("CRYPTO_MIN_BACKOFF_S", "1.0"))
 CRYPTO_MAX_BACKOFF_S = float(os.getenv("CRYPTO_MAX_BACKOFF_S", "60.0"))
 CRYPTO_JITTER_S = float(os.getenv("CRYPTO_JITTER_S", "0.25"))
 CRYPTO_TRADE_COOLDOWN_S = int(os.getenv("CRYPTO_TRADE_COOLDOWN_S", "600"))
-CRYPTO_SIGNAL_YES_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_YES_THRESHOLD", "0.65"))
-CRYPTO_SIGNAL_NO_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_NO_THRESHOLD", "0.35"))
+CRYPTO_BTC_YES_THRESHOLD = float(os.getenv("CRYPTO_BTC_YES_THRESHOLD", "0.5751"))
+CRYPTO_BTC_NO_THRESHOLD = float(os.getenv("CRYPTO_BTC_NO_THRESHOLD", "0.4249"))
+CRYPTO_ETH_YES_THRESHOLD = float(os.getenv("CRYPTO_ETH_YES_THRESHOLD", "0.551"))
+CRYPTO_ETH_NO_THRESHOLD = float(os.getenv("CRYPTO_ETH_NO_THRESHOLD", "0.449"))
 CRYPTO_FEATURE_LOOKBACK_HOURS = int(os.getenv("CRYPTO_FEATURE_LOOKBACK_HOURS", "400"))
 CRYPTO_FEATURE_CACHE_TTL_S = float(os.getenv("CRYPTO_FEATURE_CACHE_TTL_S", "30"))
 CRYPTO_MIN_FEATURE_BARS = int(os.getenv("CRYPTO_MIN_FEATURE_BARS", "205"))
@@ -150,6 +152,7 @@ def validate_runtime_bootstrap(*, require_supabase: bool = True, require_kalshi:
 def initialize_runtime_clients(*, require_supabase: bool = True, require_kalshi: bool = True) -> None:
     global supa, USER_ID, _RUNTIME_VALIDATED
     validate_runtime_bootstrap(require_supabase=require_supabase, require_kalshi=require_kalshi)
+    _validate_crypto_threshold_config()
     if _RUNTIME_VALIDATED:
         return
 
@@ -174,6 +177,32 @@ def initialize_runtime_clients(*, require_supabase: bool = True, require_kalshi:
         log.error("Failed to query user UUID: %s", exc)
 
     _RUNTIME_VALIDATED = True
+
+
+def _crypto_thresholds_for_asset(asset: str) -> tuple[float, float]:
+    normalized = asset.upper()
+    if normalized == "BTC":
+        return CRYPTO_BTC_YES_THRESHOLD, CRYPTO_BTC_NO_THRESHOLD
+    if normalized == "ETH":
+        return CRYPTO_ETH_YES_THRESHOLD, CRYPTO_ETH_NO_THRESHOLD
+    raise ValueError(f"Unsupported crypto asset for threshold lookup: {asset}")
+
+
+def _validate_crypto_threshold_config() -> None:
+    for asset in ("BTC", "ETH"):
+        yes_threshold, no_threshold = _crypto_thresholds_for_asset(asset)
+        if yes_threshold <= 0.5:
+            raise RuntimeBootstrapError(
+                f"{asset} YES threshold must be > 0.5; got {yes_threshold:.4f}."
+            )
+        if no_threshold >= 0.5:
+            raise RuntimeBootstrapError(
+                f"{asset} NO threshold must be < 0.5; got {no_threshold:.4f}."
+            )
+        if yes_threshold <= no_threshold:
+            raise RuntimeBootstrapError(
+                f"{asset} thresholds are inverted; YES={yes_threshold:.4f}, NO={no_threshold:.4f}."
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -945,9 +974,7 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
     Node: evaluate_crypto_edge
 
     When a BTC/ETH ticker update arrives, run the corresponding in-memory model.
-    Emit a TRADE_SIGNAL when:
-      - P(YES) >= 0.65  => YES signal
-      - P(YES) <= 0.35  => NO signal
+    Emit a TRADE_SIGNAL when the asset-specific live threshold contract passes.
     """
     btc_model, eth_model = load_crypto_models()
 
@@ -995,14 +1022,28 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
         probability_yes=float(prob_yes),
     )
 
+    yes_threshold, no_threshold = _crypto_thresholds_for_asset(asset)
     side: Optional[str] = None
     classification = "dead_zone"
-    if prob_yes >= CRYPTO_SIGNAL_YES_THRESHOLD:
+    decision_status = "DEAD_ZONE"
+    if prob_yes >= yes_threshold:
         side = "YES"
         classification = "yes_signal"
-    elif prob_yes <= CRYPTO_SIGNAL_NO_THRESHOLD:
+        decision_status = "PASSED -> Checking Edge"
+    elif prob_yes <= no_threshold:
         side = "NO"
         classification = "no_signal"
+        decision_status = "PASSED -> Checking Edge"
+
+    log.info(
+        "[CRYPTO DECISION] asset=%s source=%s prob=%.3f yes_threshold=%.3f no_threshold=%.3f status=%s",
+        asset,
+        market_ticker,
+        prob_yes,
+        yes_threshold,
+        no_threshold,
+        decision_status,
+    )
 
     log.info(
         "[CRYPTO INFERENCE] asset=%s source=%s p_yes=%.3f signal_price=$%.4f classification=%s",
@@ -1021,7 +1062,12 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
                 status="inference_heartbeat",
                 probability_yes=float(prob_yes),
                 signal_price_dollars=float(price),
-                payload={"classification": classification},
+                payload={
+                    "classification": classification,
+                    "decision_stage": "dead_zone",
+                    "yes_threshold": yes_threshold,
+                    "no_threshold": no_threshold,
+                },
             )
         return {"trade_signal": None}
 
@@ -1032,7 +1078,12 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
         probability_yes=float(prob_yes),
         signal_price_dollars=float(price),
         desired_side=side,
-        payload={"classification": classification},
+        payload={
+            "classification": classification,
+            "decision_stage": "signal_passed_threshold",
+            "yes_threshold": yes_threshold,
+            "no_threshold": no_threshold,
+        },
     )
 
     signal: TradeSignal = {
@@ -1770,8 +1821,24 @@ def market_resolution(state: CryptoAgentState) -> dict:
     )
 
     if final_edge <= 0.05:
+        log.info(
+            "[CRYPTO DECISION] asset=%s resolved_ticker=%s side=%s prob=%.3f price=$%.4f edge=%.3f required_edge=%.3f status=KILLED_BY_EDGE",
+            asset,
+            resolved_ticker,
+            desired_side,
+            prob_outcome,
+            float(price_to_pay),
+            final_edge,
+            0.05,
+        )
         should_alert = _should_emit_near_miss_alert(_crypto_alert_dedupe_key(signal_with_resolution, resolved_ticker))
-        execution_result = {"status": "skipped", "reason": "edge_below_threshold"}
+        execution_result = {
+            "status": "skipped",
+            "reason": "edge_below_threshold",
+            "decision_stage": "killed_by_edge",
+            "required_edge": 0.05,
+            "probability_used": float(prob_outcome),
+        }
         if should_alert:
             execution_result = _append_notification(
                 execution_result,
@@ -1814,6 +1881,9 @@ def market_resolution(state: CryptoAgentState) -> dict:
                 "limit_price_dollars": float(price_to_pay),
                 "edge": final_edge,
                 "model_probability_yes": prob_yes,
+                "decision_stage": "killed_by_edge",
+                "required_edge": 0.05,
+                "probability_used": float(prob_outcome),
             },
         )
         return {
