@@ -24,7 +24,7 @@ from typing import Any, Optional, TypedDict
 import aiohttp
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 from langgraph.graph import StateGraph, START, END
 from supabase import create_client, Client as SupabaseClient
 
@@ -39,7 +39,46 @@ from shared.kalshi_ws import sign_kalshi_message
 # ── Load .env from project root (one directory up from /backend) ──
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_PATH = os.path.join(ROOT_DIR, ".env")
-load_dotenv(ENV_PATH)
+# In PM2/systemd environments, empty vars may already exist; override ensures
+# the file-backed values are actually applied.
+load_dotenv(ENV_PATH, override=True)
+
+_ENV_FILE_VALUES: dict[str, str] = {}
+try:
+    if os.path.isfile(ENV_PATH):
+        _ENV_FILE_VALUES = {k: str(v) for k, v in (dotenv_values(ENV_PATH) or {}).items() if k and v is not None}  # type: ignore[arg-type]
+except Exception:
+    _ENV_FILE_VALUES = {}
+
+
+def _ensure_env_from_file(key: str) -> None:
+    """
+    Belt-and-suspenders env loading.
+
+    Some process managers can inject empty env vars (e.g., KEY=""), which would
+    otherwise "win" over the .env value in unexpected ways.
+    """
+    cur = os.getenv(key)
+    if cur is not None and str(cur) != "":
+        return
+    val = _ENV_FILE_VALUES.get(key)
+    if val is None or str(val) == "":
+        return
+    os.environ[key] = str(val)
+
+
+for _k in (
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "KALSHI_API_KEY_ID",
+    "KALSHI_PRIVATE_KEY_PATH",
+    "KALSHI_API_BASE",
+    "KALSHI_DEMO_API_BASE",
+    "KALSHI_WS_URL",
+    "ALPACA_API_KEY",
+    "ALPACA_SECRET_KEY",
+):
+    _ensure_env_from_file(_k)
 
 # ── Config ──
 SUPABASE_URL = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
@@ -66,16 +105,16 @@ ETH_MODEL_PATH = os.getenv("ETH_MODEL_PATH") or os.getenv("KALSHI_ETH_MODEL_PATH
 _KALSHI_API_BASE_RAW = (
     os.getenv("KALSHI_API_BASE", "")
     or os.getenv("KALSHI_DEMO_API_BASE", "")
-    or "https://demo-api.kalshi.co"
+    or "https://demo-api.kalshi.com"
 )
 _KALSHI_API_BASE_RAW = _KALSHI_API_BASE_RAW.strip().strip('"').strip("'")
-KALSHI_WS_URL = os.getenv("KALSHI_WS_URL", "wss://demo-api.kalshi.co/trade-api/ws/v2").strip().strip('"').strip("'")
+_KALSHI_WS_URL_RAW = os.getenv("KALSHI_WS_URL", "").strip().strip('"').strip("'")
 
 
 def _normalize_kalshi_api_base(raw: str) -> tuple[str, str]:
     raw = (raw or "").strip().strip('"').strip("'").rstrip("/")
     if not raw:
-        raw = "https://demo-api.kalshi.co"
+        raw = "https://demo-api.kalshi.com"
     marker = "/trade-api/v2"
     if marker in raw:
         host = raw.split(marker, 1)[0]
@@ -85,6 +124,12 @@ def _normalize_kalshi_api_base(raw: str) -> tuple[str, str]:
 
 
 KALSHI_API_BASE, KALSHI_TRADE_API_V2_BASE = _normalize_kalshi_api_base(_KALSHI_API_BASE_RAW)
+if _KALSHI_WS_URL_RAW:
+    KALSHI_WS_URL = _KALSHI_WS_URL_RAW
+else:
+    # Derive a sane WS default from whichever host the REST base points to, so
+    # demo vs live cannot accidentally drift.
+    KALSHI_WS_URL = KALSHI_API_BASE.replace("https://", "wss://").replace("http://", "ws://").rstrip("/") + "/trade-api/ws/v2"
 KALSHI_ORDER_COUNT = int(os.getenv("KALSHI_ORDER_COUNT", "1"))
 ALPACA_DATA_API_BASE = os.getenv("ALPACA_DATA_API_BASE", "https://data.alpaca.markets").strip('"').strip("'")
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")

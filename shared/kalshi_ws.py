@@ -1,11 +1,11 @@
 """
 shared/kalshi_ws.py
 ===================
-Authenticated Kalshi WebSocket (Demo) client using the `websockets` library.
+Authenticated Kalshi WebSocket client using the `websockets` library.
 
 Responsibilities:
-- Generate WS handshake auth headers using RSA-PSS (SHA256).
-- Connect to the Demo WS endpoint.
+- Generate WS handshake auth headers.
+- Connect to the configured WS endpoint.
 - Subscribe to the public `ticker` channel.
 - Reconnect on disconnect with exponential backoff.
 - Route all incoming `type="ticker"` messages into an asyncio.Queue.
@@ -31,7 +31,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa, ed25519
 
 log = logging.getLogger(__name__)
 
-KALSHI_DEMO_WS_URL = "wss://demo-api.kalshi.co/trade-api/ws/v2"
+KALSHI_DEMO_WS_URL = "wss://demo-api.kalshi.com/trade-api/ws/v2"
 _KALSHI_WS_PATH_TO_SIGN = "/trade-api/ws/v2"
 
 
