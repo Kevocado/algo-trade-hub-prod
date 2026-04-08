@@ -255,6 +255,23 @@ def execute_kalshi_order(
     - Uses RSA-PSS signing headers (same pattern as other Kalshi REST endpoints).
     - Asserts the kill-switch BEFORE any execution.
     """
+    return submit_kalshi_order(
+        ticker=ticker,
+        side=side,
+        action=action,
+        count=count,
+        limit_price_dollars=limit_price_dollars,
+    )
+
+
+def submit_kalshi_order(
+    ticker: str,
+    side: str,
+    action: str,
+    count: int,
+    limit_price_dollars: str,
+) -> dict:
+    """Submit a strict-limit Kalshi REST order for internal callers and MCP wrappers."""
     side_l = (side or "").lower().strip()
     action_l = (action or "").lower().strip()
 
@@ -267,7 +284,6 @@ def execute_kalshi_order(
     if not isinstance(count, int) or count < 1:
         return {"status": "rejected", "reason": "count must be an integer >= 1."}
 
-    # ── Kill-Switch Check ──
     if not assert_kill_switch():
         msg = f"BLOCKED: Kill switch is OFF. Kalshi order {action_l} {side_l} {count} {ticker} rejected."
         log.warning(msg)
@@ -312,12 +328,16 @@ def execute_kalshi_order(
         payload = resp.json()
         log.info("Kalshi order placed: %s %s %s x%d @ %s", action_l, side_l, ticker, count, limit_price_dollars)
         log_to_supabase("mcp_server.kalshi", f"Kalshi order placed: {action_l} {side_l} {ticker} x{count}", context=payload)
-        # Normalize status for orchestrator
         payload.setdefault("status", "ok")
         return payload
     except Exception as exc:
         log.error("Kalshi order exception: %s", exc)
-        log_to_supabase("mcp_server.kalshi", f"Kalshi order exception: {exc}", level="ERROR", context={"ticker": ticker, "body": body})
+        log_to_supabase(
+            "mcp_server.kalshi",
+            f"Kalshi order exception: {exc}",
+            level="ERROR",
+            context={"ticker": ticker, "body": body},
+        )
         return {"status": "error", "detail": str(exc)}
 
 

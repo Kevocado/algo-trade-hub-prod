@@ -28,8 +28,12 @@ from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from supabase import create_client, Client as SupabaseClient
 
-from quant_engine import analyze_all_symbols
-from news_rag import query_news  # pgvector-backed semantic search
+try:
+    from .quant_engine import analyze_all_symbols
+    from .news_rag import query_news  # pgvector-backed semantic search
+except ImportError:
+    from quant_engine import analyze_all_symbols
+    from news_rag import query_news  # pgvector-backed semantic search
 from shared.kalshi_ws import connect_and_listen as kalshi_connect_and_listen
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -51,6 +55,7 @@ ORCHESTRATOR_MODE = os.getenv("ORCHESTRATOR_MODE", "crypto").strip().lower()
 CRYPTO_MIN_BACKOFF_S = float(os.getenv("CRYPTO_MIN_BACKOFF_S", "1.0"))
 CRYPTO_MAX_BACKOFF_S = float(os.getenv("CRYPTO_MAX_BACKOFF_S", "60.0"))
 CRYPTO_JITTER_S = float(os.getenv("CRYPTO_JITTER_S", "0.25"))
+CRYPTO_TRADE_COOLDOWN_S = int(os.getenv("CRYPTO_TRADE_COOLDOWN_S", "600"))
 CRYPTO_SIGNAL_YES_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_YES_THRESHOLD", "0.65"))
 CRYPTO_SIGNAL_NO_THRESHOLD = float(os.getenv("CRYPTO_SIGNAL_NO_THRESHOLD", "0.35"))
 
@@ -62,6 +67,9 @@ ETH_MODEL_PATH = os.getenv("ETH_MODEL_PATH") or os.getenv("KALSHI_ETH_MODEL_PATH
 KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://demo-api.kalshi.co").strip('"').strip("'")
 KALSHI_TRADE_API_V2_BASE = f"{KALSHI_API_BASE}/trade-api/v2"
 KALSHI_ORDER_COUNT = int(os.getenv("KALSHI_ORDER_COUNT", "1"))
+ALPACA_DATA_API_BASE = os.getenv("ALPACA_DATA_API_BASE", "https://data.alpaca.markets").strip('"').strip("'")
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
 
 
 # ── Logging ──
@@ -606,6 +614,9 @@ class TradeSignal(TypedDict):
     side: str  # "YES" or "NO"
     probability_yes: float
     price_dollars: float
+    spot_price_dollars: Optional[float]
+    resolved_ticker: Optional[str]
+    edge: Optional[float]
     created_at: str
     raw: dict
 
@@ -666,6 +677,9 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
         "side": side,
         "probability_yes": float(prob_yes),
         "price_dollars": float(price),
+        "spot_price_dollars": None,
+        "resolved_ticker": None,
+        "edge": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "raw": ticker_message,
     }
@@ -728,6 +742,48 @@ def _kalshi_get(path: str, params: dict | None = None) -> dict:
     return resp.json()
 
 
+def _fetch_alpaca_spot_price(asset: str) -> Optional[float]:
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        log.warning("[RESOLUTION] Missing Alpaca API credentials; cannot fetch %s spot.", asset)
+        return None
+
+    symbol_map = {"BTC": "BTC/USD", "ETH": "ETH/USD"}
+    symbol = symbol_map.get(asset.upper())
+    if not symbol:
+        return None
+
+    try:
+        import requests
+
+        url = f"{ALPACA_DATA_API_BASE}/v1beta3/crypto/us/latest/bars"
+        resp = requests.get(
+            url,
+            headers={
+                "accept": "application/json",
+                "APCA-API-KEY-ID": ALPACA_API_KEY,
+                "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+            },
+            params={"symbols": symbol},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        bar = (data.get("bars") or {}).get(symbol)
+        if isinstance(bar, list):
+            bar = bar[-1] if bar else None
+        if not isinstance(bar, dict):
+            raise ValueError(f"No latest bar returned for {symbol}")
+
+        for key in ("c", "close", "price"):
+            value = bar.get(key)
+            if value is not None:
+                return float(value)
+        raise ValueError(f"Latest bar payload missing close for {symbol}: {bar}")
+    except Exception as exc:
+        log.error("[RESOLUTION] Failed to fetch Alpaca %s spot: %s", asset, exc)
+        return None
+
+
 def _kalshi_extract_strike_price(market: dict) -> Optional[float]:
     for k in ("strike_price", "strike", "floor_strike", "cap_strike"):
         v = market.get(k)
@@ -751,20 +807,44 @@ def _kalshi_extract_strike_price(market: dict) -> Optional[float]:
     return None
 
 
-def resolve_kalshi_market(*, asset: str, spot_price: float) -> Optional[str]:
-    """
-    Discover active hourly Kalshi markets for `asset` and choose the strike closest to `spot_price`.
+def _market_matches_asset(market: dict, asset: str) -> bool:
+    asset_u = asset.upper()
+    haystack = " ".join(
+        str(market.get(key) or "")
+        for key in ("ticker", "event_ticker", "title", "subtitle")
+    ).upper()
+    return asset_u in haystack or f"KX{asset_u}" in haystack
 
-    Requirement: find all active 'H2200' BTC markets and select ATM.
-    """
-    if asset.upper() != "BTC":
+
+def _is_hourly_market(market: dict) -> bool:
+    haystack = " ".join(
+        str(market.get(key) or "")
+        for key in ("ticker", "event_ticker", "title", "subtitle")
+    ).upper()
+    if any(token in haystack for token in ("15 MIN", "15MIN", "15-MIN", "15M")):
+        return False
+    return any(token in haystack for token in ("HOURLY", "TODAY AT", "-H", " H"))
+
+
+def _parse_market_close_time(close_time: Any) -> Optional[datetime]:
+    if not close_time:
+        return None
+    try:
+        text = str(close_time).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
         return None
 
-    best_ticker: Optional[str] = None
-    best_dist: float = float("inf")
 
+def resolve_kalshi_market(*, asset: str, spot_price: float) -> Optional[dict[str, Any]]:
+    """Resolve the nearest future hourly event and choose the strike closest to spot."""
     cursor: Optional[str] = None
     pages = 0
+    now = datetime.now(timezone.utc)
+    hourly_buckets: dict[str, dict[str, Any]] = {}
 
     while pages < 10:
         pages += 1
@@ -777,30 +857,54 @@ def resolve_kalshi_market(*, asset: str, spot_price: float) -> Optional[str]:
         cursor = data.get("cursor")
 
         for market in markets:
-            ticker = str(market.get("ticker") or "")
-            title = str(market.get("title") or "")
-            if not ticker:
+            if not _market_matches_asset(market, asset):
                 continue
-
-            combined = f"{ticker} {title}".upper()
-            if "BTC" not in combined:
-                continue
-            if "H2200" not in combined:
+            if not _is_hourly_market(market):
                 continue
 
             strike = _kalshi_extract_strike_price(market)
-            if strike is None:
+            close_dt = _parse_market_close_time(market.get("close_time"))
+            if strike is None or close_dt is None or close_dt <= now:
                 continue
 
-            dist = abs(strike - float(spot_price))
-            if dist < best_dist:
-                best_dist = dist
-                best_ticker = ticker
+            bucket_key = str(market.get("event_ticker") or close_dt.isoformat())
+            bucket = hourly_buckets.setdefault(
+                bucket_key,
+                {"close_time": close_dt, "markets": []},
+            )
+            if close_dt < bucket["close_time"]:
+                bucket["close_time"] = close_dt
+            bucket["markets"].append(market)
 
         if not cursor:
             break
 
-    return best_ticker
+    if not hourly_buckets:
+        return None
+
+    _, selected_bucket = min(hourly_buckets.items(), key=lambda item: item[1]["close_time"])
+    best_market: Optional[dict[str, Any]] = None
+    best_distance = float("inf")
+
+    for market in selected_bucket["markets"]:
+        strike = _kalshi_extract_strike_price(market)
+        ticker = str(market.get("ticker") or "")
+        if strike is None or not ticker:
+            continue
+        distance = abs(float(strike) - float(spot_price))
+        if distance < best_distance:
+            best_distance = distance
+            best_market = market
+
+    if best_market is None:
+        return None
+
+    return {
+        "ticker": str(best_market.get("ticker") or ""),
+        "strike_price": _kalshi_extract_strike_price(best_market),
+        "event_ticker": str(best_market.get("event_ticker") or ""),
+        "close_time": selected_bucket["close_time"].isoformat(),
+    }
 
 
 def _kalshi_orderbook_bbo_dollars(market_ticker: str) -> dict[str, Optional[float]]:
@@ -837,20 +941,20 @@ def _kalshi_orderbook_bbo_dollars(market_ticker: str) -> dict[str, Optional[floa
 def _cooldown_allows_trade(ticker_id: str) -> bool:
     now = time.time()
     last = _TRADED_TICKER_LAST_TS.get(ticker_id)
-    if last and (now - last) < 3600:
+    if last and (now - last) < CRYPTO_TRADE_COOLDOWN_S:
         return False
 
     if supa is None:
         return True
 
-    cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    cutoff_iso = (datetime.now(timezone.utc) - timedelta(seconds=CRYPTO_TRADE_COOLDOWN_S)).isoformat()
     try:
         res = (
             supa.table("agent_logs")
             .select("id")
             .eq("module", "orchestrator.crypto_trade")
             .gte("timestamp", cutoff_iso)
-            .ilike("message", f"%{ticker_id}%")
+            .contains("reasoning_context", {"resolved_ticker": ticker_id})
             .limit(1)
             .execute()
         )
@@ -867,32 +971,95 @@ def market_resolution(state: CryptoAgentState) -> dict:
     Resolve a generated crypto signal into an actionable Kalshi market + safe execution.
 
     Requirements:
-    - Market discovery: find active hourly BTC markets ("H2200") and pick ATM strike.
+    - Market discovery: find active hourly BTC/ETH markets and pick ATM strike from Alpaca spot.
     - Edge calculation: edge = P(outcome) - price_to_pay.
-    - Safe execution: if edge > 5%, place a trade via the execution bridge in mcp_server.py.
-    - Persistence: log ticker_id + confidence + timestamp to agent_logs (Supabase).
-    - Cooldown: don't trade the same ticker_id more than once per hour.
+    - Safe execution: if edge > 5%, place a strict-limit order via the execution bridge in mcp_server.py.
+    - Persistence: log full trade metadata to agent_logs (Supabase).
+    - Cooldown: don't trade the same ticker_id more than once per configured cooldown window.
     """
     signal = state.get("trade_signal")
     if not signal:
         return {"resolved_market_ticker": None, "final_edge": None, "execution_result": None}
 
     asset = str(signal.get("asset") or "").upper()
-    if asset != "BTC":
+    if asset not in {"BTC", "ETH"}:
         return {"resolved_market_ticker": None, "final_edge": None, "execution_result": None}
 
-    spot_price = float(signal.get("price_dollars", 0.0))
+    signal_with_resolution: TradeSignal = dict(signal)
+    source_market_ticker = str(signal.get("market_ticker") or "")
+    signal_price = float(signal.get("price_dollars", 0.0))
     prob_yes = float(signal.get("probability_yes", 0.0))
     desired_side = str(signal.get("side") or "").upper()  # YES or NO
 
-    resolved_ticker = resolve_kalshi_market(asset="BTC", spot_price=spot_price)
-    if not resolved_ticker:
-        log.warning("[RESOLUTION] No matching BTC H2200 market found (spot=%.2f)", spot_price)
-        return {"resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    spot_price = _fetch_alpaca_spot_price(asset)
+    if spot_price is None:
+        signal_with_resolution["spot_price_dollars"] = None
+        log_to_supabase(
+            "orchestrator.crypto_trade",
+            f"KALSHI_TRADE_SKIPPED asset={asset} reason=alpaca_spot_unavailable",
+            level="WARN",
+            context={
+                "asset": asset,
+                "source_market_ticker": source_market_ticker,
+                "signal_price_dollars": signal_price,
+                "resolved_ticker": None,
+            },
+        )
+        return {
+            "trade_signal": signal_with_resolution,
+            "resolved_market_ticker": None,
+            "final_edge": None,
+            "execution_result": {"status": "skipped", "reason": "alpaca_spot_unavailable"},
+        }
+
+    signal_with_resolution["spot_price_dollars"] = float(spot_price)
+    resolved_market = resolve_kalshi_market(asset=asset, spot_price=spot_price)
+    if not resolved_market:
+        log.warning("[RESOLUTION] No matching %s hourly market found (spot=%.2f)", asset, spot_price)
+        log_to_supabase(
+            "orchestrator.crypto_trade",
+            f"KALSHI_TRADE_SKIPPED asset={asset} reason=no_market_match",
+            level="WARN",
+            context={
+                "asset": asset,
+                "source_market_ticker": source_market_ticker,
+                "signal_price_dollars": signal_price,
+                "spot_price_dollars": float(spot_price),
+                "resolved_ticker": None,
+            },
+        )
+        return {
+            "trade_signal": signal_with_resolution,
+            "resolved_market_ticker": None,
+            "final_edge": None,
+            "execution_result": {"status": "skipped", "reason": "no_market_match"},
+        }
+
+    resolved_ticker = str(resolved_market["ticker"])
+    signal_with_resolution["resolved_ticker"] = resolved_ticker
 
     if not _cooldown_allows_trade(resolved_ticker):
-        log.info("[COOLDOWN] Skipping %s (already traded within 1h)", resolved_ticker)
-        return {"resolved_market_ticker": resolved_ticker, "final_edge": None, "execution_result": None}
+        log.info("[COOLDOWN] Skipping %s (already traded within %ss)", resolved_ticker, CRYPTO_TRADE_COOLDOWN_S)
+        log_to_supabase(
+            "orchestrator.crypto_trade",
+            f"KALSHI_TRADE_SKIPPED asset={asset} reason=cooldown",
+            level="INFO",
+            context={
+                "asset": asset,
+                "source_market_ticker": source_market_ticker,
+                "signal_price_dollars": signal_price,
+                "spot_price_dollars": float(spot_price),
+                "resolved_ticker": resolved_ticker,
+                "strike_price": resolved_market.get("strike_price"),
+                "cooldown_seconds": CRYPTO_TRADE_COOLDOWN_S,
+            },
+        )
+        return {
+            "trade_signal": signal_with_resolution,
+            "resolved_market_ticker": resolved_ticker,
+            "final_edge": None,
+            "execution_result": {"status": "skipped", "reason": "cooldown"},
+        }
 
     bbo = _kalshi_orderbook_bbo_dollars(resolved_ticker)
 
@@ -907,9 +1074,28 @@ def market_resolution(state: CryptoAgentState) -> dict:
 
     if price_to_pay is None:
         log.warning("[RESOLUTION] Missing orderbook prices for %s", resolved_ticker)
-        return {"resolved_market_ticker": resolved_ticker, "final_edge": None, "execution_result": None}
+        log_to_supabase(
+            "orchestrator.crypto_trade",
+            f"KALSHI_TRADE_SKIPPED asset={asset} reason=missing_orderbook",
+            level="WARN",
+            context={
+                "asset": asset,
+                "source_market_ticker": source_market_ticker,
+                "signal_price_dollars": signal_price,
+                "spot_price_dollars": float(spot_price),
+                "resolved_ticker": resolved_ticker,
+                "strike_price": resolved_market.get("strike_price"),
+            },
+        )
+        return {
+            "trade_signal": signal_with_resolution,
+            "resolved_market_ticker": resolved_ticker,
+            "final_edge": None,
+            "execution_result": {"status": "skipped", "reason": "missing_orderbook"},
+        }
 
     final_edge = float(prob_outcome) - float(price_to_pay)
+    signal_with_resolution["edge"] = final_edge
     log.info(
         "[RESOLUTION] %s side=%s prob=%.3f price=$%.4f edge=%.3f",
         resolved_ticker,
@@ -920,12 +1106,37 @@ def market_resolution(state: CryptoAgentState) -> dict:
     )
 
     if final_edge <= 0.05:
-        return {"resolved_market_ticker": resolved_ticker, "final_edge": final_edge, "execution_result": None}
+        log_to_supabase(
+            "orchestrator.crypto_trade",
+            f"KALSHI_TRADE_SKIPPED asset={asset} reason=edge_below_threshold",
+            level="INFO",
+            context={
+                "asset": asset,
+                "source_market_ticker": source_market_ticker,
+                "signal_price_dollars": signal_price,
+                "spot_price_dollars": float(spot_price),
+                "resolved_ticker": resolved_ticker,
+                "strike_price": resolved_market.get("strike_price"),
+                "desired_side": desired_side,
+                "limit_price_dollars": float(price_to_pay),
+                "edge": final_edge,
+                "model_probability_yes": prob_yes,
+            },
+        )
+        return {
+            "trade_signal": signal_with_resolution,
+            "resolved_market_ticker": resolved_ticker,
+            "final_edge": final_edge,
+            "execution_result": {"status": "skipped", "reason": "edge_below_threshold"},
+        }
 
     try:
-        from market_sentiment_tool.backend.mcp_server import execute_kalshi_order  # type: ignore
+        try:
+            from market_sentiment_tool.backend.mcp_server import submit_kalshi_order  # type: ignore
+        except ImportError:
+            from mcp_server import submit_kalshi_order  # type: ignore
 
-        exec_res = execute_kalshi_order(
+        exec_res = submit_kalshi_order(
             ticker=resolved_ticker,
             side=kalshi_side,
             action="buy",
@@ -935,6 +1146,7 @@ def market_resolution(state: CryptoAgentState) -> dict:
     except Exception as exc:
         log.error("Kalshi execution bridge call failed: %s", exc)
         return {
+            "trade_signal": signal_with_resolution,
             "resolved_market_ticker": resolved_ticker,
             "final_edge": final_edge,
             "execution_result": {"status": "error", "detail": str(exc)},
@@ -942,7 +1154,29 @@ def market_resolution(state: CryptoAgentState) -> dict:
 
     status = str(exec_res.get("status") or "").lower()
     if status not in ("ok", "open", "resting", "filled", "accepted", "success"):
-        return {"resolved_market_ticker": resolved_ticker, "final_edge": final_edge, "execution_result": exec_res}
+        log_to_supabase(
+            "orchestrator.crypto_trade",
+            f"KALSHI_TRADE_FAILED asset={asset} ticker_id={resolved_ticker}",
+            level="ERROR",
+            context={
+                "asset": asset,
+                "source_market_ticker": source_market_ticker,
+                "signal_price_dollars": signal_price,
+                "spot_price_dollars": float(spot_price),
+                "resolved_ticker": resolved_ticker,
+                "strike_price": resolved_market.get("strike_price"),
+                "desired_side": desired_side,
+                "limit_price_dollars": float(price_to_pay),
+                "edge": final_edge,
+                "execution_result": exec_res,
+            },
+        )
+        return {
+            "trade_signal": signal_with_resolution,
+            "resolved_market_ticker": resolved_ticker,
+            "final_edge": final_edge,
+            "execution_result": exec_res,
+        }
 
     _TRADED_TICKER_LAST_TS[resolved_ticker] = time.time()
 
@@ -952,19 +1186,32 @@ def market_resolution(state: CryptoAgentState) -> dict:
         f"KALSHI_TRADE_PLACED ticker_id={resolved_ticker} side={desired_side} edge={final_edge:.3f}",
         level="INFO",
         context={
+            "asset": asset,
             "ticker_id": resolved_ticker,
+            "resolved_ticker": resolved_ticker,
+            "source_market_ticker": source_market_ticker,
             "signal_confidence": confidence,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "edge": final_edge,
-            "spot_price": spot_price,
+            "signal_price_dollars": signal_price,
+            "spot_price_dollars": float(spot_price),
             "kalshi_price_dollars": float(price_to_pay),
             "model_probability_yes": prob_yes,
             "desired_side": desired_side,
+            "strike_price": resolved_market.get("strike_price"),
+            "event_ticker": resolved_market.get("event_ticker"),
+            "event_close_time": resolved_market.get("close_time"),
+            "cooldown_seconds": CRYPTO_TRADE_COOLDOWN_S,
             "execution_result": exec_res,
         },
     )
 
-    return {"resolved_market_ticker": resolved_ticker, "final_edge": final_edge, "execution_result": exec_res}
+    return {
+        "trade_signal": signal_with_resolution,
+        "resolved_market_ticker": resolved_ticker,
+        "final_edge": final_edge,
+        "execution_result": exec_res,
+    }
 
 
 def build_crypto_graph():
@@ -1016,7 +1263,6 @@ async def crypto_worker_loop() -> None:
             for output in graph.stream(initial_state):
                 final_state.update(output)
 
-            # market_resolution will be implemented next; for now we just keep the signal in state.
             _ = final_state
     finally:
         listener_task.cancel()
