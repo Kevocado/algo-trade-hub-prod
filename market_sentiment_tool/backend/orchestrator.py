@@ -73,6 +73,8 @@ CRYPTO_FEATURE_LOOKBACK_HOURS = int(os.getenv("CRYPTO_FEATURE_LOOKBACK_HOURS", "
 CRYPTO_FEATURE_CACHE_TTL_S = float(os.getenv("CRYPTO_FEATURE_CACHE_TTL_S", "30"))
 CRYPTO_MIN_FEATURE_BARS = int(os.getenv("CRYPTO_MIN_FEATURE_BARS", "205"))
 CRYPTO_OPPORTUNITY_ALERT_DEDUPE_S = int(os.getenv("CRYPTO_OPPORTUNITY_ALERT_DEDUPE_S", "300"))
+CRYPTO_NEAR_MISS_ALERT_DEDUPE_S = int(os.getenv("CRYPTO_NEAR_MISS_ALERT_DEDUPE_S", "600"))
+CRYPTO_INFERENCE_HEARTBEAT_EVERY = int(os.getenv("CRYPTO_INFERENCE_HEARTBEAT_EVERY", "100"))
 
 # Optional explicit model paths (otherwise auto-discover).
 BTC_MODEL_PATH = os.getenv("BTC_MODEL_PATH") or os.getenv("KALSHI_BTC_MODEL_PATH")
@@ -960,10 +962,6 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
     if not market_ticker:
         return {"trade_signal": None}
 
-    price = _extract_yes_mid_dollars(ticker_message)
-    if price is None:
-        return {"trade_signal": None}
-
     mt = market_ticker.upper()
     if "BTC" in mt:
         model = btc_model
@@ -974,6 +972,20 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
     else:
         return {"trade_signal": None}
 
+    price = _extract_yes_mid_dollars(ticker_message)
+    if price is None:
+        _record_inference_skip(
+            asset=asset,
+            market_ticker=market_ticker,
+            reason="no_usable_kalshi_price",
+        )
+        log.info(
+            "[CRYPTO INFERENCE] asset=%s source=%s classification=no_usable_kalshi_price",
+            asset,
+            market_ticker,
+        )
+        return {"trade_signal": None}
+
     try:
         feature_row = _latest_crypto_feature_row(asset, model)
         prob_yes = _model_yes_probability(model, feature_row)
@@ -982,13 +994,44 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
         return {"trade_signal": None}
 
     side: Optional[str] = None
+    classification = "dead_zone"
     if prob_yes >= CRYPTO_SIGNAL_YES_THRESHOLD:
         side = "YES"
+        classification = "yes_signal"
     elif prob_yes <= CRYPTO_SIGNAL_NO_THRESHOLD:
         side = "NO"
+        classification = "no_signal"
+
+    log.info(
+        "[CRYPTO INFERENCE] asset=%s source=%s p_yes=%.3f signal_price=$%.4f classification=%s",
+        asset,
+        market_ticker,
+        prob_yes,
+        price,
+        classification,
+    )
 
     if side is None:
+        if _should_record_inference_heartbeat(asset):
+            _record_inference_event(
+                asset=asset,
+                market_ticker=market_ticker,
+                status="inference_heartbeat",
+                probability_yes=float(prob_yes),
+                signal_price_dollars=float(price),
+                payload={"classification": classification},
+            )
         return {"trade_signal": None}
+
+    _record_inference_event(
+        asset=asset,
+        market_ticker=market_ticker,
+        status="signal_detected",
+        probability_yes=float(prob_yes),
+        signal_price_dollars=float(price),
+        desired_side=side,
+        payload={"classification": classification},
+    )
 
     signal: TradeSignal = {
         "asset": asset,
@@ -1009,6 +1052,7 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
 
 _KALSHI_REST_PRIVATE_KEY: Any | None = None
 _TRADED_TICKER_LAST_TS: dict[str, float] = {}
+_INFERENCE_EVAL_COUNTER: dict[str, int] = {}
 
 
 def _kalshi_load_rest_key():
@@ -1303,6 +1347,27 @@ def _should_emit_opportunity_alert(dedupe_key: str) -> bool:
         return True
 
 
+def _should_emit_near_miss_alert(dedupe_key: str) -> bool:
+    if supa is None:
+        return True
+    cutoff_iso = (datetime.now(timezone.utc) - timedelta(seconds=CRYPTO_NEAR_MISS_ALERT_DEDUPE_S)).isoformat()
+    try:
+        result = (
+            supa.table("crypto_signal_events")
+            .select("id")
+            .eq("dedupe_key", dedupe_key)
+            .eq("alert_kind", "near_miss")
+            .eq("alert_sent", True)
+            .gte("created_at", cutoff_iso)
+            .limit(1)
+            .execute()
+        )
+        return not bool(result.data)
+    except Exception as exc:
+        log.error("crypto near-miss dedupe query failed: %s", exc)
+        return True
+
+
 def _append_notification(result: Optional[dict], notification: dict[str, Any]) -> dict[str, Any]:
     merged = dict(result or {})
     notifications = list(merged.get("notifications") or [])
@@ -1351,6 +1416,74 @@ def _record_crypto_event(
         },
     }
     write_crypto_signal_event(event)
+
+
+def _record_inference_event(
+    *,
+    asset: str,
+    market_ticker: str,
+    status: str,
+    probability_yes: float,
+    signal_price_dollars: Optional[float] = None,
+    desired_side: Optional[str] = None,
+    payload: Optional[dict[str, Any]] = None,
+) -> None:
+    write_crypto_signal_event(
+        {
+            "asset": asset,
+            "source_market_ticker": market_ticker,
+            "resolved_ticker": None,
+            "desired_side": desired_side,
+            "status": status,
+            "model_probability_yes": probability_yes,
+            "signal_price_dollars": signal_price_dollars,
+            "payload": payload or {},
+        }
+    )
+
+
+def _record_inference_skip(
+    *,
+    asset: str,
+    market_ticker: str,
+    reason: str,
+    probability_yes: Optional[float] = None,
+    signal_price_dollars: Optional[float] = None,
+    resolved_ticker: Optional[str] = None,
+    edge: Optional[float] = None,
+    desired_side: Optional[str] = None,
+    execution_result: Optional[dict[str, Any]] = None,
+    strike_price: Optional[float] = None,
+    event_ticker: Optional[str] = None,
+    event_close_time: Optional[str] = None,
+    kalshi_price_dollars: Optional[float] = None,
+) -> None:
+    write_crypto_signal_event(
+        {
+            "asset": asset,
+            "source_market_ticker": market_ticker,
+            "resolved_ticker": resolved_ticker,
+            "desired_side": desired_side,
+            "status": "execution_skip",
+            "skip_reason": reason,
+            "execution_status": (execution_result or {}).get("status"),
+            "model_probability_yes": probability_yes,
+            "signal_price_dollars": signal_price_dollars,
+            "kalshi_price_dollars": kalshi_price_dollars,
+            "edge": edge,
+            "strike_price": strike_price,
+            "event_ticker": event_ticker,
+            "event_close_time": event_close_time,
+            "payload": {"execution_result": execution_result or {}},
+        }
+    )
+
+
+def _should_record_inference_heartbeat(asset: str) -> bool:
+    count = int(_INFERENCE_EVAL_COUNTER.get(asset, 0)) + 1
+    _INFERENCE_EVAL_COUNTER[asset] = count
+    interval = max(1, CRYPTO_INFERENCE_HEARTBEAT_EVERY)
+    return count % interval == 0
 
 
 def _load_async_telegram_notifier():
@@ -1411,6 +1544,16 @@ def market_resolution(state: CryptoAgentState) -> dict:
         controls = get_crypto_trade_controls()
         disable_reason = controls.get("crypto_trading_disabled_reason") or "crypto_auto_trade_enabled is False."
         execution_result = {"status": "blocked", "reason": disable_reason, "code": "crypto_trading_disabled"}
+        log.warning("[RESOLUTION] %s signal blocked: %s", source_market_ticker, disable_reason)
+        _record_inference_skip(
+            asset=asset,
+            market_ticker=source_market_ticker,
+            reason="crypto_disabled",
+            probability_yes=prob_yes,
+            signal_price_dollars=signal_price,
+            desired_side=desired_side,
+            execution_result=execution_result,
+        )
         _record_crypto_event(
             signal=signal_with_resolution,
             status="blocked",
@@ -1428,6 +1571,14 @@ def market_resolution(state: CryptoAgentState) -> dict:
     spot_price = _fetch_alpaca_spot_price(asset)
     if spot_price is None:
         signal_with_resolution["spot_price_dollars"] = None
+        _record_inference_skip(
+            asset=asset,
+            market_ticker=source_market_ticker,
+            reason="alpaca_spot_unavailable",
+            probability_yes=prob_yes,
+            signal_price_dollars=signal_price,
+            desired_side=desired_side,
+        )
         log_to_supabase(
             "orchestrator.crypto_trade",
             f"KALSHI_TRADE_SKIPPED asset={asset} reason=alpaca_spot_unavailable",
@@ -1450,6 +1601,14 @@ def market_resolution(state: CryptoAgentState) -> dict:
     resolved_market = resolve_kalshi_market(asset=asset, spot_price=spot_price)
     if not resolved_market:
         log.warning("[RESOLUTION] No matching %s hourly market found (spot=%.2f)", asset, spot_price)
+        _record_inference_skip(
+            asset=asset,
+            market_ticker=source_market_ticker,
+            reason="no_hourly_market",
+            probability_yes=prob_yes,
+            signal_price_dollars=signal_price,
+            desired_side=desired_side,
+        )
         log_to_supabase(
             "orchestrator.crypto_trade",
             f"KALSHI_TRADE_SKIPPED asset={asset} reason=no_market_match",
@@ -1490,10 +1649,10 @@ def market_resolution(state: CryptoAgentState) -> dict:
             )
         _record_crypto_event(
             signal=signal_with_resolution,
-            status="skipped",
+            status="execution_skip",
             resolved_ticker=resolved_ticker,
             execution_result=execution_result,
-            skip_reason="cooldown",
+            skip_reason="cooldown_active",
             alert_kind="opportunity" if should_alert else None,
             alert_sent=should_alert,
             strike_price=resolved_market.get("strike_price"),
@@ -1534,6 +1693,18 @@ def market_resolution(state: CryptoAgentState) -> dict:
 
     if price_to_pay is None:
         log.warning("[RESOLUTION] Missing orderbook prices for %s", resolved_ticker)
+        _record_inference_skip(
+            asset=asset,
+            market_ticker=source_market_ticker,
+            reason="missing_orderbook",
+            probability_yes=prob_yes,
+            signal_price_dollars=signal_price,
+            resolved_ticker=resolved_ticker,
+            desired_side=desired_side,
+            strike_price=resolved_market.get("strike_price"),
+            event_ticker=resolved_market.get("event_ticker"),
+            event_close_time=resolved_market.get("close_time"),
+        )
         log_to_supabase(
             "orchestrator.crypto_trade",
             f"KALSHI_TRADE_SKIPPED asset={asset} reason=missing_orderbook",
@@ -1567,12 +1738,29 @@ def market_resolution(state: CryptoAgentState) -> dict:
     )
 
     if final_edge <= 0.05:
+        should_alert = _should_emit_near_miss_alert(_crypto_alert_dedupe_key(signal_with_resolution, resolved_ticker))
+        execution_result = {"status": "skipped", "reason": "edge_below_threshold"}
+        if should_alert:
+            execution_result = _append_notification(
+                execution_result,
+                {
+                    "kind": "near_miss",
+                    "asset": asset,
+                    "resolved_ticker": resolved_ticker,
+                    "desired_side": desired_side,
+                    "probability_yes": prob_yes,
+                    "price_dollars": float(price_to_pay),
+                    "edge": final_edge,
+                },
+            )
         _record_crypto_event(
             signal=signal_with_resolution,
-            status="skipped",
+            status="near_miss",
             resolved_ticker=resolved_ticker,
-            execution_result={"status": "skipped", "reason": "edge_below_threshold"},
+            execution_result=execution_result,
             skip_reason="edge_below_threshold",
+            alert_kind="near_miss" if should_alert else None,
+            alert_sent=should_alert,
             final_edge=final_edge,
             strike_price=resolved_market.get("strike_price"),
             event_ticker=resolved_market.get("event_ticker"),
@@ -1600,7 +1788,7 @@ def market_resolution(state: CryptoAgentState) -> dict:
             "trade_signal": signal_with_resolution,
             "resolved_market_ticker": resolved_ticker,
             "final_edge": final_edge,
-            "execution_result": {"status": "skipped", "reason": "edge_below_threshold"},
+            "execution_result": execution_result,
         }
 
     try:
@@ -1618,6 +1806,21 @@ def market_resolution(state: CryptoAgentState) -> dict:
         )
     except Exception as exc:
         log.error("Kalshi execution bridge call failed: %s", exc)
+        _record_inference_skip(
+            asset=asset,
+            market_ticker=source_market_ticker,
+            reason="order_rejected",
+            probability_yes=prob_yes,
+            signal_price_dollars=signal_price,
+            resolved_ticker=resolved_ticker,
+            edge=final_edge,
+            desired_side=desired_side,
+            execution_result={"status": "error", "detail": str(exc)},
+            strike_price=resolved_market.get("strike_price"),
+            event_ticker=resolved_market.get("event_ticker"),
+            event_close_time=resolved_market.get("close_time"),
+            kalshi_price_dollars=float(price_to_pay),
+        )
         return {
             "trade_signal": signal_with_resolution,
             "resolved_market_ticker": resolved_ticker,
@@ -1664,6 +1867,7 @@ def market_resolution(state: CryptoAgentState) -> dict:
                     "reason": exec_res.get("detail") or exec_res.get("reason"),
                 },
             )
+            skip_reason = "insufficient_funds"
         else:
             execution_result = _append_notification(
                 execution_result,
@@ -1674,6 +1878,22 @@ def market_resolution(state: CryptoAgentState) -> dict:
                     "reason": exec_res.get("detail") or exec_res.get("reason") or exec_res.get("code"),
                 },
             )
+            skip_reason = "order_rejected"
+        _record_inference_skip(
+            asset=asset,
+            market_ticker=source_market_ticker,
+            reason=skip_reason,
+            probability_yes=prob_yes,
+            signal_price_dollars=signal_price,
+            resolved_ticker=resolved_ticker,
+            edge=final_edge,
+            desired_side=desired_side,
+            execution_result=execution_result,
+            strike_price=resolved_market.get("strike_price"),
+            event_ticker=resolved_market.get("event_ticker"),
+            event_close_time=resolved_market.get("close_time"),
+            kalshi_price_dollars=float(price_to_pay),
+        )
         trade_record["status"] = "FAILED"
         write_trade_to_supabase(trade_record)
         _record_crypto_event(
@@ -1830,6 +2050,18 @@ async def _dispatch_crypto_notifications(notifier: Any, final_state: dict[str, A
                     asset=str(notification.get("asset") or trade_signal.get("asset") or ""),
                     market_ticker=str(notification.get("resolved_ticker") or final_state.get("resolved_market_ticker") or ""),
                     reason=str(notification.get("reason") or execution_result.get("detail") or execution_result.get("reason") or "trading disabled"),
+                )
+            )
+        elif kind == "near_miss":
+            _schedule_async_notification(
+                notifier.alert_crypto_opportunity(
+                    asset=str(notification.get("asset") or trade_signal.get("asset") or ""),
+                    market_ticker=str(notification.get("resolved_ticker") or final_state.get("resolved_market_ticker") or ""),
+                    side=str(notification.get("desired_side") or trade_signal.get("side") or ""),
+                    probability_yes=float(notification.get("probability_yes") or trade_signal.get("probability_yes") or 0.0),
+                    edge=float(notification.get("edge") or final_state.get("final_edge") or 0.0),
+                    price_dollars=float(notification.get("price_dollars") or 0.0),
+                    reason="near_miss",
                 )
             )
 

@@ -116,10 +116,12 @@ class TelegramNotifier:
         price_dollars: float,
         reason: str,
     ) -> bool:
+        title = "🚨 *Crypto Near Miss*" if reason == "near_miss" else "💡 *Crypto Opportunity*"
+        blocked_by = "Edge < 5%" if reason == "near_miss" else reason
         return await self.send_message(
             "\n".join(
                 [
-                    "💡 *Crypto Opportunity*",
+                    title,
                     "",
                     f"Asset: *{asset}*",
                     f"Market: `{market_ticker}`",
@@ -127,7 +129,7 @@ class TelegramNotifier:
                     f"P(YES): *{probability_yes:.3f}*",
                     f"Signal Price: *${price_dollars:.4f}*",
                     f"Edge: *{(edge or 0.0):+.3f}*",
-                    f"Blocked By: *{reason}*",
+                    f"Blocked By: *{blocked_by}*",
                     f"⏰ {datetime.now(timezone.utc).strftime('%H:%M UTC')}",
                 ]
             )
@@ -369,7 +371,7 @@ class TelegramNotifier:
         lines = ["🔎 *Crypto Scan*", ""]
         for row in rows:
             lines.append(
-                f"• `{row.get('resolved_ticker') or 'unresolved'}` | {row.get('desired_side') or '?'} | {row.get('status')} | edge={float(row.get('edge') or 0):+.3f} | P(YES)={float(row.get('model_probability_yes') or 0):.3f}"
+                f"• `{row.get('resolved_ticker') or row.get('asset') or 'unresolved'}` | {row.get('desired_side') or '?'} | {row.get('status')} | {row.get('skip_reason') or 'live'} | edge={float(row.get('edge') or 0):+.3f} | P(YES)={float(row.get('model_probability_yes') or 0):.3f}"
             )
         return "\n".join(lines)
 
@@ -385,16 +387,16 @@ class TelegramNotifier:
                     [
                         "🤖 *Crypto Operator Commands*",
                         "",
-                        "/crypto_status",
+                        "/crypto_status *(or /cryptostatus)*",
                         "/balance",
                         "/positions",
                         "/trades",
-                        "/crypto_scan",
+                        "/crypto_scan *(signals + near misses)*",
                         "/help",
                     ]
                 )
             )
-        elif cmd == "/crypto_status":
+        elif cmd in {"/crypto_status", "/cryptostatus"}:
             await self.send_message(await self._get_crypto_status())
         elif cmd == "/balance":
             await self.send_message(await self._get_balance_text())

@@ -89,6 +89,7 @@ def _future_time(hours: int) -> str:
 @pytest.fixture(autouse=True)
 def reset_crypto_state(monkeypatch):
     orchestrator._TRADED_TICKER_LAST_TS.clear()
+    orchestrator._INFERENCE_EVAL_COUNTER.clear()
     monkeypatch.setattr(orchestrator, "supa", None)
     monkeypatch.setattr(orchestrator, "log_to_supabase", lambda *args, **kwargs: None)
 
@@ -595,6 +596,53 @@ def test_evaluate_crypto_edge_skips_on_feature_inference_failure(monkeypatch):
     assert result == {"trade_signal": None}
 
 
+def test_evaluate_crypto_edge_logs_dead_zone_and_samples_sparse_heartbeat(monkeypatch, caplog):
+    ticker_message = {
+        "msg": {
+            "market_ticker": "KXBTC-DUMMY",
+            "yes_bid_dollars": 0.49,
+            "yes_ask_dollars": 0.51,
+        }
+    }
+    recorded_events = []
+
+    monkeypatch.setattr(orchestrator, "load_crypto_models", lambda: (object(), object()))
+    monkeypatch.setattr(orchestrator, "_latest_crypto_feature_row", lambda *_args, **_kwargs: pd.DataFrame([[1.0]]))
+    monkeypatch.setattr(orchestrator, "_model_yes_probability", lambda *_args, **_kwargs: 0.50)
+    monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
+    monkeypatch.setattr(orchestrator, "CRYPTO_INFERENCE_HEARTBEAT_EVERY", 2)
+
+    with caplog.at_level(logging.INFO):
+        first = orchestrator.evaluate_crypto_edge(
+            {"ticker": ticker_message, "trade_signal": None, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+        )
+        second = orchestrator.evaluate_crypto_edge(
+            {"ticker": ticker_message, "trade_signal": None, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+        )
+
+    assert first == {"trade_signal": None}
+    assert second == {"trade_signal": None}
+    assert len(recorded_events) == 1
+    assert recorded_events[0]["status"] == "inference_heartbeat"
+    assert any("classification=dead_zone" in record.getMessage() for record in caplog.records)
+
+
+def test_evaluate_crypto_edge_records_no_usable_price_skip(monkeypatch):
+    ticker_message = {"msg": {"market_ticker": "KXETH-DUMMY"}}
+    recorded_events = []
+
+    monkeypatch.setattr(orchestrator, "load_crypto_models", lambda: (object(), object()))
+    monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
+
+    result = orchestrator.evaluate_crypto_edge(
+        {"ticker": ticker_message, "trade_signal": None, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    )
+
+    assert result == {"trade_signal": None}
+    assert recorded_events[0]["status"] == "execution_skip"
+    assert recorded_events[0]["skip_reason"] == "no_usable_kalshi_price"
+
+
 def test_market_resolution_emits_deduped_cooldown_opportunity(monkeypatch):
     markets = [
         {
@@ -633,8 +681,55 @@ def test_market_resolution_emits_deduped_cooldown_opportunity(monkeypatch):
 
     notifications = result["execution_result"]["notifications"]
     assert notifications[0]["kind"] == "opportunity"
-    assert recorded_events[0]["alert_kind"] == "opportunity"
-    assert recorded_events[0]["alert_sent"] is True
+    assert any(event["status"] == "execution_skip" and event["skip_reason"] == "cooldown_active" for event in recorded_events)
+    assert any(event["alert_kind"] == "opportunity" and event["alert_sent"] is True for event in recorded_events if "alert_kind" in event)
+
+
+def test_market_resolution_records_near_miss_and_dedupes_alert(monkeypatch):
+    markets = [
+        {
+            "ticker": "KXBTC-NEXT-60000",
+            "event_ticker": "KXBTC-NEXT",
+            "title": "Bitcoin price today at 11PM",
+            "close_time": _future_time(1),
+            "strike_price": 60000,
+        }
+    ]
+    recorded_events = []
+
+    monkeypatch.setattr(orchestrator, "_kalshi_get", lambda *_args, **_kwargs: {"markets": markets, "cursor": None})
+    monkeypatch.setattr(orchestrator, "_fetch_alpaca_spot_price", lambda asset: 60100.0 if asset == "BTC" else None)
+    monkeypatch.setattr(orchestrator, "_cooldown_allows_trade", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(orchestrator, "check_crypto_trade_switch", lambda: True)
+    monkeypatch.setattr(orchestrator, "_should_emit_near_miss_alert", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        orchestrator,
+        "_kalshi_orderbook_bbo_dollars",
+        lambda *_args, **_kwargs: {"yes_ask": 0.68, "yes_bid": 0.67, "no_ask": 0.32, "no_bid": 0.31},
+    )
+    monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
+
+    signal = {
+        "asset": "BTC",
+        "market_ticker": "KXBTC-SOURCE",
+        "side": "YES",
+        "probability_yes": 0.71,
+        "price_dollars": 0.45,
+        "spot_price_dollars": None,
+        "resolved_ticker": None,
+        "edge": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "raw": {},
+    }
+
+    result = orchestrator.market_resolution(
+        {"ticker": {}, "trade_signal": signal, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    )
+
+    assert result["execution_result"]["status"] == "skipped"
+    assert "notifications" not in result["execution_result"]
+    assert any(event["status"] == "near_miss" and event["alert_sent"] is False for event in recorded_events)
+    assert any(event["status"] == "near_miss" and event["skip_reason"] == "edge_below_threshold" for event in recorded_events)
 
 
 def test_market_resolution_flags_insufficient_funds_and_records_failure(monkeypatch):
@@ -689,7 +784,8 @@ def test_market_resolution_flags_insufficient_funds_and_records_failure(monkeypa
 
     assert written_trades[0]["status"] == "FAILED"
     assert result["execution_result"]["notifications"][0]["kind"] == "trading_disabled"
-    assert recorded_events[0]["status"] == "failed"
+    assert any(event["status"] == "execution_skip" and event["skip_reason"] == "insufficient_funds" for event in recorded_events)
+    assert any(event["status"] == "failed" for event in recorded_events)
 
 
 def test_schedule_async_notification_logs_failures(caplog):
