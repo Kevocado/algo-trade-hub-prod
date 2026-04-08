@@ -12,13 +12,13 @@ pinned: false
 
 > [!WARNING]
 > **⚠️ DISCLAIMER: RESEARCH AND EDUCATION TOOL ONLY**
-> - ✋ **No real or simulated orders** are placed by this app.
+> - ✋ **This Streamlit app remains read-only.**
 > - 📊 All market data is read-only (view-only).
-> - 🧪 Quant signals are **experimental** and for backtesting only.
-> - 💰 Do NOT rely on this app for actual trading decisions.
-> Use Kalshi's official platform to execute real trades.
+> - 🧪 Quant signals are **experimental** and for backtesting/operator monitoring only.
+> - 💰 Do NOT rely on this app alone for actual trading decisions.
+> - The repo now also contains a separate VPS-only crypto demo trading runtime and Telegram operator plane under `market_sentiment_tool/backend`, but that is not this Streamlit UI.
 
-**Prediction Market Edge Finder** is a professional-grade analytics dashboard that identifies statistical edges in Kalshi prediction markets for SPX, Nasdaq, BTC, and ETH. It combines real-time market data, AI-powered probability models (LightGBM), multi-source sentiment analysis, and a "Bloomberg Terminal" style interface.
+**Prediction Market Edge Finder** is a professional-grade analytics dashboard that identifies statistical edges in Kalshi prediction markets for SPX, Nasdaq, BTC, and ETH. It combines real-time market data, AI-powered probability models (LightGBM), multi-source sentiment analysis, and a "Bloomberg Terminal" style interface. The repo also now includes a separate async crypto demo execution runtime with Telegram operator commands, but this README describes the Streamlit analytics surface.
 
 ## ⚡ Key Features
 
@@ -37,9 +37,9 @@ pinned: false
 **Frontend:** Streamlit web app (default port 8501)
 **Backend:** Python 3.9+
 **Scanner:** Background terminal process (runs independently via cron or daemon)
-**Storage:** Azure Table Storage & Hugging Face Model Hub
+**Storage:** Supabase (trades / agent logs / portfolio state) and Hugging Face Model Hub
 **APIs:** Kalshi (Markets), FRED (Macro), Alpaca (Paper Data)
-**Data Flow:** Scanner → Azure Storage → Streamlit reads cache → UI renders
+**Data Flow:** Scanner / backend engines → Supabase + model artifacts → Streamlit reads current state → UI renders
 
 ## 📂 Project Structure
 
@@ -59,7 +59,7 @@ pinned: false
 │   ├── signals.py            # Trading signal generation
 │   ├── evaluation.py         # Model performance metrics
 │   ├── utils.py              # Helper functions
-│   └── azure_logger.py       # Azure Blob Storage logging
+│   └── supabase_client.py    # Supabase logging / history helpers
 ├── pages/
 │   └── 1_Performance.py      # Performance analytics page
 ├── scripts/                  # Utility scripts
@@ -89,7 +89,8 @@ Create a `.env` file in the root directory before running the app. You must popu
 ```env
 # Kalshi Trading API (Required for Portfolio Tab)
 KALSHI_API_KEY_ID=your_kalshi_api_key_id_here
-# Note: You must also place your kalshi_private_key.pem in the root directory.
+KALSHI_PRIVATE_KEY_PATH=/absolute/path/to/kalshi_demo_key.pem
+KALSHI_ENV=demo
 
 # Alpaca Paper Trading (Required for Backtesting Quant Trades)
 APCA_API_KEY_ID=your_alpaca_key
@@ -98,13 +99,14 @@ APCA_API_SECRET_KEY=your_alpaca_secret
 # AI & Infrastructure
 FRED_API_KEY=your_fred_api_key
 HF_TOKEN=your_hugging_face_token
-AZURE_CONNECTION_STRING=your_azure_storage_string
+SUPABASE_URL=your_supabase_url
+SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 ```
 
 ## 🚀 Getting Started
 
 ### Step 1: Start the Background Scanner
-The UI reads from pre-computed data. You must run the scanner in the background to fetch new markets and update Azure Storage.
+The UI reads from pre-computed data and Supabase. You must run the scanner in the background to fetch new markets and update backend state.
 ```bash
 python scripts/background_scanner.py
 ```

@@ -26,6 +26,11 @@ from market_sentiment_tool.backend.runtime_bootstrap import (
     load_canonical_env,
     resolve_kalshi_runtime_settings,
 )
+from market_sentiment_tool.backend.crypto_operator_state import (
+    fetch_trading_controls,
+    is_crypto_trading_enabled,
+    set_crypto_trading_enabled,
+)
 
 # ── Runtime bootstrap ──
 ENV_BOOTSTRAP = load_canonical_env(__file__)
@@ -107,6 +112,43 @@ def assert_kill_switch() -> bool:
     except Exception as exc:
         log.error("Kill-switch query failed: %s", exc)
     return False
+
+
+def assert_crypto_trading_enabled() -> bool:
+    if supa is None:
+        log.warning("Supabase not connected — crypto trading defaults to OFF.")
+        return False
+    return is_crypto_trading_enabled(supa)
+
+
+def _classify_kalshi_error(resp) -> tuple[str | None, str]:
+    body_text = resp.text or ""
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {}
+
+    error_payload = payload.get("error") if isinstance(payload, dict) else {}
+    details = str((error_payload or {}).get("details") or body_text)
+    code = str((error_payload or {}).get("code") or "").lower()
+    message = str((error_payload or {}).get("message") or "").lower()
+    detail_lower = details.lower()
+
+    insufficient_patterns = (
+        "insufficient",
+        "balance",
+        "buying power",
+        "not enough funds",
+        "funds",
+    )
+    if resp.status_code in (400, 403) and (
+        any(pattern in detail_lower for pattern in insufficient_patterns)
+        or any(pattern in code for pattern in insufficient_patterns)
+        or any(pattern in message for pattern in insufficient_patterns)
+    ):
+        return "insufficient_funds", details
+
+    return None, details
 
 
 def log_to_supabase(module: str, message: str, level: str = "INFO", context: dict | None = None):
@@ -313,6 +355,13 @@ def submit_kalshi_order(
         log.warning(msg)
         log_to_supabase("mcp_server", msg, level="WARN")
         return {"status": "blocked", "reason": "auto_trade_enabled is False (kill switch)."}
+    if not assert_crypto_trading_enabled():
+        controls = fetch_trading_controls(supa)
+        reason = controls.get("crypto_trading_disabled_reason") or "crypto_auto_trade_enabled is False."
+        msg = f"BLOCKED: Crypto kill switch is OFF. Kalshi order {action_l} {side_l} {count} {ticker} rejected."
+        log.warning(msg)
+        log_to_supabase("mcp_server.kalshi", msg, level="WARN", context={"reason": reason})
+        return {"status": "blocked", "reason": reason, "code": "crypto_trading_disabled"}
 
     try:
         px = float(limit_price_dollars)
@@ -344,15 +393,48 @@ def submit_kalshi_order(
         headers = _kalshi_signed_headers("POST", path)
         resp = requests.post(url, headers=headers, json=body, timeout=15)
         if resp.status_code >= 300:
+            classified_reason, details = _classify_kalshi_error(resp)
+            if classified_reason == "insufficient_funds":
+                disable_reason = f"Kalshi rejected order for insufficient funds ({ticker})."
+                set_crypto_trading_enabled(
+                    supa,
+                    enabled=False,
+                    reason=disable_reason,
+                )
+                msg = f"Kalshi order disabled crypto trading: {resp.status_code} {details[:300]}"
+                log.error(msg)
+                log_to_supabase(
+                    "mcp_server.kalshi",
+                    msg,
+                    level="ERROR",
+                    context={"ticker": ticker, "body": body, "error_code": classified_reason},
+                )
+                return {
+                    "status": "blocked",
+                    "reason": "insufficient_funds",
+                    "code": classified_reason,
+                    "detail": details,
+                    "trading_disabled": True,
+                }
+
             msg = f"Kalshi order failed: {resp.status_code} {resp.text[:300]}"
             log.error(msg)
-            log_to_supabase("mcp_server.kalshi", msg, level="ERROR", context={"ticker": ticker, "body": body})
+            log_to_supabase(
+                "mcp_server.kalshi",
+                msg,
+                level="ERROR",
+                context={"ticker": ticker, "body": body, "response": details},
+            )
             return {"status": "error", "code": resp.status_code, "detail": resp.text}
 
         payload = resp.json()
         log.info("Kalshi order placed: %s %s %s x%d @ %s", action_l, side_l, ticker, count, limit_price_dollars)
         log_to_supabase("mcp_server.kalshi", f"Kalshi order placed: {action_l} {side_l} {ticker} x{count}", context=payload)
         payload.setdefault("status", "ok")
+        if isinstance(payload.get("order"), dict):
+            payload.setdefault("external_order_id", payload["order"].get("order_id") or payload["order"].get("id"))
+        elif payload.get("order_id") or payload.get("id"):
+            payload.setdefault("external_order_id", payload.get("order_id") or payload.get("id"))
         return payload
     except Exception as exc:
         log.error("Kalshi order exception: %s", exc)

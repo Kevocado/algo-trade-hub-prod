@@ -70,6 +70,8 @@ The system relies on a strict split of secrets.
 
 - The crypto runtime reads the canonical backend env from repo root: `Algo-Trade-Hub/.env`. `market_sentiment_tool/.env` is only a fallback if the root file is missing.
 - Required backend vars: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `KALSHI_ENV`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`, `BTC_MODEL_PATH`, `ETH_MODEL_PATH`.
+- Telegram operator-plane vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+- Before restarting the VPS worker after today’s operator-plane changes, apply the Supabase migration `market_sentiment_tool/supabase/migrations/20260408224000_crypto_operator_plane.sql` so `crypto_signal_events` and the crypto-specific `user_settings` columns exist.
 - Install the crypto backend runtime dependencies into the PM2 interpreter environment before starting the worker:
 
 ```bash
@@ -94,10 +96,36 @@ pm2 restart crypto-sniper --update-env
 pm2 logs crypto-sniper --lines 80
 ```
 
+Apply the latest code + runtime dependencies on VPS:
+
+```bash
+cd /root/kalshibot
+git pull
+/root/kalshibot/.venv/bin/pip install -r market_sentiment_tool/backend/requirements.txt
+pm2 restart crypto-sniper --update-env
+pm2 logs crypto-sniper --lines 120 --nostream
+```
+
 Healthy startup should show:
 - repo-root `.env` loaded,
 - Supabase service-role client initialized,
 - Kalshi WS listener using the canonical host for the selected `KALSHI_ENV`,
 - `Kalshi WS connected; subscribing to ticker`,
 - either direct inference or a yfinance backfill log instead of repeated `Need at least 205 hourly bars...` errors,
-- `[CRYPTO EDGE] ... P(YES)=...` once markets begin streaming.
+- `[CRYPTO EDGE] ... P(YES)=...` once markets begin streaming,
+- Telegram operator plane started if Telegram env vars are present,
+- `/balance`, `/positions`, `/trades`, and `/crypto_status` returning data from Telegram after the bot sees at least one chat message from the configured chat.
+
+Telegram commands:
+- `/crypto_status`
+- `/balance`
+- `/positions`
+- `/trades`
+- `/crypto_scan`
+
+Operator-plane behavior:
+- Telegram alerts are async and must never block the crypto LangGraph loop.
+- Telegram reads from Supabase and direct Kalshi REST reads; it does not share in-memory state with the worker.
+- Threshold-crossing opportunity alerts are deduped for 5 minutes per market.
+- Actual execution outcomes always alert.
+- Insufficient-funds Kalshi rejections disable further crypto trading in Supabase until an operator re-enables it.

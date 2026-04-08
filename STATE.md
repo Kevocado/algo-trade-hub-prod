@@ -1,25 +1,28 @@
 # Project State: Algo-Trade-Hub
 
-## 🗓️ Last Updated: 2026-03-24
-**Current Status:** Production-Ready Beta
+## 🗓️ Last Updated: 2026-04-08
+**Current Status:** Crypto Demo Runtime Live on VPS
 
 ---
 
 ## ✅ Accomplished Today
-- **Architecture Simplification**: Purged all Azure dependencies (Table/Blob) and consolidated the data layer into Supabase.
-- **Unified Frontend**: Rebuilt the React app into a strict 2-page layout (`Home` and `Prediction Lab`).
-- **Secure Portfolio Bridge**: Implemented a secure Python-to-Supabase telemetery bridge for Kalshi portfolio metrics (`total_value`, `daily_pnl`, `cash_balance`).
-- **AI Optimization**: Implemented the "War Room" bulk summarization logic for the Top 3 market edges to save Gemini API tokens.
-- **Sports Engine Fixes**: Resolved the "mega-string" loop bug in NBA, NCAA, and Football engines and standardized `market_id` generation.
-- **Hugging Face Monitoring**: Added detailed metric definitions to the Quant Factory Streamlit app.
-- **Agent Governance**: Created the `quant_pipeline` skill to enforce architectural directives.
+- **Runtime Bootstrap Hardening**: Consolidated the backend onto a single canonical root `.env`, added explicit validation/fail-fast startup, and enforced canonical Kalshi hosts.
+- **Kalshi Demo Auth Debugged**: Fixed the auth probe path-signing bug, validated a working demo API key + PEM pair, and brought the VPS onto authenticated demo REST + WS.
+- **Crypto Inference Last-Mile**: Aligned live crypto inference to the 30-feature notebook schema, added Alpaca→`yfinance` historical backfill, and documented the `ta`/`yfinance` PM2 venv requirements.
+- **Crypto Demo Execution Path**: The `crypto-sniper` worker now reaches Kalshi demo WS, evaluates signals, resolves markets, and submits demo trades through the Kalshi REST bridge.
+- **Async Telegram Operator Plane**: Replaced the old threaded Telegram notifier with an async `aiohttp` implementation, added operator commands (`/crypto_status`, `/balance`, `/positions`, `/trades`, `/crypto_scan`), and launched it alongside the crypto worker.
+- **Decoupled Operator State**: Added Supabase-backed crypto operator persistence (`crypto_signal_events`, crypto-specific trading control flags, enriched trade metadata) so Telegram reads durable state instead of worker memory.
+- **Insufficient-Funds Safeguard**: Kalshi insufficient-funds rejections now disable further crypto trading in Supabase and generate operator alerts instead of repeatedly retrying.
 
 ## 🟢 Currently Working / Stable
-- **Backend**: `background_scanner.py` is running a 15-minute loop fetching live portfolio data and engine edges.
-- **Frontend**: Navigation, Real-time portfolio hooks, and tabbed market filtering are active and dark-mode enabled.
-- **Models**: Walk-forward validation factory on Hugging Face is training hourly.
+- **Crypto VPS Runtime**: `/root/kalshibot/market_sentiment_tool/backend/orchestrator.py` boots cleanly under PM2 as `crypto-sniper`, authenticates to Kalshi demo, and streams ticker data.
+- **Signal Pipeline**: The BTC/ETH LightGBM models now receive the expected live feature frame, including long-window indicators via historical backfill.
+- **Execution Bridge**: Kalshi demo order submission is wired through `market_sentiment_tool/backend/mcp_server.py` with Supabase-backed kill-switch controls.
+- **Operator Visibility**: Supabase now holds trade attempts, crypto signal events, portfolio snapshots, and operator logs; Telegram commands read from Supabase/Kalshi directly.
+- **Frontend**: The React/Vite dashboard and existing Supabase-backed UI remain intact.
 
 ## 🚀 Next Immediate Task
-- **NFL Engine Expansion**: Implement a new NFL-specific engine using the `quant_pipeline` skill to track Super Bowl and regular season markets.
-- **Verification**: Monitor the `portfolio_metrics` table over a few hours to ensure PnL calculations align with Kalshi settlements.
-- **UI Polish**: Add micro-interactions to the `Prediction Lab` cards (hover effects, sparklines).
+- **Apply Migration on VPS Supabase**: Run `market_sentiment_tool/supabase/migrations/20260408224000_crypto_operator_plane.sql` so the async Telegram/operator-plane tables and user-settings columns exist in prod.
+- **End-to-End Demo Validation**: Confirm a full threshold-crossing opportunity, Telegram alert, trade submission, and `/balance` + `/trades` Telegram command responses against the funded demo account.
+- **Threshold/Signal Tuning**: If the worker connects but rarely emits actionable predictions, log or tune threshold-crossing behavior without weakening the model feature contract.
+- **Operator Controls**: Add explicit Telegram or admin-path controls for re-enabling crypto trading after an insufficient-funds lockout, if needed.

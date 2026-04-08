@@ -9,6 +9,7 @@ Tests are designed to work offline (no real API calls) using mocks.
 import sys
 import os
 import json
+import asyncio
 import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
@@ -191,33 +192,48 @@ class TestTelegramCommands:
     """Tests the command parser in TelegramNotifier (no real Telegram calls)."""
 
     def test_all_valid_commands_recognised(self):
-        """All slash commands should hit _handle_command without raising immediately."""
+        """All supported slash commands should hit the async handler without raising."""
         from src.telegram_notifier import TelegramNotifier
         tn = TelegramNotifier()
-        # Override send_message to not actually send
-        tn.send_message = MagicMock(return_value=True)
-        tn._get_chat_id = MagicMock(return_value="12345")
+        async def fake_send_message(*_args, **_kwargs):
+            return True
 
-        for cmd in ["/help", "/status", "/scan", "/kill", "/nba", "/f1", "/weather"]:
-            # Should not raise (errors are caught internally)
-            try:
-                tn._handle_command(cmd, "12345")
-            except SystemExit:
-                pass
-            except Exception as e:
-                # Import errors are acceptable; the command parser itself should not crash
-                assert "No module named" in str(e) or "ImportError" in str(type(e).__name__)
+        async def fake_chat_id():
+            return "12345"
+
+        async def fake_text():
+            return "ok"
+
+        tn.send_message = fake_send_message
+        tn._get_chat_id = fake_chat_id
+        tn._get_crypto_status = fake_text
+        tn._get_balance_text = fake_text
+        tn._get_positions_text = fake_text
+        tn._get_trades_text = fake_text
+        tn._get_crypto_scan_text = fake_text
+
+        for cmd in ["/help", "/crypto_status", "/balance", "/positions", "/trades", "/crypto_scan"]:
+            asyncio.run(tn._handle_command(cmd, "12345"))
 
     def test_unknown_command_sends_help(self):
         """Unknown command → should send help hint, not raise."""
         from src.telegram_notifier import TelegramNotifier
         tn = TelegramNotifier()
-        tn.send_message = MagicMock(return_value=True)
-        tn._get_chat_id = MagicMock(return_value="12345")
+        sent_messages = []
 
-        tn._handle_command("/unknowncommand", "12345")
-        tn.send_message.assert_called_once()
-        call_text = tn.send_message.call_args[0][0]
+        async def fake_send_message(text, *_args, **_kwargs):
+            sent_messages.append(text)
+            return True
+
+        async def fake_chat_id():
+            return "12345"
+
+        tn.send_message = fake_send_message
+        tn._get_chat_id = fake_chat_id
+
+        asyncio.run(tn._handle_command("/unknowncommand", "12345"))
+        assert len(sent_messages) == 1
+        call_text = sent_messages[0]
         assert "Unknown command" in call_text or "help" in call_text.lower()
 
     def test_send_alert_alias(self):
@@ -228,10 +244,16 @@ class TestTelegramCommands:
 
         from src.telegram_notifier import TelegramNotifier
         tn = TelegramNotifier()
-        tn.send_message = MagicMock(return_value=True)
+        sent_messages = []
 
-        result = tn.send_alert("test message")
-        tn.send_message.assert_called_once_with("test message")
+        async def fake_send_message(text, *_args, **_kwargs):
+            sent_messages.append(text)
+            return True
+
+        tn.send_message = fake_send_message
+
+        result = asyncio.run(tn.send_alert("test message"))
+        assert sent_messages == ["test message"]
         assert result is True
 
 

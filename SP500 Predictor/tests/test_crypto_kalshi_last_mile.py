@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import logging
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -162,6 +163,7 @@ def test_market_resolution_uses_spot_price_not_signal_price(monkeypatch):
     monkeypatch.setattr(orchestrator, "_kalshi_get", lambda *_args, **_kwargs: {"markets": markets, "cursor": None})
     monkeypatch.setattr(orchestrator, "_fetch_alpaca_spot_price", lambda asset: 70100.0 if asset == "BTC" else None)
     monkeypatch.setattr(orchestrator, "_cooldown_allows_trade", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(orchestrator, "check_crypto_trade_switch", lambda: True)
     monkeypatch.setattr(
         orchestrator,
         "_kalshi_orderbook_bbo_dollars",
@@ -214,6 +216,7 @@ def test_market_resolution_calls_plain_submit_helper(monkeypatch):
     monkeypatch.setattr(orchestrator, "_kalshi_get", lambda *_args, **_kwargs: {"markets": markets, "cursor": None})
     monkeypatch.setattr(orchestrator, "_fetch_alpaca_spot_price", lambda asset: 3490.0 if asset == "ETH" else None)
     monkeypatch.setattr(orchestrator, "_cooldown_allows_trade", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(orchestrator, "check_crypto_trade_switch", lambda: True)
     monkeypatch.setattr(
         orchestrator,
         "_kalshi_orderbook_bbo_dollars",
@@ -590,3 +593,113 @@ def test_evaluate_crypto_edge_skips_on_feature_inference_failure(monkeypatch):
     )
 
     assert result == {"trade_signal": None}
+
+
+def test_market_resolution_emits_deduped_cooldown_opportunity(monkeypatch):
+    markets = [
+        {
+            "ticker": "KXBTC-NEXT-60000",
+            "event_ticker": "KXBTC-NEXT",
+            "title": "Bitcoin price today at 11PM",
+            "close_time": _future_time(1),
+            "strike_price": 60000,
+        }
+    ]
+    recorded_events = []
+
+    monkeypatch.setattr(orchestrator, "_kalshi_get", lambda *_args, **_kwargs: {"markets": markets, "cursor": None})
+    monkeypatch.setattr(orchestrator, "_fetch_alpaca_spot_price", lambda asset: 60100.0 if asset == "BTC" else None)
+    monkeypatch.setattr(orchestrator, "_cooldown_allows_trade", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(orchestrator, "check_crypto_trade_switch", lambda: True)
+    monkeypatch.setattr(orchestrator, "_should_emit_opportunity_alert", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
+
+    signal = {
+        "asset": "BTC",
+        "market_ticker": "KXBTC-SOURCE",
+        "side": "YES",
+        "probability_yes": 0.71,
+        "price_dollars": 0.45,
+        "spot_price_dollars": None,
+        "resolved_ticker": None,
+        "edge": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "raw": {},
+    }
+
+    result = orchestrator.market_resolution(
+        {"ticker": {}, "trade_signal": signal, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    )
+
+    notifications = result["execution_result"]["notifications"]
+    assert notifications[0]["kind"] == "opportunity"
+    assert recorded_events[0]["alert_kind"] == "opportunity"
+    assert recorded_events[0]["alert_sent"] is True
+
+
+def test_market_resolution_flags_insufficient_funds_and_records_failure(monkeypatch):
+    markets = [
+        {
+            "ticker": "KXETH-NEXT-3500",
+            "event_ticker": "KXETH-NEXT",
+            "title": "Ethereum price today at 11PM",
+            "close_time": _future_time(1),
+            "strike_price": 3500,
+        }
+    ]
+    written_trades = []
+    recorded_events = []
+
+    monkeypatch.setattr(orchestrator, "_kalshi_get", lambda *_args, **_kwargs: {"markets": markets, "cursor": None})
+    monkeypatch.setattr(orchestrator, "_fetch_alpaca_spot_price", lambda asset: 3490.0 if asset == "ETH" else None)
+    monkeypatch.setattr(orchestrator, "_cooldown_allows_trade", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(orchestrator, "check_crypto_trade_switch", lambda: True)
+    monkeypatch.setattr(
+        orchestrator,
+        "_kalshi_orderbook_bbo_dollars",
+        lambda *_args, **_kwargs: {"yes_ask": 0.40, "yes_bid": 0.39, "no_ask": 0.60, "no_bid": 0.59},
+    )
+
+    import market_sentiment_tool.backend.mcp_server as live_mcp_server
+
+    monkeypatch.setattr(
+        live_mcp_server,
+        "submit_kalshi_order",
+        lambda **_kwargs: {"status": "blocked", "reason": "insufficient_funds", "detail": "not enough funds", "trading_disabled": True},
+    )
+    monkeypatch.setattr(orchestrator, "write_trade_to_supabase", lambda payload: written_trades.append(payload))
+    monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
+
+    signal = {
+        "asset": "ETH",
+        "market_ticker": "KXETH-SOURCE",
+        "side": "YES",
+        "probability_yes": 0.81,
+        "price_dollars": 0.48,
+        "spot_price_dollars": None,
+        "resolved_ticker": None,
+        "edge": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "raw": {},
+    }
+
+    result = orchestrator.market_resolution(
+        {"ticker": {}, "trade_signal": signal, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    )
+
+    assert written_trades[0]["status"] == "FAILED"
+    assert result["execution_result"]["notifications"][0]["kind"] == "trading_disabled"
+    assert recorded_events[0]["status"] == "failed"
+
+
+def test_schedule_async_notification_logs_failures(caplog):
+    async def failing_coro():
+        raise RuntimeError("telegram down")
+
+    async def exercise():
+        with caplog.at_level(logging.ERROR):
+            orchestrator._schedule_async_notification(failing_coro())
+            await asyncio.sleep(0)
+
+    asyncio.run(exercise())
+    assert any("Async Telegram task failed: telegram down" in record.getMessage() for record in caplog.records)
