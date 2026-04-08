@@ -29,10 +29,10 @@ def _build_headers(api_key_id: str, pem_path: Path, request_path: str) -> dict[s
 
 
 def probe_key(api_key_id: str, pem_path: Path, base_url: str) -> tuple[int | None, str]:
-    request_path = "/portfolio/balance"
-    url = f"{base_url.rstrip('/')}{request_path}"
+    signed_path = "/trade-api/v2/portfolio/balance"
+    url = f"{base_url.rstrip('/')}/portfolio/balance"
     try:
-        headers = _build_headers(api_key_id, pem_path, request_path)
+        headers = _build_headers(api_key_id, pem_path, signed_path)
     except Exception as exc:
         return None, f"key-load-error: {exc}"
 
