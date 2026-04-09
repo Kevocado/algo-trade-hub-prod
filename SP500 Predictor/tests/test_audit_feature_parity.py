@@ -166,7 +166,7 @@ def test_default_audit_windows():
     assert module.DEFAULT_TRAIN_HOURS == 24
 
 
-def test_fetch_training_feature_frame_passes_asset_to_build_features(monkeypatch):
+def test_fetch_training_feature_frame_passes_asset_to_build_features_in_raw_mode(monkeypatch):
     module = _load_audit_module()
     captured = {}
     fake_index = pd.date_range("2026-04-08T00:00:00Z", periods=230, freq="h")
@@ -197,7 +197,7 @@ def test_fetch_training_feature_frame_passes_asset_to_build_features(monkeypatch
 
     assert not frame.empty
     assert captured["asset"] == "ETH"
-    assert captured["is_live_inference"] is True
+    assert captured["is_live_inference"] is False
 
 
 def test_compute_drift_table_stays_finite_with_variable_training_distribution():

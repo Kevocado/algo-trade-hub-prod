@@ -438,7 +438,7 @@ def test_build_features_preserves_canonical_volume_derived_values():
     assert latest_row["vol_pressure"] == pytest.approx(float(expected_vol_pressure.loc[latest_ts]))
 
 
-def test_build_features_calls_calibrate_features_without_changing_output(monkeypatch):
+def test_build_features_calls_calibrate_features_only_for_live_inference(monkeypatch):
     index = pd.date_range("2026-01-01", periods=260, freq="h", tz="UTC")
     close = np.linspace(90000.0, 93000.0, len(index))
     bars = pd.DataFrame(
@@ -460,12 +460,42 @@ def test_build_features_calls_calibrate_features_without_changing_output(monkeyp
 
     monkeypatch.setattr(crypto_features, "calibrate_features", _capture)
 
-    features = build_features(bars, is_live_inference=True)
+    live_features = build_features(bars, is_live_inference=True)
+    training_features = build_features(bars, is_live_inference=False)
 
-    assert not features.empty
+    assert not live_features.empty
+    assert not training_features.empty
     assert len(calls) == 1
     assert calls[0][1] is None
-    assert list(features.columns) == list(CANONICAL_CRYPTO_FEATURES)
+    assert list(live_features.columns) == list(CANONICAL_CRYPTO_FEATURES)
+    assert list(training_features.columns) == list(CANONICAL_CRYPTO_FEATURES)
+
+
+def test_build_features_skips_eth_calibration_for_training_mode():
+    index = pd.date_range("2026-01-01", periods=260, freq="h", tz="UTC")
+    close = np.linspace(2500.0, 3100.0, len(index))
+    volume = np.linspace(500.0, 1500.0, len(index))
+    bars = pd.DataFrame(
+        {
+            "Open": close - 3.0,
+            "High": close + 6.0,
+            "Low": close - 6.0,
+            "Close": close,
+            "Volume": volume,
+        },
+        index=index,
+    )
+
+    live_features = build_features(bars, asset="ETH", is_live_inference=True)
+    training_features = build_features(bars, asset="ETH", is_live_inference=False)
+    expected_force_idx = (bars["Close"].diff() * bars["Volume"]).shift(1)
+
+    latest_ts = training_features.index[-1]
+
+    assert live_features.loc[latest_ts, "Volume"] == pytest.approx(
+        training_features.loc[latest_ts, "Volume"] * crypto_features.VOLUME_MULTIPLIER_ETH
+    )
+    assert training_features.loc[latest_ts, "force_idx"] == pytest.approx(float(expected_force_idx.loc[latest_ts]))
 
 
 def test_calibrate_features_scales_eth_volume_only():

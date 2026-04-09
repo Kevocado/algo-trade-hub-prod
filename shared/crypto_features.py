@@ -151,7 +151,8 @@ def build_features(
     if include_target and not is_live_inference:
         output_columns.append("target")
 
-    frame = calibrate_features(frame, asset)
+    if is_live_inference:
+        frame = calibrate_features(frame, asset)
     frame = frame[output_columns]
     frame = frame.dropna()
     return frame

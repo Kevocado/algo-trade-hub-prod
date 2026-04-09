@@ -128,7 +128,7 @@ def fetch_training_feature_frame(
     frame.index = pd.to_datetime(frame.index, utc=True)
     frame = frame[["Open", "High", "Low", "Close", "Volume"]].apply(pd.to_numeric, errors="coerce").dropna()
     frame = frame.loc[(frame.index >= start) & (frame.index <= end)]
-    features = build_features(frame, asset=asset, is_live_inference=True)
+    features = build_features(frame, asset=asset, is_live_inference=False)
     if features.empty:
         raise RuntimeError(f"Unable to build training baseline features for {asset}")
     cutoff = features.index.max() - timedelta(hours=train_hours - 1)
@@ -217,6 +217,8 @@ def main() -> None:
     live_frames = fetch_live_audit_snapshots(supa, hours=args.live_hours)
     if not live_frames:
         raise RuntimeError("No live audit snapshots found in agent_logs for the requested window.")
+
+    print("[AUDIT INFO] Baseline is RAW (Uncalibrated). Live is CALIBRATED.")
 
     for asset in ("BTC", "ETH"):
         live_frame = live_frames.get(asset)
