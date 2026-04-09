@@ -229,20 +229,28 @@ def _crypto_thresholds_for_asset(asset: str) -> tuple[float, float]:
     raise ValueError(f"Unsupported crypto asset for threshold lookup: {asset}")
 
 
-def request_manual_crypto_test(asset: str) -> tuple[bool, str]:
+def request_manual_crypto_test(asset: str, *, force_execution: bool = False) -> tuple[bool, str]:
     normalized = str(asset or "").strip().upper()
     if normalized not in {"BTC", "ETH"}:
-        return False, "Usage: /test_trade BTC or /test_trade ETH"
+        command_name = "/force_demo_buy" if force_execution else "/test_trade"
+        return False, f"Usage: {command_name} BTC or {command_name} ETH"
     if KALSHI_ENV != "demo":
-        return False, "Safety stop: /test_trade is only allowed when KALSHI_ENV=demo."
+        command_name = "/force_demo_buy" if force_execution else "/test_trade"
+        return False, f"Safety stop: {command_name} is only allowed when KALSHI_ENV=demo."
 
     _MANUAL_TEST_OVERRIDES[normalized] = {
         "asset": normalized,
         "requested_at": datetime.now(timezone.utc).isoformat(),
         "probability_yes": 0.80,
         "desired_side": "YES",
-        "reason": "telegram_test_trade",
+        "reason": "telegram_force_demo_buy" if force_execution else "telegram_test_trade",
+        "force_execution": bool(force_execution),
     }
+    if force_execution:
+        return True, (
+            f"Queued one-shot forced demo buy for {normalized}. Next eligible live loop will bypass the probability and edge gates, "
+            "but still require real market resolution, orderbook data, and demo order submission."
+        )
     return True, f"Queued one-shot manual test for {normalized}. Next eligible live loop will attempt real market resolution and edge checks."
 
 
@@ -2205,6 +2213,7 @@ def market_resolution(state: CryptoAgentState) -> dict:
     desired_side = str(signal.get("side") or "").upper()  # YES or NO
     signal_raw = dict(signal.get("raw") or {})
     manual_test = bool(signal_raw.get("manual_test"))
+    force_execution = bool((signal_raw.get("manual_test_request") or {}).get("force_execution"))
 
     if not check_crypto_trade_switch():
         controls = get_crypto_trade_controls()
@@ -2460,7 +2469,7 @@ def market_resolution(state: CryptoAgentState) -> dict:
         final_edge,
     )
 
-    if final_edge <= 0.05:
+    if final_edge <= 0.05 and not force_execution:
         log.info(
             "[CRYPTO DECISION] asset=%s resolved_ticker=%s side=%s prob=%.3f price=$%.4f edge=%.3f required_edge=%.3f status=KILLED_BY_EDGE",
             asset,
@@ -2534,6 +2543,16 @@ def market_resolution(state: CryptoAgentState) -> dict:
             "final_edge": final_edge,
             "execution_result": execution_result,
         }
+    if final_edge <= 0.05 and force_execution:
+        log.warning(
+            "[MANUAL TEST ORDER] Bypassing edge gate for asset=%s resolved_ticker=%s side=%s prob=%.3f price=$%.4f edge=%.3f",
+            asset,
+            resolved_ticker,
+            desired_side,
+            prob_outcome,
+            float(price_to_pay),
+            final_edge,
+        )
 
     try:
         try:

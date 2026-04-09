@@ -383,6 +383,31 @@ class TestTelegramCommands:
         assert "Manual Test Rejected" in sent_messages[0]
         assert "only allowed when KALSHI_ENV=demo" in sent_messages[0]
 
+    def test_handle_force_demo_buy_command_queues_forced_buy(self, monkeypatch):
+        from src.telegram_notifier import TelegramNotifier
+        from market_sentiment_tool.backend import orchestrator
+
+        tn = TelegramNotifier()
+        sent_messages = []
+
+        async def fake_send_message(text, *_args, **_kwargs):
+            sent_messages.append(text)
+            return True
+
+        async def fake_chat_id():
+            return "12345"
+
+        monkeypatch.setattr(orchestrator, "KALSHI_ENV", "demo")
+        orchestrator._MANUAL_TEST_OVERRIDES.clear()
+        tn.send_message = fake_send_message
+        tn._get_chat_id = fake_chat_id
+
+        asyncio.run(tn._handle_command("/force_demo_buy ETH", "12345"))
+
+        assert len(sent_messages) == 1
+        assert "Forced Demo Buy Armed" in sent_messages[0]
+        assert orchestrator._MANUAL_TEST_OVERRIDES["ETH"]["force_execution"] is True
+
 
 # ════════════════════════════════════════════════════════════════════
 # Microstructure Engine Tests

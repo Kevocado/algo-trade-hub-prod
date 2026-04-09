@@ -515,6 +515,7 @@ class TelegramNotifier:
                         "/trades",
                         "/crypto_scan *(or /cryptoscan; latest actionable crypto events from the last 24h)*",
                         "/test_trade `BTC|ETH` *(demo-only one-shot execution smoke test)*",
+                        "/force_demo_buy `BTC|ETH` *(demo-only one-shot forced demo buy)*",
                         "/help",
                     ]
                 )
@@ -535,6 +536,13 @@ class TelegramNotifier:
 
             ok, message = crypto_orchestrator.request_manual_crypto_test(asset)
             prefix = "🧪 *Manual Test Armed*" if ok else "⚠️ *Manual Test Rejected*"
+            await self.send_message(f"{prefix}\n\n{message}")
+        elif cmd == "/force_demo_buy":
+            asset = parts[1].upper() if len(parts) > 1 else ""
+            from market_sentiment_tool.backend import orchestrator as crypto_orchestrator
+
+            ok, message = crypto_orchestrator.request_manual_crypto_test(asset, force_execution=True)
+            prefix = "🧪 *Forced Demo Buy Armed*" if ok else "⚠️ *Forced Demo Buy Rejected*"
             await self.send_message(f"{prefix}\n\n{message}")
         else:
             await self.send_message(f"❓ Unknown command: `{cmd}`\nSend */help* for the list.")

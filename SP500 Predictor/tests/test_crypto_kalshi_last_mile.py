@@ -1486,6 +1486,61 @@ def test_market_resolution_manual_test_near_miss_forces_notification(monkeypatch
     assert any(event["status"] == "near_miss" and event["alert_sent"] is True for event in recorded_events)
 
 
+def test_market_resolution_force_demo_buy_bypasses_edge_gate(monkeypatch):
+    markets = [
+        {
+            "ticker": "KXETH-NEXT-3500",
+            "event_ticker": "KXETH-NEXT",
+            "title": "Ethereum price today at 11PM",
+            "close_time": _future_time(1),
+            "strike_price": 3500,
+        }
+    ]
+    written_trades = []
+    recorded_events = []
+
+    monkeypatch.setattr(orchestrator, "_kalshi_get", lambda *_args, **_kwargs: {"markets": markets, "cursor": None})
+    monkeypatch.setattr(orchestrator, "_fetch_alpaca_spot_price", lambda asset: 3490.0 if asset == "ETH" else None)
+    monkeypatch.setattr(orchestrator, "_cooldown_allows_trade", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(orchestrator, "check_crypto_trade_switch", lambda: True)
+    monkeypatch.setattr(
+        orchestrator,
+        "_kalshi_orderbook_bbo_dollars",
+        lambda *_args, **_kwargs: {"yes_ask": 0.78, "yes_bid": 0.77, "no_ask": 0.22, "no_bid": 0.21},
+    )
+
+    import market_sentiment_tool.backend.mcp_server as live_mcp_server
+
+    monkeypatch.setattr(
+        live_mcp_server,
+        "submit_kalshi_order",
+        lambda **_kwargs: {"status": "accepted", "order_id": "demo-123"},
+    )
+    monkeypatch.setattr(orchestrator, "write_trade_to_supabase", lambda payload: written_trades.append(payload))
+    monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
+
+    signal = {
+        "asset": "ETH",
+        "market_ticker": "KXETH-SOURCE",
+        "side": "YES",
+        "probability_yes": 0.80,
+        "price_dollars": 0.48,
+        "spot_price_dollars": None,
+        "resolved_ticker": None,
+        "edge": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "raw": {"manual_test": True, "manual_test_request": {"asset": "ETH", "force_execution": True}},
+    }
+
+    result = orchestrator.market_resolution(
+        {"ticker": {}, "trade_signal": signal, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    )
+
+    assert result["execution_result"]["status"] == "accepted"
+    assert written_trades[0]["metadata"]["manual_test"] is True
+    assert any(event["status"] == "trade_placed" for event in recorded_events)
+
+
 def test_evaluate_crypto_edge_records_no_usable_price_skip(monkeypatch):
     ticker_message = {"msg": {"market_ticker": "KXETH-DUMMY"}}
     recorded_events = []
