@@ -11,7 +11,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import requests
-from dotenv import load_dotenv
 from supabase import create_client
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -21,14 +20,15 @@ for path in (REPO_ROOT, PREDICTOR_ROOT):
     if text not in sys.path:
         sys.path.insert(0, text)
 
+from market_sentiment_tool.backend.runtime_bootstrap import load_canonical_env
+
+ENV_BOOTSTRAP = load_canonical_env(__file__)
 DEFAULT_LOOKBACK_HOURS = int(os.getenv("SHADOW_SCORECARD_HOURS", "24"))
 DEFAULT_BTC_YES = float(os.getenv("CRYPTO_BTC_YES_THRESHOLD", "0.5751"))
 DEFAULT_BTC_NO = float(os.getenv("CRYPTO_BTC_NO_THRESHOLD", "0.4249"))
 DEFAULT_ETH_YES = float(os.getenv("CRYPTO_ETH_YES_THRESHOLD", "0.551"))
 DEFAULT_ETH_NO = float(os.getenv("CRYPTO_ETH_NO_THRESHOLD", "0.449"))
-ALPACA_DATA_API_BASE = os.getenv("ALPACA_DATA_API_BASE", "https://data.alpaca.markets").strip('"').strip("'")
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+DEFAULT_STALE_GRACE_SECONDS = float(os.getenv("CRYPTO_STALE_DATA_GRACE_SECONDS", "60"))
 
 
 @dataclass(frozen=True)
@@ -65,12 +65,32 @@ def _to_utc_timestamp(value: Any) -> pd.Timestamp:
     return timestamp.tz_convert("UTC")
 
 
+def _missing_env_detail() -> str:
+    if ENV_BOOTSTRAP.env_path is not None:
+        return f"Loaded env from {ENV_BOOTSTRAP.env_path}"
+    return "No canonical .env file was found under the repo root or service root."
+
+
+def _alpaca_config() -> tuple[str, str, str]:
+    api_base = os.getenv("ALPACA_DATA_API_BASE", "https://data.alpaca.markets").strip('"').strip("'")
+    api_key = os.getenv("ALPACA_API_KEY", "")
+    secret_key = os.getenv("ALPACA_SECRET_KEY", "")
+    if not api_key or not secret_key:
+        raise RuntimeError(
+            "Missing Alpaca API credentials for shadow scorecard. "
+            f"Expected ALPACA_API_KEY and ALPACA_SECRET_KEY. {_missing_env_detail()}"
+        )
+    return api_base, api_key, secret_key
+
+
 def _load_supabase_client():
-    load_dotenv(REPO_ROOT / ".env")
     url = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
     key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     if not url or not key:
-        raise RuntimeError("Missing SUPABASE_URL/VITE_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.")
+        raise RuntimeError(
+            "Missing Supabase credentials for shadow scorecard. "
+            f"Expected SUPABASE_URL or VITE_SUPABASE_URL plus SUPABASE_SERVICE_ROLE_KEY. {_missing_env_detail()}"
+        )
     return create_client(url, key)
 
 
@@ -99,7 +119,7 @@ def fetch_recent_signal_events(*, hours: int = DEFAULT_LOOKBACK_HOURS, limit: in
     response = (
         supa.table("crypto_signal_events")
         .select("asset,created_at,source_market_ticker,desired_side,status,model_probability_yes,payload")
-        .eq("status", "signal_detected")
+        .in_("status", ["signal_detected", "inference_heartbeat"])
         .gte("created_at", cutoff_iso)
         .order("created_at", desc=False)
         .limit(limit)
@@ -128,15 +148,14 @@ def _alpaca_symbol(asset: str) -> str:
 
 
 def _fetch_alpaca_hourly_closes(asset: str, *, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
-        raise RuntimeError("Missing Alpaca API credentials for shadow scorecard.")
+    api_base, api_key, secret_key = _alpaca_config()
     symbol = _alpaca_symbol(asset)
     response = requests.get(
-        f"{ALPACA_DATA_API_BASE}/v1beta3/crypto/us/bars",
+        f"{api_base}/v1beta3/crypto/us/bars",
         headers={
             "accept": "application/json",
-            "APCA-API-KEY-ID": ALPACA_API_KEY,
-            "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": secret_key,
         },
         params={
             "symbols": symbol,
@@ -173,6 +192,41 @@ def _threshold_side(probability_yes: float, thresholds: ThresholdConfig) -> str 
     if probability_yes <= thresholds.no:
         return "NO"
     return None
+
+
+def _considered_signal_count(rows: list[dict[str, Any]], thresholds: dict[str, ThresholdConfig]) -> dict[str, int]:
+    total = 0
+    considered = 0
+    dead_zone = 0
+    for row in rows:
+        asset = str(row.get("asset") or "").upper()
+        if asset not in thresholds:
+            continue
+        probability_yes = row.get("model_probability_yes")
+        if probability_yes is None:
+            continue
+        total += 1
+        if _threshold_side(float(probability_yes), thresholds[asset]) is None:
+            dead_zone += 1
+        else:
+            considered += 1
+    return {"evaluated_count": total, "considered_count": considered, "dead_zone_count": dead_zone}
+
+
+def _latest_bar_status(asset: str, *, current_hour: pd.Timestamp, grace_seconds: float = DEFAULT_STALE_GRACE_SECONDS) -> dict[str, Any]:
+    start = current_hour - pd.Timedelta(hours=6)
+    closes = _fetch_alpaca_hourly_closes(asset, start=start, end=current_hour)
+    if closes.empty:
+        return {"asset": asset, "latest_bar": None, "age_hours": None, "is_stale": True}
+    latest_bar = closes.index.max()
+    age = current_hour.to_pydatetime() - latest_bar.to_pydatetime()
+    stale_cutoff = timedelta(hours=2) + timedelta(seconds=max(float(grace_seconds), 0.0))
+    return {
+        "asset": asset,
+        "latest_bar": latest_bar,
+        "age_hours": age.total_seconds() / 3600.0,
+        "is_stale": age > stale_cutoff,
+    }
 
 
 def _probability_bucket(probability_yes: float) -> str:
@@ -274,8 +328,32 @@ def build_shadow_report(
         eth_yes=eth_yes,
         eth_no=eth_no,
     )
-    rows = fetch_recent_signal_events(hours=hours)
-    evaluated = evaluate_recent_signals(rows, thresholds=thresholds)
+    current_hour = _current_hour_utc()
+    errors: list[str] = []
+    rows: list[dict[str, Any]] = []
+    try:
+        rows = fetch_recent_signal_events(hours=hours)
+    except RuntimeError as exc:
+        errors.append(str(exc))
+
+    consideration = _considered_signal_count(rows, thresholds)
+
+    evaluated: list[EvaluatedSignal] = []
+    if rows:
+        try:
+            evaluated = evaluate_recent_signals(rows, thresholds=thresholds)
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    freshness: dict[str, dict[str, Any]] = {}
+    for asset in ("BTC", "ETH"):
+        try:
+            freshness[asset] = _latest_bar_status(asset, current_hour=current_hour)
+        except RuntimeError as exc:
+            if str(exc) not in errors:
+                errors.append(str(exc))
+            freshness[asset] = {"asset": asset, "latest_bar": None, "age_hours": None, "is_stale": None}
+
     if not evaluated:
         return {
             "hours": hours,
@@ -284,6 +362,9 @@ def build_shadow_report(
             "overall": {"count": 0, "hit_rate": None, "virtual_pnl_pct": 0.0, "brier_score": None},
             "by_asset": {"BTC": _asset_summary([], "BTC"), "ETH": _asset_summary([], "ETH")},
             "bucket_stats": {},
+            "consideration": consideration,
+            "freshness": freshness,
+            "errors": errors,
         }
 
     outcomes = np.array([item.realized_yes for item in evaluated], dtype=float)
@@ -311,17 +392,48 @@ def build_shadow_report(
             "ETH": _asset_summary(evaluated, "ETH"),
         },
         "bucket_stats": bucket_stats,
+        "consideration": consideration,
+        "freshness": freshness,
+        "errors": errors,
     }
 
 
 def render_shadow_report(report: dict[str, Any], *, telegram: bool = False) -> str:
+    consideration = report.get("consideration") or {"evaluated_count": 0, "considered_count": 0, "dead_zone_count": 0}
+    freshness = report.get("freshness") or {}
+
+    def _freshness_line(asset: str) -> str:
+        status = freshness.get(asset) or {}
+        latest_bar = status.get("latest_bar")
+        age_hours = status.get("age_hours")
+        is_stale = status.get("is_stale")
+        if latest_bar is None or age_hours is None:
+            return f"{asset}: freshness unavailable"
+        freshness_label = "STALE" if is_stale else "fresh"
+        return f"{asset}: {freshness_label} | latest {pd.Timestamp(latest_bar).isoformat()} | age {float(age_hours):.2f}h"
+
     if not report["overall"]["count"]:
         prefix = "📊 *Crypto Accuracy*" if telegram else "Crypto Accuracy"
-        return (
-            f"{prefix}\n\n"
-            f"No recent shadow data in the last {report['hours']}h.\n"
-            "This scorecard requires recent actionable crypto signals with a fully closed next-hour outcome."
-        )
+        lines = [
+            prefix,
+            "",
+            f"Window: {report['hours']}h",
+            f"Inference Events Reviewed: {int(consideration['evaluated_count'])}",
+            f"Bot Would Have Considered: {int(consideration['considered_count'])} trades",
+            f"Dead Zone: {int(consideration['dead_zone_count'])}",
+            _freshness_line("BTC"),
+            _freshness_line("ETH"),
+        ]
+        if report.get("errors"):
+            lines.extend(["", f"Scorecard Warning: {report['errors'][0]}"])
+        else:
+            lines.extend(
+                [
+                    "",
+                    "No recent shadow outcomes with a fully closed next-hour bar.",
+                ]
+            )
+        return "\n".join(lines)
 
     overall = report["overall"]
     btc = report["by_asset"]["BTC"]
@@ -332,13 +444,20 @@ def render_shadow_report(report: dict[str, Any], *, telegram: bool = False) -> s
         "📊 *Crypto Accuracy*" if telegram else "Crypto Accuracy",
         "",
         f"Window: {report['hours']}h",
+        f"Inference Events Reviewed: {int(consideration['evaluated_count'])}",
+        f"Bot Would Have Considered: {int(consideration['considered_count'])} trades",
+        f"Dead Zone: {int(consideration['dead_zone_count'])}",
         f"Signals Evaluated: {overall['count']}",
         f"Overall Hit Rate: {float(overall['hit_rate']) * 100:.1f}%",
         f"Brier Score: {float(overall['brier_score']):.4f}",
         f"Virtual PnL: {float(overall['virtual_pnl_pct']):+.2f}% at BTC>{btc_yes:.4f}, ETH>{eth_yes:.3f}",
         f"BTC: {int(btc['count'])} signals | hit rate {float(btc['hit_rate'] or 0.0) * 100:.1f}% | pnl {float(btc['virtual_pnl_pct']):+.2f}%",
         f"ETH: {int(eth['count'])} signals | hit rate {float(eth['hit_rate'] or 0.0) * 100:.1f}% | pnl {float(eth['virtual_pnl_pct']):+.2f}%",
+        _freshness_line("BTC"),
+        _freshness_line("ETH"),
     ]
+    if report.get("errors"):
+        lines.append(f"Scorecard Warning: {report['errors'][0]}")
     if not telegram and report["bucket_stats"]:
         lines.append("")
         lines.append("Threshold Buckets:")
@@ -360,7 +479,6 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    load_dotenv(REPO_ROOT / ".env")
     args = _parse_args()
     report = build_shadow_report(
         hours=args.hours,
@@ -370,7 +488,7 @@ def main() -> int:
         eth_no=args.eth_no,
     )
     print(render_shadow_report(report, telegram=False))
-    return 0
+    return 2 if report.get("errors") else 0
 
 
 if __name__ == "__main__":

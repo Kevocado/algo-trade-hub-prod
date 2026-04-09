@@ -523,7 +523,7 @@ class TelegramNotifier:
                         "/positions",
                         "/trades",
                         "/crypto_scan *(or /cryptoscan; latest actionable crypto events from the last 24h)*",
-                        "/stats *(or /accuracy; shadow hit rate, Brier score, virtual PnL)*",
+                        "/stats *(or /accuracy; considered trades, Brier score, virtual PnL, data freshness)*",
                         "/help",
                     ]
                 )

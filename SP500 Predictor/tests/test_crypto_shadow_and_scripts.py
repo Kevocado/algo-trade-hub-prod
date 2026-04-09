@@ -52,6 +52,9 @@ def test_shadow_report_computes_hit_rate_brier_and_virtual_pnl(monkeypatch):
     report = shadow_performance.build_shadow_report(hours=24, btc_yes=0.55, btc_no=0.45, eth_yes=0.55, eth_no=0.45)
 
     assert report["overall"]["count"] == 2
+    assert report["consideration"]["evaluated_count"] == 2
+    assert report["consideration"]["considered_count"] == 2
+    assert report["consideration"]["dead_zone_count"] == 0
     assert report["overall"]["hit_rate"] == pytest.approx(1.0)
     assert report["overall"]["brier_score"] == pytest.approx(0.16)
     assert report["overall"]["virtual_pnl_pct"] == pytest.approx(1.5)
@@ -68,11 +71,18 @@ def test_shadow_report_handles_no_recent_data():
             "by_asset": {"BTC": {}, "ETH": {}},
             "thresholds": {"BTC": shadow_performance.ThresholdConfig(0.5751, 0.4249), "ETH": shadow_performance.ThresholdConfig(0.551, 0.449)},
             "bucket_stats": {},
+            "consideration": {"evaluated_count": 0, "considered_count": 0, "dead_zone_count": 0},
+            "freshness": {
+                "BTC": {"latest_bar": None, "age_hours": None, "is_stale": None},
+                "ETH": {"latest_bar": None, "age_hours": None, "is_stale": None},
+            },
+            "errors": [],
         },
         telegram=True,
     )
 
-    assert "No recent shadow data" in text
+    assert "Bot Would Have Considered: 0 trades" in text
+    assert "No recent shadow outcomes" in text
 
 
 def test_shadow_current_hour_utc_handles_aware_datetime():
@@ -81,6 +91,71 @@ def test_shadow_current_hour_utc_handles_aware_datetime():
     ts = shadow_performance._current_hour_utc(datetime(2026, 4, 9, 22, 17, tzinfo=timezone.utc))
 
     assert ts == pd.Timestamp("2026-04-09T22:00:00Z")
+
+
+def test_shadow_alpaca_config_reads_env_lazily(monkeypatch):
+    from scripts import shadow_performance
+
+    monkeypatch.setenv("ALPACA_API_KEY", "key-123")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "secret-456")
+    monkeypatch.setenv("ALPACA_DATA_API_BASE", "https://example.alpaca")
+
+    api_base, api_key, secret_key = shadow_performance._alpaca_config()
+
+    assert api_base == "https://example.alpaca"
+    assert api_key == "key-123"
+    assert secret_key == "secret-456"
+
+
+def test_shadow_report_counts_dead_zone_and_reports_freshness(monkeypatch):
+    from scripts import shadow_performance
+
+    rows = [
+        {
+            "asset": "BTC",
+            "created_at": "2026-04-09T03:30:00+00:00",
+            "source_market_ticker": "BTC-A",
+            "desired_side": "YES",
+            "status": "signal_detected",
+            "model_probability_yes": 0.60,
+            "payload": {},
+        },
+        {
+            "asset": "ETH",
+            "created_at": "2026-04-09T03:40:00+00:00",
+            "source_market_ticker": "ETH-B",
+            "desired_side": None,
+            "status": "inference_heartbeat",
+            "model_probability_yes": 0.50,
+            "payload": {},
+        },
+    ]
+
+    monkeypatch.setattr(shadow_performance, "fetch_recent_signal_events", lambda **_kwargs: rows)
+    monkeypatch.setattr(
+        shadow_performance,
+        "_current_hour_utc",
+        lambda reference=None: pd.Timestamp("2026-04-09T05:00:00Z"),
+    )
+
+    def fake_fetch(asset, *, start, end):
+        if asset == "BTC":
+            index = pd.to_datetime(["2026-04-09T02:00:00Z", "2026-04-09T03:00:00Z"], utc=True)
+            return pd.DataFrame({"Close": [100.0, 101.0]}, index=index)
+        index = pd.to_datetime(["2026-04-09T02:00:00Z", "2026-04-09T03:00:00Z"], utc=True)
+        return pd.DataFrame({"Close": [200.0, 200.0]}, index=index)
+
+    monkeypatch.setattr(shadow_performance, "_fetch_alpaca_hourly_closes", fake_fetch)
+
+    report = shadow_performance.build_shadow_report(hours=24, btc_yes=0.55, btc_no=0.45, eth_yes=0.55, eth_no=0.45)
+    text = shadow_performance.render_shadow_report(report, telegram=False)
+
+    assert report["consideration"]["evaluated_count"] == 2
+    assert report["consideration"]["considered_count"] == 1
+    assert report["consideration"]["dead_zone_count"] == 1
+    assert "Bot Would Have Considered: 1 trades" in text
+    assert "Dead Zone: 1" in text
+    assert "BTC: fresh" in text
 
 
 def test_force_demo_trade_rejects_non_demo(monkeypatch):
