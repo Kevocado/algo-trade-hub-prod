@@ -34,6 +34,13 @@ KALSHI_TRADE_API_V2_BASE = resolve_kalshi_runtime_settings().api_base
 POLL_INTERVAL = int(os.getenv("TELEGRAM_POLL_INTERVAL_S", "5"))
 
 
+def _escape_markdown_text(value: Any) -> str:
+    text = str(value or "")
+    for char in ("\\", "_", "*", "`", "["):
+        text = text.replace(char, f"\\{char}")
+    return text
+
+
 class TelegramNotifier:
     def __init__(self) -> None:
         self.bot_token = BOT_TOKEN
@@ -464,7 +471,9 @@ class TelegramNotifier:
             ticker = row.get("resolved_ticker") or row.get("source_market_ticker") or row.get("asset") or "unresolved"
             skip_or_exec = row.get("skip_reason") or row.get("execution_status") or "live"
             lines.append(
-                f"• *{label}*: `{ticker}` | {row.get('desired_side') or '?'} | {status} | {skip_or_exec} | edge={float(row.get('edge') or 0):+.3f} | P(YES)={float(row.get('model_probability_yes') or 0):.3f}"
+                f"• *{label}*: `{_escape_markdown_text(ticker)}` | {_escape_markdown_text(row.get('desired_side') or '?')} | "
+                f"`{_escape_markdown_text(status)}` | `{_escape_markdown_text(skip_or_exec)}` | "
+                f"edge={float(row.get('edge') or 0):+.3f} | P(YES)={float(row.get('model_probability_yes') or 0):.3f}"
             )
             rendered += 1
         if rendered == 0:

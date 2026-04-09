@@ -312,6 +312,8 @@ class TestTelegramCommands:
         assert "Last Failed Trade" in text
         assert "KXETHY-27JAN0100-B1125" in text
         assert "KXBTCY-27JAN0100-B92500" in text
+        assert "`near\\_miss`" in text
+        assert "`edge\\_below\\_threshold`" in text
 
     def test_crypto_scan_handles_no_actionable_events(self):
         from src.telegram_notifier import TelegramNotifier
