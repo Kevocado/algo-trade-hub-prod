@@ -100,6 +100,7 @@ def reset_crypto_state(monkeypatch):
     orchestrator._DEEP_AUDIT_EVAL_COUNTER.clear()
     orchestrator._FEATURE_RUNNING_STATS.clear()
     orchestrator._DATA_CRITICAL_ALERT_LAST_HOUR.clear()
+    orchestrator._STALE_DATA_ALERT_LAST_HOUR.clear()
     monkeypatch.setattr(orchestrator, "supa", None)
     monkeypatch.setattr(orchestrator, "log_to_supabase", lambda *args, **kwargs: None)
     monkeypatch.setattr(orchestrator, "CRYPTO_ALPACA_VOLUME_MULTIPLIER", 1.0)
@@ -660,9 +661,10 @@ def test_merge_crypto_bar_sources_prefers_primary_on_overlap():
 
 
 def test_fetch_alpaca_crypto_bars_backfills_when_live_history_short(monkeypatch):
-    short_index = pd.date_range("2026-01-01", periods=168, freq="h", tz="UTC")
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    short_index = pd.date_range(now - timedelta(hours=167), periods=168, freq="h", tz="UTC")
     live_close = np.linspace(90000.0, 92000.0, len(short_index))
-    historical_index = pd.date_range("2025-12-20", periods=260, freq="h", tz="UTC")
+    historical_index = pd.date_range(now - timedelta(hours=427), periods=260, freq="h", tz="UTC")
     historical_close = np.linspace(85000.0, 91000.0, len(historical_index))
 
     live_frame = pd.DataFrame(
@@ -727,7 +729,8 @@ def test_fetch_alpaca_crypto_bars_backfills_when_live_history_short(monkeypatch)
 
 
 def test_fetch_alpaca_crypto_bars_applies_volume_multiplier(monkeypatch):
-    index = pd.date_range("2026-01-01", periods=220, freq="h", tz="UTC")
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    index = pd.date_range(now - timedelta(hours=219), periods=220, freq="h", tz="UTC")
     live_frame = pd.DataFrame(
         {
             "Open": np.linspace(90000.0, 92000.0, len(index)),
@@ -811,7 +814,8 @@ def test_alpaca_bars_to_frame_raises_when_volume_missing(caplog):
 
 
 def test_fetch_alpaca_crypto_bars_uses_symbol_fallback(monkeypatch, caplog):
-    index = pd.date_range("2026-01-01", periods=220, freq="h", tz="UTC")
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    index = pd.date_range(now - timedelta(hours=219), periods=220, freq="h", tz="UTC")
     live_frame = pd.DataFrame(
         {
             "Open": np.linspace(90000.0, 92000.0, len(index)),
@@ -866,6 +870,122 @@ def test_fetch_alpaca_crypto_bars_uses_symbol_fallback(monkeypatch, caplog):
     assert any("recovered with fallback symbol=BTCUSD" in record.getMessage() for record in caplog.records)
 
 
+def test_fetch_alpaca_crypto_bars_paginates_until_recent_data(monkeypatch, caplog):
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    page_one_index = pd.date_range(now - timedelta(hours=260), periods=100, freq="h", tz="UTC")
+    page_two_index = pd.date_range(now - timedelta(hours=160), periods=100, freq="h", tz="UTC")
+    page_three_index = pd.date_range(now - timedelta(hours=60), periods=60, freq="h", tz="UTC")
+
+    def _bars(index, base_close):
+        return [
+            {
+                "t": ts.isoformat(),
+                "o": float(base_close + idx),
+                "h": float(base_close + idx + 5.0),
+                "l": float(base_close + idx - 5.0),
+                "c": float(base_close + idx + 1.0),
+                "v": float(100.0 + idx),
+            }
+            for idx, ts in enumerate(index)
+        ]
+
+    payloads = [
+        {"bars": {"BTC/USD": _bars(page_one_index, 90000.0)}, "next_page_token": "page-2"},
+        {"bars": {"BTC/USD": _bars(page_two_index, 90500.0)}, "next_page_token": "page-3"},
+        {"bars": {"BTC/USD": _bars(page_three_index, 91000.0)}, "next_page_token": None},
+    ]
+    requested_page_tokens = []
+
+    monkeypatch.setattr(orchestrator, "ALPACA_API_KEY", "key")
+    monkeypatch.setattr(orchestrator, "ALPACA_SECRET_KEY", "secret")
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class FakeRequests:
+        @staticmethod
+        def get(*_args, **kwargs):
+            requested_page_tokens.append(kwargs["params"].get("page_token"))
+            return FakeResponse(payloads[len(requested_page_tokens) - 1])
+
+    monkeypatch.setitem(sys.modules, "requests", FakeRequests)
+
+    with caplog.at_level(logging.INFO):
+        frame = orchestrator._fetch_alpaca_crypto_bars("BTC", lookback_hours=220)
+
+    assert requested_page_tokens == [None, "page-2", "page-3"]
+    assert frame.index.max() == page_three_index.max()
+    assert any("[CRYPTO BAR WINDOW]" in record.getMessage() for record in caplog.records)
+
+
+def test_fetch_alpaca_crypto_bars_raises_data_recency_error_and_alerts(monkeypatch):
+    stale_index = pd.date_range("2026-01-01", periods=220, freq="h", tz="UTC")
+    stale_frame = [
+        {
+            "t": ts.isoformat(),
+            "o": float(90000.0 + idx),
+            "h": float(90010.0 + idx),
+            "l": float(89990.0 + idx),
+            "c": float(90005.0 + idx),
+            "v": float(100.0 + idx),
+        }
+        for idx, ts in enumerate(stale_index)
+    ]
+    supabase_calls = []
+    alerts = []
+
+    monkeypatch.setattr(orchestrator, "ALPACA_API_KEY", "key")
+    monkeypatch.setattr(orchestrator, "ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setattr(
+        orchestrator,
+        "log_to_supabase",
+        lambda module, message, level="INFO", context=None: supabase_calls.append(
+            {"module": module, "message": message, "level": level, "context": context}
+        ),
+    )
+
+    class FakeNotifier:
+        def is_enabled(self):
+            return True
+
+        async def alert_crypto_stale_data(self, **kwargs):
+            alerts.append(kwargs)
+            return True
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"bars": {"BTC/USD": stale_frame}, "next_page_token": None}
+
+    class FakeRequests:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setitem(sys.modules, "requests", FakeRequests)
+    monkeypatch.setattr(orchestrator, "_load_async_telegram_notifier", lambda: FakeNotifier)
+
+    with pytest.raises(orchestrator.DataRecencyError, match="stale by"):
+        orchestrator._fetch_alpaca_crypto_bars("BTC", lookback_hours=220)
+
+    assert len(alerts) == 1
+    assert alerts[0]["asset"] == "BTC"
+    assert alerts[0]["market_ticker"] == "BTC/USD"
+    stale_logs = [call for call in supabase_calls if call["module"] == "orchestrator.crypto_data_quality"]
+    assert len(stale_logs) == 1
+    assert stale_logs[0]["context"]["audit_kind"] == "stale_data"
+    assert stale_logs[0]["context"]["requested_symbol"] == "BTC/USD"
+
+
 def test_fetch_yfinance_crypto_bars_raises_clear_error_when_dependency_missing(monkeypatch):
     import builtins
 
@@ -883,9 +1003,10 @@ def test_fetch_yfinance_crypto_bars_raises_clear_error_when_dependency_missing(m
 
 
 def test_fetch_alpaca_crypto_bars_logs_when_merged_history_still_short(monkeypatch, caplog):
-    short_index = pd.date_range("2026-01-01", periods=168, freq="h", tz="UTC")
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    short_index = pd.date_range(now - timedelta(hours=167), periods=168, freq="h", tz="UTC")
     live_close = np.linspace(90000.0, 92000.0, len(short_index))
-    historical_index = pd.date_range("2025-12-25", periods=20, freq="h", tz="UTC")
+    historical_index = pd.date_range(now - timedelta(hours=186), periods=20, freq="h", tz="UTC")
     historical_close = np.linspace(85000.0, 85500.0, len(historical_index))
 
     live_frame = pd.DataFrame(

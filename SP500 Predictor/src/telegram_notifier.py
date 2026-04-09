@@ -206,6 +206,29 @@ class TelegramNotifier:
             )
         )
 
+    async def alert_crypto_stale_data(
+        self,
+        *,
+        asset: str,
+        market_ticker: str,
+        latest_bar_timestamp: str,
+        age_hours: float,
+    ) -> bool:
+        return await self.send_message(
+            "\n".join(
+                [
+                    "🚨 *CRITICAL: STALE DATA*",
+                    "",
+                    f"Asset: *{asset}*",
+                    f"Symbol: `{market_ticker}`",
+                    f"Latest Bar: `{latest_bar_timestamp}`",
+                    f"Age Hours: *{age_hours:.2f}*",
+                    "Live Alpaca hourly bars are too old for safe crypto inference.",
+                    f"⏰ {datetime.now(timezone.utc).strftime('%H:%M UTC')}",
+                ]
+            )
+        )
+
     async def alert_crypto_trade_failed(self, *, asset: str, market_ticker: str, reason: str) -> bool:
         return await self.send_message(
             "\n".join(

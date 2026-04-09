@@ -166,6 +166,11 @@ _DEEP_AUDIT_FOCUS_FEATURES = (
 )
 _FEATURE_RUNNING_STATS: dict[str, dict[str, dict[str, float]]] = {}
 _DATA_CRITICAL_ALERT_LAST_HOUR: dict[str, str] = {}
+_STALE_DATA_ALERT_LAST_HOUR: dict[str, str] = {}
+
+
+class DataRecencyError(RuntimeError):
+    pass
 
 # ── pgvector RAG is handled via news_rag.query_news() — no local DB client needed ──
 
@@ -866,6 +871,22 @@ def _alpaca_bars_from_payload(payload: dict[str, Any], requested_symbol: str) ->
     return []
 
 
+def _latest_alpaca_page_timestamp(bars: list[Any]) -> Optional[pd.Timestamp]:
+    if not bars:
+        return None
+    latest_timestamp: Optional[pd.Timestamp] = None
+    for bar in bars:
+        timestamp = _alpaca_bar_value(bar, "t", "timestamp")
+        if timestamp is None:
+            continue
+        parsed = pd.to_datetime(timestamp, utc=True, errors="coerce")
+        if pd.isna(parsed):
+            continue
+        if latest_timestamp is None or parsed > latest_timestamp:
+            latest_timestamp = parsed
+    return latest_timestamp
+
+
 def _alpaca_bars_to_frame(*, asset: str, requested_symbol: str, bars: list[Any]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for bar in bars:
@@ -901,6 +922,98 @@ def _alpaca_bars_to_frame(*, asset: str, requested_symbol: str, bars: list[Any])
     for column in required_cols:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     return frame[required_cols].dropna()
+
+
+def _record_stale_data_event(
+    *,
+    asset: str,
+    requested_symbol: str,
+    latest_bar_timestamp: pd.Timestamp,
+    age_hours: float,
+    bars_frame: pd.DataFrame,
+) -> None:
+    log_to_supabase(
+        "orchestrator.crypto_data_quality",
+        (
+            f"asset={asset} symbol={requested_symbol} stale data "
+            f"latest_bar={latest_bar_timestamp.isoformat()} age_hours={age_hours:.2f}"
+        ),
+        level="CRITICAL",
+        context={
+            "audit_kind": "stale_data",
+            "asset": asset,
+            "requested_symbol": requested_symbol,
+            "reason": "stale_alpaca_crypto_bars",
+            "latest_bar_timestamp_utc": latest_bar_timestamp.isoformat(),
+            "age_hours": age_hours,
+            "bar_window": {
+                "start_timestamp_utc": bars_frame.index.min().isoformat(),
+                "end_timestamp_utc": bars_frame.index.max().isoformat(),
+                "row_count": len(bars_frame),
+            },
+            "latest_bar": {
+                "Open": float(bars_frame.iloc[-1]["Open"]),
+                "High": float(bars_frame.iloc[-1]["High"]),
+                "Low": float(bars_frame.iloc[-1]["Low"]),
+                "Close": float(bars_frame.iloc[-1]["Close"]),
+                "Volume": float(bars_frame.iloc[-1]["Volume"]),
+            },
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+def _should_send_stale_data_alert(asset: str, latest_bar_timestamp: pd.Timestamp) -> bool:
+    hour_key = latest_bar_timestamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
+    asset_key = asset.upper()
+    if _STALE_DATA_ALERT_LAST_HOUR.get(asset_key) == hour_key:
+        return False
+    _STALE_DATA_ALERT_LAST_HOUR[asset_key] = hour_key
+    return True
+
+
+def _emit_stale_data_critical(
+    *,
+    asset: str,
+    requested_symbol: str,
+    bars_frame: pd.DataFrame,
+    latest_bar_timestamp: pd.Timestamp,
+    age_hours: float,
+) -> None:
+    log.critical(
+        "[CRITICAL: STALE DATA] asset=%s symbol=%s latest_bar=%s age_hours=%.2f",
+        asset,
+        requested_symbol,
+        latest_bar_timestamp.isoformat(),
+        age_hours,
+    )
+    _record_stale_data_event(
+        asset=asset,
+        requested_symbol=requested_symbol,
+        latest_bar_timestamp=latest_bar_timestamp,
+        age_hours=age_hours,
+        bars_frame=bars_frame,
+    )
+    if not _should_send_stale_data_alert(asset, latest_bar_timestamp):
+        return
+    try:
+        notifier_cls = _load_async_telegram_notifier()
+        notifier = notifier_cls()
+        if notifier.is_enabled():
+            coroutine = notifier.alert_crypto_stale_data(
+                asset=asset,
+                market_ticker=requested_symbol,
+                latest_bar_timestamp=latest_bar_timestamp.isoformat(),
+                age_hours=age_hours,
+            )
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(coroutine)
+            else:
+                _schedule_async_notification(coroutine)
+    except Exception as exc:
+        log.error("STALE DATA Telegram alert failed: %s", exc)
 
 
 def _fetch_yfinance_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATURE_LOOKBACK_HOURS) -> pd.DataFrame:
@@ -946,35 +1059,52 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=max(lookback_hours, 240))
     url = f"{ALPACA_DATA_API_BASE}/v1beta3/crypto/us/bars"
+    required_bars = max(lookback_hours, CRYPTO_MIN_FEATURE_BARS)
     frame: Optional[pd.DataFrame] = None
     selected_symbol: Optional[str] = None
     last_error: Optional[Exception] = None
     for index, symbol in enumerate(symbols):
         try:
-            response = requests.get(
-                url,
-                headers={
-                    "accept": "application/json",
-                    "APCA-API-KEY-ID": ALPACA_API_KEY,
-                    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
-                },
-                params={
+            accumulated_bars: list[Any] = []
+            next_page_token: Optional[str] = None
+            target_recent_threshold = end - timedelta(hours=2)
+            while True:
+                params = {
                     "symbols": symbol,
                     "timeframe": "1Hour",
                     "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "limit": max(lookback_hours + 24, 300),
+                    "limit": min(max(required_bars + 24, 300), 1000),
                     "sort": "asc",
-                },
-                timeout=15,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            bars = _alpaca_bars_from_payload(payload, symbol)
-            _log_alpaca_payload_audit(asset, symbol, payload, bars)
-            if not bars:
+                }
+                if next_page_token:
+                    params["page_token"] = next_page_token
+                response = requests.get(
+                    url,
+                    headers={
+                        "accept": "application/json",
+                        "APCA-API-KEY-ID": ALPACA_API_KEY,
+                        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+                    },
+                    params=params,
+                    timeout=15,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                bars = _alpaca_bars_from_payload(payload, symbol)
+                _log_alpaca_payload_audit(asset, symbol, payload, bars)
+                accumulated_bars.extend(bars)
+                next_page_token = payload.get("next_page_token")
+                latest_page_timestamp = _latest_alpaca_page_timestamp(accumulated_bars)
+                if not next_page_token:
+                    break
+                if latest_page_timestamp is not None and latest_page_timestamp >= target_recent_threshold:
+                    break
+                if latest_page_timestamp is not None and len(accumulated_bars) >= required_bars and latest_page_timestamp >= end - timedelta(hours=1):
+                    break
+            if not accumulated_bars:
                 raise ValueError(f"Alpaca returned no hourly crypto bars for {symbol}")
-            frame = _alpaca_bars_to_frame(asset=asset, requested_symbol=symbol, bars=bars)
+            frame = _alpaca_bars_to_frame(asset=asset, requested_symbol=symbol, bars=accumulated_bars)
             selected_symbol = symbol
             if index > 0:
                 log.warning("[CRYPTO ALPACA PAYLOAD] asset=%s recovered with fallback symbol=%s", asset, symbol)
@@ -995,6 +1125,29 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
         raise ValueError("CRYPTO_ALPACA_VOLUME_MULTIPLIER must be positive.")
     if CRYPTO_ALPACA_VOLUME_MULTIPLIER != 1.0:
         frame["Volume"] = frame["Volume"] * CRYPTO_ALPACA_VOLUME_MULTIPLIER
+    log.info(
+        "[CRYPTO BAR WINDOW] asset=%s symbol=%s start_timestamp=%s end_timestamp=%s row_count=%s",
+        asset,
+        selected_symbol,
+        frame.index.min().isoformat(),
+        frame.index.max().isoformat(),
+        len(frame),
+    )
+    latest_bar_timestamp = frame.index.max()
+    age = datetime.now(timezone.utc) - latest_bar_timestamp.to_pydatetime()
+    if age > timedelta(hours=2):
+        age_hours = age.total_seconds() / 3600.0
+        _emit_stale_data_critical(
+            asset=asset,
+            requested_symbol=selected_symbol,
+            bars_frame=frame,
+            latest_bar_timestamp=latest_bar_timestamp,
+            age_hours=age_hours,
+        )
+        raise DataRecencyError(
+            f"Latest Alpaca bar for {selected_symbol} is stale by {age_hours:.2f} hours "
+            f"(latest={latest_bar_timestamp.isoformat()})"
+        )
     if len(frame) < CRYPTO_MIN_FEATURE_BARS:
         log.info(
             "[CRYPTO EDGE] Alpaca returned only %s hourly bars for %s; attempting yfinance backfill to reach %s bars.",
@@ -1004,7 +1157,7 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
         )
         try:
             historical = _fetch_yfinance_crypto_bars(asset, lookback_hours=lookback_hours)
-            merged = _merge_crypto_bar_sources(frame, historical, required_bars=max(lookback_hours, CRYPTO_MIN_FEATURE_BARS))
+            merged = _merge_crypto_bar_sources(frame, historical, required_bars=required_bars)
             if len(merged) >= CRYPTO_MIN_FEATURE_BARS:
                 log.info(
                     "[CRYPTO EDGE] Backfilled %s hourly bars via yfinance (%s Alpaca + %s merged).",

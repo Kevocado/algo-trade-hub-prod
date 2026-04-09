@@ -21,7 +21,7 @@ from shared.crypto_features import CANONICAL_CRYPTO_FEATURES, build_features
 
 AUDIT_MODULE = "orchestrator.crypto_feature_audit"
 AUDIT_KIND = "feature_distribution_snapshot"
-DEFAULT_COMPARE_HOURS = 24
+DEFAULT_COMPARE_HOURS = 1
 DEFAULT_WARMUP_HOURS = 21 * 24
 RED_FLAG_THRESHOLD = 1.5
 ASSET_SYMBOLS = {"BTC": "BTC-USD", "ETH": "ETH-USD"}
@@ -104,7 +104,7 @@ def fetch_training_feature_frame(
     frame.index = pd.to_datetime(frame.index, utc=True)
     frame = frame[["Open", "High", "Low", "Close", "Volume"]].apply(pd.to_numeric, errors="coerce").dropna()
     frame = frame.loc[(frame.index >= start) & (frame.index <= end)]
-    features = build_features(frame, is_live_inference=True)
+    features = build_features(frame, asset=asset, is_live_inference=True)
     if features.empty:
         raise RuntimeError(f"Unable to build training baseline features for {asset}")
     cutoff = features.index.max() - timedelta(hours=compare_hours - 1)

@@ -102,7 +102,47 @@ def test_fetch_live_audit_snapshots_extracts_feature_vectors():
         },
     ]
 
-    frames = module.fetch_live_audit_snapshots(_FakeSupabase(rows), hours=24)
+    frames = module.fetch_live_audit_snapshots(_FakeSupabase(rows), hours=1)
 
     assert frames["BTC"].iloc[0]["Close"] == 100.0
     assert frames["ETH"].iloc[0]["Volume"] == 350.0
+
+
+def test_default_compare_window_is_one_hour():
+    module = _load_audit_module()
+
+    assert module.DEFAULT_COMPARE_HOURS == 1
+
+
+def test_fetch_training_feature_frame_passes_asset_to_build_features(monkeypatch):
+    module = _load_audit_module()
+    captured = {}
+    fake_index = pd.date_range("2026-04-08T00:00:00Z", periods=230, freq="h")
+    fake_bars = pd.DataFrame(
+        {
+            "Open": [100.0] * len(fake_index),
+            "High": [101.0] * len(fake_index),
+            "Low": [99.0] * len(fake_index),
+            "Close": [100.5] * len(fake_index),
+            "Volume": [250.0] * len(fake_index),
+        },
+        index=fake_index,
+    )
+
+    monkeypatch.setattr(module.yf, "download", lambda *args, **kwargs: fake_bars)
+
+    def fake_build_features(frame, *, asset=None, is_live_inference=False, include_target=False):
+        captured["asset"] = asset
+        captured["is_live_inference"] = is_live_inference
+        return pd.DataFrame(
+            [{name: 1.0 for name in module.CANONICAL_CRYPTO_FEATURES}],
+            index=[fake_index[-1]],
+        )
+
+    monkeypatch.setattr(module, "build_features", fake_build_features)
+
+    frame = module.fetch_training_feature_frame("ETH", compare_hours=1, warmup_hours=24)
+
+    assert not frame.empty
+    assert captured["asset"] == "ETH"
+    assert captured["is_live_inference"] is True
