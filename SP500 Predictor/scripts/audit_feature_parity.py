@@ -21,10 +21,12 @@ from shared.crypto_features import CANONICAL_CRYPTO_FEATURES, build_features
 
 AUDIT_MODULE = "orchestrator.crypto_feature_audit"
 AUDIT_KIND = "feature_distribution_snapshot"
-DEFAULT_COMPARE_HOURS = 1
+DEFAULT_LIVE_HOURS = 1
+DEFAULT_TRAIN_HOURS = 24
 DEFAULT_WARMUP_HOURS = 21 * 24
 RED_FLAG_THRESHOLD = 1.5
 ASSET_SYMBOLS = {"BTC": "BTC-USD", "ETH": "ETH-USD"}
+SUCCESS_FEATURES = ("Volume", "force_idx")
 
 
 def load_env() -> None:
@@ -42,7 +44,7 @@ def create_supabase_client():
 def fetch_live_audit_snapshots(
     supa: Any,
     *,
-    hours: int = DEFAULT_COMPARE_HOURS,
+    hours: int = DEFAULT_LIVE_HOURS,
 ) -> dict[str, pd.DataFrame]:
     cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     result = (
@@ -80,7 +82,7 @@ def fetch_live_audit_snapshots(
 def fetch_training_feature_frame(
     asset: str,
     *,
-    compare_hours: int = DEFAULT_COMPARE_HOURS,
+    train_hours: int = DEFAULT_TRAIN_HOURS,
     warmup_hours: int = DEFAULT_WARMUP_HOURS,
 ) -> pd.DataFrame:
     symbol = ASSET_SYMBOLS.get(asset.upper())
@@ -88,7 +90,7 @@ def fetch_training_feature_frame(
         raise ValueError(f"Unsupported asset for training baseline: {asset}")
 
     end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    start = end - timedelta(hours=compare_hours + warmup_hours)
+    start = end - timedelta(hours=train_hours + warmup_hours)
     frame = yf.download(
         symbol,
         start=start.strftime("%Y-%m-%d"),
@@ -107,7 +109,7 @@ def fetch_training_feature_frame(
     features = build_features(frame, asset=asset, is_live_inference=True)
     if features.empty:
         raise RuntimeError(f"Unable to build training baseline features for {asset}")
-    cutoff = features.index.max() - timedelta(hours=compare_hours - 1)
+    cutoff = features.index.max() - timedelta(hours=train_hours - 1)
     return features.loc[features.index >= cutoff, CANONICAL_CRYPTO_FEATURES]
 
 
@@ -166,20 +168,31 @@ def print_asset_report(asset: str, drift_table: pd.DataFrame) -> None:
     print("\nRed Flag features (> 1.5):")
     if red_flags.empty:
         print("  none")
-        return
-    for row in red_flags.itertuples(index=False):
-        print(f"  {row.feature}: drift={format_drift_value(row.drift_score)}")
+    else:
+        for row in red_flags.itertuples(index=False):
+            print(f"  {row.feature}: drift={format_drift_value(row.drift_score)}")
+
+    print("\nCalibration targets:")
+    for feature in SUCCESS_FEATURES:
+        feature_rows = drift_table.loc[drift_table["feature"] == feature]
+        if feature_rows.empty:
+            print(f"  {feature}: unavailable")
+            continue
+        drift_score = float(feature_rows.iloc[0]["drift_score"])
+        status = "PASS" if math.isfinite(drift_score) and drift_score < 1.0 else "CHECK"
+        print(f"  {feature}: drift={format_drift_value(drift_score)} [{status}]")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Audit crypto live-vs-training feature parity.")
-    parser.add_argument("--hours", type=int, default=DEFAULT_COMPARE_HOURS, help="Lookback window for live snapshots.")
+    parser.add_argument("--live-hours", type=int, default=DEFAULT_LIVE_HOURS, help="Lookback window for live snapshots.")
+    parser.add_argument("--train-hours", type=int, default=DEFAULT_TRAIN_HOURS, help="Window used for training baseline distribution stats.")
     parser.add_argument("--warmup-hours", type=int, default=DEFAULT_WARMUP_HOURS, help="Warmup hours for training baseline features.")
     args = parser.parse_args()
 
     load_env()
     supa = create_supabase_client()
-    live_frames = fetch_live_audit_snapshots(supa, hours=args.hours)
+    live_frames = fetch_live_audit_snapshots(supa, hours=args.live_hours)
     if not live_frames:
         raise RuntimeError("No live audit snapshots found in agent_logs for the requested window.")
 
@@ -189,7 +202,7 @@ def main() -> None:
             print(f"\n=== {asset} Feature Drift ===")
             print("No live audit snapshots found.")
             continue
-        train_frame = fetch_training_feature_frame(asset, compare_hours=args.hours, warmup_hours=args.warmup_hours)
+        train_frame = fetch_training_feature_frame(asset, train_hours=args.train_hours, warmup_hours=args.warmup_hours)
         drift_table = compute_drift_table(live_frame, train_frame)
         print_asset_report(asset, drift_table)
 

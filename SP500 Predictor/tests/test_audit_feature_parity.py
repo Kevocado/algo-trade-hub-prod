@@ -108,10 +108,11 @@ def test_fetch_live_audit_snapshots_extracts_feature_vectors():
     assert frames["ETH"].iloc[0]["Volume"] == 350.0
 
 
-def test_default_compare_window_is_one_hour():
+def test_default_audit_windows():
     module = _load_audit_module()
 
-    assert module.DEFAULT_COMPARE_HOURS == 1
+    assert module.DEFAULT_LIVE_HOURS == 1
+    assert module.DEFAULT_TRAIN_HOURS == 24
 
 
 def test_fetch_training_feature_frame_passes_asset_to_build_features(monkeypatch):
@@ -141,8 +142,21 @@ def test_fetch_training_feature_frame_passes_asset_to_build_features(monkeypatch
 
     monkeypatch.setattr(module, "build_features", fake_build_features)
 
-    frame = module.fetch_training_feature_frame("ETH", compare_hours=1, warmup_hours=24)
+    frame = module.fetch_training_feature_frame("ETH", train_hours=24, warmup_hours=24)
 
     assert not frame.empty
     assert captured["asset"] == "ETH"
     assert captured["is_live_inference"] is True
+
+
+def test_compute_drift_table_stays_finite_with_variable_training_distribution():
+    module = _load_audit_module()
+    live_frame = pd.DataFrame({"Volume": [110.0, 120.0], "force_idx": [9.0, 12.0]})
+    train_frame = pd.DataFrame({"Volume": [90.0, 100.0, 110.0, 120.0], "force_idx": [4.0, 6.0, 8.0, 10.0]})
+
+    drift_table = module.compute_drift_table(live_frame, train_frame)
+
+    volume_row = drift_table.loc[drift_table["feature"] == "Volume"].iloc[0]
+    force_idx_row = drift_table.loc[drift_table["feature"] == "force_idx"].iloc[0]
+    assert math.isfinite(volume_row["drift_score"])
+    assert math.isfinite(force_idx_row["drift_score"])
