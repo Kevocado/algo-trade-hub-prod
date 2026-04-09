@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+import requests
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if REPO_ROOT not in sys.path:
@@ -101,6 +102,7 @@ def reset_crypto_state(monkeypatch):
     orchestrator._FEATURE_RUNNING_STATS.clear()
     orchestrator._DATA_CRITICAL_ALERT_LAST_HOUR.clear()
     orchestrator._STALE_DATA_ALERT_LAST_HOUR.clear()
+    orchestrator._MANUAL_TEST_OVERRIDES.clear()
     monkeypatch.setattr(orchestrator, "supa", None)
     monkeypatch.setattr(orchestrator, "log_to_supabase", lambda *args, **kwargs: None)
     monkeypatch.setattr(orchestrator, "CRYPTO_ALPACA_VOLUME_MULTIPLIER", 1.0)
@@ -757,7 +759,7 @@ def test_fetch_alpaca_crypto_bars_backfills_when_live_history_short(monkeypatch)
     merged = orchestrator._fetch_alpaca_crypto_bars("BTC", lookback_hours=220)
 
     assert len(merged) >= orchestrator.CRYPTO_MIN_FEATURE_BARS
-    assert merged.index.max() == live_frame.index.max()
+    assert merged.index.max() == live_frame.index.max() - timedelta(hours=1)
 
 
 def test_fetch_alpaca_crypto_bars_applies_volume_multiplier(monkeypatch):
@@ -811,7 +813,7 @@ def test_fetch_alpaca_crypto_bars_applies_volume_multiplier(monkeypatch):
     scaled = orchestrator._fetch_alpaca_crypto_bars("BTC", lookback_hours=200)
 
     assert scaled.iloc[0]["Volume"] == pytest.approx(live_frame.iloc[0]["Volume"] * 1000.0)
-    assert scaled.iloc[-1]["Volume"] == pytest.approx(live_frame.iloc[-1]["Volume"] * 1000.0)
+    assert scaled.iloc[-1]["Volume"] == pytest.approx(live_frame.iloc[-2]["Volume"] * 1000.0)
 
 
 def test_alpaca_bars_to_frame_supports_object_volume_attributes():
@@ -1099,7 +1101,7 @@ def test_fetch_alpaca_crypto_bars_logs_when_merged_history_still_short(monkeypat
             orchestrator._fetch_alpaca_crypto_bars("BTC", lookback_hours=220)
 
     messages = [record.getMessage() for record in caplog.records]
-    assert any("Alpaca returned only 168 hourly bars for BTC/USD" in message for message in messages)
+    assert any("Alpaca returned only 167 hourly bars for BTC/USD" in message for message in messages)
     assert any("merged history is still short" in message for message in messages)
 
 
@@ -1366,7 +1368,122 @@ def test_evaluate_crypto_edge_emits_zero_volume_data_critical_once_per_hour(monk
     assert len(critical_logs) == 2
     assert len(alerts) == 1
     assert alerts[0]["asset"] == "BTC"
-    assert alerts[0]["reason"] == "zero live volume after calibration"
+    assert alerts[0]["reason"] == "zero live volume on last closed hourly bar after calibration"
+
+
+def test_fetch_alpaca_crypto_bars_excludes_still_forming_hour(monkeypatch):
+    closed_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    last_closed = closed_hour - timedelta(hours=1)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "bars": {
+                    "ETH/USD": [
+                        {"t": last_closed.isoformat().replace("+00:00", "Z"), "o": 10, "h": 11, "l": 9, "c": 10.5, "v": 125},
+                        {"t": closed_hour.isoformat().replace("+00:00", "Z"), "o": 11, "h": 12, "l": 10, "c": 11.5, "v": 0},
+                    ]
+                }
+            }
+
+    monkeypatch.setattr(orchestrator, "ALPACA_API_KEY", "key")
+    monkeypatch.setattr(orchestrator, "ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setattr(orchestrator, "CRYPTO_MIN_FEATURE_BARS", 1)
+    monkeypatch.setattr(orchestrator, "_latest_closed_hour_utc", lambda reference=None: closed_hour)
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: FakeResponse())
+
+    frame = orchestrator._fetch_alpaca_crypto_bars("ETH", lookback_hours=4)
+
+    assert len(frame) == 1
+    assert frame.index.max() == pd.Timestamp(last_closed)
+    assert float(frame.iloc[-1]["Volume"]) == pytest.approx(125.0)
+
+
+def test_evaluate_crypto_edge_consumes_manual_test_override(monkeypatch):
+    ticker_message = {
+        "msg": {
+            "market_ticker": "KXETH-DUMMY",
+            "yes_bid_dollars": 0.49,
+            "yes_ask_dollars": 0.51,
+        }
+    }
+    recorded_events = []
+
+    monkeypatch.setattr(orchestrator, "load_crypto_models", lambda: (object(), object()))
+    feature_row = pd.DataFrame(
+        [[float(index) for index in range(len(CANONICAL_CRYPTO_FEATURES))]],
+        columns=CANONICAL_CRYPTO_FEATURES,
+        index=[pd.Timestamp("2026-01-01T12:00:00Z")],
+    )
+    monkeypatch.setattr(orchestrator, "_latest_crypto_feature_row", lambda *_args, **_kwargs: feature_row)
+    monkeypatch.setattr(orchestrator, "_model_yes_probability", lambda *_args, **_kwargs: 0.548)
+    monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
+    monkeypatch.setattr(orchestrator, "KALSHI_ENV", "demo")
+
+    ok, _message = orchestrator.request_manual_crypto_test("ETH")
+    assert ok is True
+
+    result = orchestrator.evaluate_crypto_edge(
+        {"ticker": ticker_message, "trade_signal": None, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    )
+
+    assert result["trade_signal"]["side"] == "YES"
+    assert result["trade_signal"]["probability_yes"] == pytest.approx(0.80)
+    assert result["trade_signal"]["raw"]["manual_test"] is True
+    assert result["trade_signal"]["raw"]["observed_probability_yes"] == pytest.approx(0.548)
+    assert recorded_events[0]["status"] == "signal_detected"
+    assert recorded_events[0]["payload"]["manual_test"] is True
+    assert orchestrator._MANUAL_TEST_OVERRIDES == {}
+
+
+def test_market_resolution_manual_test_near_miss_forces_notification(monkeypatch):
+    markets = [
+        {
+            "ticker": "KXETH-NEXT-3500",
+            "event_ticker": "KXETH-NEXT",
+            "title": "Ethereum price today at 11PM",
+            "close_time": _future_time(1),
+            "strike_price": 3500,
+        }
+    ]
+    recorded_events = []
+
+    monkeypatch.setattr(orchestrator, "_kalshi_get", lambda *_args, **_kwargs: {"markets": markets, "cursor": None})
+    monkeypatch.setattr(orchestrator, "_fetch_alpaca_spot_price", lambda asset: 3490.0 if asset == "ETH" else None)
+    monkeypatch.setattr(orchestrator, "_cooldown_allows_trade", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(orchestrator, "check_crypto_trade_switch", lambda: True)
+    monkeypatch.setattr(orchestrator, "_should_emit_near_miss_alert", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        orchestrator,
+        "_kalshi_orderbook_bbo_dollars",
+        lambda *_args, **_kwargs: {"yes_ask": 0.78, "yes_bid": 0.77, "no_ask": 0.22, "no_bid": 0.21},
+    )
+    monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
+
+    signal = {
+        "asset": "ETH",
+        "market_ticker": "KXETH-SOURCE",
+        "side": "YES",
+        "probability_yes": 0.80,
+        "price_dollars": 0.48,
+        "spot_price_dollars": None,
+        "resolved_ticker": None,
+        "edge": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "raw": {"manual_test": True, "manual_test_request": {"asset": "ETH"}},
+    }
+
+    result = orchestrator.market_resolution(
+        {"ticker": {}, "trade_signal": signal, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    )
+
+    assert result["execution_result"]["status"] == "skipped"
+    assert result["execution_result"]["notifications"][0]["kind"] == "near_miss"
+    assert result["execution_result"]["notifications"][0]["manual_test"] is True
+    assert any(event["status"] == "near_miss" and event["alert_sent"] is True for event in recorded_events)
 
 
 def test_evaluate_crypto_edge_records_no_usable_price_skip(monkeypatch):

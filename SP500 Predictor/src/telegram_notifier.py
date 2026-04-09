@@ -124,8 +124,11 @@ class TelegramNotifier:
         edge: float | None,
         price_dollars: float,
         reason: str,
+        manual_test: bool = False,
     ) -> bool:
         title = "🚨 *Crypto Near Miss*" if reason == "near_miss" else "💡 *Crypto Opportunity*"
+        if manual_test:
+            title = f"🧪 *[MANUAL TEST ORDER]* {'Crypto Near Miss' if reason == 'near_miss' else 'Crypto Opportunity'}"
         blocked_by = "Edge < 5%" if reason == "near_miss" else reason
         return await self.send_message(
             "\n".join(
@@ -154,11 +157,12 @@ class TelegramNotifier:
         edge: float,
         count: int,
         execution_result: dict[str, Any],
+        manual_test: bool = False,
     ) -> bool:
         return await self.send_message(
             "\n".join(
                 [
-                    "✅ *Crypto Demo Trade Executed*",
+                    "🧪 *[MANUAL TEST ORDER]* Crypto Demo Trade Executed" if manual_test else "✅ *Crypto Demo Trade Executed*",
                     "",
                     f"Asset: *{asset}*",
                     f"Market: `{market_ticker}`",
@@ -208,7 +212,7 @@ class TelegramNotifier:
                     f"Asset: *{asset}*",
                     f"Market: `{market_ticker}`",
                     f"Reason: `{reason}`",
-                    "Live volume is zero after calibration; crypto model input is invalid.",
+                    "The latest fully closed live hourly bar has zero volume after calibration; crypto model input is invalid.",
                     f"⏰ {datetime.now(timezone.utc).strftime('%H:%M UTC')}",
                 ]
             )
@@ -237,11 +241,11 @@ class TelegramNotifier:
             )
         )
 
-    async def alert_crypto_trade_failed(self, *, asset: str, market_ticker: str, reason: str) -> bool:
+    async def alert_crypto_trade_failed(self, *, asset: str, market_ticker: str, reason: str, manual_test: bool = False) -> bool:
         return await self.send_message(
             "\n".join(
                 [
-                    "❌ *Crypto Demo Trade Failed*",
+                    "🧪 *[MANUAL TEST ORDER]* Crypto Demo Trade Failed" if manual_test else "❌ *Crypto Demo Trade Failed*",
                     "",
                     f"Asset: *{asset}*",
                     f"Market: `{market_ticker}`",
@@ -251,11 +255,11 @@ class TelegramNotifier:
             )
         )
 
-    async def alert_crypto_trading_disabled(self, *, asset: str, market_ticker: str, reason: str) -> bool:
+    async def alert_crypto_trading_disabled(self, *, asset: str, market_ticker: str, reason: str, manual_test: bool = False) -> bool:
         return await self.send_message(
             "\n".join(
                 [
-                    "🚨 *Crypto Trading Disabled*",
+                    "🧪 *[MANUAL TEST ORDER]* Crypto Trading Disabled" if manual_test else "🚨 *Crypto Trading Disabled*",
                     "",
                     f"Asset: *{asset}*",
                     f"Market: `{market_ticker}`",
@@ -497,7 +501,8 @@ class TelegramNotifier:
         if from_chat_id != resolved_chat_id:
             return
 
-        cmd = command.strip().lower().split()[0]
+        parts = command.strip().split()
+        cmd = parts[0].lower() if parts else ""
         if cmd == "/help":
             await self.send_message(
                 "\n".join(
@@ -508,7 +513,8 @@ class TelegramNotifier:
                         "/balance",
                         "/positions",
                         "/trades",
-                        "/crypto_scan *(or /cryptoscan; latest signal/skip/fail summary)*",
+                        "/crypto_scan *(or /cryptoscan; latest actionable crypto events from the last 24h)*",
+                        "/test_trade `BTC|ETH` *(demo-only one-shot execution smoke test)*",
                         "/help",
                     ]
                 )
@@ -523,6 +529,13 @@ class TelegramNotifier:
             await self.send_message(await self._get_trades_text())
         elif cmd in {"/crypto_scan", "/cryptoscan", "/scan"}:
             await self.send_message(await self._get_crypto_scan_text())
+        elif cmd == "/test_trade":
+            asset = parts[1].upper() if len(parts) > 1 else ""
+            from market_sentiment_tool.backend import orchestrator as crypto_orchestrator
+
+            ok, message = crypto_orchestrator.request_manual_crypto_test(asset)
+            prefix = "🧪 *Manual Test Armed*" if ok else "⚠️ *Manual Test Rejected*"
+            await self.send_message(f"{prefix}\n\n{message}")
         else:
             await self.send_message(f"❓ Unknown command: `{cmd}`\nSend */help* for the list.")
 
