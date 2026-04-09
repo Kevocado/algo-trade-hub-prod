@@ -1,0 +1,204 @@
+{
+  "main": {
+    "id": "15386b8d999d6636",
+    "type": "split",
+    "children": [
+      {
+        "id": "34ebb527c778a333",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "9f741d8d107bb297",
+            "type": "leaf",
+            "state": {
+              "type": "graph",
+              "state": {},
+              "icon": "lucide-git-fork",
+              "title": "Graph view"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "b91178f47b3ab04c",
+    "type": "split",
+    "children": [
+      {
+        "id": "2c1beb8b079d85ad",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "5f8b25e37fcb8659",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "191f32aa61d61e0a",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "tag:#open-meteo",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "def61aeef10157d9",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ],
+        "currentTab": 1
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "d4de22fb30d8bcba",
+    "type": "split",
+    "children": [
+      {
+        "id": "82093fea5c02ee70",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "c01c817340e50d4e",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks"
+            }
+          },
+          {
+            "id": "2e1f576cb28450ac",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links"
+            }
+          },
+          {
+            "id": "64e959aa80790e57",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "a83c123e01e82622",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "056348b2229b740a",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "191f32aa61d61e0a",
+  "lastOpenFiles": [
+    "market_sentiment_tool/node_modules/abab/LICENSE.md",
+    "market_sentiment_tool/node_modules/tailwindcss-animate/README.md",
+    "SP500 Predictor/tests/__pycache__/test_obsidian_note_indexer.cpython-313-pytest-8.4.1.pyc",
+    "SP500 Predictor/tests/__pycache__/test_obsidian_note_indexer.cpython-313.pyc",
+    "scripts/__pycache__/index_obsidian_notes.cpython-313.pyc",
+    "scripts/__pycache__",
+    "SP500 Predictor/tests/test_obsidian_note_indexer.py",
+    "scripts/index_obsidian_notes.py",
+    "scripts",
+    "Weather/Settlement/NWS_Settlement_Rules.md",
+    "Weather/Research/Weather_Market_Research.md",
+    "Weather/Markets/Kalshi_Weather_Market_Mapping.md",
+    "Weather/Features/weather_features_schema.md",
+    "Weather/APIs/OpenMeteo_Ensemble_API.md",
+    "Weather/APIs/NWS_API_Spec.md",
+    "Weather/Settlement",
+    "Weather/Research",
+    "Weather/Markets",
+    "implementation_plan.md",
+    "task.md",
+    "AGENTS.md"
+  ]
+}
