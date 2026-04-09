@@ -191,6 +191,21 @@ class TelegramNotifier:
             )
         )
 
+    async def alert_crypto_data_critical(self, *, asset: str, market_ticker: str, reason: str) -> bool:
+        return await self.send_message(
+            "\n".join(
+                [
+                    "🚨 *DATA CRITICAL*",
+                    "",
+                    f"Asset: *{asset}*",
+                    f"Market: `{market_ticker}`",
+                    f"Reason: `{reason}`",
+                    "Live volume is zero after calibration; crypto model input is invalid.",
+                    f"⏰ {datetime.now(timezone.utc).strftime('%H:%M UTC')}",
+                ]
+            )
+        )
+
     async def alert_crypto_trade_failed(self, *, asset: str, market_ticker: str, reason: str) -> bool:
         return await self.send_message(
             "\n".join(

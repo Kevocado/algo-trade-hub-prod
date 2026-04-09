@@ -99,6 +99,7 @@ def reset_crypto_state(monkeypatch):
     orchestrator._DIAGNOSTIC_EVAL_COUNTER.clear()
     orchestrator._DEEP_AUDIT_EVAL_COUNTER.clear()
     orchestrator._FEATURE_RUNNING_STATS.clear()
+    orchestrator._DATA_CRITICAL_ALERT_LAST_HOUR.clear()
     monkeypatch.setattr(orchestrator, "supa", None)
     monkeypatch.setattr(orchestrator, "log_to_supabase", lambda *args, **kwargs: None)
     monkeypatch.setattr(orchestrator, "CRYPTO_ALPACA_VOLUME_MULTIPLIER", 1.0)
@@ -113,6 +114,7 @@ def reset_crypto_state(monkeypatch):
     monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD", 0.495)
     monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY", 50)
     monkeypatch.setattr(orchestrator, "CRYPTO_DEEP_AUDIT_EVERY", 20)
+    monkeypatch.setattr(orchestrator, "CRYPTO_ALPACA_PAYLOAD_AUDIT", False)
 
 
 def test_resolve_kalshi_market_picks_nearest_hourly_bucket_and_nearest_strike(monkeypatch):
@@ -451,9 +453,9 @@ def test_build_features_calls_calibrate_features_without_changing_output(monkeyp
     calls = []
     original = crypto_features.calibrate_features
 
-    def _capture(df):
-        calls.append(df.copy())
-        return original(df)
+    def _capture(df, asset=None):
+        calls.append((df.copy(), asset))
+        return original(df, asset)
 
     monkeypatch.setattr(crypto_features, "calibrate_features", _capture)
 
@@ -461,7 +463,22 @@ def test_build_features_calls_calibrate_features_without_changing_output(monkeyp
 
     assert not features.empty
     assert len(calls) == 1
+    assert calls[0][1] is None
     assert list(features.columns) == list(CANONICAL_CRYPTO_FEATURES)
+
+
+def test_calibrate_features_scales_eth_volume_only():
+    frame = pd.DataFrame({"Volume": [100.0, 200.0], "Close": [1.0, 2.0]})
+
+    btc = crypto_features.calibrate_features(frame, "BTC")
+    eth = crypto_features.calibrate_features(frame, "ETH")
+    other = crypto_features.calibrate_features(frame, "SOL")
+
+    assert btc["Volume"].tolist() == [100.0, 200.0]
+    assert eth["Volume"].tolist() == pytest.approx(
+        [100.0 * crypto_features.VOLUME_MULTIPLIER_ETH, 200.0 * crypto_features.VOLUME_MULTIPLIER_ETH]
+    )
+    assert other["Volume"].tolist() == [100.0, 200.0]
 
 
 def test_latest_crypto_feature_row_aligns_to_model(monkeypatch):
@@ -760,6 +777,93 @@ def test_fetch_alpaca_crypto_bars_applies_volume_multiplier(monkeypatch):
 
     assert scaled.iloc[0]["Volume"] == pytest.approx(live_frame.iloc[0]["Volume"] * 1000.0)
     assert scaled.iloc[-1]["Volume"] == pytest.approx(live_frame.iloc[-1]["Volume"] * 1000.0)
+
+
+def test_alpaca_bars_to_frame_supports_object_volume_attributes():
+    class FakeBar:
+        def __init__(self, timestamp, open_price, high_price, low_price, close_price, volume):
+            self.timestamp = timestamp
+            self.open = open_price
+            self.high = high_price
+            self.low = low_price
+            self.close = close_price
+            self.volume = volume
+
+    bars = [
+        FakeBar("2026-01-01T00:00:00+00:00", 1.0, 2.0, 0.5, 1.5, 100.0),
+        FakeBar("2026-01-01T01:00:00+00:00", 2.0, 3.0, 1.5, 2.5, 110.0),
+    ]
+
+    frame = orchestrator._alpaca_bars_to_frame(asset="BTC", requested_symbol="BTC/USD", bars=bars)
+
+    assert list(frame.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert frame.iloc[-1]["Volume"] == pytest.approx(110.0)
+
+
+def test_alpaca_bars_to_frame_raises_when_volume_missing(caplog):
+    bars = [{"t": "2026-01-01T00:00:00+00:00", "o": 1.0, "h": 2.0, "l": 0.5, "c": 1.5}]
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ValueError, match="missing usable volume field"):
+            orchestrator._alpaca_bars_to_frame(asset="BTC", requested_symbol="BTC/USD", bars=bars)
+
+    assert any("missing usable volume field" in record.getMessage() for record in caplog.records)
+
+
+def test_fetch_alpaca_crypto_bars_uses_symbol_fallback(monkeypatch, caplog):
+    index = pd.date_range("2026-01-01", periods=220, freq="h", tz="UTC")
+    live_frame = pd.DataFrame(
+        {
+            "Open": np.linspace(90000.0, 92000.0, len(index)),
+            "High": np.linspace(90050.0, 92050.0, len(index)),
+            "Low": np.linspace(89950.0, 91950.0, len(index)),
+            "Close": np.linspace(90025.0, 92025.0, len(index)),
+            "Volume": np.linspace(10.0, 20.0, len(index)),
+        },
+        index=index,
+    )
+
+    monkeypatch.setattr(orchestrator, "ALPACA_API_KEY", "key")
+    monkeypatch.setattr(orchestrator, "ALPACA_SECRET_KEY", "secret")
+
+    class FakeResponse:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            if self.symbol == "BTC/USD":
+                return {"bars": {"BTC/USD": []}}
+            return {
+                "bars": {
+                    "BTCUSD": [
+                        {
+                            "t": ts.isoformat(),
+                            "o": float(row.Open),
+                            "h": float(row.High),
+                            "l": float(row.Low),
+                            "c": float(row.Close),
+                            "volume": float(row.Volume),
+                        }
+                        for ts, row in live_frame.iterrows()
+                    ]
+                }
+            }
+
+    class FakeRequests:
+        @staticmethod
+        def get(*_args, **kwargs):
+            return FakeResponse(kwargs["params"]["symbols"])
+
+    monkeypatch.setitem(sys.modules, "requests", FakeRequests)
+
+    with caplog.at_level(logging.WARNING):
+        frame = orchestrator._fetch_alpaca_crypto_bars("BTC", lookback_hours=200)
+
+    assert not frame.empty
+    assert any("recovered with fallback symbol=BTCUSD" in record.getMessage() for record in caplog.records)
 
 
 def test_fetch_yfinance_crypto_bars_raises_clear_error_when_dependency_missing(monkeypatch):
@@ -1061,6 +1165,55 @@ def test_evaluate_crypto_edge_persists_deep_audit_snapshot(monkeypatch, caplog):
     assert context["focus_features"]["Volume"]["running_std"] == pytest.approx(0.0)
     assert context["feature_vector"]["force_idx"] == pytest.approx(float(latest_row.iloc[-1]["force_idx"]))
     assert any("[CRYPTO DEEP SNAPSHOT]" in record.getMessage() for record in caplog.records)
+
+
+def test_evaluate_crypto_edge_emits_zero_volume_data_critical_once_per_hour(monkeypatch):
+    ticker_message = {
+        "msg": {
+            "market_ticker": "KXBTC-DUMMY",
+            "yes_bid_dollars": 0.49,
+            "yes_ask_dollars": 0.51,
+        }
+    }
+    latest_row = pd.DataFrame(
+        [{name: (0.0 if name == "Volume" else 1.0) for name in CANONICAL_CRYPTO_FEATURES}],
+        index=pd.date_range("2026-01-01T00:00:00Z", periods=1, freq="h"),
+    )
+    supabase_calls = []
+    alerts = []
+
+    class FakeNotifier:
+        def is_enabled(self):
+            return True
+
+        async def alert_crypto_data_critical(self, **kwargs):
+            alerts.append(kwargs)
+            return True
+
+    monkeypatch.setattr(orchestrator, "load_crypto_models", lambda: (object(), object()))
+    monkeypatch.setattr(orchestrator, "_latest_crypto_feature_row", lambda *_args, **_kwargs: latest_row)
+    monkeypatch.setattr(orchestrator, "_model_yes_probability", lambda *_args, **_kwargs: 0.52)
+    monkeypatch.setattr(orchestrator, "_load_async_telegram_notifier", lambda: FakeNotifier)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_to_supabase",
+        lambda module, message, level="INFO", context=None: supabase_calls.append(
+            {"module": module, "message": message, "level": level, "context": context}
+        ),
+    )
+
+    orchestrator.evaluate_crypto_edge(
+        {"ticker": ticker_message, "trade_signal": None, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    )
+    orchestrator.evaluate_crypto_edge(
+        {"ticker": ticker_message, "trade_signal": None, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+    )
+
+    critical_logs = [call for call in supabase_calls if call["module"] == "orchestrator.crypto_data_quality"]
+    assert len(critical_logs) == 2
+    assert len(alerts) == 1
+    assert alerts[0]["asset"] == "BTC"
+    assert alerts[0]["reason"] == "zero live volume after calibration"
 
 
 def test_evaluate_crypto_edge_records_no_usable_price_skip(monkeypatch):

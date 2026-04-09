@@ -89,6 +89,7 @@ CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_ETH_YES
 CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD", "0.495"))
 CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY = int(os.getenv("CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY", "50"))
 CRYPTO_DEEP_AUDIT_EVERY = int(os.getenv("CRYPTO_DEEP_AUDIT_EVERY", "20"))
+CRYPTO_ALPACA_PAYLOAD_AUDIT = _env_flag("CRYPTO_ALPACA_PAYLOAD_AUDIT", "false")
 CRYPTO_FEATURE_LOOKBACK_HOURS = int(os.getenv("CRYPTO_FEATURE_LOOKBACK_HOURS", "400"))
 CRYPTO_FEATURE_CACHE_TTL_S = float(os.getenv("CRYPTO_FEATURE_CACHE_TTL_S", "30"))
 CRYPTO_MIN_FEATURE_BARS = int(os.getenv("CRYPTO_MIN_FEATURE_BARS", "205"))
@@ -164,6 +165,7 @@ _DEEP_AUDIT_FOCUS_FEATURES = (
     "ret_1h_z",
 )
 _FEATURE_RUNNING_STATS: dict[str, dict[str, dict[str, float]]] = {}
+_DATA_CRITICAL_ALERT_LAST_HOUR: dict[str, str] = {}
 
 # ── pgvector RAG is handled via news_rag.query_news() — no local DB client needed ──
 
@@ -786,6 +788,19 @@ def _alpaca_crypto_symbol(asset: str) -> Optional[str]:
     return {"BTC": "BTC/USD", "ETH": "ETH/USD"}.get(asset.upper())
 
 
+def _alpaca_crypto_symbol_variants(asset: str) -> list[str]:
+    normalized = asset.upper()
+    variants = [
+        {"BTC": "BTC/USD", "ETH": "ETH/USD"}.get(normalized),
+        {"BTC": "BTCUSD", "ETH": "ETHUSD"}.get(normalized),
+    ]
+    deduped: list[str] = []
+    for symbol in variants:
+        if symbol and symbol not in deduped:
+            deduped.append(symbol)
+    return deduped
+
+
 def _yfinance_crypto_symbol(asset: str) -> Optional[str]:
     return {"BTC": "BTC-USD", "ETH": "ETH-USD"}.get(asset.upper())
 
@@ -810,6 +825,82 @@ def _merge_crypto_bar_sources(primary: pd.DataFrame, backfill: pd.DataFrame, *, 
     if required_bars > 0 and len(merged) > required_bars:
         return merged.tail(required_bars)
     return merged
+
+
+def _log_alpaca_payload_audit(asset: str, requested_symbol: str, payload: dict[str, Any], bars: list[Any]) -> None:
+    if not CRYPTO_ALPACA_PAYLOAD_AUDIT:
+        return
+    log.info(
+        "[CRYPTO ALPACA PAYLOAD] asset=%s requested_symbol=%s payload_keys=%s bar_count=%s first_bar=%s last_bar=%s",
+        asset,
+        requested_symbol,
+        sorted(payload.keys()),
+        len(bars),
+        repr(bars[0]) if bars else "None",
+        repr(bars[-1]) if bars else "None",
+    )
+
+
+def _alpaca_bar_value(bar: Any, *keys: str) -> Any:
+    if isinstance(bar, dict):
+        for key in keys:
+            if key in bar:
+                return bar.get(key)
+        return None
+    for key in keys:
+        if hasattr(bar, key):
+            return getattr(bar, key)
+    return None
+
+
+def _alpaca_bars_from_payload(payload: dict[str, Any], requested_symbol: str) -> list[Any]:
+    bars_payload = payload.get("bars") or {}
+    if not isinstance(bars_payload, dict):
+        return []
+    if requested_symbol in bars_payload and isinstance(bars_payload[requested_symbol], list):
+        return bars_payload[requested_symbol]
+    requested_normalized = requested_symbol.replace("/", "")
+    for symbol_key, bars in bars_payload.items():
+        if symbol_key.replace("/", "") == requested_normalized and isinstance(bars, list):
+            return bars
+    return []
+
+
+def _alpaca_bars_to_frame(*, asset: str, requested_symbol: str, bars: list[Any]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for bar in bars:
+        volume = _alpaca_bar_value(bar, "v", "volume")
+        if volume is None:
+            log.error(
+                "[CRYPTO ALPACA PAYLOAD] asset=%s requested_symbol=%s missing usable volume field bar=%s",
+                asset,
+                requested_symbol,
+                repr(bar),
+            )
+            raise ValueError(f"Alpaca bar payload missing usable volume field for {requested_symbol}")
+        rows.append(
+            {
+                "timestamp": _alpaca_bar_value(bar, "t", "timestamp"),
+                "Open": _alpaca_bar_value(bar, "o", "open"),
+                "High": _alpaca_bar_value(bar, "h", "high"),
+                "Low": _alpaca_bar_value(bar, "l", "low"),
+                "Close": _alpaca_bar_value(bar, "c", "close"),
+                "Volume": volume,
+            }
+        )
+
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        raise ValueError(f"Alpaca returned no usable hourly crypto bars for {requested_symbol}")
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    frame = frame.set_index("timestamp").sort_index()
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
+    missing_cols = [column for column in required_cols if column not in frame.columns]
+    if missing_cols:
+        raise ValueError(f"Alpaca bar payload missing required columns for {requested_symbol}: {missing_cols}")
+    for column in required_cols:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame[required_cols].dropna()
 
 
 def _fetch_yfinance_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATURE_LOOKBACK_HOURS) -> pd.DataFrame:
@@ -846,8 +937,8 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         raise RuntimeError("Missing Alpaca API credentials for crypto feature fetch.")
 
-    symbol = _alpaca_crypto_symbol(asset)
-    if not symbol:
+    symbols = _alpaca_crypto_symbol_variants(asset)
+    if not symbols:
         raise ValueError(f"Unsupported crypto asset: {asset}")
 
     import requests
@@ -855,43 +946,51 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=max(lookback_hours, 240))
     url = f"{ALPACA_DATA_API_BASE}/v1beta3/crypto/us/bars"
-    response = requests.get(
-        url,
-        headers={
-            "accept": "application/json",
-            "APCA-API-KEY-ID": ALPACA_API_KEY,
-            "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
-        },
-        params={
-            "symbols": symbol,
-            "timeframe": "1Hour",
-            "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "limit": max(lookback_hours + 24, 300),
-            "sort": "asc",
-        },
-        timeout=15,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    bars = (payload.get("bars") or {}).get(symbol) or []
-    if not bars:
-        raise ValueError(f"Alpaca returned no hourly crypto bars for {symbol}")
-
-    frame = pd.DataFrame(bars)
-    rename_map = {"t": "timestamp", "o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume"}
-    frame = frame.rename(columns=rename_map)
-    if "timestamp" not in frame.columns:
-        raise ValueError(f"Alpaca bar payload missing timestamp for {symbol}")
-    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
-    frame = frame.set_index("timestamp").sort_index()
-    required_cols = ["Open", "High", "Low", "Close", "Volume"]
-    missing_cols = [column for column in required_cols if column not in frame.columns]
-    if missing_cols:
-        raise ValueError(f"Alpaca bar payload missing required columns for {symbol}: {missing_cols}")
-    for column in required_cols:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame = frame[required_cols].dropna()
+    frame: Optional[pd.DataFrame] = None
+    selected_symbol: Optional[str] = None
+    last_error: Optional[Exception] = None
+    for index, symbol in enumerate(symbols):
+        try:
+            response = requests.get(
+                url,
+                headers={
+                    "accept": "application/json",
+                    "APCA-API-KEY-ID": ALPACA_API_KEY,
+                    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+                },
+                params={
+                    "symbols": symbol,
+                    "timeframe": "1Hour",
+                    "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "limit": max(lookback_hours + 24, 300),
+                    "sort": "asc",
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            bars = _alpaca_bars_from_payload(payload, symbol)
+            _log_alpaca_payload_audit(asset, symbol, payload, bars)
+            if not bars:
+                raise ValueError(f"Alpaca returned no hourly crypto bars for {symbol}")
+            frame = _alpaca_bars_to_frame(asset=asset, requested_symbol=symbol, bars=bars)
+            selected_symbol = symbol
+            if index > 0:
+                log.warning("[CRYPTO ALPACA PAYLOAD] asset=%s recovered with fallback symbol=%s", asset, symbol)
+            break
+        except Exception as exc:
+            last_error = exc
+            if index < (len(symbols) - 1):
+                log.warning(
+                    "[CRYPTO ALPACA PAYLOAD] asset=%s symbol=%s failed (%s); trying fallback.",
+                    asset,
+                    symbol,
+                    exc,
+                )
+                continue
+    if frame is None or selected_symbol is None:
+        raise ValueError(f"Failed to fetch usable Alpaca crypto bars for {asset}: {last_error}")
     if CRYPTO_ALPACA_VOLUME_MULTIPLIER <= 0:
         raise ValueError("CRYPTO_ALPACA_VOLUME_MULTIPLIER must be positive.")
     if CRYPTO_ALPACA_VOLUME_MULTIPLIER != 1.0:
@@ -900,7 +999,7 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
         log.info(
             "[CRYPTO EDGE] Alpaca returned only %s hourly bars for %s; attempting yfinance backfill to reach %s bars.",
             len(frame),
-            symbol,
+            selected_symbol,
             CRYPTO_MIN_FEATURE_BARS,
         )
         try:
@@ -909,25 +1008,25 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
             if len(merged) >= CRYPTO_MIN_FEATURE_BARS:
                 log.info(
                     "[CRYPTO EDGE] Backfilled %s hourly bars via yfinance (%s Alpaca + %s merged).",
-                    symbol,
+                    selected_symbol,
                     len(frame),
                     len(merged),
                 )
                 return merged
             log.warning(
                 "[CRYPTO EDGE] yfinance backfill for %s completed but merged history is still short (%s < %s bars).",
-                symbol,
+                selected_symbol,
                 len(merged),
                 CRYPTO_MIN_FEATURE_BARS,
             )
         except Exception as exc:
-            log.warning("[CRYPTO EDGE] Failed to backfill %s hourly bars via yfinance: %s", symbol, exc)
-        raise ValueError(f"Need at least {CRYPTO_MIN_FEATURE_BARS} hourly bars for {symbol}; received {len(frame)}")
+            log.warning("[CRYPTO EDGE] Failed to backfill %s hourly bars via yfinance: %s", selected_symbol, exc)
+        raise ValueError(f"Need at least {CRYPTO_MIN_FEATURE_BARS} hourly bars for {selected_symbol}; received {len(frame)}")
     return frame
 
 
-def _build_crypto_feature_frame(bars: pd.DataFrame, *, is_live_inference: bool = True) -> pd.DataFrame:
-    return build_features(bars, is_live_inference=is_live_inference)
+def _build_crypto_feature_frame(bars: pd.DataFrame, *, asset: str | None = None, is_live_inference: bool = True) -> pd.DataFrame:
+    return build_features(bars, asset=asset, is_live_inference=is_live_inference)
 
 
 def _latest_crypto_feature_row(asset: str, model: Any) -> pd.DataFrame:
@@ -943,7 +1042,7 @@ def _latest_crypto_feature_row(asset: str, model: Any) -> pd.DataFrame:
             f"Model feature contract mismatch for {asset}: expected canonical crypto features, got {feature_names}"
         )
     bars = _fetch_alpaca_crypto_bars(asset)
-    features = build_features(bars, is_live_inference=True)
+    features = build_features(bars, asset=asset, is_live_inference=True)
     if features.empty:
         raise ValueError(f"No usable crypto features generated for {asset}")
 
@@ -964,6 +1063,64 @@ def _latest_crypto_feature_frame(asset: str) -> Optional[pd.DataFrame]:
     if (time.time() - cached[0]) >= CRYPTO_FEATURE_CACHE_TTL_S:
         return None
     return cached[1]
+
+
+def _record_data_critical_event(*, asset: str, market_ticker: str, feature_row: pd.DataFrame, reason: str) -> None:
+    log_to_supabase(
+        "orchestrator.crypto_data_quality",
+        f"asset={asset} source={market_ticker} reason={reason}",
+        level="CRITICAL",
+        context={
+            "audit_kind": "data_critical",
+            "asset": asset,
+            "source_market_ticker": market_ticker,
+            "reason": reason,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "feature_vector": _feature_row_dict(feature_row),
+        },
+    )
+
+
+def _should_send_data_critical_alert(asset: str, feature_row: pd.DataFrame) -> bool:
+    hour_key = feature_row.index[-1].astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
+    asset_key = asset.upper()
+    if _DATA_CRITICAL_ALERT_LAST_HOUR.get(asset_key) == hour_key:
+        return False
+    _DATA_CRITICAL_ALERT_LAST_HOUR[asset_key] = hour_key
+    return True
+
+
+def _emit_zero_volume_data_critical(asset: str, market_ticker: str, feature_row: pd.DataFrame) -> None:
+    log.critical(
+        "[DATA CRITICAL] asset=%s source=%s zero live Volume after calibration; model input is invalid",
+        asset,
+        market_ticker,
+    )
+    _record_data_critical_event(
+        asset=asset,
+        market_ticker=market_ticker,
+        feature_row=feature_row,
+        reason="zero_live_volume_after_calibration",
+    )
+    if not _should_send_data_critical_alert(asset, feature_row):
+        return
+    try:
+        notifier_cls = _load_async_telegram_notifier()
+        notifier = notifier_cls()
+        if notifier.is_enabled():
+            coroutine = notifier.alert_crypto_data_critical(
+                asset=asset,
+                market_ticker=market_ticker,
+                reason="zero live volume after calibration",
+            )
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(coroutine)
+            else:
+                _schedule_async_notification(coroutine)
+    except Exception as exc:
+        log.error("DATA CRITICAL Telegram alert failed: %s", exc)
 
 
 def _model_yes_probability(model: Any, feature_frame: pd.DataFrame) -> float:
@@ -1063,6 +1220,10 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
         log.error("[CRYPTO EDGE] %s feature inference failed: %s", market_ticker, exc)
         return {"trade_signal": None}
 
+    volume_zero = float(feature_row.iloc[-1]["Volume"]) == 0.0
+    if volume_zero:
+        _emit_zero_volume_data_critical(asset, market_ticker, feature_row)
+
     _log_hourly_feature_snapshot(
         asset=asset,
         source_market_ticker=market_ticker,
@@ -1126,6 +1287,7 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
                     "yes_threshold": yes_threshold,
                     "no_threshold": no_threshold,
                     "diagnostic_mode": CRYPTO_DIAGNOSTIC_MODE,
+                    "volume_zero": volume_zero,
                 },
             )
         return {"trade_signal": None}
@@ -1143,6 +1305,7 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
             "yes_threshold": yes_threshold,
             "no_threshold": no_threshold,
             "diagnostic_mode": CRYPTO_DIAGNOSTIC_MODE,
+            "volume_zero": volume_zero,
         },
     )
 
@@ -1161,6 +1324,7 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
             "diagnostic_mode": CRYPTO_DIAGNOSTIC_MODE,
             "yes_threshold": yes_threshold,
             "no_threshold": no_threshold,
+            "volume_zero": volume_zero,
         },
     }
 

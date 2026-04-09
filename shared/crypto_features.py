@@ -5,6 +5,9 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
+VOLUME_MULTIPLIER_BTC = 1.0
+VOLUME_MULTIPLIER_ETH = 0.029656679061267618
+
 CANONICAL_CRYPTO_FEATURES = [
     "Close",
     "High",
@@ -39,8 +42,16 @@ CANONICAL_CRYPTO_FEATURES = [
 ]
 
 
-def calibrate_features(df: pd.DataFrame) -> pd.DataFrame:
-    return df
+def calibrate_features(df: pd.DataFrame, asset: str | None = None) -> pd.DataFrame:
+    calibrated = df.copy()
+    normalized_asset = (asset or "").upper()
+    if "Volume" not in calibrated.columns:
+        return calibrated
+    if normalized_asset == "BTC":
+        calibrated["Volume"] = calibrated["Volume"] * VOLUME_MULTIPLIER_BTC
+    elif normalized_asset == "ETH":
+        calibrated["Volume"] = calibrated["Volume"] * VOLUME_MULTIPLIER_ETH
+    return calibrated
 
 
 def _require_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
@@ -63,6 +74,7 @@ def _require_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
 def build_features(
     df: pd.DataFrame,
     *,
+    asset: str | None = None,
     is_live_inference: bool = False,
     include_target: bool = False,
 ) -> pd.DataFrame:
@@ -139,7 +151,7 @@ def build_features(
     if include_target and not is_live_inference:
         output_columns.append("target")
 
-    frame = calibrate_features(frame)
+    frame = calibrate_features(frame, asset)
     frame = frame[output_columns]
     frame = frame.dropna()
     return frame
