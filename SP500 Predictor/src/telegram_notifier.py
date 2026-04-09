@@ -433,18 +433,42 @@ class TelegramNotifier:
         rows = await self._supabase_select(
             "crypto_signal_events",
             params={
-                "select": "created_at,asset,resolved_ticker,desired_side,status,skip_reason,edge,model_probability_yes",
+                "select": "created_at,asset,source_market_ticker,resolved_ticker,desired_side,status,skip_reason,execution_status,edge,model_probability_yes",
                 "order": "created_at.desc",
-                "limit": "5",
+                "limit": "25",
             },
         )
         if not rows:
             return "🔎 *Crypto Scan*\n\nNo qualifying crypto signals recorded yet."
-        lines = ["🔎 *Crypto Scan*", ""]
+
+        latest_by_status: dict[str, dict[str, Any]] = {}
+        status_order = [
+            ("signal_detected", "Last Signal"),
+            ("near_miss", "Last Near Miss"),
+            ("failed", "Last Failed Trade"),
+            ("execution_skip", "Last Skip"),
+            ("trade_placed", "Last Trade"),
+            ("blocked", "Last Blocked Signal"),
+        ]
         for row in rows:
+            status = str(row.get("status") or "")
+            if status and status not in latest_by_status:
+                latest_by_status[status] = row
+
+        lines = ["🔎 *Crypto Scan*", ""]
+        rendered = 0
+        for status, label in status_order:
+            row = latest_by_status.get(status)
+            if not row:
+                continue
+            ticker = row.get("resolved_ticker") or row.get("source_market_ticker") or row.get("asset") or "unresolved"
+            skip_or_exec = row.get("skip_reason") or row.get("execution_status") or "live"
             lines.append(
-                f"• `{row.get('resolved_ticker') or row.get('asset') or 'unresolved'}` | {row.get('desired_side') or '?'} | {row.get('status')} | {row.get('skip_reason') or 'live'} | edge={float(row.get('edge') or 0):+.3f} | P(YES)={float(row.get('model_probability_yes') or 0):.3f}"
+                f"• *{label}*: `{ticker}` | {row.get('desired_side') or '?'} | {status} | {skip_or_exec} | edge={float(row.get('edge') or 0):+.3f} | P(YES)={float(row.get('model_probability_yes') or 0):.3f}"
             )
+            rendered += 1
+        if rendered == 0:
+            return "🔎 *Crypto Scan*\n\nNo actionable crypto events yet. This command reports the latest signal, near miss, skip, failure, or trade."
         return "\n".join(lines)
 
     async def _handle_command(self, command: str, from_chat_id: str) -> None:
@@ -463,7 +487,7 @@ class TelegramNotifier:
                         "/balance",
                         "/positions",
                         "/trades",
-                        "/crypto_scan *(or /cryptoscan; signals + near misses)*",
+                        "/crypto_scan *(or /cryptoscan; latest signal/skip/fail summary)*",
                         "/help",
                     ]
                 )

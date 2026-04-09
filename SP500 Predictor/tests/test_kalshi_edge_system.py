@@ -256,6 +256,77 @@ class TestTelegramCommands:
         assert sent_messages == ["test message"]
         assert result is True
 
+    def test_crypto_scan_summarizes_latest_actionable_statuses(self):
+        from src.telegram_notifier import TelegramNotifier
+
+        tn = TelegramNotifier()
+
+        async def fake_supabase_select(table, *, params):
+            assert table == "crypto_signal_events"
+            assert params["limit"] == "25"
+            return [
+                {
+                    "created_at": "2026-04-09T01:00:00+00:00",
+                    "asset": "ETH",
+                    "source_market_ticker": "KXETHY-27JAN0100-B1125",
+                    "resolved_ticker": None,
+                    "desired_side": "YES",
+                    "status": "signal_detected",
+                    "skip_reason": None,
+                    "execution_status": None,
+                    "edge": None,
+                    "model_probability_yes": 0.548,
+                },
+                {
+                    "created_at": "2026-04-09T00:59:00+00:00",
+                    "asset": "ETH",
+                    "source_market_ticker": "KXETHY-27JAN0100-B1125",
+                    "resolved_ticker": "KXETHY-27JAN0100-B1125",
+                    "desired_side": "YES",
+                    "status": "near_miss",
+                    "skip_reason": "edge_below_threshold",
+                    "execution_status": "skipped",
+                    "edge": 0.041,
+                    "model_probability_yes": 0.548,
+                },
+                {
+                    "created_at": "2026-04-09T00:58:00+00:00",
+                    "asset": "BTC",
+                    "source_market_ticker": "KXBTCY-27JAN0100-B92500",
+                    "resolved_ticker": "KXBTCY-27JAN0100-B92500",
+                    "desired_side": "NO",
+                    "status": "failed",
+                    "skip_reason": None,
+                    "execution_status": "failed",
+                    "edge": 0.082,
+                    "model_probability_yes": 0.412,
+                },
+            ]
+
+        tn._supabase_select = fake_supabase_select
+
+        text = asyncio.run(tn._get_crypto_scan_text())
+
+        assert "Last Signal" in text
+        assert "Last Near Miss" in text
+        assert "Last Failed Trade" in text
+        assert "KXETHY-27JAN0100-B1125" in text
+        assert "KXBTCY-27JAN0100-B92500" in text
+
+    def test_crypto_scan_handles_no_actionable_events(self):
+        from src.telegram_notifier import TelegramNotifier
+
+        tn = TelegramNotifier()
+
+        async def fake_supabase_select(_table, **_kwargs):
+            return [{"status": "inference_heartbeat"}]
+
+        tn._supabase_select = fake_supabase_select
+
+        text = asyncio.run(tn._get_crypto_scan_text())
+
+        assert "No actionable crypto events yet" in text
+
 
 # ════════════════════════════════════════════════════════════════════
 # Microstructure Engine Tests
