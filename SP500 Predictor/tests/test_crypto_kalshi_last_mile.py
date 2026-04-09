@@ -92,6 +92,7 @@ def reset_crypto_state(monkeypatch):
     orchestrator._TRADED_TICKER_LAST_TS.clear()
     orchestrator._INFERENCE_EVAL_COUNTER.clear()
     orchestrator._FEATURE_SNAPSHOT_LAST_HOUR.clear()
+    orchestrator._DIAGNOSTIC_EVAL_COUNTER.clear()
     monkeypatch.setattr(orchestrator, "supa", None)
     monkeypatch.setattr(orchestrator, "log_to_supabase", lambda *args, **kwargs: None)
     monkeypatch.setattr(orchestrator, "CRYPTO_ALPACA_VOLUME_MULTIPLIER", 1.0)
@@ -99,6 +100,12 @@ def reset_crypto_state(monkeypatch):
     monkeypatch.setattr(orchestrator, "CRYPTO_BTC_NO_THRESHOLD", 0.4249)
     monkeypatch.setattr(orchestrator, "CRYPTO_ETH_YES_THRESHOLD", 0.551)
     monkeypatch.setattr(orchestrator, "CRYPTO_ETH_NO_THRESHOLD", 0.449)
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_MODE", False)
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_BTC_YES_THRESHOLD", 0.53)
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_BTC_NO_THRESHOLD", 0.47)
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD", 0.505)
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD", 0.495)
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY", 50)
 
 
 def test_resolve_kalshi_market_picks_nearest_hourly_bucket_and_nearest_strike(monkeypatch):
@@ -906,6 +913,49 @@ def test_validate_crypto_threshold_config_rejects_invalid_thresholds(monkeypatch
         orchestrator._validate_crypto_threshold_config()
 
 
+def test_diagnostic_mode_overrides_asset_thresholds(monkeypatch):
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_MODE", True)
+
+    assert orchestrator._crypto_thresholds_for_asset("BTC") == pytest.approx((0.53, 0.47))
+    assert orchestrator._crypto_thresholds_for_asset("ETH") == pytest.approx((0.505, 0.495))
+
+
+def test_evaluate_crypto_edge_logs_diagnostic_feature_snapshot(monkeypatch, caplog):
+    ticker_message = {
+        "msg": {
+            "market_ticker": "KXBTC-DUMMY",
+            "yes_bid_dollars": 0.49,
+            "yes_ask_dollars": 0.51,
+        }
+    }
+    feature_frame = pd.DataFrame(
+        {
+            **{name: np.linspace(1.0, 2.0, 60) for name in CANONICAL_CRYPTO_FEATURES},
+            "force_idx": np.linspace(10.0, 20.0, 60),
+            "relative_vol": np.linspace(1.0, 3.0, 60),
+            "vol_pressure": np.linspace(0.5, 1.5, 60),
+            "ret_1h_z": np.linspace(-1.0, 1.0, 60),
+            "dist_ma200": np.linspace(-0.2, 0.2, 60),
+        },
+        index=pd.date_range("2026-01-01T00:00:00Z", periods=60, freq="h"),
+    )[CANONICAL_CRYPTO_FEATURES]
+    latest_row = feature_frame.tail(1)
+
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_MODE", True)
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY", 1)
+    monkeypatch.setattr(orchestrator, "load_crypto_models", lambda: (object(), object()))
+    monkeypatch.setattr(orchestrator, "_latest_crypto_feature_row", lambda *_args, **_kwargs: latest_row)
+    monkeypatch.setattr(orchestrator, "_latest_crypto_feature_frame", lambda *_args, **_kwargs: feature_frame)
+    monkeypatch.setattr(orchestrator, "_model_yes_probability", lambda *_args, **_kwargs: 0.52)
+
+    with caplog.at_level(logging.INFO):
+        orchestrator.evaluate_crypto_edge(
+            {"ticker": ticker_message, "trade_signal": None, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+        )
+
+    assert any("[CRYPTO DIAGNOSTIC SNAPSHOT]" in record.getMessage() for record in caplog.records)
+
+
 def test_evaluate_crypto_edge_records_no_usable_price_skip(monkeypatch):
     ticker_message = {"msg": {"market_ticker": "KXETH-DUMMY"}}
     recorded_events = []
@@ -1083,3 +1133,35 @@ def test_schedule_async_notification_logs_failures(caplog):
 
     asyncio.run(exercise())
     assert any("Async Telegram task failed: telegram down" in record.getMessage() for record in caplog.records)
+
+
+def test_dispatch_crypto_notifications_sends_diagnostic_signal(monkeypatch):
+    calls = []
+
+    class FakeNotifier:
+        def is_enabled(self):
+            return True
+
+        async def alert_crypto_diagnostic_signal(self, **kwargs):
+            calls.append(kwargs)
+            return True
+
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_MODE", True)
+
+    final_state = {
+        "trade_signal": {
+            "asset": "BTC",
+            "market_ticker": "KXBTC-DUMMY",
+            "side": "YES",
+            "probability_yes": 0.531,
+            "price_dollars": 0.42,
+            "raw": {"yes_threshold": 0.53, "no_threshold": 0.47},
+        },
+        "execution_result": {},
+    }
+
+    asyncio.run(orchestrator._dispatch_crypto_notifications(FakeNotifier(), final_state))
+
+    assert calls[0]["asset"] == "BTC"
+    assert calls[0]["yes_threshold"] == pytest.approx(0.53)
+    assert calls[0]["no_threshold"] == pytest.approx(0.47)

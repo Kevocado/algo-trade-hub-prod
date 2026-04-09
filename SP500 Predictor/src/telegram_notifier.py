@@ -164,6 +164,33 @@ class TelegramNotifier:
             )
         )
 
+    async def alert_crypto_diagnostic_signal(
+        self,
+        *,
+        asset: str,
+        market_ticker: str,
+        side: str,
+        probability_yes: float,
+        signal_price_dollars: float,
+        yes_threshold: float,
+        no_threshold: float,
+    ) -> bool:
+        return await self.send_message(
+            "\n".join(
+                [
+                    "🧪 *Crypto Diagnostic Signal*",
+                    "",
+                    f"Asset: *{asset}*",
+                    f"Market: `{market_ticker}`",
+                    f"Side: *{side}*",
+                    f"P(YES): *{probability_yes:.3f}*",
+                    f"Signal Price: *${signal_price_dollars:.4f}*",
+                    f"Thresholds: *YES {yes_threshold:.3f} / NO {no_threshold:.3f}*",
+                    f"⏰ {datetime.now(timezone.utc).strftime('%H:%M UTC')}",
+                ]
+            )
+        )
+
     async def alert_crypto_trade_failed(self, *, asset: str, market_ticker: str, reason: str) -> bool:
         return await self.send_message(
             "\n".join(

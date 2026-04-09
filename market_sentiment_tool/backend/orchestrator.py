@@ -60,6 +60,10 @@ ENV_BOOTSTRAP = load_canonical_env(__file__)
 ENV_PATH = str(ENV_BOOTSTRAP.env_path) if ENV_BOOTSTRAP.env_path else "<missing>"
 KALSHI_RUNTIME = resolve_kalshi_runtime_settings()
 
+
+def _env_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
 # ── Config ──
 SUPABASE_URL = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
@@ -78,6 +82,12 @@ CRYPTO_BTC_YES_THRESHOLD = float(os.getenv("CRYPTO_BTC_YES_THRESHOLD", "0.5751")
 CRYPTO_BTC_NO_THRESHOLD = float(os.getenv("CRYPTO_BTC_NO_THRESHOLD", "0.4249"))
 CRYPTO_ETH_YES_THRESHOLD = float(os.getenv("CRYPTO_ETH_YES_THRESHOLD", "0.551"))
 CRYPTO_ETH_NO_THRESHOLD = float(os.getenv("CRYPTO_ETH_NO_THRESHOLD", "0.449"))
+CRYPTO_DIAGNOSTIC_MODE = _env_flag("CRYPTO_DIAGNOSTIC_MODE", "false")
+CRYPTO_DIAGNOSTIC_BTC_YES_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_BTC_YES_THRESHOLD", "0.53"))
+CRYPTO_DIAGNOSTIC_BTC_NO_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_BTC_NO_THRESHOLD", "0.47"))
+CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD", "0.505"))
+CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD", "0.495"))
+CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY = int(os.getenv("CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY", "50"))
 CRYPTO_FEATURE_LOOKBACK_HOURS = int(os.getenv("CRYPTO_FEATURE_LOOKBACK_HOURS", "400"))
 CRYPTO_FEATURE_CACHE_TTL_S = float(os.getenv("CRYPTO_FEATURE_CACHE_TTL_S", "30"))
 CRYPTO_MIN_FEATURE_BARS = int(os.getenv("CRYPTO_MIN_FEATURE_BARS", "205"))
@@ -135,6 +145,14 @@ for _kalshi_error in KALSHI_RUNTIME.errors:
 supa: SupabaseClient | None = None
 USER_ID = None
 _RUNTIME_VALIDATED = False
+_DIAGNOSTIC_EVAL_COUNTER: dict[str, int] = {}
+_DIAGNOSTIC_TOP_FEATURES = (
+    "force_idx",
+    "relative_vol",
+    "vol_pressure",
+    "ret_1h_z",
+    "dist_ma200",
+)
 
 # ── pgvector RAG is handled via news_rag.query_news() — no local DB client needed ──
 
@@ -182,8 +200,12 @@ def initialize_runtime_clients(*, require_supabase: bool = True, require_kalshi:
 def _crypto_thresholds_for_asset(asset: str) -> tuple[float, float]:
     normalized = asset.upper()
     if normalized == "BTC":
+        if CRYPTO_DIAGNOSTIC_MODE:
+            return CRYPTO_DIAGNOSTIC_BTC_YES_THRESHOLD, CRYPTO_DIAGNOSTIC_BTC_NO_THRESHOLD
         return CRYPTO_BTC_YES_THRESHOLD, CRYPTO_BTC_NO_THRESHOLD
     if normalized == "ETH":
+        if CRYPTO_DIAGNOSTIC_MODE:
+            return CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD, CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD
         return CRYPTO_ETH_YES_THRESHOLD, CRYPTO_ETH_NO_THRESHOLD
     raise ValueError(f"Unsupported crypto asset for threshold lookup: {asset}")
 
@@ -600,6 +622,7 @@ def execute_trade(state: AgentState) -> dict:
 _BTC_MODEL: Any | None = None
 _ETH_MODEL: Any | None = None
 _CRYPTO_FEATURE_ROW_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_CRYPTO_FEATURE_FRAME_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 
 
 def _repo_root() -> Path:
@@ -915,7 +938,17 @@ def _latest_crypto_feature_row(asset: str, model: Any) -> pd.DataFrame:
         raise ValueError(f"Crypto feature row contains NaN values for {asset}: {bad_columns}")
 
     _CRYPTO_FEATURE_ROW_CACHE[cache_key] = (now_ts, last_row)
+    _CRYPTO_FEATURE_FRAME_CACHE[cache_key] = (now_ts, features.copy())
     return last_row
+
+
+def _latest_crypto_feature_frame(asset: str) -> Optional[pd.DataFrame]:
+    cached = _CRYPTO_FEATURE_FRAME_CACHE.get(asset.upper())
+    if not cached:
+        return None
+    if (time.time() - cached[0]) >= CRYPTO_FEATURE_CACHE_TTL_S:
+        return None
+    return cached[1]
 
 
 def _model_yes_probability(model: Any, feature_frame: pd.DataFrame) -> float:
@@ -1021,6 +1054,8 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
         feature_row=feature_row,
         probability_yes=float(prob_yes),
     )
+    if _should_log_diagnostic_feature_snapshot(asset):
+        _log_diagnostic_feature_snapshot(asset, market_ticker, feature_row)
 
     yes_threshold, no_threshold = _crypto_thresholds_for_asset(asset)
     side: Optional[str] = None
@@ -1067,6 +1102,7 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
                     "decision_stage": "dead_zone",
                     "yes_threshold": yes_threshold,
                     "no_threshold": no_threshold,
+                    "diagnostic_mode": CRYPTO_DIAGNOSTIC_MODE,
                 },
             )
         return {"trade_signal": None}
@@ -1083,6 +1119,7 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
             "decision_stage": "signal_passed_threshold",
             "yes_threshold": yes_threshold,
             "no_threshold": no_threshold,
+            "diagnostic_mode": CRYPTO_DIAGNOSTIC_MODE,
         },
     )
 
@@ -1096,7 +1133,12 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
         "resolved_ticker": None,
         "edge": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "raw": ticker_message,
+        "raw": {
+            **ticker_message,
+            "diagnostic_mode": CRYPTO_DIAGNOSTIC_MODE,
+            "yes_threshold": yes_threshold,
+            "no_threshold": no_threshold,
+        },
     }
 
     log.info("[CRYPTO EDGE] %s %s P(YES)=%.3f price=$%.4f", market_ticker, side, prob_yes, price)
@@ -1538,6 +1580,58 @@ def _should_record_inference_heartbeat(asset: str) -> bool:
     _INFERENCE_EVAL_COUNTER[asset] = count
     interval = max(1, CRYPTO_INFERENCE_HEARTBEAT_EVERY)
     return count % interval == 0
+
+
+def _should_log_diagnostic_feature_snapshot(asset: str) -> bool:
+    if not CRYPTO_DIAGNOSTIC_MODE:
+        return False
+    count = int(_DIAGNOSTIC_EVAL_COUNTER.get(asset, 0)) + 1
+    _DIAGNOSTIC_EVAL_COUNTER[asset] = count
+    interval = max(1, CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY)
+    return count % interval == 0
+
+
+def _compute_feature_zscores(feature_frame: pd.DataFrame, latest_row: pd.DataFrame) -> dict[str, dict[str, float]]:
+    zscores: dict[str, dict[str, float]] = {}
+    for feature_name in _DIAGNOSTIC_TOP_FEATURES:
+        if feature_name not in feature_frame.columns or feature_name not in latest_row.columns:
+            continue
+        series = pd.to_numeric(feature_frame[feature_name], errors="coerce").dropna()
+        if series.empty:
+            continue
+        mean_value = float(series.mean())
+        std_value = float(series.std(ddof=0))
+        latest_value = float(latest_row.iloc[-1][feature_name])
+        if std_value <= 1e-12:
+            z_score = 0.0
+        else:
+            z_score = (latest_value - mean_value) / std_value
+        zscores[feature_name] = {
+            "value": latest_value,
+            "mean": mean_value,
+            "std": std_value,
+            "z": float(z_score),
+        }
+    return zscores
+
+
+def _log_diagnostic_feature_snapshot(asset: str, market_ticker: str, feature_row: pd.DataFrame) -> None:
+    feature_frame = _latest_crypto_feature_frame(asset)
+    if feature_frame is None or feature_frame.empty:
+        return
+    zscores = _compute_feature_zscores(feature_frame, feature_row)
+    if not zscores:
+        return
+    summary = " | ".join(
+        f"{name}: z={stats['z']:+.2f} value={stats['value']:.4f}"
+        for name, stats in zscores.items()
+    )
+    log.info(
+        "[CRYPTO DIAGNOSTIC SNAPSHOT] asset=%s source=%s %s",
+        asset,
+        market_ticker,
+        summary,
+    )
 
 
 def _log_hourly_feature_snapshot(
@@ -2111,6 +2205,21 @@ async def _dispatch_crypto_notifications(notifier: Any, final_state: dict[str, A
     execution_result = final_state.get("execution_result") or {}
     notifications = list(execution_result.get("notifications") or [])
     trade_signal = final_state.get("trade_signal") or {}
+    signal_raw = trade_signal.get("raw") or {}
+
+    if CRYPTO_DIAGNOSTIC_MODE and trade_signal:
+        try:
+            await notifier.alert_crypto_diagnostic_signal(
+                asset=str(trade_signal.get("asset") or ""),
+                market_ticker=str(trade_signal.get("market_ticker") or ""),
+                side=str(trade_signal.get("side") or ""),
+                probability_yes=float(trade_signal.get("probability_yes") or 0.0),
+                signal_price_dollars=float(trade_signal.get("price_dollars") or 0.0),
+                yes_threshold=float(signal_raw.get("yes_threshold") or _crypto_thresholds_for_asset(str(trade_signal.get("asset") or ""))[0]),
+                no_threshold=float(signal_raw.get("no_threshold") or _crypto_thresholds_for_asset(str(trade_signal.get("asset") or ""))[1]),
+            )
+        except Exception as exc:
+            log.error("Diagnostic Telegram alert failed: %s", exc)
 
     for notification in notifications:
         kind = notification.get("kind")
