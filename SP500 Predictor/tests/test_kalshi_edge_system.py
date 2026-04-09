@@ -264,6 +264,7 @@ class TestTelegramCommands:
         async def fake_supabase_select(table, *, params):
             assert table == "crypto_signal_events"
             assert params["limit"] == "25"
+            assert "created_at" in params
             return [
                 {
                     "created_at": "2026-04-09T01:00:00+00:00",
@@ -314,6 +315,7 @@ class TestTelegramCommands:
         assert "KXBTCY-27JAN0100-B92500" in text
         assert "`near\\_miss`" in text
         assert "`edge\\_below\\_threshold`" in text
+        assert "2026-04-09T01:00:00+00:00" in text
 
     def test_crypto_scan_handles_no_actionable_events(self):
         from src.telegram_notifier import TelegramNotifier
@@ -327,7 +329,8 @@ class TestTelegramCommands:
 
         text = asyncio.run(tn._get_crypto_scan_text())
 
-        assert "No actionable crypto events yet" in text
+        assert "No actionable crypto events in the last" in text
+        assert "latest signal, near miss, skip, failure, or trade" in text
 
 
 # ════════════════════════════════════════════════════════════════════

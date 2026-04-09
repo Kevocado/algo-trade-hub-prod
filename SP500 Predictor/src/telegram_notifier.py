@@ -10,7 +10,7 @@ import contextlib
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,7 @@ KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
 KALSHI_TRADE_API_V2_BASE = resolve_kalshi_runtime_settings().api_base
 
 POLL_INTERVAL = int(os.getenv("TELEGRAM_POLL_INTERVAL_S", "5"))
+CRYPTO_SCAN_LOOKBACK_HOURS = int(os.getenv("TELEGRAM_CRYPTO_SCAN_HOURS", "24"))
 
 
 def _escape_markdown_text(value: Any) -> str:
@@ -437,16 +438,22 @@ class TelegramNotifier:
         return "\n".join(lines)
 
     async def _get_crypto_scan_text(self) -> str:
+        cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=CRYPTO_SCAN_LOOKBACK_HOURS)).isoformat()
         rows = await self._supabase_select(
             "crypto_signal_events",
             params={
                 "select": "created_at,asset,source_market_ticker,resolved_ticker,desired_side,status,skip_reason,execution_status,edge,model_probability_yes",
                 "order": "created_at.desc",
                 "limit": "25",
+                "created_at": f"gte.{cutoff_iso}",
             },
         )
         if not rows:
-            return "🔎 *Crypto Scan*\n\nNo qualifying crypto signals recorded yet."
+            return (
+                "🔎 *Crypto Scan*\n\n"
+                f"No actionable crypto events in the last {CRYPTO_SCAN_LOOKBACK_HOURS}h.\n"
+                "Dead-zone decisions are not included in this view."
+            )
 
         latest_by_status: dict[str, dict[str, Any]] = {}
         status_order = [
@@ -470,14 +477,19 @@ class TelegramNotifier:
                 continue
             ticker = row.get("resolved_ticker") or row.get("source_market_ticker") or row.get("asset") or "unresolved"
             skip_or_exec = row.get("skip_reason") or row.get("execution_status") or "live"
+            created_at = _escape_markdown_text(str(row.get("created_at") or "n/a"))
             lines.append(
                 f"• *{label}*: `{_escape_markdown_text(ticker)}` | {_escape_markdown_text(row.get('desired_side') or '?')} | "
                 f"`{_escape_markdown_text(status)}` | `{_escape_markdown_text(skip_or_exec)}` | "
-                f"edge={float(row.get('edge') or 0):+.3f} | P(YES)={float(row.get('model_probability_yes') or 0):.3f}"
+                f"edge={float(row.get('edge') or 0):+.3f} | P(YES)={float(row.get('model_probability_yes') or 0):.3f} | `{created_at}`"
             )
             rendered += 1
         if rendered == 0:
-            return "🔎 *Crypto Scan*\n\nNo actionable crypto events yet. This command reports the latest signal, near miss, skip, failure, or trade."
+            return (
+                "🔎 *Crypto Scan*\n\n"
+                f"No actionable crypto events in the last {CRYPTO_SCAN_LOOKBACK_HOURS}h.\n"
+                "This command reports the latest signal, near miss, skip, failure, or trade."
+            )
         return "\n".join(lines)
 
     async def _handle_command(self, command: str, from_chat_id: str) -> None:
