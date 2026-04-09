@@ -41,6 +41,25 @@ def create_supabase_client():
     return create_client(url, key)
 
 
+def _latest_session_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return rows
+    ordered = sorted(
+        rows,
+        key=lambda row: pd.to_datetime(row["timestamp_utc"], utc=True, errors="coerce"),
+    )
+    session_start_index = 0
+    previous_eval_count: int | None = None
+    for index, row in enumerate(ordered):
+        evaluation_count = row.get("evaluation_count")
+        if isinstance(evaluation_count, (int, float)):
+            current_eval_count = int(evaluation_count)
+            if previous_eval_count is not None and current_eval_count < previous_eval_count:
+                session_start_index = index
+            previous_eval_count = current_eval_count
+    return ordered[session_start_index:]
+
+
 def fetch_live_audit_snapshots(
     supa: Any,
     *,
@@ -55,7 +74,7 @@ def fetch_live_audit_snapshots(
         .execute()
     )
 
-    asset_rows: dict[str, list[dict[str, float]]] = {}
+    asset_rows: dict[str, list[dict[str, Any]]] = {}
     for row in result.data or []:
         context = row.get("reasoning_context") or {}
         if context.get("audit_kind") != AUDIT_KIND:
@@ -64,16 +83,19 @@ def fetch_live_audit_snapshots(
         feature_vector = context.get("feature_vector") or {}
         if asset not in ASSET_SYMBOLS or not feature_vector:
             continue
+        feature_row = {
+            name: float(feature_vector[name])
+            for name in CANONICAL_CRYPTO_FEATURES
+            if name in feature_vector
+        }
+        feature_row["timestamp_utc"] = str(context.get("timestamp_utc") or row.get("timestamp") or "")
+        feature_row["evaluation_count"] = context.get("evaluation_count")
         asset_rows.setdefault(asset, []).append(
-            {
-                name: float(feature_vector[name])
-                for name in CANONICAL_CRYPTO_FEATURES
-                if name in feature_vector
-            }
+            feature_row
         )
 
     return {
-        asset: pd.DataFrame(rows, columns=CANONICAL_CRYPTO_FEATURES)
+        asset: pd.DataFrame(_latest_session_rows(rows), columns=["timestamp_utc", "evaluation_count", *CANONICAL_CRYPTO_FEATURES])[CANONICAL_CRYPTO_FEATURES]
         for asset, rows in asset_rows.items()
         if rows
     }

@@ -108,6 +108,57 @@ def test_fetch_live_audit_snapshots_extracts_feature_vectors():
     assert frames["ETH"].iloc[0]["Volume"] == 350.0
 
 
+def test_fetch_live_audit_snapshots_filters_to_latest_process_epoch():
+    module = _load_audit_module()
+    rows = [
+        {
+            "timestamp": "2026-04-09T00:10:00+00:00",
+            "reasoning_context": {
+                "audit_kind": "feature_distribution_snapshot",
+                "asset": "ETH",
+                "evaluation_count": 240,
+                "timestamp_utc": "2026-04-09T00:10:00+00:00",
+                "feature_vector": {"Close": 2000.0, "Volume": 900000000.0},
+            },
+        },
+        {
+            "timestamp": "2026-04-09T00:20:00+00:00",
+            "reasoning_context": {
+                "audit_kind": "feature_distribution_snapshot",
+                "asset": "ETH",
+                "evaluation_count": 260,
+                "timestamp_utc": "2026-04-09T00:20:00+00:00",
+                "feature_vector": {"Close": 2010.0, "Volume": 910000000.0},
+            },
+        },
+        {
+            "timestamp": "2026-04-09T00:50:00+00:00",
+            "reasoning_context": {
+                "audit_kind": "feature_distribution_snapshot",
+                "asset": "ETH",
+                "evaluation_count": 20,
+                "timestamp_utc": "2026-04-09T00:50:00+00:00",
+                "feature_vector": {"Close": 2170.0, "Volume": 45000000.0},
+            },
+        },
+        {
+            "timestamp": "2026-04-09T00:55:00+00:00",
+            "reasoning_context": {
+                "audit_kind": "feature_distribution_snapshot",
+                "asset": "ETH",
+                "evaluation_count": 40,
+                "timestamp_utc": "2026-04-09T00:55:00+00:00",
+                "feature_vector": {"Close": 2175.0, "Volume": 50000000.0},
+            },
+        },
+    ]
+
+    frames = module.fetch_live_audit_snapshots(_FakeSupabase(rows), hours=1)
+
+    assert list(frames["ETH"]["Close"]) == [2170.0, 2175.0]
+    assert list(frames["ETH"]["Volume"]) == [45000000.0, 50000000.0]
+
+
 def test_default_audit_windows():
     module = _load_audit_module()
 
