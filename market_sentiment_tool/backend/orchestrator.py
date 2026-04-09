@@ -167,7 +167,6 @@ _DEEP_AUDIT_FOCUS_FEATURES = (
 _FEATURE_RUNNING_STATS: dict[str, dict[str, dict[str, float]]] = {}
 _DATA_CRITICAL_ALERT_LAST_HOUR: dict[str, str] = {}
 _STALE_DATA_ALERT_LAST_HOUR: dict[str, str] = {}
-_MANUAL_TEST_OVERRIDES: dict[str, dict[str, Any]] = {}
 
 
 class DataRecencyError(RuntimeError):
@@ -227,74 +226,6 @@ def _crypto_thresholds_for_asset(asset: str) -> tuple[float, float]:
             return CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD, CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD
         return CRYPTO_ETH_YES_THRESHOLD, CRYPTO_ETH_NO_THRESHOLD
     raise ValueError(f"Unsupported crypto asset for threshold lookup: {asset}")
-
-
-def request_manual_crypto_test(asset: str, *, force_execution: bool = False) -> tuple[bool, str]:
-    normalized = str(asset or "").strip().upper()
-    if normalized not in {"BTC", "ETH"}:
-        command_name = "/force_demo_buy" if force_execution else "/test_trade"
-        return False, f"Usage: {command_name} BTC or {command_name} ETH"
-    if KALSHI_ENV != "demo":
-        command_name = "/force_demo_buy" if force_execution else "/test_trade"
-        return False, f"Safety stop: {command_name} is only allowed when KALSHI_ENV=demo."
-
-    _MANUAL_TEST_OVERRIDES[normalized] = {
-        "asset": normalized,
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "probability_yes": 0.80,
-        "desired_side": "YES",
-        "reason": "telegram_force_demo_buy" if force_execution else "telegram_test_trade",
-        "force_execution": bool(force_execution),
-    }
-    if force_execution:
-        return True, (
-            f"Queued one-shot forced demo buy for {normalized}. Next eligible live loop will bypass the probability and edge gates, "
-            "but still require real market resolution, orderbook data, and demo order submission."
-        )
-    return True, f"Queued one-shot manual test for {normalized}. Next eligible live loop will attempt real market resolution and edge checks."
-
-
-def validate_manual_crypto_test_request(asset: str, *, force_execution: bool = False) -> tuple[bool, str]:
-    normalized = str(asset or "").strip().upper()
-    if normalized not in {"BTC", "ETH"}:
-        command_name = "/force_demo_buy" if force_execution else "/test_trade"
-        return False, f"Usage: {command_name} BTC or {command_name} ETH"
-    if KALSHI_ENV != "demo":
-        command_name = "/force_demo_buy" if force_execution else "/test_trade"
-        return False, f"Safety stop: {command_name} is only allowed when KALSHI_ENV=demo."
-    return True, normalized
-
-
-def _manual_test_signal(asset: str, *, force_execution: bool) -> "TradeSignal":
-    requested_at = datetime.now(timezone.utc).isoformat()
-    request_payload = {
-        "asset": asset,
-        "requested_at": requested_at,
-        "probability_yes": 0.80,
-        "desired_side": "YES",
-        "reason": "telegram_force_demo_buy" if force_execution else "telegram_test_trade",
-        "force_execution": force_execution,
-    }
-    return {
-        "asset": asset,
-        "market_ticker": f"MANUAL-{asset}-TEST",
-        "side": "YES",
-        "probability_yes": 0.80,
-        "price_dollars": 0.0,
-        "spot_price_dollars": None,
-        "resolved_ticker": None,
-        "edge": None,
-        "created_at": requested_at,
-        "raw": {
-            "manual_test": True,
-            "manual_test_request": request_payload,
-            "observed_probability_yes": None,
-        },
-    }
-
-
-def _consume_manual_test_override(asset: str) -> Optional[dict[str, Any]]:
-    return _MANUAL_TEST_OVERRIDES.pop(asset.upper(), None)
 
 
 def _latest_closed_hour_utc(reference: Optional[datetime] = None) -> datetime:
@@ -1473,16 +1404,11 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
         )
 
     yes_threshold, no_threshold = _crypto_thresholds_for_asset(asset)
-    manual_test = _consume_manual_test_override(asset)
-    prob_yes = float(manual_test["probability_yes"]) if manual_test else float(observed_prob_yes)
+    prob_yes = float(observed_prob_yes)
     side: Optional[str] = None
     classification = "dead_zone"
     decision_status = "DEAD_ZONE"
-    if manual_test:
-        side = str(manual_test.get("desired_side") or "YES")
-        classification = "manual_test_signal"
-        decision_status = "MANUAL_TEST -> Checking Edge"
-    elif prob_yes >= yes_threshold:
+    if prob_yes >= yes_threshold:
         side = "YES"
         classification = "yes_signal"
         decision_status = "PASSED -> Checking Edge"
@@ -1525,7 +1451,6 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
                     "no_threshold": no_threshold,
                     "diagnostic_mode": CRYPTO_DIAGNOSTIC_MODE,
                     "volume_zero": volume_zero,
-                    "manual_test": False,
                     "observed_probability_yes": float(observed_prob_yes),
                 },
             )
@@ -1545,9 +1470,7 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
             "no_threshold": no_threshold,
             "diagnostic_mode": CRYPTO_DIAGNOSTIC_MODE,
             "volume_zero": volume_zero,
-            "manual_test": bool(manual_test),
             "observed_probability_yes": float(observed_prob_yes),
-            "manual_test_request": manual_test,
         },
     )
 
@@ -1567,23 +1490,11 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
             "yes_threshold": yes_threshold,
             "no_threshold": no_threshold,
             "volume_zero": volume_zero,
-            "manual_test": bool(manual_test),
-            "manual_test_request": manual_test,
             "observed_probability_yes": float(observed_prob_yes),
         },
     }
 
-    if manual_test:
-        log.info(
-            "[CRYPTO EDGE] %s %s P(YES)=%.3f price=$%.4f manual_test=true observed_p_yes=%.3f",
-            market_ticker,
-            side,
-            prob_yes,
-            price,
-            observed_prob_yes,
-        )
-    else:
-        log.info("[CRYPTO EDGE] %s %s P(YES)=%.3f price=$%.4f", market_ticker, side, prob_yes, price)
+    log.info("[CRYPTO EDGE] %s %s P(YES)=%.3f price=$%.4f", market_ticker, side, prob_yes, price)
     return {"trade_signal": signal}
 
 
@@ -2214,45 +2125,6 @@ def _run_crypto_graph_once(graph, initial_state: CryptoAgentState) -> dict[str, 
     return final_state
 
 
-def run_manual_crypto_test_once(asset: str, *, force_execution: bool = False) -> dict[str, Any]:
-    ok, normalized_or_message = validate_manual_crypto_test_request(asset, force_execution=force_execution)
-    if not ok:
-        raise ValueError(normalized_or_message)
-
-    normalized = normalized_or_message
-    initialize_runtime_clients(require_supabase=True, require_kalshi=True)
-    signal = _manual_test_signal(normalized, force_execution=force_execution)
-    _record_inference_event(
-        asset=normalized,
-        market_ticker=signal["market_ticker"],
-        status="signal_detected",
-        probability_yes=float(signal["probability_yes"]),
-        signal_price_dollars=float(signal["price_dollars"]),
-        desired_side=signal["side"],
-        payload={
-            "classification": "manual_test_signal",
-            "decision_stage": "manual_test_direct_resolution",
-            "manual_test": True,
-            "force_execution": force_execution,
-        },
-    )
-    initial_state: CryptoAgentState = {
-        "ticker": {},
-        "trade_signal": signal,
-        "resolved_market_ticker": None,
-        "final_edge": None,
-        "execution_result": None,
-    }
-    return market_resolution(initial_state)
-
-
-async def execute_manual_crypto_test(asset: str, *, notifier: Any | None = None, force_execution: bool = False) -> dict[str, Any]:
-    final_state = await asyncio.to_thread(run_manual_crypto_test_once, asset, force_execution=force_execution)
-    if notifier is not None:
-        await _dispatch_crypto_notifications(notifier, final_state)
-    return final_state
-
-
 def _schedule_async_notification(coroutine: Any) -> None:
     task = asyncio.create_task(coroutine)
 
@@ -2289,25 +2161,20 @@ def market_resolution(state: CryptoAgentState) -> dict:
     signal_price = float(signal.get("price_dollars", 0.0))
     prob_yes = float(signal.get("probability_yes", 0.0))
     desired_side = str(signal.get("side") or "").upper()  # YES or NO
-    signal_raw = dict(signal.get("raw") or {})
-    manual_test = bool(signal_raw.get("manual_test"))
-    force_execution = bool((signal_raw.get("manual_test_request") or {}).get("force_execution"))
 
     if not check_crypto_trade_switch():
         controls = get_crypto_trade_controls()
         disable_reason = controls.get("crypto_trading_disabled_reason") or "crypto_auto_trade_enabled is False."
         execution_result = {"status": "blocked", "reason": disable_reason, "code": "crypto_trading_disabled"}
-        if manual_test:
-            execution_result = _append_notification(
-                execution_result,
-                {
-                    "kind": "trading_disabled",
-                    "asset": asset,
-                    "resolved_ticker": source_market_ticker,
-                    "reason": disable_reason,
-                    "manual_test": True,
-                },
-            )
+        execution_result = _append_notification(
+            execution_result,
+            {
+                "kind": "trading_disabled",
+                "asset": asset,
+                "resolved_ticker": source_market_ticker,
+                "reason": disable_reason,
+            },
+        )
         log.warning("[RESOLUTION] %s signal blocked: %s", source_market_ticker, disable_reason)
         _record_inference_skip(
             asset=asset,
@@ -2332,23 +2199,19 @@ def market_resolution(state: CryptoAgentState) -> dict:
             "execution_result": execution_result,
         }
 
-    log_prefix = "[MANUAL TEST ORDER] " if manual_test else ""
-
     spot_price = _fetch_alpaca_spot_price(asset)
     if spot_price is None:
         signal_with_resolution["spot_price_dollars"] = None
         execution_result = {"status": "skipped", "reason": "alpaca_spot_unavailable"}
-        if manual_test:
-            execution_result = _append_notification(
-                execution_result,
-                {
-                    "kind": "execution_failed",
-                    "asset": asset,
-                    "resolved_ticker": source_market_ticker,
-                    "reason": "alpaca_spot_unavailable",
-                    "manual_test": True,
-                },
-            )
+        execution_result = _append_notification(
+            execution_result,
+            {
+                "kind": "execution_failed",
+                "asset": asset,
+                "resolved_ticker": source_market_ticker,
+                "reason": "alpaca_spot_unavailable",
+            },
+        )
         _record_inference_skip(
             asset=asset,
             market_ticker=source_market_ticker,
@@ -2360,11 +2223,10 @@ def market_resolution(state: CryptoAgentState) -> dict:
         )
         log_to_supabase(
             "orchestrator.crypto_trade",
-            f"{log_prefix}KALSHI_TRADE_SKIPPED asset={asset} reason=alpaca_spot_unavailable",
+            f"KALSHI_TRADE_SKIPPED asset={asset} reason=alpaca_spot_unavailable",
             level="WARN",
             context={
                 "asset": asset,
-                "manual_test": manual_test,
                 "source_market_ticker": source_market_ticker,
                 "signal_price_dollars": signal_price,
                 "resolved_ticker": None,
@@ -2382,17 +2244,15 @@ def market_resolution(state: CryptoAgentState) -> dict:
     if not resolved_market:
         log.warning("[RESOLUTION] No matching %s hourly market found (spot=%.2f)", asset, spot_price)
         execution_result = {"status": "skipped", "reason": "no_market_match"}
-        if manual_test:
-            execution_result = _append_notification(
-                execution_result,
-                {
-                    "kind": "execution_failed",
-                    "asset": asset,
-                    "resolved_ticker": source_market_ticker,
-                    "reason": "no_market_match",
-                    "manual_test": True,
-                },
-            )
+        execution_result = _append_notification(
+            execution_result,
+            {
+                "kind": "execution_failed",
+                "asset": asset,
+                "resolved_ticker": source_market_ticker,
+                "reason": "no_market_match",
+            },
+        )
         _record_inference_skip(
             asset=asset,
             market_ticker=source_market_ticker,
@@ -2404,11 +2264,10 @@ def market_resolution(state: CryptoAgentState) -> dict:
         )
         log_to_supabase(
             "orchestrator.crypto_trade",
-            f"{log_prefix}KALSHI_TRADE_SKIPPED asset={asset} reason=no_market_match",
+            f"KALSHI_TRADE_SKIPPED asset={asset} reason=no_market_match",
             level="WARN",
             context={
                 "asset": asset,
-                "manual_test": manual_test,
                 "source_market_ticker": source_market_ticker,
                 "signal_price_dollars": signal_price,
                 "spot_price_dollars": float(spot_price),
@@ -2427,7 +2286,7 @@ def market_resolution(state: CryptoAgentState) -> dict:
 
     if not _cooldown_allows_trade(resolved_ticker):
         log.info("[COOLDOWN] Skipping %s (already traded within %ss)", resolved_ticker, CRYPTO_TRADE_COOLDOWN_S)
-        should_alert = manual_test or _should_emit_opportunity_alert(_crypto_alert_dedupe_key(signal_with_resolution, resolved_ticker))
+        should_alert = _should_emit_opportunity_alert(_crypto_alert_dedupe_key(signal_with_resolution, resolved_ticker))
         execution_result = {"status": "skipped", "reason": "cooldown"}
         if should_alert:
             execution_result = _append_notification(
@@ -2439,7 +2298,6 @@ def market_resolution(state: CryptoAgentState) -> dict:
                     "desired_side": desired_side,
                     "probability_yes": prob_yes,
                     "price_dollars": signal_price,
-                    "manual_test": manual_test,
                 },
             )
         _record_crypto_event(
@@ -2456,11 +2314,10 @@ def market_resolution(state: CryptoAgentState) -> dict:
         )
         log_to_supabase(
             "orchestrator.crypto_trade",
-            f"{log_prefix}KALSHI_TRADE_SKIPPED asset={asset} reason=cooldown",
+            f"KALSHI_TRADE_SKIPPED asset={asset} reason=cooldown",
             level="INFO",
             context={
                 "asset": asset,
-                "manual_test": manual_test,
                 "source_market_ticker": source_market_ticker,
                 "signal_price_dollars": signal_price,
                 "spot_price_dollars": float(spot_price),
@@ -2490,17 +2347,15 @@ def market_resolution(state: CryptoAgentState) -> dict:
     if price_to_pay is None:
         log.warning("[RESOLUTION] Missing orderbook prices for %s", resolved_ticker)
         execution_result = {"status": "skipped", "reason": "missing_orderbook"}
-        if manual_test:
-            execution_result = _append_notification(
-                execution_result,
-                {
-                    "kind": "execution_failed",
-                    "asset": asset,
-                    "resolved_ticker": resolved_ticker,
-                    "reason": "missing_orderbook",
-                    "manual_test": True,
-                },
-            )
+        execution_result = _append_notification(
+            execution_result,
+            {
+                "kind": "execution_failed",
+                "asset": asset,
+                "resolved_ticker": resolved_ticker,
+                "reason": "missing_orderbook",
+            },
+        )
         _record_inference_skip(
             asset=asset,
             market_ticker=source_market_ticker,
@@ -2516,11 +2371,10 @@ def market_resolution(state: CryptoAgentState) -> dict:
         )
         log_to_supabase(
             "orchestrator.crypto_trade",
-            f"{log_prefix}KALSHI_TRADE_SKIPPED asset={asset} reason=missing_orderbook",
+            f"KALSHI_TRADE_SKIPPED asset={asset} reason=missing_orderbook",
             level="WARN",
             context={
                 "asset": asset,
-                "manual_test": manual_test,
                 "source_market_ticker": source_market_ticker,
                 "signal_price_dollars": signal_price,
                 "spot_price_dollars": float(spot_price),
@@ -2547,7 +2401,7 @@ def market_resolution(state: CryptoAgentState) -> dict:
         final_edge,
     )
 
-    if final_edge <= 0.05 and not force_execution:
+    if final_edge <= 0.05:
         log.info(
             "[CRYPTO DECISION] asset=%s resolved_ticker=%s side=%s prob=%.3f price=$%.4f edge=%.3f required_edge=%.3f status=KILLED_BY_EDGE",
             asset,
@@ -2558,7 +2412,7 @@ def market_resolution(state: CryptoAgentState) -> dict:
             final_edge,
             0.05,
         )
-        should_alert = manual_test or _should_emit_near_miss_alert(_crypto_alert_dedupe_key(signal_with_resolution, resolved_ticker))
+        should_alert = _should_emit_near_miss_alert(_crypto_alert_dedupe_key(signal_with_resolution, resolved_ticker))
         execution_result = {
             "status": "skipped",
             "reason": "edge_below_threshold",
@@ -2577,7 +2431,6 @@ def market_resolution(state: CryptoAgentState) -> dict:
                     "probability_yes": prob_yes,
                     "price_dollars": float(price_to_pay),
                     "edge": final_edge,
-                    "manual_test": manual_test,
                 },
             )
         _record_crypto_event(
@@ -2596,11 +2449,10 @@ def market_resolution(state: CryptoAgentState) -> dict:
         )
         log_to_supabase(
             "orchestrator.crypto_trade",
-            f"{log_prefix}KALSHI_TRADE_SKIPPED asset={asset} reason=edge_below_threshold",
+            f"KALSHI_TRADE_SKIPPED asset={asset} reason=edge_below_threshold",
             level="INFO",
             context={
                 "asset": asset,
-                "manual_test": manual_test,
                 "source_market_ticker": source_market_ticker,
                 "signal_price_dollars": signal_price,
                 "spot_price_dollars": float(spot_price),
@@ -2621,16 +2473,6 @@ def market_resolution(state: CryptoAgentState) -> dict:
             "final_edge": final_edge,
             "execution_result": execution_result,
         }
-    if final_edge <= 0.05 and force_execution:
-        log.warning(
-            "[MANUAL TEST ORDER] Bypassing edge gate for asset=%s resolved_ticker=%s side=%s prob=%.3f price=$%.4f edge=%.3f",
-            asset,
-            resolved_ticker,
-            desired_side,
-            prob_outcome,
-            float(price_to_pay),
-            final_edge,
-        )
 
     try:
         try:
@@ -2648,17 +2490,15 @@ def market_resolution(state: CryptoAgentState) -> dict:
     except Exception as exc:
         log.error("Kalshi execution bridge call failed: %s", exc)
         execution_result = {"status": "error", "detail": str(exc)}
-        if manual_test:
-            execution_result = _append_notification(
-                execution_result,
-                {
-                    "kind": "execution_failed",
-                    "asset": asset,
-                    "resolved_ticker": resolved_ticker,
-                    "reason": str(exc),
-                    "manual_test": True,
-                },
-            )
+        execution_result = _append_notification(
+            execution_result,
+            {
+                "kind": "execution_failed",
+                "asset": asset,
+                "resolved_ticker": resolved_ticker,
+                "reason": str(exc),
+            },
+        )
         _record_inference_skip(
             asset=asset,
             market_ticker=source_market_ticker,
@@ -2705,8 +2545,6 @@ def market_resolution(state: CryptoAgentState) -> dict:
             "event_ticker": resolved_market.get("event_ticker"),
             "event_close_time": resolved_market.get("close_time"),
             "execution_result": exec_res,
-            "manual_test": manual_test,
-            "manual_test_request": signal_raw.get("manual_test_request"),
         },
     }
 
@@ -2720,7 +2558,6 @@ def market_resolution(state: CryptoAgentState) -> dict:
                     "asset": asset,
                     "resolved_ticker": resolved_ticker,
                     "reason": exec_res.get("detail") or exec_res.get("reason"),
-                    "manual_test": manual_test,
                 },
             )
             skip_reason = "insufficient_funds"
@@ -2732,7 +2569,6 @@ def market_resolution(state: CryptoAgentState) -> dict:
                     "asset": asset,
                     "resolved_ticker": resolved_ticker,
                     "reason": exec_res.get("detail") or exec_res.get("reason") or exec_res.get("code"),
-                    "manual_test": manual_test,
                 },
             )
             skip_reason = "order_rejected"
@@ -2766,11 +2602,10 @@ def market_resolution(state: CryptoAgentState) -> dict:
         )
         log_to_supabase(
             "orchestrator.crypto_trade",
-            f"{log_prefix}KALSHI_TRADE_FAILED asset={asset} ticker_id={resolved_ticker}",
+            f"KALSHI_TRADE_FAILED asset={asset} ticker_id={resolved_ticker}",
             level="ERROR",
             context={
                 "asset": asset,
-                "manual_test": manual_test,
                 "source_market_ticker": source_market_ticker,
                 "signal_price_dollars": signal_price,
                 "spot_price_dollars": float(spot_price),
@@ -2799,7 +2634,6 @@ def market_resolution(state: CryptoAgentState) -> dict:
             "desired_side": desired_side,
             "edge": final_edge,
             "price_dollars": float(price_to_pay),
-            "manual_test": manual_test,
         },
     )
     trade_record["status"] = "OPEN" if status in ("ok", "open", "resting", "accepted", "success") else "FILLED"
@@ -2818,11 +2652,10 @@ def market_resolution(state: CryptoAgentState) -> dict:
 
     log_to_supabase(
         "orchestrator.crypto_trade",
-        f"{log_prefix}KALSHI_TRADE_PLACED ticker_id={resolved_ticker} side={desired_side} edge={final_edge:.3f}",
+        f"KALSHI_TRADE_PLACED ticker_id={resolved_ticker} side={desired_side} edge={final_edge:.3f}",
         level="INFO",
         context={
             "asset": asset,
-            "manual_test": manual_test,
             "ticker_id": resolved_ticker,
             "resolved_ticker": resolved_ticker,
             "source_market_ticker": source_market_ticker,
@@ -2870,7 +2703,6 @@ async def _dispatch_crypto_notifications(notifier: Any, final_state: dict[str, A
     notifications = list(execution_result.get("notifications") or [])
     trade_signal = final_state.get("trade_signal") or {}
     signal_raw = trade_signal.get("raw") or {}
-    signal_manual_test = bool(signal_raw.get("manual_test"))
 
     if CRYPTO_DIAGNOSTIC_MODE and trade_signal:
         try:
@@ -2898,7 +2730,6 @@ async def _dispatch_crypto_notifications(notifier: Any, final_state: dict[str, A
                     edge=final_state.get("final_edge"),
                     price_dollars=float(notification.get("price_dollars") or trade_signal.get("price_dollars") or 0.0),
                     reason="cooldown",
-                    manual_test=bool(notification.get("manual_test") or signal_manual_test),
                 )
             )
         elif kind == "trade_executed":
@@ -2911,7 +2742,6 @@ async def _dispatch_crypto_notifications(notifier: Any, final_state: dict[str, A
                     edge=float(notification.get("edge") or final_state.get("final_edge") or 0.0),
                     count=KALSHI_ORDER_COUNT,
                     execution_result=execution_result,
-                    manual_test=bool(notification.get("manual_test") or signal_manual_test),
                 )
             )
         elif kind == "execution_failed":
@@ -2920,7 +2750,6 @@ async def _dispatch_crypto_notifications(notifier: Any, final_state: dict[str, A
                     asset=str(notification.get("asset") or trade_signal.get("asset") or ""),
                     market_ticker=str(notification.get("resolved_ticker") or final_state.get("resolved_market_ticker") or ""),
                     reason=str(notification.get("reason") or execution_result.get("detail") or execution_result.get("reason") or "order failed"),
-                    manual_test=bool(notification.get("manual_test") or signal_manual_test),
                 )
             )
         elif kind == "trading_disabled":
@@ -2929,7 +2758,6 @@ async def _dispatch_crypto_notifications(notifier: Any, final_state: dict[str, A
                     asset=str(notification.get("asset") or trade_signal.get("asset") or ""),
                     market_ticker=str(notification.get("resolved_ticker") or final_state.get("resolved_market_ticker") or ""),
                     reason=str(notification.get("reason") or execution_result.get("detail") or execution_result.get("reason") or "trading disabled"),
-                    manual_test=bool(notification.get("manual_test") or signal_manual_test),
                 )
             )
         elif kind == "near_miss":
@@ -2942,7 +2770,6 @@ async def _dispatch_crypto_notifications(notifier: Any, final_state: dict[str, A
                     edge=float(notification.get("edge") or final_state.get("final_edge") or 0.0),
                     price_dollars=float(notification.get("price_dollars") or 0.0),
                     reason="near_miss",
-                    manual_test=bool(notification.get("manual_test") or signal_manual_test),
                 )
             )
 

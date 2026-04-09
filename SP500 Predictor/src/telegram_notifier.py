@@ -19,6 +19,9 @@ import aiohttp
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+PREDICTOR_ROOT = Path(__file__).resolve().parents[1]
+if str(PREDICTOR_ROOT) not in sys.path:
+    sys.path.insert(0, str(PREDICTOR_ROOT))
 
 from shared.kalshi_ws import load_rsa_private_key, sign_kalshi_message
 from market_sentiment_tool.backend.runtime_bootstrap import resolve_kalshi_runtime_settings
@@ -496,6 +499,12 @@ class TelegramNotifier:
             )
         return "\n".join(lines)
 
+    async def _get_crypto_stats_text(self) -> str:
+        from scripts.shadow_performance import build_shadow_report, render_shadow_report
+
+        report = await asyncio.to_thread(build_shadow_report, hours=CRYPTO_SCAN_LOOKBACK_HOURS)
+        return render_shadow_report(report, telegram=True)
+
     async def _handle_command(self, command: str, from_chat_id: str) -> None:
         resolved_chat_id = await self._get_chat_id()
         if from_chat_id != resolved_chat_id:
@@ -514,8 +523,7 @@ class TelegramNotifier:
                         "/positions",
                         "/trades",
                         "/crypto_scan *(or /cryptoscan; latest actionable crypto events from the last 24h)*",
-                        "/test_trade `BTC|ETH` *(demo-only one-shot execution smoke test)*",
-                        "/force_demo_buy `BTC|ETH` *(demo-only one-shot forced demo buy)*",
+                        "/stats *(or /accuracy; shadow hit rate, Brier score, virtual PnL)*",
                         "/help",
                     ]
                 )
@@ -530,28 +538,8 @@ class TelegramNotifier:
             await self.send_message(await self._get_trades_text())
         elif cmd in {"/crypto_scan", "/cryptoscan", "/scan"}:
             await self.send_message(await self._get_crypto_scan_text())
-        elif cmd == "/test_trade":
-            asset = parts[1].upper() if len(parts) > 1 else ""
-            from market_sentiment_tool.backend import orchestrator as crypto_orchestrator
-
-            ok, message = crypto_orchestrator.request_manual_crypto_test(asset)
-            prefix = "🧪 *Manual Test Armed*" if ok else "⚠️ *Manual Test Rejected*"
-            await self.send_message(f"{prefix}\n\n{message}")
-        elif cmd == "/force_demo_buy":
-            asset = parts[1].upper() if len(parts) > 1 else ""
-            from market_sentiment_tool.backend import orchestrator as crypto_orchestrator
-
-            ok, message = crypto_orchestrator.validate_manual_crypto_test_request(asset, force_execution=True)
-            prefix = "🧪 *Forced Demo Buy Armed*" if ok else "⚠️ *Forced Demo Buy Rejected*"
-            if ok:
-                asyncio.create_task(
-                    crypto_orchestrator.execute_manual_crypto_test(asset, notifier=self, force_execution=True)
-                )
-                await self.send_message(
-                    f"{prefix}\n\nQueued one-shot forced demo buy for {message}. Executing now against the live demo order path."
-                )
-            else:
-                await self.send_message(f"{prefix}\n\n{message}")
+        elif cmd in {"/stats", "/accuracy"}:
+            await self.send_message(await self._get_crypto_stats_text())
         else:
             await self.send_message(f"❓ Unknown command: `{cmd}`\nSend */help* for the list.")
 

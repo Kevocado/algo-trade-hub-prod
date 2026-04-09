@@ -211,8 +211,9 @@ class TestTelegramCommands:
         tn._get_positions_text = fake_text
         tn._get_trades_text = fake_text
         tn._get_crypto_scan_text = fake_text
+        tn._get_crypto_stats_text = fake_text
 
-        for cmd in ["/help", "/crypto_status", "/cryptostatus", "/balance", "/positions", "/trades", "/crypto_scan", "/cryptoscan"]:
+        for cmd in ["/help", "/crypto_status", "/cryptostatus", "/balance", "/positions", "/trades", "/crypto_scan", "/cryptoscan", "/stats", "/accuracy"]:
             asyncio.run(tn._handle_command(cmd, "12345"))
 
     def test_unknown_command_sends_help(self):
@@ -331,88 +332,6 @@ class TestTelegramCommands:
 
         assert "No actionable crypto events in the last" in text
         assert "latest signal, near miss, skip, failure, or trade" in text
-
-    def test_handle_test_trade_command_queues_demo_smoke_test(self, monkeypatch):
-        from src.telegram_notifier import TelegramNotifier
-        from market_sentiment_tool.backend import orchestrator
-
-        tn = TelegramNotifier()
-        sent_messages = []
-
-        async def fake_send_message(text, *_args, **_kwargs):
-            sent_messages.append(text)
-            return True
-
-        async def fake_chat_id():
-            return "12345"
-
-        monkeypatch.setattr(orchestrator, "KALSHI_ENV", "demo")
-        orchestrator._MANUAL_TEST_OVERRIDES.clear()
-        tn.send_message = fake_send_message
-        tn._get_chat_id = fake_chat_id
-
-        asyncio.run(tn._handle_command("/test_trade ETH", "12345"))
-
-        assert len(sent_messages) == 1
-        assert "Manual Test Armed" in sent_messages[0]
-        assert "ETH" in sent_messages[0]
-        assert orchestrator._MANUAL_TEST_OVERRIDES["ETH"]["probability_yes"] == pytest.approx(0.80)
-
-    def test_handle_test_trade_command_rejects_prod(self, monkeypatch):
-        from src.telegram_notifier import TelegramNotifier
-        from market_sentiment_tool.backend import orchestrator
-
-        tn = TelegramNotifier()
-        sent_messages = []
-
-        async def fake_send_message(text, *_args, **_kwargs):
-            sent_messages.append(text)
-            return True
-
-        async def fake_chat_id():
-            return "12345"
-
-        monkeypatch.setattr(orchestrator, "KALSHI_ENV", "prod")
-        orchestrator._MANUAL_TEST_OVERRIDES.clear()
-        tn.send_message = fake_send_message
-        tn._get_chat_id = fake_chat_id
-
-        asyncio.run(tn._handle_command("/test_trade BTC", "12345"))
-
-        assert len(sent_messages) == 1
-        assert "Manual Test Rejected" in sent_messages[0]
-        assert "only allowed when KALSHI_ENV=demo" in sent_messages[0]
-
-    def test_handle_force_demo_buy_command_queues_forced_buy(self, monkeypatch):
-        from src.telegram_notifier import TelegramNotifier
-        from market_sentiment_tool.backend import orchestrator
-
-        tn = TelegramNotifier()
-        sent_messages = []
-        triggered = []
-
-        async def fake_send_message(text, *_args, **_kwargs):
-            sent_messages.append(text)
-            return True
-
-        async def fake_chat_id():
-            return "12345"
-
-        async def fake_execute_manual_crypto_test(asset, *, notifier=None, force_execution=False):
-            triggered.append((asset, force_execution, notifier is tn))
-            return {}
-
-        monkeypatch.setattr(orchestrator, "KALSHI_ENV", "demo")
-        monkeypatch.setattr(orchestrator, "execute_manual_crypto_test", fake_execute_manual_crypto_test)
-        tn.send_message = fake_send_message
-        tn._get_chat_id = fake_chat_id
-
-        asyncio.run(tn._handle_command("/force_demo_buy ETH", "12345"))
-
-        assert len(sent_messages) == 1
-        assert "Forced Demo Buy Armed" in sent_messages[0]
-        assert triggered == [("ETH", True, True)]
-
 
 # ════════════════════════════════════════════════════════════════════
 # Microstructure Engine Tests
