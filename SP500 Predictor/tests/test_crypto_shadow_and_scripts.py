@@ -75,6 +75,14 @@ def test_shadow_report_handles_no_recent_data():
     assert "No recent shadow data" in text
 
 
+def test_shadow_current_hour_utc_handles_aware_datetime():
+    from scripts import shadow_performance
+
+    ts = shadow_performance._current_hour_utc(datetime(2026, 4, 9, 22, 17, tzinfo=timezone.utc))
+
+    assert ts == pd.Timestamp("2026-04-09T22:00:00Z")
+
+
 def test_force_demo_trade_rejects_non_demo(monkeypatch):
     from scripts import force_demo_trade
 

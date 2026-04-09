@@ -1019,6 +1019,49 @@ def test_fetch_alpaca_crypto_bars_raises_data_recency_error_and_alerts(monkeypat
     assert stale_logs[0]["context"]["requested_symbol"] == "BTC/USD"
 
 
+def test_fetch_alpaca_crypto_bars_allows_exact_two_hour_boundary(monkeypatch):
+    latest_bar = pd.Timestamp("2026-04-09T18:00:00Z")
+    index = pd.date_range(end=latest_bar, periods=220, freq="h", tz="UTC")
+    frame_rows = [
+        {
+            "t": ts.isoformat(),
+            "o": float(3000.0 + idx),
+            "h": float(3010.0 + idx),
+            "l": float(2990.0 + idx),
+            "c": float(3005.0 + idx),
+            "v": float(100.0 + idx),
+        }
+        for idx, ts in enumerate(index)
+    ]
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"bars": {"ETH/USD": frame_rows}, "next_page_token": None}
+
+    class FakeRequests:
+        @staticmethod
+        def get(*_args, **_kwargs):
+            return FakeResponse()
+
+    class FakeDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return latest_bar.to_pydatetime() + timedelta(hours=2)
+
+    monkeypatch.setitem(sys.modules, "requests", FakeRequests)
+    monkeypatch.setattr(orchestrator, "ALPACA_API_KEY", "key")
+    monkeypatch.setattr(orchestrator, "ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setattr(orchestrator, "datetime", FakeDatetime)
+    monkeypatch.setattr(orchestrator, "CRYPTO_STALE_DATA_GRACE_SECONDS", 60.0)
+
+    frame = orchestrator._fetch_alpaca_crypto_bars("ETH", lookback_hours=220)
+
+    assert frame.index.max() == latest_bar
+
+
 def test_fetch_yfinance_crypto_bars_raises_clear_error_when_dependency_missing(monkeypatch):
     import builtins
 

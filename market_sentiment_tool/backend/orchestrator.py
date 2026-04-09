@@ -111,6 +111,7 @@ KALSHI_ORDER_COUNT = int(os.getenv("KALSHI_ORDER_COUNT", "1"))
 ALPACA_DATA_API_BASE = os.getenv("ALPACA_DATA_API_BASE", "https://data.alpaca.markets").strip('"').strip("'")
 ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+CRYPTO_STALE_DATA_GRACE_SECONDS = float(os.getenv("CRYPTO_STALE_DATA_GRACE_SECONDS", "60"))
 
 
 # ── Logging ──
@@ -1144,7 +1145,7 @@ def _fetch_alpaca_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEATUR
     )
     latest_bar_timestamp = frame.index.max()
     age = datetime.now(timezone.utc) - latest_bar_timestamp.to_pydatetime()
-    if age > timedelta(hours=2):
+    if age > (timedelta(hours=2) + timedelta(seconds=max(CRYPTO_STALE_DATA_GRACE_SECONDS, 0.0))):
         age_hours = age.total_seconds() / 3600.0
         _emit_stale_data_critical(
             asset=asset,

@@ -55,7 +55,7 @@ class EvaluatedSignal:
 
 def _current_hour_utc(reference: datetime | None = None) -> pd.Timestamp:
     now = reference or datetime.now(timezone.utc)
-    return pd.Timestamp(now.replace(minute=0, second=0, microsecond=0), tz="UTC")
+    return _to_utc_timestamp(now.replace(minute=0, second=0, microsecond=0))
 
 
 def _to_utc_timestamp(value: Any) -> pd.Timestamp:
