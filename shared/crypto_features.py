@@ -81,6 +81,8 @@ def build_features(
     import ta
 
     frame = _require_ohlcv(df)
+    if is_live_inference:
+        frame = calibrate_features(frame, asset)
 
     frame["rsi_5_raw"] = ta.momentum.rsi(frame["Close"], window=5)
     frame["rsi_7_raw"] = ta.momentum.rsi(frame["Close"], window=7)
@@ -151,8 +153,6 @@ def build_features(
     if include_target and not is_live_inference:
         output_columns.append("target")
 
-    if is_live_inference:
-        frame = calibrate_features(frame, asset)
     frame = frame[output_columns]
     frame = frame.dropna()
     return frame

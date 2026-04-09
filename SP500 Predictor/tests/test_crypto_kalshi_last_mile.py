@@ -489,12 +489,14 @@ def test_build_features_skips_eth_calibration_for_training_mode():
     live_features = build_features(bars, asset="ETH", is_live_inference=True)
     training_features = build_features(bars, asset="ETH", is_live_inference=False)
     expected_force_idx = (bars["Close"].diff() * bars["Volume"]).shift(1)
+    expected_live_force_idx = expected_force_idx * crypto_features.VOLUME_MULTIPLIER_ETH
 
     latest_ts = training_features.index[-1]
 
     assert live_features.loc[latest_ts, "Volume"] == pytest.approx(
         training_features.loc[latest_ts, "Volume"] * crypto_features.VOLUME_MULTIPLIER_ETH
     )
+    assert live_features.loc[latest_ts, "force_idx"] == pytest.approx(float(expected_live_force_idx.loc[latest_ts]))
     assert training_features.loc[latest_ts, "force_idx"] == pytest.approx(float(expected_force_idx.loc[latest_ts]))
 
 
