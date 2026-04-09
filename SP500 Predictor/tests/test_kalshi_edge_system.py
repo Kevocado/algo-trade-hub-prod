@@ -389,6 +389,7 @@ class TestTelegramCommands:
 
         tn = TelegramNotifier()
         sent_messages = []
+        triggered = []
 
         async def fake_send_message(text, *_args, **_kwargs):
             sent_messages.append(text)
@@ -397,8 +398,12 @@ class TestTelegramCommands:
         async def fake_chat_id():
             return "12345"
 
+        async def fake_execute_manual_crypto_test(asset, *, notifier=None, force_execution=False):
+            triggered.append((asset, force_execution, notifier is tn))
+            return {}
+
         monkeypatch.setattr(orchestrator, "KALSHI_ENV", "demo")
-        orchestrator._MANUAL_TEST_OVERRIDES.clear()
+        monkeypatch.setattr(orchestrator, "execute_manual_crypto_test", fake_execute_manual_crypto_test)
         tn.send_message = fake_send_message
         tn._get_chat_id = fake_chat_id
 
@@ -406,7 +411,7 @@ class TestTelegramCommands:
 
         assert len(sent_messages) == 1
         assert "Forced Demo Buy Armed" in sent_messages[0]
-        assert orchestrator._MANUAL_TEST_OVERRIDES["ETH"]["force_execution"] is True
+        assert triggered == [("ETH", True, True)]
 
 
 # ════════════════════════════════════════════════════════════════════

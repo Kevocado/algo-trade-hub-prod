@@ -541,9 +541,17 @@ class TelegramNotifier:
             asset = parts[1].upper() if len(parts) > 1 else ""
             from market_sentiment_tool.backend import orchestrator as crypto_orchestrator
 
-            ok, message = crypto_orchestrator.request_manual_crypto_test(asset, force_execution=True)
+            ok, message = crypto_orchestrator.validate_manual_crypto_test_request(asset, force_execution=True)
             prefix = "🧪 *Forced Demo Buy Armed*" if ok else "⚠️ *Forced Demo Buy Rejected*"
-            await self.send_message(f"{prefix}\n\n{message}")
+            if ok:
+                asyncio.create_task(
+                    crypto_orchestrator.execute_manual_crypto_test(asset, notifier=self, force_execution=True)
+                )
+                await self.send_message(
+                    f"{prefix}\n\nQueued one-shot forced demo buy for {message}. Executing now against the live demo order path."
+                )
+            else:
+                await self.send_message(f"{prefix}\n\n{message}")
         else:
             await self.send_message(f"❓ Unknown command: `{cmd}`\nSend */help* for the list.")
 

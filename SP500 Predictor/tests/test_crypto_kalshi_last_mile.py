@@ -1541,6 +1541,27 @@ def test_market_resolution_force_demo_buy_bypasses_edge_gate(monkeypatch):
     assert any(event["status"] == "trade_placed" for event in recorded_events)
 
 
+def test_run_manual_crypto_test_once_executes_direct_resolution(monkeypatch):
+    final_state = {
+        "trade_signal": {"asset": "ETH"},
+        "resolved_market_ticker": "KXETH-DEMO",
+        "final_edge": -0.12,
+        "execution_result": {"status": "accepted"},
+    }
+    recorded_events = []
+
+    monkeypatch.setattr(orchestrator, "initialize_runtime_clients", lambda **_kwargs: None)
+    monkeypatch.setattr(orchestrator, "market_resolution", lambda state: final_state if state["trade_signal"]["raw"]["manual_test_request"]["force_execution"] else {})
+    monkeypatch.setattr(orchestrator, "write_crypto_signal_event", lambda payload: recorded_events.append(payload))
+    monkeypatch.setattr(orchestrator, "KALSHI_ENV", "demo")
+
+    result = orchestrator.run_manual_crypto_test_once("ETH", force_execution=True)
+
+    assert result == final_state
+    assert recorded_events[0]["status"] == "signal_detected"
+    assert recorded_events[0]["payload"]["force_execution"] is True
+
+
 def test_evaluate_crypto_edge_records_no_usable_price_skip(monkeypatch):
     ticker_message = {"msg": {"market_ticker": "KXETH-DUMMY"}}
     recorded_events = []

@@ -254,6 +254,45 @@ def request_manual_crypto_test(asset: str, *, force_execution: bool = False) -> 
     return True, f"Queued one-shot manual test for {normalized}. Next eligible live loop will attempt real market resolution and edge checks."
 
 
+def validate_manual_crypto_test_request(asset: str, *, force_execution: bool = False) -> tuple[bool, str]:
+    normalized = str(asset or "").strip().upper()
+    if normalized not in {"BTC", "ETH"}:
+        command_name = "/force_demo_buy" if force_execution else "/test_trade"
+        return False, f"Usage: {command_name} BTC or {command_name} ETH"
+    if KALSHI_ENV != "demo":
+        command_name = "/force_demo_buy" if force_execution else "/test_trade"
+        return False, f"Safety stop: {command_name} is only allowed when KALSHI_ENV=demo."
+    return True, normalized
+
+
+def _manual_test_signal(asset: str, *, force_execution: bool) -> "TradeSignal":
+    requested_at = datetime.now(timezone.utc).isoformat()
+    request_payload = {
+        "asset": asset,
+        "requested_at": requested_at,
+        "probability_yes": 0.80,
+        "desired_side": "YES",
+        "reason": "telegram_force_demo_buy" if force_execution else "telegram_test_trade",
+        "force_execution": force_execution,
+    }
+    return {
+        "asset": asset,
+        "market_ticker": f"MANUAL-{asset}-TEST",
+        "side": "YES",
+        "probability_yes": 0.80,
+        "price_dollars": 0.0,
+        "spot_price_dollars": None,
+        "resolved_ticker": None,
+        "edge": None,
+        "created_at": requested_at,
+        "raw": {
+            "manual_test": True,
+            "manual_test_request": request_payload,
+            "observed_probability_yes": None,
+        },
+    }
+
+
 def _consume_manual_test_override(asset: str) -> Optional[dict[str, Any]]:
     return _MANUAL_TEST_OVERRIDES.pop(asset.upper(), None)
 
@@ -2172,6 +2211,45 @@ def _run_crypto_graph_once(graph, initial_state: CryptoAgentState) -> dict[str, 
     final_state: dict[str, Any] = {}
     for output in graph.stream(initial_state):
         final_state.update(output)
+    return final_state
+
+
+def run_manual_crypto_test_once(asset: str, *, force_execution: bool = False) -> dict[str, Any]:
+    ok, normalized_or_message = validate_manual_crypto_test_request(asset, force_execution=force_execution)
+    if not ok:
+        raise ValueError(normalized_or_message)
+
+    normalized = normalized_or_message
+    initialize_runtime_clients(require_supabase=True, require_kalshi=True)
+    signal = _manual_test_signal(normalized, force_execution=force_execution)
+    _record_inference_event(
+        asset=normalized,
+        market_ticker=signal["market_ticker"],
+        status="signal_detected",
+        probability_yes=float(signal["probability_yes"]),
+        signal_price_dollars=float(signal["price_dollars"]),
+        desired_side=signal["side"],
+        payload={
+            "classification": "manual_test_signal",
+            "decision_stage": "manual_test_direct_resolution",
+            "manual_test": True,
+            "force_execution": force_execution,
+        },
+    )
+    initial_state: CryptoAgentState = {
+        "ticker": {},
+        "trade_signal": signal,
+        "resolved_market_ticker": None,
+        "final_edge": None,
+        "execution_result": None,
+    }
+    return market_resolution(initial_state)
+
+
+async def execute_manual_crypto_test(asset: str, *, notifier: Any | None = None, force_execution: bool = False) -> dict[str, Any]:
+    final_state = await asyncio.to_thread(run_manual_crypto_test_once, asset, force_execution=force_execution)
+    if notifier is not None:
+        await _dispatch_crypto_notifications(notifier, final_state)
     return final_state
 
 
