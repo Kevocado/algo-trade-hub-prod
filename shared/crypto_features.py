@@ -39,6 +39,10 @@ CANONICAL_CRYPTO_FEATURES = [
 ]
 
 
+def calibrate_features(df: pd.DataFrame) -> pd.DataFrame:
+    return df
+
+
 def _require_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
     required = ["Open", "High", "Low", "Close", "Volume"]
     missing = [column for column in required if column not in frame.columns]
@@ -135,6 +139,7 @@ def build_features(
     if include_target and not is_live_inference:
         output_columns.append("target")
 
+    frame = calibrate_features(frame)
     frame = frame[output_columns]
     frame = frame.dropna()
     return frame

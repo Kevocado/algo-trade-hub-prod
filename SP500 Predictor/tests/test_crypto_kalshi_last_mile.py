@@ -16,6 +16,7 @@ if REPO_ROOT not in sys.path:
 
 from market_sentiment_tool.backend import mcp_server, orchestrator
 from market_sentiment_tool.backend import runtime_bootstrap
+from shared import crypto_features
 from shared.crypto_features import CANONICAL_CRYPTO_FEATURES, build_features
 
 CRYPTO_MODEL_FEATURES = [
@@ -65,6 +66,9 @@ class FakeQuery:
     def gte(self, *_args, **_kwargs):
         return self
 
+    def order(self, *_args, **_kwargs):
+        return self
+
     def contains(self, *_args, **_kwargs):
         return self
 
@@ -93,6 +97,8 @@ def reset_crypto_state(monkeypatch):
     orchestrator._INFERENCE_EVAL_COUNTER.clear()
     orchestrator._FEATURE_SNAPSHOT_LAST_HOUR.clear()
     orchestrator._DIAGNOSTIC_EVAL_COUNTER.clear()
+    orchestrator._DEEP_AUDIT_EVAL_COUNTER.clear()
+    orchestrator._FEATURE_RUNNING_STATS.clear()
     monkeypatch.setattr(orchestrator, "supa", None)
     monkeypatch.setattr(orchestrator, "log_to_supabase", lambda *args, **kwargs: None)
     monkeypatch.setattr(orchestrator, "CRYPTO_ALPACA_VOLUME_MULTIPLIER", 1.0)
@@ -106,6 +112,7 @@ def reset_crypto_state(monkeypatch):
     monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD", 0.505)
     monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD", 0.495)
     monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY", 50)
+    monkeypatch.setattr(orchestrator, "CRYPTO_DEEP_AUDIT_EVERY", 20)
 
 
 def test_resolve_kalshi_market_picks_nearest_hourly_bucket_and_nearest_strike(monkeypatch):
@@ -426,6 +433,35 @@ def test_build_features_preserves_canonical_volume_derived_values():
     assert latest_row["force_idx"] == pytest.approx(float(expected_force_idx.loc[latest_ts]))
     assert latest_row["relative_vol"] == pytest.approx(float(expected_relative_vol.loc[latest_ts]))
     assert latest_row["vol_pressure"] == pytest.approx(float(expected_vol_pressure.loc[latest_ts]))
+
+
+def test_build_features_calls_calibrate_features_without_changing_output(monkeypatch):
+    index = pd.date_range("2026-01-01", periods=260, freq="h", tz="UTC")
+    close = np.linspace(90000.0, 93000.0, len(index))
+    bars = pd.DataFrame(
+        {
+            "Open": close - 25.0,
+            "High": close + 40.0,
+            "Low": close - 40.0,
+            "Close": close,
+            "Volume": np.linspace(1000.0, 3000.0, len(index)),
+        },
+        index=index,
+    )
+    calls = []
+    original = crypto_features.calibrate_features
+
+    def _capture(df):
+        calls.append(df.copy())
+        return original(df)
+
+    monkeypatch.setattr(crypto_features, "calibrate_features", _capture)
+
+    features = build_features(bars, is_live_inference=True)
+
+    assert not features.empty
+    assert len(calls) == 1
+    assert list(features.columns) == list(CANONICAL_CRYPTO_FEATURES)
 
 
 def test_latest_crypto_feature_row_aligns_to_model(monkeypatch):
@@ -954,6 +990,77 @@ def test_evaluate_crypto_edge_logs_diagnostic_feature_snapshot(monkeypatch, capl
         )
 
     assert any("[CRYPTO DIAGNOSTIC SNAPSHOT]" in record.getMessage() for record in caplog.records)
+
+
+def test_update_feature_running_stats_tracks_assets_independently():
+    btc_row = pd.DataFrame([{name: 1.0 for name in CANONICAL_CRYPTO_FEATURES}])
+    eth_row = pd.DataFrame([{name: 10.0 for name in CANONICAL_CRYPTO_FEATURES}])
+
+    orchestrator._update_feature_running_stats("BTC", btc_row)
+    orchestrator._update_feature_running_stats("BTC", btc_row)
+    orchestrator._update_feature_running_stats("ETH", eth_row)
+
+    btc_summary = orchestrator._running_feature_summary("BTC", "Volume")
+    eth_summary = orchestrator._running_feature_summary("ETH", "Volume")
+
+    assert btc_summary == pytest.approx({"count": 2, "mean": 1.0, "std": 0.0})
+    assert eth_summary == pytest.approx({"count": 1, "mean": 10.0, "std": 0.0})
+
+
+def test_evaluate_crypto_edge_persists_deep_audit_snapshot(monkeypatch, caplog):
+    ticker_message = {
+        "msg": {
+            "market_ticker": "KXBTC-DUMMY",
+            "yes_bid_dollars": 0.48,
+            "yes_ask_dollars": 0.50,
+        }
+    }
+    feature_frame = pd.DataFrame(
+        {
+            **{name: np.linspace(1.0, 3.0, 40) for name in CANONICAL_CRYPTO_FEATURES},
+            "Volume": np.linspace(100.0, 139.0, 40),
+            "force_idx": np.linspace(10.0, 49.0, 40),
+            "relative_vol": np.linspace(1.0, 2.0, 40),
+            "vol_pressure": np.linspace(0.5, 1.5, 40),
+            "ret_1h_z": np.linspace(-1.0, 1.0, 40),
+            "dist_ma200": np.linspace(-0.2, 0.2, 40),
+        },
+        index=pd.date_range("2026-01-01T00:00:00Z", periods=40, freq="h"),
+    )[CANONICAL_CRYPTO_FEATURES]
+    latest_row = feature_frame.tail(1)
+    supabase_calls = []
+
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_MODE", True)
+    monkeypatch.setattr(orchestrator, "CRYPTO_DEEP_AUDIT_EVERY", 1)
+    monkeypatch.setattr(orchestrator, "CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY", 99)
+    monkeypatch.setattr(orchestrator, "load_crypto_models", lambda: (object(), object()))
+    monkeypatch.setattr(orchestrator, "_latest_crypto_feature_row", lambda *_args, **_kwargs: latest_row)
+    monkeypatch.setattr(orchestrator, "_latest_crypto_feature_frame", lambda *_args, **_kwargs: feature_frame)
+    monkeypatch.setattr(orchestrator, "_model_yes_probability", lambda *_args, **_kwargs: 0.522)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_to_supabase",
+        lambda module, message, level="INFO", context=None: supabase_calls.append(
+            {"module": module, "message": message, "level": level, "context": context}
+        ),
+    )
+
+    with caplog.at_level(logging.INFO):
+        orchestrator.evaluate_crypto_edge(
+            {"ticker": ticker_message, "trade_signal": None, "resolved_market_ticker": None, "final_edge": None, "execution_result": None}
+        )
+
+    audit_log = next(call for call in supabase_calls if call["module"] == "orchestrator.crypto_feature_audit")
+    context = audit_log["context"]
+    assert context["audit_kind"] == "feature_distribution_snapshot"
+    assert context["asset"] == "BTC"
+    assert context["model_confidence"] == pytest.approx(abs(0.522 - 0.5) * 2.0)
+    assert set(context["focus_features"]) == {"Volume", "force_idx", "relative_vol", "vol_pressure", "dist_ma200", "ret_1h_z"}
+    assert context["focus_features"]["Volume"]["value"] == pytest.approx(float(latest_row.iloc[-1]["Volume"]))
+    assert context["focus_features"]["Volume"]["running_mean"] == pytest.approx(float(latest_row.iloc[-1]["Volume"]))
+    assert context["focus_features"]["Volume"]["running_std"] == pytest.approx(0.0)
+    assert context["feature_vector"]["force_idx"] == pytest.approx(float(latest_row.iloc[-1]["force_idx"]))
+    assert any("[CRYPTO DEEP SNAPSHOT]" in record.getMessage() for record in caplog.records)
 
 
 def test_evaluate_crypto_edge_records_no_usable_price_skip(monkeypatch):

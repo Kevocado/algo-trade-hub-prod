@@ -88,6 +88,7 @@ CRYPTO_DIAGNOSTIC_BTC_NO_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_BTC_NO_T
 CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD", "0.505"))
 CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD", "0.495"))
 CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY = int(os.getenv("CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY", "50"))
+CRYPTO_DEEP_AUDIT_EVERY = int(os.getenv("CRYPTO_DEEP_AUDIT_EVERY", "20"))
 CRYPTO_FEATURE_LOOKBACK_HOURS = int(os.getenv("CRYPTO_FEATURE_LOOKBACK_HOURS", "400"))
 CRYPTO_FEATURE_CACHE_TTL_S = float(os.getenv("CRYPTO_FEATURE_CACHE_TTL_S", "30"))
 CRYPTO_MIN_FEATURE_BARS = int(os.getenv("CRYPTO_MIN_FEATURE_BARS", "205"))
@@ -146,6 +147,7 @@ supa: SupabaseClient | None = None
 USER_ID = None
 _RUNTIME_VALIDATED = False
 _DIAGNOSTIC_EVAL_COUNTER: dict[str, int] = {}
+_DEEP_AUDIT_EVAL_COUNTER: dict[str, int] = {}
 _DIAGNOSTIC_TOP_FEATURES = (
     "force_idx",
     "relative_vol",
@@ -153,6 +155,15 @@ _DIAGNOSTIC_TOP_FEATURES = (
     "ret_1h_z",
     "dist_ma200",
 )
+_DEEP_AUDIT_FOCUS_FEATURES = (
+    "Volume",
+    "force_idx",
+    "relative_vol",
+    "vol_pressure",
+    "dist_ma200",
+    "ret_1h_z",
+)
+_FEATURE_RUNNING_STATS: dict[str, dict[str, dict[str, float]]] = {}
 
 # ── pgvector RAG is handled via news_rag.query_news() — no local DB client needed ──
 
@@ -225,6 +236,10 @@ def _validate_crypto_threshold_config() -> None:
             raise RuntimeBootstrapError(
                 f"{asset} thresholds are inverted; YES={yes_threshold:.4f}, NO={no_threshold:.4f}."
             )
+    if CRYPTO_DEEP_AUDIT_EVERY < 1:
+        raise RuntimeBootstrapError(
+            f"CRYPTO_DEEP_AUDIT_EVERY must be >= 1; got {CRYPTO_DEEP_AUDIT_EVERY}."
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1054,8 +1069,16 @@ def evaluate_crypto_edge(state: CryptoAgentState) -> dict:
         feature_row=feature_row,
         probability_yes=float(prob_yes),
     )
+    _update_feature_running_stats(asset, feature_row)
     if _should_log_diagnostic_feature_snapshot(asset):
         _log_diagnostic_feature_snapshot(asset, market_ticker, feature_row)
+    if _should_log_deep_audit_snapshot(asset):
+        _log_deep_audit_snapshot(
+            asset=asset,
+            market_ticker=market_ticker,
+            feature_row=feature_row,
+            probability_yes=float(prob_yes),
+        )
 
     yes_threshold, no_threshold = _crypto_thresholds_for_asset(asset)
     side: Optional[str] = None
@@ -1591,6 +1614,55 @@ def _should_log_diagnostic_feature_snapshot(asset: str) -> bool:
     return count % interval == 0
 
 
+def _should_log_deep_audit_snapshot(asset: str) -> bool:
+    if not CRYPTO_DIAGNOSTIC_MODE:
+        return False
+    count = int(_DEEP_AUDIT_EVAL_COUNTER.get(asset, 0)) + 1
+    _DEEP_AUDIT_EVAL_COUNTER[asset] = count
+    interval = max(1, CRYPTO_DEEP_AUDIT_EVERY)
+    return count % interval == 0
+
+
+def _feature_row_dict(feature_row: pd.DataFrame) -> dict[str, float]:
+    return {
+        name: float(feature_row.iloc[-1][name])
+        for name in CANONICAL_CRYPTO_FEATURES
+        if name in feature_row.columns
+    }
+
+
+def _update_feature_running_stats(asset: str, feature_row: pd.DataFrame) -> None:
+    asset_key = asset.upper()
+    stats = _FEATURE_RUNNING_STATS.setdefault(asset_key, {})
+    feature_values = _feature_row_dict(feature_row)
+    for feature_name, value in feature_values.items():
+        feature_stats = stats.setdefault(
+            feature_name,
+            {"count": 0.0, "mean": 0.0, "m2": 0.0},
+        )
+        count = int(feature_stats["count"]) + 1
+        delta = value - float(feature_stats["mean"])
+        mean = float(feature_stats["mean"]) + (delta / count)
+        delta2 = value - mean
+        m2 = float(feature_stats["m2"]) + (delta * delta2)
+        feature_stats["count"] = float(count)
+        feature_stats["mean"] = mean
+        feature_stats["m2"] = m2
+
+
+def _running_feature_summary(asset: str, feature_name: str) -> Optional[dict[str, float]]:
+    feature_stats = _FEATURE_RUNNING_STATS.get(asset.upper(), {}).get(feature_name)
+    if not feature_stats:
+        return None
+    count = int(feature_stats["count"])
+    mean = float(feature_stats["mean"])
+    if count <= 1:
+        std = 0.0
+    else:
+        std = float(np.sqrt(max(float(feature_stats["m2"]) / count, 0.0)))
+    return {"count": count, "mean": mean, "std": std}
+
+
 def _compute_feature_zscores(feature_frame: pd.DataFrame, latest_row: pd.DataFrame) -> dict[str, dict[str, float]]:
     zscores: dict[str, dict[str, float]] = {}
     for feature_name in _DIAGNOSTIC_TOP_FEATURES:
@@ -1631,6 +1703,49 @@ def _log_diagnostic_feature_snapshot(asset: str, market_ticker: str, feature_row
         asset,
         market_ticker,
         summary,
+    )
+
+
+def _log_deep_audit_snapshot(
+    *,
+    asset: str,
+    market_ticker: str,
+    feature_row: pd.DataFrame,
+    probability_yes: float,
+) -> None:
+    evaluation_count = int(_DEEP_AUDIT_EVAL_COUNTER.get(asset, 0))
+    feature_vector = _feature_row_dict(feature_row)
+    focus_features: dict[str, dict[str, float]] = {}
+    for feature_name in _DEEP_AUDIT_FOCUS_FEATURES:
+        if feature_name not in feature_vector:
+            continue
+        running_summary = _running_feature_summary(asset, feature_name) or {"count": 0, "mean": 0.0, "std": 0.0}
+        focus_features[feature_name] = {
+            "value": feature_vector[feature_name],
+            "running_mean": float(running_summary["mean"]),
+            "running_std": float(running_summary["std"]),
+        }
+    if not focus_features:
+        return
+
+    payload = {
+        "audit_kind": "feature_distribution_snapshot",
+        "asset": asset,
+        "source_market_ticker": market_ticker,
+        "evaluation_count": evaluation_count,
+        "diagnostic_mode": CRYPTO_DIAGNOSTIC_MODE,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "model_probability_yes": float(probability_yes),
+        "model_confidence": float(abs(float(probability_yes) - 0.5) * 2.0),
+        "feature_vector": feature_vector,
+        "focus_features": focus_features,
+    }
+    log.info("[CRYPTO DEEP SNAPSHOT] %s", json.dumps(payload, sort_keys=True))
+    log_to_supabase(
+        "orchestrator.crypto_feature_audit",
+        f"asset={asset} source={market_ticker} confidence={payload['model_confidence']:.3f}",
+        level="INFO",
+        context=payload,
     )
 
 
