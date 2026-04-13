@@ -5,7 +5,8 @@
 2. `implementation_plan.md`
 3. `.agent/buffer/session_logs.md`
 4. `.agent/index/notes_manifest.json`
-5. Broad repo search
+5. `graphify-out/graph.json` or `graphify-out/report.md`
+6. Broad repo search
 
 ## Weather Feature Building
 - Unload crypto model, threshold, RSI, and execution-specific working context before reasoning about weather features.
@@ -19,6 +20,8 @@
 ## Domain Switch Procedure
 - Append a dated entry to `.agent/buffer/session_logs.md` with current decisions, blockers, and next actions.
 - Update `task.md` with the current stop point and immediate next task.
+- Purge the Active Buffer so only the new domain's working state remains.
+- Retain Shared Infrastructure context for Kalshi API utilities, Supabase access, graphify outputs, and shared feature contracts.
 - Refresh `.agent/index/notes_manifest.json` if new notes were added during the session.
 
 ## Context Budget

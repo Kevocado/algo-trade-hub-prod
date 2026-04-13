@@ -4,11 +4,11 @@
     "type": "split",
     "children": [
       {
-        "id": "34ebb527c778a333",
+        "id": "60062db7ffd89715",
         "type": "tabs",
         "children": [
           {
-            "id": "9f741d8d107bb297",
+            "id": "bdb1e3724a78a463",
             "type": "leaf",
             "state": {
               "type": "graph",
@@ -49,7 +49,7 @@
             "state": {
               "type": "search",
               "state": {
-                "query": "tag:#open-meteo",
+                "query": "",
                 "matchingCase": false,
                 "explainSearch": false,
                 "collapseAll": false,
@@ -70,8 +70,7 @@
               "title": "Bookmarks"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "horizontal",
@@ -163,8 +162,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 300,
-    "collapsed": true
+    "width": 300
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -177,26 +175,33 @@
       "bases:Create new base": false
     }
   },
-  "active": "191f32aa61d61e0a",
+  "active": "bdb1e3724a78a463",
   "lastOpenFiles": [
-    "market_sentiment_tool/node_modules/abab/LICENSE.md",
+    "shared/__pycache__/feature_engine.cpython-313.pyc",
+    "market_sentiment_tool/node_modules/asynckit/README.md",
     "market_sentiment_tool/node_modules/tailwindcss-animate/README.md",
+    "Untitled.canvas",
+    "graphify-out/memory/query_20260413_153924_what_are_the_canonical_high_value_edges_for_the_ka.md",
+    "graphify-out/cache/1b083653a8571d19d0cc520612b93de623fd537fc446eaf8fd2be72d9aec5433.json",
+    "graphify-out/cache/919cefedf8fd025ad93028de318e635d25b9d9aabdd5f436a780935d64fb02bf.json",
+    "graphify-out/cache/8344a7f479bb61205cf3def01fb71918e9a2290a7c8978ff82c2b9a5e3af6267.json",
+    "graphify-out/cache/7ae20ccdcdf93b87fac78b3c84b1c1c8d4cd8880a3f57d71272fd9f8e193ef89.json",
+    "shared/weather_features.py",
+    "shared/feature_engine.py",
+    "graphify-out/memory/query_20260413_153924_how_does_a_kalshi_trade_move_from_signal_to_settle.md",
+    "graphify-out/memory",
+    "graphify-out/GRAPH_REPORT.md",
+    "market_sentiment_tool/node_modules/ms/license.md",
+    "market_sentiment_tool/node_modules/abab/LICENSE.md",
     "SP500 Predictor/tests/__pycache__/test_obsidian_note_indexer.cpython-313-pytest-8.4.1.pyc",
     "SP500 Predictor/tests/__pycache__/test_obsidian_note_indexer.cpython-313.pyc",
     "scripts/__pycache__/index_obsidian_notes.cpython-313.pyc",
-    "scripts/__pycache__",
-    "SP500 Predictor/tests/test_obsidian_note_indexer.py",
-    "scripts/index_obsidian_notes.py",
-    "scripts",
     "Weather/Settlement/NWS_Settlement_Rules.md",
     "Weather/Research/Weather_Market_Research.md",
     "Weather/Markets/Kalshi_Weather_Market_Mapping.md",
     "Weather/Features/weather_features_schema.md",
     "Weather/APIs/OpenMeteo_Ensemble_API.md",
     "Weather/APIs/NWS_API_Spec.md",
-    "Weather/Settlement",
-    "Weather/Research",
-    "Weather/Markets",
     "implementation_plan.md",
     "task.md",
     "AGENTS.md"

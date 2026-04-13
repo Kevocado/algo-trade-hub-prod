@@ -5,6 +5,8 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
+from shared.feature_engine import FeatureEngine
+
 VOLUME_MULTIPLIER_BTC = 1.0
 VOLUME_MULTIPLIER_ETH = 0.0047616754759827115
 
@@ -40,6 +42,102 @@ CANONICAL_CRYPTO_FEATURES = [
     "retail_rsi",
     "trend_bias",
 ]
+
+
+class CryptoFeatureEngine(FeatureEngine):
+    domain = "crypto"
+
+    def canonical_feature_names(self) -> list[str]:
+        return list(CANONICAL_CRYPTO_FEATURES)
+
+    def build_features(
+        self,
+        frame: pd.DataFrame,
+        *,
+        asset: str | None = None,
+        is_live_inference: bool = False,
+        include_target: bool = False,
+    ) -> pd.DataFrame:
+        import ta
+
+        normalized = _require_ohlcv(frame)
+        if is_live_inference:
+            normalized = calibrate_features(normalized, asset)
+
+        normalized["rsi_5_raw"] = ta.momentum.rsi(normalized["Close"], window=5)
+        normalized["rsi_7_raw"] = ta.momentum.rsi(normalized["Close"], window=7)
+        normalized["rsi_14_raw"] = ta.momentum.rsi(normalized["Close"], window=14)
+
+        atr = ta.volatility.average_true_range(normalized["High"], normalized["Low"], normalized["Close"], window=14)
+        rolling_std_24 = normalized["Close"].pct_change().rolling(window=24).std()
+        rolling_std_168 = normalized["Close"].pct_change().rolling(window=168).std()
+
+        normalized["hour"] = normalized.index.hour
+        normalized["dayofweek"] = normalized.index.dayofweek
+        normalized["is_weekend"] = (normalized["dayofweek"] >= 5).astype(int)
+        normalized["is_retail_window"] = (normalized["dayofweek"] >= 4).astype(int)
+        normalized["is_us_session"] = ((normalized["hour"] >= 14) & (normalized["hour"] <= 21)).astype(int)
+        normalized["sin_hour"] = np.sin(2 * np.pi * normalized["hour"] / 24)
+        normalized["cos_hour"] = np.cos(2 * np.pi * normalized["hour"] / 24)
+        normalized["midnight_signal"] = (normalized["hour"] == 0).astype(int)
+
+        normalized["vol_ratio_raw"] = rolling_std_24 / (rolling_std_168 + 1e-6)
+        normalized["dist_ma200_raw"] = (
+            (normalized["Close"] - normalized["Close"].rolling(200).mean())
+            / (normalized["Close"].rolling(200).std() + 1e-6)
+        )
+        normalized["force_idx_raw"] = normalized["Close"].diff(1) * normalized["Volume"]
+        normalized["rsi_slope"] = normalized["rsi_7_raw"].diff(3)
+        normalized["price_slope"] = normalized["Close"].diff(3)
+        normalized["rsi_div_raw"] = ((normalized["rsi_slope"] < 0) & (normalized["price_slope"] > 0)).astype(int)
+
+        for raw_column in (
+            "rsi_5_raw",
+            "rsi_7_raw",
+            "rsi_14_raw",
+            "vol_ratio_raw",
+            "dist_ma200_raw",
+            "force_idx_raw",
+            "rsi_div_raw",
+        ):
+            normalized[raw_column.replace("_raw", "")] = normalized[raw_column].shift(1)
+
+        normalized["ret_1h_z"] = (normalized["Close"].pct_change(1) / (rolling_std_24 + 1e-6)).shift(1)
+        normalized["ret_4h"] = normalized["Close"].pct_change(4).shift(1)
+        normalized["rsi_z"] = (
+            (
+                normalized["rsi_7_raw"] - normalized["rsi_7_raw"].rolling(24).mean()
+            ) / (normalized["rsi_7_raw"].rolling(24).std() + 1e-6)
+        ).shift(1)
+        normalized["z_score_24h"] = (
+            (normalized["Close"] - normalized["Close"].rolling(24).mean())
+            / (normalized["Close"].rolling(24).std() + 1e-6)
+        ).shift(1)
+        normalized["vol_adj_ret"] = (normalized["Close"].pct_change() / (atr / normalized["Close"] + 1e-6)).shift(1)
+        normalized["relative_vol"] = (normalized["Volume"] / (normalized["Volume"].rolling(24).mean() + 1e-6)).shift(1)
+        normalized["vol_pressure"] = normalized["relative_vol"] / (normalized["vol_ratio_raw"].shift(1) + 1e-6)
+        normalized["vol_spike"] = (normalized["Volume"] > normalized["Volume"].rolling(24).mean()).astype(int).shift(1)
+        normalized["retail_rsi"] = normalized["rsi_z"] * normalized["is_retail_window"]
+
+        plus_dm = normalized["High"].diff().clip(lower=0)
+        minus_dm = normalized["Low"].diff().clip(upper=0).abs()
+        normalized["trend_bias"] = ((plus_dm.rolling(14).mean() - minus_dm.rolling(14).mean()) / (atr + 1e-6)).shift(1)
+
+        if include_target and not is_live_inference:
+            normalized["target"] = (normalized["Close"].shift(-1) > normalized["Close"]).astype(int)
+
+        cols_to_drop = [column for column in normalized.columns if "_raw" in column or "slope" in column]
+        normalized = normalized.drop(columns=cols_to_drop)
+
+        output_columns: list[str] = list(CANONICAL_CRYPTO_FEATURES)
+        if include_target and not is_live_inference:
+            output_columns.append("target")
+
+        normalized = normalized[output_columns]
+        return normalized.dropna()
+
+
+ENGINE = CryptoFeatureEngine()
 
 
 def calibrate_features(df: pd.DataFrame, asset: str | None = None) -> pd.DataFrame:
@@ -78,98 +176,17 @@ def build_features(
     is_live_inference: bool = False,
     include_target: bool = False,
 ) -> pd.DataFrame:
-    import ta
-
-    frame = _require_ohlcv(df)
-    if is_live_inference:
-        frame = calibrate_features(frame, asset)
-
-    frame["rsi_5_raw"] = ta.momentum.rsi(frame["Close"], window=5)
-    frame["rsi_7_raw"] = ta.momentum.rsi(frame["Close"], window=7)
-    frame["rsi_14_raw"] = ta.momentum.rsi(frame["Close"], window=14)
-
-    atr = ta.volatility.average_true_range(frame["High"], frame["Low"], frame["Close"], window=14)
-    rolling_std_24 = frame["Close"].pct_change().rolling(window=24).std()
-    rolling_std_168 = frame["Close"].pct_change().rolling(window=168).std()
-
-    frame["hour"] = frame.index.hour
-    frame["dayofweek"] = frame.index.dayofweek
-    frame["is_weekend"] = (frame["dayofweek"] >= 5).astype(int)
-    frame["is_retail_window"] = (frame["dayofweek"] >= 4).astype(int)
-    frame["is_us_session"] = ((frame["hour"] >= 14) & (frame["hour"] <= 21)).astype(int)
-    frame["sin_hour"] = np.sin(2 * np.pi * frame["hour"] / 24)
-    frame["cos_hour"] = np.cos(2 * np.pi * frame["hour"] / 24)
-    frame["midnight_signal"] = (frame["hour"] == 0).astype(int)
-
-    frame["vol_ratio_raw"] = rolling_std_24 / (rolling_std_168 + 1e-6)
-    frame["dist_ma200_raw"] = (
-        (frame["Close"] - frame["Close"].rolling(200).mean())
-        / (frame["Close"].rolling(200).std() + 1e-6)
+    return ENGINE.build_features(
+        df,
+        asset=asset,
+        is_live_inference=is_live_inference,
+        include_target=include_target,
     )
-    frame["force_idx_raw"] = frame["Close"].diff(1) * frame["Volume"]
-    frame["rsi_slope"] = frame["rsi_7_raw"].diff(3)
-    frame["price_slope"] = frame["Close"].diff(3)
-    frame["rsi_div_raw"] = ((frame["rsi_slope"] < 0) & (frame["price_slope"] > 0)).astype(int)
-
-    for raw_column in (
-        "rsi_5_raw",
-        "rsi_7_raw",
-        "rsi_14_raw",
-        "vol_ratio_raw",
-        "dist_ma200_raw",
-        "force_idx_raw",
-        "rsi_div_raw",
-    ):
-        frame[raw_column.replace("_raw", "")] = frame[raw_column].shift(1)
-
-    frame["ret_1h_z"] = (frame["Close"].pct_change(1) / (rolling_std_24 + 1e-6)).shift(1)
-    frame["ret_4h"] = frame["Close"].pct_change(4).shift(1)
-    frame["rsi_z"] = (
-        (
-            frame["rsi_7_raw"] - frame["rsi_7_raw"].rolling(24).mean()
-        ) / (frame["rsi_7_raw"].rolling(24).std() + 1e-6)
-    ).shift(1)
-    frame["z_score_24h"] = (
-        (frame["Close"] - frame["Close"].rolling(24).mean())
-        / (frame["Close"].rolling(24).std() + 1e-6)
-    ).shift(1)
-    frame["vol_adj_ret"] = (frame["Close"].pct_change() / (atr / frame["Close"] + 1e-6)).shift(1)
-    frame["relative_vol"] = (frame["Volume"] / (frame["Volume"].rolling(24).mean() + 1e-6)).shift(1)
-    frame["vol_pressure"] = frame["relative_vol"] / (frame["vol_ratio_raw"].shift(1) + 1e-6)
-    frame["vol_spike"] = (frame["Volume"] > frame["Volume"].rolling(24).mean()).astype(int).shift(1)
-    frame["retail_rsi"] = frame["rsi_z"] * frame["is_retail_window"]
-
-    plus_dm = frame["High"].diff().clip(lower=0)
-    minus_dm = frame["Low"].diff().clip(upper=0).abs()
-    frame["trend_bias"] = ((plus_dm.rolling(14).mean() - minus_dm.rolling(14).mean()) / (atr + 1e-6)).shift(1)
-
-    if include_target and not is_live_inference:
-        frame["target"] = (frame["Close"].shift(-1) > frame["Close"]).astype(int)
-
-    cols_to_drop = [column for column in frame.columns if "_raw" in column or "slope" in column]
-    frame = frame.drop(columns=cols_to_drop)
-
-    output_columns: list[str] = list(CANONICAL_CRYPTO_FEATURES)
-    if include_target and not is_live_inference:
-        output_columns.append("target")
-
-    frame = frame[output_columns]
-    frame = frame.dropna()
-    return frame
 
 
 def canonical_feature_names() -> list[str]:
-    return list(CANONICAL_CRYPTO_FEATURES)
+    return ENGINE.canonical_feature_names()
 
 
 def feature_dict_from_row(row: pd.Series | pd.DataFrame | Iterable[float]) -> dict[str, float]:
-    if isinstance(row, pd.DataFrame):
-        if len(row) != 1:
-            raise ValueError("Expected single-row DataFrame for feature serialization.")
-        row = row.iloc[0]
-    if isinstance(row, pd.Series):
-        return {name: float(row[name]) for name in CANONICAL_CRYPTO_FEATURES}
-    values = list(row)
-    if len(values) != len(CANONICAL_CRYPTO_FEATURES):
-        raise ValueError("Feature vector length does not match canonical feature contract.")
-    return {name: float(value) for name, value in zip(CANONICAL_CRYPTO_FEATURES, values)}
+    return ENGINE.feature_dict_from_row(row)

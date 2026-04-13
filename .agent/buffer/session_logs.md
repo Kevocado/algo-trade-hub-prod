@@ -15,3 +15,11 @@
 - Corrected the Open-Meteo ensemble notebook fetcher to use the documented `gfs_seamless` model name for v1 research.
 - Removed conflicting `forecast_days` / `past_days` parameters when explicit `start_date` and `end_date` are supplied.
 - Preserved the research limitation note: if Open-Meteo exposes only a single aggregate temperature trace instead of member traces, sigma is treated as a bounded proxy and flagged in notebook metadata.
+
+## 2026-04-13 Graph Architecture Pass
+- Added repo-wide graph hygiene rules under `.agent/rules/` and elevated graphify to the primary discovery layer in `AGENTS.md`.
+- Installed the official graphify Codex skill, registered `.codex/hooks.json`, and enabled `multi_agent = true` in `~/.codex/config.toml` per the upstream graphify README.
+- Built the initial repo graph with `graphify update .`, producing `graphify-out/graph.json` and `graphify-out/GRAPH_REPORT.md`.
+- Added `.agent/index/SYSTEM_MAP.md` as the graph-backed universal system map from signal to settlement.
+- Seeded graphify memory with canonical answers for the trade path and the high-value Kalshi system edges.
+- Introduced `shared/feature_engine.py` plus crypto and weather feature-engine bindings to support a canonical cross-domain feature contract.

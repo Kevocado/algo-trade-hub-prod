@@ -1,31 +1,31 @@
-# Weather Oracle Implementation Plan
+# Universal Graph Architecture Plan
 
 ## Goal
-- Build the first weather research artifact around deterministic note retrieval, settlement normalization, and ensemble-based probability of exceedance.
+- Establish graphify as the primary discovery engine across code, research, and execution logic.
+- Standardize shared feature contracts so domain engines inherit from a canonical `FeatureEngine`.
+- Maintain one repo-wide vault protocol for notes, graph outputs, and system maps.
 
-## First Artifact
-- Open-Meteo ensemble fetch schema
-- NWS settlement normalization
-- City-to-station mapping contract
-- Probability of exceedance formula
-- Edge formula
-- Initial supported cities
+## First Artifacts
+- `.graphifyignore`
+- `graphify-out/graph.json`
+- `graphify-out/GRAPH_REPORT.md`
+- `.agent/index/SYSTEM_MAP.md`
+- `shared/feature_engine.py`
+- `shared/weather_features.py`
 
-## Supported Cities v1
-- Chicago
-- New York City
-- Washington, DC
+## Structural Contracts
+- Root vault rules live in `AGENTS.md` and `.agent/rules/`.
+- Shared infrastructure context survives domain switches.
+- Active Buffer context must be purged on domain switches.
+- Graph-backed discovery precedes broad repo search.
 
-## Core Formulas
-- Probability of exceedance: `P(X > K) = 1 - Φ((K - μ) / σ)`
-- Edge trigger: `abs(Model_PoE - Kalshi_Implied_Prob) > 0.08`
-
-## Data Contracts
-- Open-Meteo ensemble response must provide forecast horizon, mean, and dispersion needed to approximate `μ` and `σ`.
-- NWS settlement notes must define station IDs, settlement source type, and publication lag by city.
+## High-Value System Edges
+1. `Model_Inference -> depends_on -> Feature_Contract`
+2. `Market_Ticker -> resolves_via -> Settlement_Rules`
+3. `Strategy_Logic -> calls -> Kalshi_Execution_Bridge`
 
 ## Delivery Sequence
-1. Formalize weather notes.
-2. Refresh manifest.
-3. Draft fetcher schema from notes.
-4. Implement `shared/weather_features.py` only after note contracts are stable.
+1. Install graphify for Codex and register repo hooks.
+2. Build and refresh the repo graph.
+3. Seed durable system-memory artifacts from graph outputs.
+4. Extend runtime generalization work from the shared `FeatureEngine` contract.
