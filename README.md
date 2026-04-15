@@ -77,10 +77,11 @@ The system relies on a strict split of secrets.
 - Telegram operator-plane vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 - Before restarting the VPS worker after operator-plane changes, apply the Supabase migrations `market_sentiment_tool/supabase/migrations/20260408224000_crypto_operator_plane.sql` and `market_sentiment_tool/supabase/migrations/20260415090000_signal_events_unification.sql` so the canonical `signal_events` table and the `crypto_signal_events` compatibility view exist.
 - Install the crypto backend runtime dependencies into the PM2 interpreter environment before starting the worker:
+- Prefer the lean VPS/runtime dependency set in `requirements.vps.txt` for servers. It excludes offline research and unused local tooling so the VPS only installs what the live stack and validation path need.
 
 ```bash
 cd /root/kalshibot
-/root/kalshibot/.venv/bin/pip install -r market_sentiment_tool/backend/requirements.txt
+/root/kalshibot/.venv/bin/pip install -r requirements.vps.txt
 /root/kalshibot/.venv/bin/python -c "import yfinance; print(yfinance.__version__)"
 /root/kalshibot/.venv/bin/python -c "import ta; print(ta.__version__ if hasattr(ta, '__version__') else 'ta-ok')"
 ```
@@ -105,7 +106,7 @@ Apply the latest code + runtime dependencies on VPS:
 ```bash
 cd /root/kalshibot
 git pull
-/root/kalshibot/.venv/bin/pip install -r market_sentiment_tool/backend/requirements.txt
+/root/kalshibot/.venv/bin/pip install -r requirements.vps.txt
 pm2 restart crypto-sniper --update-env
 pm2 logs crypto-sniper --lines 120 --nostream
 ```
