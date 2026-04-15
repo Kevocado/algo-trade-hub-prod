@@ -16,6 +16,8 @@ IGNORED_PARTS = {
     ".git",
     ".obsidian",
     ".agent/index",
+    "archive",
+    "graphify-out",
     "__pycache__",
     ".pytest_cache",
     ".venv",
@@ -24,7 +26,7 @@ IGNORED_PARTS = {
     "dist",
     "build",
 }
-REQUIRED_KEYS = ("title", "type", "domain", "status", "tags", "summary")
+REQUIRED_KEYS = ("title", "type", "domain", "status", "settlement_source", "tags", "summary")
 
 
 @dataclass
@@ -34,6 +36,7 @@ class IndexedNote:
     domain: str
     note_type: str
     status: str
+    settlement_source: str
     tags: list[str]
     summary: str
     headings: list[str]
@@ -46,6 +49,7 @@ class IndexedNote:
             "domain": self.domain,
             "type": self.note_type,
             "status": self.status,
+            "settlement_source": self.settlement_source,
             "tags": self.tags,
             "summary": self.summary,
             "headings": self.headings,
@@ -109,6 +113,7 @@ def index_markdown_note(path: Path, repo_root: Path) -> IndexedNote:
     note_type = str(frontmatter.get("type") or "note")
     domain = str(frontmatter.get("domain") or "unknown")
     status = str(frontmatter.get("status") or "unclassified")
+    settlement_source = str(frontmatter.get("settlement_source") or "unspecified")
     tags = _normalize_tags(frontmatter.get("tags"))
     summary = str(frontmatter.get("summary") or "").strip()
     if not summary:
@@ -120,6 +125,7 @@ def index_markdown_note(path: Path, repo_root: Path) -> IndexedNote:
         domain=domain,
         note_type=note_type,
         status=status,
+        settlement_source=settlement_source,
         tags=tags,
         summary=summary,
         headings=_extract_headings(body),
@@ -152,13 +158,13 @@ def write_manifest(notes: list[IndexedNote], repo_root: Path = REPO_ROOT) -> Non
         f"Generated: {payload['generated_at_utc']}",
         f"Vault Root: `{repo_root}`",
         "",
-        "| Path | Domain | Type | Status | Title | Tags |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| Path | Domain | Type | Status | Settlement Source | Title | Tags |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for note in notes:
         tags = ", ".join(note.tags)
         lines.append(
-            f"| `{note.path}` | {note.domain} | {note.note_type} | {note.status} | {note.title} | {tags} |"
+            f"| `{note.path}` | {note.domain} | {note.note_type} | {note.status} | {note.settlement_source} | {note.title} | {tags} |"
         )
     MANIFEST_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

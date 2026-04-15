@@ -36,10 +36,12 @@ summary: Graph-backed map of the Kalshi trading system from model signal to mark
   - `market_sentiment_tool/backend/orchestrator.py::market_resolution()`
   - `market_sentiment_tool/backend/orchestrator.py::resolve_kalshi_market()`
   - `SP500 Predictor/src/kalshi_portfolio.py::KalshiPortfolio.get_settlements()`
+  - `market_sentiment_tool/backend/signal_events.py`
 - Meaning:
   - A raw signal does not become executable until it resolves to a concrete Kalshi market ticker.
   - Final truth is closed by Kalshi settlement records and the domain authority that underlies that market.
   - Weather settlement remains tied to NWS authority; crypto settlement is observed through Kalshi portfolio settlement history.
+  - Canonical operator event storage now lives in `signal_events`, with `crypto_signal_events` retained only as a crypto compatibility view.
 
 ### `Strategy_Logic -> calls -> Kalshi_Execution_Bridge`
 - Concrete graph anchors:
@@ -56,8 +58,8 @@ summary: Graph-backed map of the Kalshi trading system from model signal to mark
 4. `market_resolution()` resolves the trade signal into a concrete Kalshi market via `resolve_kalshi_market()`, using live spot data and active market metadata.
 5. `market_resolution()` checks trade controls, cooldown rules, best bid/offer, and minimum edge before allowing execution.
 6. If the edge survives, `market_resolution()` calls the Kalshi execution bridge in `market_sentiment_tool/backend/mcp_server.py::submit_kalshi_order()`.
-7. The runtime persists execution state through `write_trade_to_supabase()` and signal telemetry through `write_crypto_signal_event()`.
-8. Operators inspect the live state through `SP500 Predictor/src/telegram_notifier.py` and post-trade accuracy through `SP500 Predictor/scripts/shadow_performance.py`.
+7. The runtime persists execution state through `write_trade_to_supabase()` and signal telemetry through the canonical `signal_events` store.
+8. Operators inspect the live state through `SP500 Predictor/src/telegram_notifier.py` using `/scan {domain}` and post-trade accuracy through `SP500 Predictor/scripts/shadow_performance.py` using `/performance {domain}`.
 9. The trade reaches terminal truth when Kalshi closes the market and settlement is observable through `KalshiPortfolio.get_settlements()` plus the relevant domain settlement authority.
 
 ## Discovery Order Going Forward

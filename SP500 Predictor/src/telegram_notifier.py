@@ -1,5 +1,5 @@
 """
-Async Telegram operator plane for Kalshi crypto trading.
+Async Telegram operator plane for Kalshi trading domains.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ if str(PREDICTOR_ROOT) not in sys.path:
 
 from shared.kalshi_ws import load_rsa_private_key, sign_kalshi_message
 from market_sentiment_tool.backend.runtime_bootstrap import resolve_kalshi_runtime_settings
+from market_sentiment_tool.backend.signal_events import CRYPTO_DOMAIN, SIGNAL_EVENTS_TABLE, is_supported_signal_event_domain
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip('"').strip("'")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip('"').strip("'")
@@ -365,9 +366,10 @@ class TelegramNotifier:
             },
         )
         latest_signal = await self._supabase_select(
-            "crypto_signal_events",
+            SIGNAL_EVENTS_TABLE,
             params={
                 "select": "created_at,status,resolved_ticker,skip_reason",
+                "domain": f"eq.{CRYPTO_DOMAIN}",
                 "order": "created_at.desc",
                 "limit": "1",
             },
@@ -445,11 +447,21 @@ class TelegramNotifier:
         return "\n".join(lines)
 
     async def _get_crypto_scan_text(self) -> str:
+        return await self._get_scan_text(CRYPTO_DOMAIN)
+
+    async def _get_crypto_stats_text(self) -> str:
+        return await self._get_performance_text(CRYPTO_DOMAIN)
+
+    async def _get_scan_text(self, domain: str) -> str:
+        normalized_domain = str(domain).strip().lower() or CRYPTO_DOMAIN
+        if not is_supported_signal_event_domain(normalized_domain):
+            return f"⚠️ Unsupported domain: `{_escape_markdown_text(normalized_domain)}`. Currently supported: `crypto`."
         cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=CRYPTO_SCAN_LOOKBACK_HOURS)).isoformat()
         rows = await self._supabase_select(
-            "crypto_signal_events",
+            SIGNAL_EVENTS_TABLE,
             params={
                 "select": "created_at,asset,source_market_ticker,resolved_ticker,desired_side,status,skip_reason,execution_status,edge,model_probability_yes",
+                "domain": f"eq.{normalized_domain}",
                 "order": "created_at.desc",
                 "limit": "25",
                 "created_at": f"gte.{cutoff_iso}",
@@ -457,8 +469,8 @@ class TelegramNotifier:
         )
         if not rows:
             return (
-                "🔎 *Crypto Scan*\n\n"
-                f"No actionable crypto events in the last {CRYPTO_SCAN_LOOKBACK_HOURS}h.\n"
+                f"🔎 *{normalized_domain.title()} Scan*\n\n"
+                f"No actionable {normalized_domain} events in the last {CRYPTO_SCAN_LOOKBACK_HOURS}h.\n"
                 "Dead-zone decisions are not included in this view."
             )
 
@@ -476,7 +488,7 @@ class TelegramNotifier:
             if status and status not in latest_by_status:
                 latest_by_status[status] = row
 
-        lines = ["🔎 *Crypto Scan*", ""]
+        lines = [f"🔎 *{normalized_domain.title()} Scan*", ""]
         rendered = 0
         for status, label in status_order:
             row = latest_by_status.get(status)
@@ -493,17 +505,26 @@ class TelegramNotifier:
             rendered += 1
         if rendered == 0:
             return (
-                "🔎 *Crypto Scan*\n\n"
-                f"No actionable crypto events in the last {CRYPTO_SCAN_LOOKBACK_HOURS}h.\n"
+                f"🔎 *{normalized_domain.title()} Scan*\n\n"
+                f"No actionable {normalized_domain} events in the last {CRYPTO_SCAN_LOOKBACK_HOURS}h.\n"
                 "This command reports the latest signal, near miss, skip, failure, or trade."
             )
         return "\n".join(lines)
 
-    async def _get_crypto_stats_text(self) -> str:
+    async def _get_performance_text(self, domain: str) -> str:
+        normalized_domain = str(domain).strip().lower() or CRYPTO_DOMAIN
+        if not is_supported_signal_event_domain(normalized_domain):
+            return f"⚠️ Unsupported domain: `{_escape_markdown_text(normalized_domain)}`. Currently supported: `crypto`."
         from scripts.shadow_performance import build_shadow_report, render_shadow_report
 
-        report = await asyncio.to_thread(build_shadow_report, hours=CRYPTO_SCAN_LOOKBACK_HOURS)
+        report = await asyncio.to_thread(build_shadow_report, hours=CRYPTO_SCAN_LOOKBACK_HOURS, domain=normalized_domain)
         return render_shadow_report(report, telegram=True)
+
+    @staticmethod
+    def _command_domain(parts: list[str], *, default: str = CRYPTO_DOMAIN) -> str:
+        if len(parts) >= 2 and parts[1].strip():
+            return parts[1].strip().lower()
+        return default
 
     async def _handle_command(self, command: str, from_chat_id: str) -> None:
         resolved_chat_id = await self._get_chat_id()
@@ -516,14 +537,16 @@ class TelegramNotifier:
             await self.send_message(
                 "\n".join(
                     [
-                        "🤖 *Crypto Operator Commands*",
+                        "🤖 *Kalshi Operator Commands*",
                         "",
                         "/crypto_status *(or /cryptostatus)*",
                         "/balance",
                         "/positions",
                         "/trades",
-                        "/crypto_scan *(or /cryptoscan; latest actionable crypto events from the last 24h)*",
-                        "/stats *(or /accuracy; considered trades, Brier score, virtual PnL, data freshness)*",
+                        "/scan {domain} *(currently `crypto`; latest actionable events from the last 24h)*",
+                        "/performance {domain} *(currently `crypto`; considered trades, Brier score, virtual PnL, data freshness)*",
+                        "/crypto_scan *(alias for `/scan crypto`)*",
+                        "/stats *(alias for `/performance crypto`)*",
                         "/help",
                     ]
                 )
@@ -537,9 +560,9 @@ class TelegramNotifier:
         elif cmd == "/trades":
             await self.send_message(await self._get_trades_text())
         elif cmd in {"/crypto_scan", "/cryptoscan", "/scan"}:
-            await self.send_message(await self._get_crypto_scan_text())
-        elif cmd in {"/stats", "/accuracy"}:
-            await self.send_message(await self._get_crypto_stats_text())
+            await self.send_message(await self._get_scan_text(self._command_domain(parts, default=CRYPTO_DOMAIN)))
+        elif cmd in {"/stats", "/accuracy", "/performance"}:
+            await self.send_message(await self._get_performance_text(self._command_domain(parts, default=CRYPTO_DOMAIN)))
         else:
             await self.send_message(f"❓ Unknown command: `{cmd}`\nSend */help* for the list.")
 

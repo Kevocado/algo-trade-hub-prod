@@ -210,10 +210,10 @@ class TestTelegramCommands:
         tn._get_balance_text = fake_text
         tn._get_positions_text = fake_text
         tn._get_trades_text = fake_text
-        tn._get_crypto_scan_text = fake_text
-        tn._get_crypto_stats_text = fake_text
+        tn._get_scan_text = lambda domain: fake_text()
+        tn._get_performance_text = lambda domain: fake_text()
 
-        for cmd in ["/help", "/crypto_status", "/cryptostatus", "/balance", "/positions", "/trades", "/crypto_scan", "/cryptoscan", "/stats", "/accuracy"]:
+        for cmd in ["/help", "/crypto_status", "/cryptostatus", "/balance", "/positions", "/trades", "/crypto_scan", "/cryptoscan", "/scan crypto", "/stats", "/accuracy", "/performance crypto"]:
             asyncio.run(tn._handle_command(cmd, "12345"))
 
     def test_unknown_command_sends_help(self):
@@ -263,9 +263,10 @@ class TestTelegramCommands:
         tn = TelegramNotifier()
 
         async def fake_supabase_select(table, *, params):
-            assert table == "crypto_signal_events"
+            assert table == "signal_events"
             assert params["limit"] == "25"
             assert "created_at" in params
+            assert params["domain"] == "eq.crypto"
             return [
                 {
                     "created_at": "2026-04-09T01:00:00+00:00",
@@ -307,7 +308,7 @@ class TestTelegramCommands:
 
         tn._supabase_select = fake_supabase_select
 
-        text = asyncio.run(tn._get_crypto_scan_text())
+        text = asyncio.run(tn._get_scan_text("crypto"))
 
         assert "Last Signal" in text
         assert "Last Near Miss" in text
@@ -328,10 +329,19 @@ class TestTelegramCommands:
 
         tn._supabase_select = fake_supabase_select
 
-        text = asyncio.run(tn._get_crypto_scan_text())
+        text = asyncio.run(tn._get_scan_text("crypto"))
 
         assert "No actionable crypto events in the last" in text
         assert "latest signal, near miss, skip, failure, or trade" in text
+
+    def test_scan_reports_unsupported_domain(self):
+        from src.telegram_notifier import TelegramNotifier
+
+        tn = TelegramNotifier()
+
+        text = asyncio.run(tn._get_scan_text("weather"))
+
+        assert "Unsupported domain" in text
 
 # ════════════════════════════════════════════════════════════════════
 # Microstructure Engine Tests

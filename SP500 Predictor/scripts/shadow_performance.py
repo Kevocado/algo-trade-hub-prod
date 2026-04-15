@@ -21,6 +21,7 @@ for path in (REPO_ROOT, PREDICTOR_ROOT):
         sys.path.insert(0, text)
 
 from market_sentiment_tool.backend.runtime_bootstrap import load_canonical_env
+from market_sentiment_tool.backend.signal_events import CRYPTO_DOMAIN, SIGNAL_EVENTS_TABLE, is_supported_signal_event_domain
 
 ENV_BOOTSTRAP = load_canonical_env(__file__)
 DEFAULT_LOOKBACK_HOURS = int(os.getenv("SHADOW_SCORECARD_HOURS", "24"))
@@ -113,12 +114,21 @@ def _is_manual_test(payload: dict[str, Any]) -> bool:
     return bool(payload.get("manual_test") or raw.get("manual_test"))
 
 
-def fetch_recent_signal_events(*, hours: int = DEFAULT_LOOKBACK_HOURS, limit: int = 500) -> list[dict[str, Any]]:
+def fetch_recent_signal_events(
+    *,
+    hours: int = DEFAULT_LOOKBACK_HOURS,
+    limit: int = 500,
+    domain: str = CRYPTO_DOMAIN,
+) -> list[dict[str, Any]]:
+    normalized_domain = str(domain).strip().lower()
+    if not is_supported_signal_event_domain(normalized_domain):
+        raise RuntimeError(f"Unsupported signal-event domain: {domain}")
     supa = _load_supabase_client()
     cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     response = (
-        supa.table("crypto_signal_events")
+        supa.table(SIGNAL_EVENTS_TABLE)
         .select("asset,created_at,source_market_ticker,desired_side,status,model_probability_yes,payload")
+        .eq("domain", normalized_domain)
         .in_("status", ["signal_detected", "inference_heartbeat"])
         .gte("created_at", cutoff_iso)
         .order("created_at", desc=False)
@@ -317,11 +327,13 @@ def _asset_summary(evaluated: list[EvaluatedSignal], asset: str) -> dict[str, fl
 def build_shadow_report(
     *,
     hours: int = DEFAULT_LOOKBACK_HOURS,
+    domain: str = CRYPTO_DOMAIN,
     btc_yes: float = DEFAULT_BTC_YES,
     btc_no: float = DEFAULT_BTC_NO,
     eth_yes: float = DEFAULT_ETH_YES,
     eth_no: float = DEFAULT_ETH_NO,
 ) -> dict[str, Any]:
+    normalized_domain = str(domain).strip().lower()
     thresholds = _scorecard_thresholds(
         btc_yes=btc_yes,
         btc_no=btc_no,
@@ -332,7 +344,7 @@ def build_shadow_report(
     errors: list[str] = []
     rows: list[dict[str, Any]] = []
     try:
-        rows = fetch_recent_signal_events(hours=hours)
+        rows = fetch_recent_signal_events(hours=hours, domain=normalized_domain)
     except RuntimeError as exc:
         errors.append(str(exc))
 
@@ -356,6 +368,7 @@ def build_shadow_report(
 
     if not evaluated:
         return {
+            "domain": normalized_domain,
             "hours": hours,
             "thresholds": thresholds,
             "signals": [],
@@ -378,6 +391,7 @@ def build_shadow_report(
         }
 
     return {
+        "domain": normalized_domain,
         "hours": hours,
         "thresholds": thresholds,
         "signals": evaluated,
@@ -399,8 +413,10 @@ def build_shadow_report(
 
 
 def render_shadow_report(report: dict[str, Any], *, telegram: bool = False) -> str:
+    domain = str(report.get("domain") or CRYPTO_DOMAIN).strip().lower()
     consideration = report.get("consideration") or {"evaluated_count": 0, "considered_count": 0, "dead_zone_count": 0}
     freshness = report.get("freshness") or {}
+    title = "Crypto Accuracy" if domain == CRYPTO_DOMAIN else f"{domain.title()} Accuracy"
 
     def _freshness_line(asset: str) -> str:
         status = freshness.get(asset) or {}
@@ -413,7 +429,7 @@ def render_shadow_report(report: dict[str, Any], *, telegram: bool = False) -> s
         return f"{asset}: {freshness_label} | latest {pd.Timestamp(latest_bar).isoformat()} | age {float(age_hours):.2f}h"
 
     if not report["overall"]["count"]:
-        prefix = "📊 *Crypto Accuracy*" if telegram else "Crypto Accuracy"
+        prefix = f"📊 *{title}*" if telegram else title
         lines = [
             prefix,
             "",
@@ -441,7 +457,7 @@ def render_shadow_report(report: dict[str, Any], *, telegram: bool = False) -> s
     btc_yes = report["thresholds"]["BTC"].yes
     eth_yes = report["thresholds"]["ETH"].yes
     lines = [
-        "📊 *Crypto Accuracy*" if telegram else "Crypto Accuracy",
+        f"📊 *{title}*" if telegram else title,
         "",
         f"Window: {report['hours']}h",
         f"Inference Events Reviewed: {int(consideration['evaluated_count'])}",
@@ -469,8 +485,9 @@ def render_shadow_report(report: dict[str, Any], *, telegram: bool = False) -> s
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Compute crypto shadow hit rate, Brier Score, and virtual PnL.")
+    parser = argparse.ArgumentParser(description="Compute domain shadow hit rate, Brier Score, and virtual PnL.")
     parser.add_argument("--hours", type=int, default=DEFAULT_LOOKBACK_HOURS)
+    parser.add_argument("--domain", type=str, default=CRYPTO_DOMAIN)
     parser.add_argument("--btc-yes", type=float, default=DEFAULT_BTC_YES)
     parser.add_argument("--btc-no", type=float, default=DEFAULT_BTC_NO)
     parser.add_argument("--eth-yes", type=float, default=DEFAULT_ETH_YES)
@@ -482,6 +499,7 @@ def main() -> int:
     args = _parse_args()
     report = build_shadow_report(
         hours=args.hours,
+        domain=args.domain,
         btc_yes=args.btc_yes,
         btc_no=args.btc_no,
         eth_yes=args.eth_yes,

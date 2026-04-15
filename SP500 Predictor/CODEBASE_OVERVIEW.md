@@ -118,4 +118,4 @@ The following files were removed during the refactor:
 - `debug_feed.py`, `test_api.py`, `test_auto_retrain.py`, `test_categorization.py`, `test_expirations.py`, `test_new_categorization.py`, `test_range_logic.py` — standalone debug/test scripts
 - `market_data.json` — stale sample data
 - `market_scanner_app.py` — Polymarket scanner (replaced by Kalshi-based `src/market_scanner.py`)
-- `INTEGRATION_PROMPT.md`, `README 2.md`, `requirements_minimal.txt` — consumed integration docs
+- `INTEGRATION_PROMPT.md`, `README 2.md`, `requirements_minimal.txt` — consumed integration docs now archived out of the primary discovery path

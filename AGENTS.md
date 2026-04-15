@@ -9,7 +9,7 @@
 - Consult `.agent/index/notes_manifest.json` or `.agent/index/notes_manifest.md` before opening notes directly.
 - Never load more than 3 notes into active context for a single task.
 - Prefer deterministic retrieval from YAML frontmatter and manifest metadata over broad semantic search.
-- For repo structure and cross-cutting logic, consult `graphify-out/graph.json`, `graphify-out/report.md`, and `.agent/index/SYSTEM_MAP.md` before using broad `rg` scans.
+- For repo structure and cross-cutting logic, consult `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`, and `.agent/index/SYSTEM_MAP.md` before using broad `rg` scans.
 
 ## Offloading Rules
 - Append decisions, blockers, and next steps to `.agent/buffer/session_logs.md` before switching domains.
@@ -28,6 +28,7 @@
 - All domains must follow one note schema.
 - Required frontmatter keys: `title`, `type`, `domain`, `status`, `settlement_source`, `tags`, `summary`.
 - Machine-readable notes must stay deterministic and concise so any coding agent can parse them.
+- Archive legacy specs, duplicate prompt packs, and scratch material under `archive/` so primary discovery stays focused on canonical surfaces.
 
 ## graphify
 

@@ -1,8 +1,8 @@
 # Algo-Trade-Hub
 
-A unified, production-grade quantitative trading and sports analytics monorepo. This system continuously discovers arbitrage edges in prediction markets (Kalshi) by crunching weather data, macroeconomic indicators, crypto momentum, and sports statistics.
+A unified, production-grade Kalshi trading and analytics monorepo. The canonical product surface is the `SP500 Predictor` engine/operator package plus the `market_sentiment_tool` backend/frontend surface, with shared infrastructure living in `shared/`, `Weather/`, `quant_research_lab/`, and `.agent/`.
 
-> **Full architecture reference:** [`SYSTEM_ARCH.md`](./SYSTEM_ARCH.md)
+> **Canonical references:** [`SYSTEM_ARCH.md`](./SYSTEM_ARCH.md), [`.agent/index/SYSTEM_MAP.md`](./.agent/index/SYSTEM_MAP.md), and [`AGENTS.md`](./AGENTS.md)
 
 ---
 
@@ -19,9 +19,13 @@ Algo-Trade-Hub operates on a separated hybrid model to maximize VPS performance 
 
 ```text
 Algo-Trade-Hub/
-├── SP500 Predictor/        # Python ML & Backend Engines (Run via PM2 VPS)
-├── market_sentiment_tool/  # React/Vite Frontend (Hosted on Vercel)
-├── FPL_Optimizer/          # Legacy Python sports models
+├── SP500 Predictor/        # Canonical Python engine/operator package
+├── market_sentiment_tool/  # Canonical backend/frontend service surface
+├── Weather/                # Weather settlement research and contracts
+├── shared/                 # Universal shared contracts and utilities
+├── quant_research_lab/     # Active research notebooks and model experiments
+├── archive/                # Archived legacy docs and duplicate prompt material
+├── FPL_Optimizer/          # Legacy auxiliary content
 ├── ecosystem.config.js     # PM2 Orchestrator config
 ├── SYSTEM_ARCH.md          # ← Master architecture reference (read this first)
 └── README.md
@@ -71,7 +75,7 @@ The system relies on a strict split of secrets.
 - The crypto runtime reads the canonical backend env from repo root: `Algo-Trade-Hub/.env`. `market_sentiment_tool/.env` is only a fallback if the root file is missing.
 - Required backend vars: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `KALSHI_ENV`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`, `BTC_MODEL_PATH`, `ETH_MODEL_PATH`.
 - Telegram operator-plane vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
-- Before restarting the VPS worker after today’s operator-plane changes, apply the Supabase migration `market_sentiment_tool/supabase/migrations/20260408224000_crypto_operator_plane.sql` so `crypto_signal_events` and the crypto-specific `user_settings` columns exist.
+- Before restarting the VPS worker after operator-plane changes, apply the Supabase migrations `market_sentiment_tool/supabase/migrations/20260408224000_crypto_operator_plane.sql` and `market_sentiment_tool/supabase/migrations/20260415090000_signal_events_unification.sql` so the canonical `signal_events` table and the `crypto_signal_events` compatibility view exist.
 - Install the crypto backend runtime dependencies into the PM2 interpreter environment before starting the worker:
 
 ```bash
@@ -121,7 +125,12 @@ Telegram commands:
 - `/balance`
 - `/positions`
 - `/trades`
-- `/crypto_scan`
+- `/scan crypto`
+- `/performance crypto`
+- `/crypto_scan` *(alias)*
+- `/cryptoscan` *(alias)*
+- `/stats` *(alias)*
+- `/accuracy` *(alias)*
 
 Operator-plane behavior:
 - Telegram alerts are async and must never block the crypto LangGraph loop.

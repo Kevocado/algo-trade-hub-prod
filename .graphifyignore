@@ -3,9 +3,15 @@
 .venv
 node_modules
 graphify-out
+archive
+.agent/archive
 __pycache__
 *.egg-info
 *.ipynb_checkpoints
 *.log
 *.pkl
 *.pyc
+.pytest_cache
+.bolt
+.claude
+.qodo

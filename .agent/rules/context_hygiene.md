@@ -5,7 +5,7 @@
 2. `implementation_plan.md`
 3. `.agent/buffer/session_logs.md`
 4. `.agent/index/notes_manifest.json`
-5. `graphify-out/graph.json` or `graphify-out/report.md`
+5. `graphify-out/graph.json` or `graphify-out/GRAPH_REPORT.md`
 6. Broad repo search
 
 ## Weather Feature Building
@@ -27,3 +27,4 @@
 ## Context Budget
 - Never load more than 3 notes at once unless a task explicitly requires a fourth note for conflict resolution.
 - Prefer note summaries and headings from the manifest before opening full note bodies.
+- Ignore `archive/` and `.agent/archive/` during primary retrieval unless the task explicitly calls for historical context.

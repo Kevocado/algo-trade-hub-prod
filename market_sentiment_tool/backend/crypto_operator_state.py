@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from market_sentiment_tool.backend.signal_events import CRYPTO_DOMAIN, SIGNAL_EVENTS_TABLE, normalize_signal_event
+
 
 def _resolve_user_settings_user_id(supa: Any, user_id: str | None = None) -> str | None:
     if user_id:
@@ -85,13 +87,13 @@ def insert_crypto_signal_event(
     if supa is None:
         return False
 
-    payload = dict(event)
+    payload = normalize_signal_event(event, domain=CRYPTO_DOMAIN)
     target_user_id = _resolve_user_settings_user_id(supa, user_id=user_id)
     if target_user_id:
         payload["user_id"] = target_user_id
 
     try:
-        supa.table("crypto_signal_events").insert(payload).execute()
+        supa.table(SIGNAL_EVENTS_TABLE).insert(payload).execute()
         return True
     except Exception:
         return False

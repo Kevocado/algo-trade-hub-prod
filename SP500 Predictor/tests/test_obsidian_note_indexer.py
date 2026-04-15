@@ -26,6 +26,7 @@ def test_index_markdown_note_parses_frontmatter(tmp_path):
         "type: api_spec\n"
         "domain: weather\n"
         "status: active\n"
+        "settlement_source: nws\n"
         "tags: [weather, api]\n"
         "summary: Sample summary.\n"
         "---\n\n"
@@ -39,6 +40,7 @@ def test_index_markdown_note_parses_frontmatter(tmp_path):
     assert indexed.title == "Sample Weather Note"
     assert indexed.domain == "weather"
     assert indexed.note_type == "api_spec"
+    assert indexed.settlement_source == "nws"
     assert indexed.tags == ["weather", "api"]
     assert indexed.headings == ["Sample Weather Note", "Fields"]
 
@@ -79,6 +81,7 @@ def test_write_manifest_outputs_json_and_markdown(tmp_path):
             domain="weather",
             note_type="research",
             status="active",
+            settlement_source="nws",
             tags=["weather"],
             summary="Summary",
             headings=["Kept Note"],
@@ -94,4 +97,5 @@ def test_write_manifest_outputs_json_and_markdown(tmp_path):
     markdown = module.MANIFEST_MD.read_text(encoding="utf-8")
 
     assert payload["notes"][0]["path"] == "Weather/Note.md"
+    assert payload["notes"][0]["settlement_source"] == "nws"
     assert "Weather/Note.md" in markdown

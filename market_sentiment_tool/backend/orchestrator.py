@@ -54,6 +54,7 @@ from market_sentiment_tool.backend.crypto_operator_state import (
     insert_crypto_signal_event,
     is_crypto_trading_enabled,
 )
+from market_sentiment_tool.backend.signal_events import CRYPTO_DOMAIN, SIGNAL_EVENTS_TABLE
 
 # ── Runtime bootstrap ──
 ENV_BOOTSTRAP = load_canonical_env(__file__)
@@ -359,7 +360,7 @@ def write_crypto_signal_event(event: dict[str, Any]) -> None:
     if supa is None:
         return
     if not insert_crypto_signal_event(supa, event=event, user_id=USER_ID):
-        log.error("crypto_signal_events insert failed: %s", event)
+        log.error("%s insert failed: %s", SIGNAL_EVENTS_TABLE, event)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1782,8 +1783,9 @@ def _should_emit_opportunity_alert(dedupe_key: str) -> bool:
     cutoff_iso = (datetime.now(timezone.utc) - timedelta(seconds=CRYPTO_OPPORTUNITY_ALERT_DEDUPE_S)).isoformat()
     try:
         result = (
-            supa.table("crypto_signal_events")
+            supa.table(SIGNAL_EVENTS_TABLE)
             .select("id")
+            .eq("domain", CRYPTO_DOMAIN)
             .eq("dedupe_key", dedupe_key)
             .eq("alert_kind", "opportunity")
             .eq("alert_sent", True)
@@ -1803,8 +1805,9 @@ def _should_emit_near_miss_alert(dedupe_key: str) -> bool:
     cutoff_iso = (datetime.now(timezone.utc) - timedelta(seconds=CRYPTO_NEAR_MISS_ALERT_DEDUPE_S)).isoformat()
     try:
         result = (
-            supa.table("crypto_signal_events")
+            supa.table(SIGNAL_EVENTS_TABLE)
             .select("id")
+            .eq("domain", CRYPTO_DOMAIN)
             .eq("dedupe_key", dedupe_key)
             .eq("alert_kind", "near_miss")
             .eq("alert_sent", True)

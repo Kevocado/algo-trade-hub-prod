@@ -23,3 +23,14 @@
 - Added `.agent/index/SYSTEM_MAP.md` as the graph-backed universal system map from signal to settlement.
 - Seeded graphify memory with canonical answers for the trade path and the high-value Kalshi system edges.
 - Introduced `shared/feature_engine.py` plus crypto and weather feature-engine bindings to support a canonical cross-domain feature contract.
+
+## 2026-04-15 Cleanup And Unification Pass
+- Added canonical signal-event helpers in `market_sentiment_tool/backend/signal_events.py`.
+- Introduced a Supabase migration that promotes `signal_events` to the canonical operator event table and exposes `crypto_signal_events` as a compatibility view with write triggers.
+- Refactored Telegram scanning/performance commands toward `/scan {domain}` and `/performance {domain}` while preserving crypto aliases.
+- Updated the crypto scorecard path to read canonical `signal_events` filtered by domain.
+- Archived duplicate FPL prompt packs, legacy architecture specs, the old root `STATE.md`, and `market_sentiment_tool/Complete context.md` under `archive/`.
+- Preserved active notebook work and existing local `.obsidian/workspace.json` edits without rewriting them.
+- Refreshed the Obsidian note manifest after the archive move; the current repo vault index now covers 32 Markdown notes and excludes archived material from primary retrieval.
+- Verified the updated Python modules compile cleanly and re-ran the note-indexer test suite with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` because a broken global `langsmith` pytest plugin blocks default pytest startup in this environment.
+- Attempted `graphify update .` after cleanup; the command did not return a stable completion signal in this runner, so `.agent/index/SYSTEM_MAP.md` still references the last verified April 13 graph snapshot until graphify is re-run successfully in a normal shell.

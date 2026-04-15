@@ -12,12 +12,17 @@
 - `.agent/index/SYSTEM_MAP.md`
 - `shared/feature_engine.py`
 - `shared/weather_features.py`
+- `market_sentiment_tool/backend/signal_events.py`
+- `market_sentiment_tool/supabase/migrations/20260415090000_signal_events_unification.sql`
 
 ## Structural Contracts
 - Root vault rules live in `AGENTS.md` and `.agent/rules/`.
 - Shared infrastructure context survives domain switches.
 - Active Buffer context must be purged on domain switches.
 - Graph-backed discovery precedes broad repo search.
+- `signal_events` is the canonical operator event store.
+- `crypto_signal_events` exists only as a crypto compatibility view during migration.
+- Legacy prompt/spec copies belong in `archive/`, not in primary discovery paths.
 
 ## High-Value System Edges
 1. `Model_Inference -> depends_on -> Feature_Contract`
@@ -29,3 +34,5 @@
 2. Build and refresh the repo graph.
 3. Seed durable system-memory artifacts from graph outputs.
 4. Extend runtime generalization work from the shared `FeatureEngine` contract.
+5. Unify operator storage and commands around `signal_events`, `/scan {domain}`, and `/performance {domain}`.
+6. Archive duplicate prompt/spec material out of active discovery paths.

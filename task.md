@@ -1,12 +1,12 @@
 # Active Task
 
 ## Current Focus
-- Build a graph-augmented repo memory and discovery layer for the Kalshi trading system.
+- Complete the cleanup and unification pass across runtime storage, operator interfaces, and primary discovery paths.
 
 ## Immediate Next Steps
-- Refresh graphify after structural changes to shared contracts and agent rules.
-- Refresh the note manifest after adding graph architecture artifacts.
+- Re-run `graphify update .` from a normal shell so the post-cleanup graph snapshot replaces the April 13 baseline.
+- Apply the Supabase `signal_events` migration in the target environment before relying on the universal operator interface.
 - Use `.agent/index/SYSTEM_MAP.md` as the universal traversal entry point for future repo work.
 
 ## Stop Point
-- Graphify Codex integration is installed, the initial graph is built, and the universal system map has been added. Remaining runtime generalization work should extend from the shared `FeatureEngine` contract and the graph-backed system map.
+- Runtime storage and operator commands now resolve through canonical `signal_events` plus crypto compatibility. The remaining follow-through is environment-level: apply the DB migration and refresh graphify successfully outside this runner.

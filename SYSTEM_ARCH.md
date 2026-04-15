@@ -20,7 +20,7 @@ Algo-Trade-Hub is a unified quantitative trading and sports analytics platform o
 ```
 Algo-Trade-Hub/                          ← Root monorepo (one git repo)
 │
-├── SP500 Predictor/                     ← Backend Python Compute Engines
+├── SP500 Predictor/                     ← Canonical Python compute + operator package
 │   ├── src/                             ← Core library modules & shared tools
 │   │   ├── supabase_client.py           ← Unified Supabase write client (upsert_opportunities)
 │   │   └── ...
@@ -34,7 +34,7 @@ Algo-Trade-Hub/                          ← Root monorepo (one git repo)
 │   │   └── background_scanner.py        ← Central Daemon (runs all engines, pushes to Supabase)
 │   └── .env                             ← BACKEND SECRETS (Role Keys, APIs)
 │
-├── market_sentiment_tool/               ← Frontend Unified Web Dashboard (Vercel)
+├── market_sentiment_tool/               ← Canonical backend/frontend service surface
 │   ├── src/                             ← React app source
 │   │   ├── pages/                       ← Dynamic Routing
 │   │   │   ├── Index.tsx                ← 'War Room' (AI Swarm Activity Console)
@@ -46,7 +46,11 @@ Algo-Trade-Hub/                          ← Root monorepo (one git repo)
 │   ├── package.json                     ← Node deps (React, Tailwind, Supabase JS)
 │   └── .env                             ← FRONTEND CONFIG (VITE_ API URLs & Anon Keys)
 │
-├── FPL_Optimizer/                       ← Legacy standalone FPL tools (Merged pending full port)
+├── shared/                              ← Shared cross-domain contracts and utilities
+├── Weather/                             ← Weather research, settlement rules, and feature schema
+├── quant_research_lab/                  ← Active notebooks and experimental backtests
+├── archive/                             ← Archived legacy docs, duplicate prompt packs, scratch material
+├── FPL_Optimizer/                       ← Legacy standalone FPL tools
 │
 ├── ecosystem.config.js                  ← PM2 Daemon configuration
 ├── SYSTEM_ARCH.md                       ← You are here
@@ -130,4 +134,10 @@ VITE_API_BASE_URL="..."
 
 ---
 
-*Last updated: 2026-03-23 by Antigravity (automated architecture sync)*
+## Cleanup And Unification Notes
+
+- `signal_events` is the canonical operator event store; `crypto_signal_events` is a compatibility view for crypto during migration.
+- `shared/feature_engine.py` is the canonical feature-builder contract for active runtime builders.
+- Archive legacy or duplicate material under `archive/` so graphify and vault indexing stay centered on canonical surfaces.
+
+*Last updated: 2026-04-15 during cleanup and unification pass*

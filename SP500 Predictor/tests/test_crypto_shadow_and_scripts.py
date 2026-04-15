@@ -208,18 +208,20 @@ def test_telegram_help_and_stats_commands(monkeypatch):
     tn._get_balance_text = fake_stats
     tn._get_positions_text = fake_stats
     tn._get_trades_text = fake_stats
-    tn._get_crypto_scan_text = fake_stats
-    tn._get_crypto_stats_text = fake_stats
+    tn._get_scan_text = lambda domain: fake_stats()
+    tn._get_performance_text = lambda domain: fake_stats()
 
     asyncio.run(tn._handle_command("/help", "12345"))
     asyncio.run(tn._handle_command("/stats", "12345"))
     asyncio.run(tn._handle_command("/accuracy", "12345"))
+    asyncio.run(tn._handle_command("/performance crypto", "12345"))
 
-    assert "/stats" in sent_messages[0]
+    assert "/performance {domain}" in sent_messages[0]
     assert "/test_trade" not in sent_messages[0]
     assert "/force_demo_buy" not in sent_messages[0]
     assert sent_messages[1] == "stats ok"
     assert sent_messages[2] == "stats ok"
+    assert sent_messages[3] == "stats ok"
 
 
 def test_auto_retrain_does_not_replace_incumbent_on_tie_or_worse(monkeypatch, tmp_path):
