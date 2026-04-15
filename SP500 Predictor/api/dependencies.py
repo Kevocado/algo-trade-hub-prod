@@ -23,9 +23,9 @@ def get_supabase():
     try:
         from supabase import create_client
         url = os.getenv("SUPABASE_URL", "")
-        key = os.getenv("SUPABASE_KEY", "")
+        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_KEY", "")
         if not url or not key:
-            print("⚠️  SUPABASE_URL or SUPABASE_KEY missing — Supabase calls will fail.")
+            print("⚠️  SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing — Supabase calls will fail.")
             return None
         return create_client(url, key)
     except ImportError:

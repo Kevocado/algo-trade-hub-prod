@@ -21,9 +21,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.schemas import (
     HealthResponse, Position, PnLSummary,
-    Opportunity, NWSReading, NBASignal, F1Signal,
+    Opportunity, NWSReading, NBASignal, F1Signal, ShadowPerformanceResponse,
 )
 from api.dependencies import get_supabase, get_scanner_cache
+from scripts.shadow_performance import build_shadow_timeline_response
 
 # ── App ─────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -202,6 +203,24 @@ async def get_f1_signals(
     if min_edge > 0:
         signals = [s for s in signals if abs(s.get("edge_pct", 0)) >= min_edge]
     return signals
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ENDPOINT 8: /api/shadow-performance
+# ════════════════════════════════════════════════════════════════════════════
+@app.get("/api/shadow-performance", response_model=ShadowPerformanceResponse, tags=["Shadow"])
+async def get_shadow_performance(
+    domain: str = Query("crypto", description="Domain to visualize; currently only crypto is supported"),
+    hours: int = Query(24, ge=1, le=168, description="Lookback window in hours"),
+):
+    try:
+        return build_shadow_timeline_response(domain=domain, hours=hours)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── Dev entrypoint ───────────────────────────────────────────────────────────

@@ -53,6 +53,10 @@ class EvaluatedSignal:
     correct: bool
     virtual_return_pct: float
 
+    @property
+    def shadow_outcome(self) -> str:
+        return "win" if self.correct else "loss"
+
 
 def _current_hour_utc(reference: datetime | None = None) -> pd.Timestamp:
     now = reference or datetime.now(timezone.utc)
@@ -409,6 +413,90 @@ def build_shadow_report(
         "consideration": consideration,
         "freshness": freshness,
         "errors": errors,
+    }
+
+
+def _serialize_thresholds(thresholds: dict[str, ThresholdConfig]) -> dict[str, dict[str, float]]:
+    return {
+        asset: {"yes": float(config.yes), "no": float(config.no)}
+        for asset, config in thresholds.items()
+    }
+
+
+def _serialize_freshness(freshness: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    payload: dict[str, dict[str, Any]] = {}
+    for asset, status in freshness.items():
+        latest_bar = status.get("latest_bar")
+        payload[asset] = {
+            "asset": asset,
+            "latest_bar": None if latest_bar is None else _to_utc_timestamp(latest_bar).to_pydatetime(),
+            "age_hours": None if status.get("age_hours") is None else float(status["age_hours"]),
+            "is_stale": status.get("is_stale"),
+        }
+    return payload
+
+
+def build_shadow_timeline_response(
+    *,
+    hours: int = DEFAULT_LOOKBACK_HOURS,
+    domain: str = CRYPTO_DOMAIN,
+    btc_yes: float = DEFAULT_BTC_YES,
+    btc_no: float = DEFAULT_BTC_NO,
+    eth_yes: float = DEFAULT_ETH_YES,
+    eth_no: float = DEFAULT_ETH_NO,
+) -> dict[str, Any]:
+    normalized_domain = str(domain or "").strip().lower()
+    if not is_supported_signal_event_domain(normalized_domain):
+        raise ValueError(f"Unsupported signal-event domain: {domain}")
+
+    report = build_shadow_report(
+        hours=hours,
+        domain=normalized_domain,
+        btc_yes=btc_yes,
+        btc_no=btc_no,
+        eth_yes=eth_yes,
+        eth_no=eth_no,
+    )
+    if report.get("errors"):
+        raise RuntimeError(str(report["errors"][0]))
+
+    thresholds = report["thresholds"]
+    series = []
+    for item in sorted(report["signals"], key=lambda signal: signal.created_at):
+        series.append(
+            {
+                "timestamp": item.created_at.isoformat().replace("+00:00", "Z"),
+                "asset": item.asset,
+                "market_ticker": item.source_market_ticker,
+                "probability_yes": float(item.probability_yes),
+                "threshold_side": item.desired_side,
+                "threshold_triggered": True,
+                "current_price": float(item.current_close),
+                "next_hour_price": float(item.next_close),
+                "realized_yes": int(item.realized_yes),
+                "shadow_outcome": item.shadow_outcome,
+                "correct": bool(item.correct),
+                "virtual_return_pct": float(item.virtual_return_pct),
+            }
+        )
+
+    overall = report["overall"]
+    consideration = report["consideration"]
+    return {
+        "domain": normalized_domain,
+        "hours": int(report["hours"]),
+        "generated_at": datetime.now(timezone.utc),
+        "thresholds": _serialize_thresholds(thresholds),
+        "summary": {
+            "evaluated_count": int(consideration["evaluated_count"]),
+            "considered_count": int(consideration["considered_count"]),
+            "dead_zone_count": int(consideration["dead_zone_count"]),
+            "hit_rate": None if overall["hit_rate"] is None else float(overall["hit_rate"]),
+            "brier_score": None if overall["brier_score"] is None else float(overall["brier_score"]),
+            "virtual_pnl_pct": float(overall["virtual_pnl_pct"]),
+        },
+        "freshness": _serialize_freshness(report["freshness"]),
+        "series": series,
     }
 
 

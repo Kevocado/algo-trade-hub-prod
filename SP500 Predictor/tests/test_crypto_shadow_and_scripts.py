@@ -158,6 +158,62 @@ def test_shadow_report_counts_dead_zone_and_reports_freshness(monkeypatch):
     assert "BTC: fresh" in text
 
 
+def test_shadow_timeline_response_serializes_points(monkeypatch):
+    from scripts import shadow_performance
+
+    report = {
+        "domain": "crypto",
+        "hours": 24,
+        "thresholds": {
+            "BTC": shadow_performance.ThresholdConfig(0.5751, 0.4249),
+            "ETH": shadow_performance.ThresholdConfig(0.551, 0.449),
+        },
+        "signals": [
+            shadow_performance.EvaluatedSignal(
+                asset="BTC",
+                created_at=pd.Timestamp("2026-04-09T03:30:00Z"),
+                source_market_ticker="BTC-A",
+                desired_side="YES",
+                probability_yes=0.61,
+                base_hour=pd.Timestamp("2026-04-09T02:00:00Z"),
+                realized_hour=pd.Timestamp("2026-04-09T03:00:00Z"),
+                current_close=100.0,
+                next_close=101.5,
+                realized_yes=1,
+                correct=True,
+                virtual_return_pct=1.5,
+            )
+        ],
+        "overall": {"count": 1, "hit_rate": 1.0, "virtual_pnl_pct": 1.5, "brier_score": 0.1521},
+        "by_asset": {},
+        "bucket_stats": {},
+        "consideration": {"evaluated_count": 2, "considered_count": 1, "dead_zone_count": 1},
+        "freshness": {
+            "BTC": {"asset": "BTC", "latest_bar": pd.Timestamp("2026-04-09T03:00:00Z"), "age_hours": 1.0, "is_stale": False},
+            "ETH": {"asset": "ETH", "latest_bar": None, "age_hours": None, "is_stale": None},
+        },
+        "errors": [],
+    }
+
+    monkeypatch.setattr(shadow_performance, "build_shadow_report", lambda **_kwargs: report)
+
+    payload = shadow_performance.build_shadow_timeline_response(domain="crypto", hours=24)
+
+    assert payload["domain"] == "crypto"
+    assert payload["summary"]["considered_count"] == 1
+    assert payload["series"][0]["timestamp"] == "2026-04-09T03:30:00Z"
+    assert payload["series"][0]["shadow_outcome"] == "win"
+    assert payload["series"][0]["threshold_triggered"] is True
+    assert payload["freshness"]["BTC"]["latest_bar"].isoformat() == "2026-04-09T03:00:00+00:00"
+
+
+def test_shadow_timeline_response_rejects_unsupported_domain():
+    from scripts import shadow_performance
+
+    with pytest.raises(ValueError, match="Unsupported signal-event domain"):
+        shadow_performance.build_shadow_timeline_response(domain="weather", hours=24)
+
+
 def test_force_demo_trade_rejects_non_demo(monkeypatch):
     from scripts import force_demo_trade
 

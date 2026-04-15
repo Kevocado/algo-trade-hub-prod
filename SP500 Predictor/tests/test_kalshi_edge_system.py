@@ -135,6 +135,72 @@ class TestFastAPIEndpoints:
         response = client.get("/docs")
         assert response.status_code == 200
 
+    def test_shadow_performance_endpoint_returns_typed_payload(self, client, monkeypatch):
+        from api import main
+
+        monkeypatch.setattr(
+            main,
+            "build_shadow_timeline_response",
+            lambda **_kwargs: {
+                "domain": "crypto",
+                "hours": 24,
+                "generated_at": datetime(2026, 4, 15, 12, 0, tzinfo=timezone.utc),
+                "thresholds": {
+                    "BTC": {"yes": 0.5751, "no": 0.4249},
+                    "ETH": {"yes": 0.551, "no": 0.449},
+                },
+                "summary": {
+                    "evaluated_count": 10,
+                    "considered_count": 4,
+                    "dead_zone_count": 6,
+                    "hit_rate": 0.75,
+                    "brier_score": 0.16,
+                    "virtual_pnl_pct": 1.4,
+                },
+                "freshness": {
+                    "BTC": {"asset": "BTC", "latest_bar": datetime(2026, 4, 15, 11, 0, tzinfo=timezone.utc), "age_hours": 1.0, "is_stale": False},
+                    "ETH": {"asset": "ETH", "latest_bar": None, "age_hours": None, "is_stale": None},
+                },
+                "series": [
+                    {
+                        "timestamp": "2026-04-15T10:00:00Z",
+                        "asset": "BTC",
+                        "market_ticker": "BTC-A",
+                        "probability_yes": 0.61,
+                        "threshold_side": "YES",
+                        "threshold_triggered": True,
+                        "current_price": 63100.0,
+                        "next_hour_price": 63200.0,
+                        "realized_yes": 1,
+                        "shadow_outcome": "win",
+                        "correct": True,
+                        "virtual_return_pct": 0.16,
+                    }
+                ],
+            },
+        )
+
+        response = client.get("/api/shadow-performance?domain=crypto&hours=24")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["domain"] == "crypto"
+        assert data["summary"]["considered_count"] == 4
+        assert data["series"][0]["timestamp"] == "2026-04-15T10:00:00Z"
+
+    def test_shadow_performance_endpoint_rejects_unsupported_domain(self, client, monkeypatch):
+        from api import main
+
+        def fail(**_kwargs):
+            raise ValueError("Unsupported signal-event domain: weather")
+
+        monkeypatch.setattr(main, "build_shadow_timeline_response", fail)
+
+        response = client.get("/api/shadow-performance?domain=weather&hours=24")
+
+        assert response.status_code == 400
+        assert "Unsupported signal-event domain" in response.json()["detail"]
+
 
 # ════════════════════════════════════════════════════════════════════
 # Weather Maker Tests

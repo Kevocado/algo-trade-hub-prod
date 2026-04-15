@@ -8,7 +8,7 @@ tags:
   - graphify
   - architecture
   - kalshi
-summary: Graph-backed map of the Kalshi trading system from model signal to market resolution, execution, operator monitoring, and settlement observation.
+summary: Graph-backed map of the Kalshi trading system from model signal to market resolution, execution, operator monitoring, shadow visualization, and settlement observation.
 ---
 
 # Kalshi Trading System Map
@@ -51,6 +51,15 @@ summary: Graph-backed map of the Kalshi trading system from model signal to mark
   - Strategy logic must not submit orders directly.
   - The execution bridge is the choke point for kill-switch enforcement, signed Kalshi order submission, and execution logging.
 
+### `Shadow_Visualization -> reads_from -> Signal_Timeline`
+- Concrete graph anchors:
+  - `SP500 Predictor/api/main.py::get_shadow_performance()`
+  - `SP500 Predictor/scripts/shadow_performance.py::build_shadow_timeline_response()`
+  - `market_sentiment_tool/src/pages/ShadowBacktester.tsx`
+- Meaning:
+  - Visual backtesting is a read-only surface built on canonical `signal_events` plus realized next-hour price moves.
+  - FastAPI remains the computed-data transport layer; the React dashboard renders the timeline without querying Supabase directly.
+
 ## Single Trade Flow
 1. `evaluate_crypto_edge()` ingests a live ticker update and pulls the latest canonical feature row via `_latest_crypto_feature_row()`.
 2. `_latest_crypto_feature_row()` depends on `shared/crypto_features.py::build_features()` to produce the model-ready feature contract.
@@ -60,7 +69,8 @@ summary: Graph-backed map of the Kalshi trading system from model signal to mark
 6. If the edge survives, `market_resolution()` calls the Kalshi execution bridge in `market_sentiment_tool/backend/mcp_server.py::submit_kalshi_order()`.
 7. The runtime persists execution state through `write_trade_to_supabase()` and signal telemetry through the canonical `signal_events` store.
 8. Operators inspect the live state through `SP500 Predictor/src/telegram_notifier.py` using `/scan {domain}` and post-trade accuracy through `SP500 Predictor/scripts/shadow_performance.py` using `/performance {domain}`.
-9. The trade reaches terminal truth when Kalshi closes the market and settlement is observable through `KalshiPortfolio.get_settlements()` plus the relevant domain settlement authority.
+9. The visual backtester consumes the same computed shadow series through `SP500 Predictor/api/main.py::get_shadow_performance()` and renders it in `market_sentiment_tool/src/pages/ShadowBacktester.tsx` at `/shadow`.
+10. The trade reaches terminal truth when Kalshi closes the market and settlement is observable through `KalshiPortfolio.get_settlements()` plus the relevant domain settlement authority.
 
 ## Discovery Order Going Forward
 1. Read `graphify-out/GRAPH_REPORT.md` for god nodes and major communities.

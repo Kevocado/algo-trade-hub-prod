@@ -4,7 +4,7 @@ Keeps the API layer typed, validated, and self-documenting (Swagger UI).
 """
 
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 
 
@@ -97,3 +97,51 @@ class F1Signal(BaseModel):
     action: Optional[str] = None
     key_metric: Optional[str] = None  # e.g. "sector_z_score: -1.8σ"
     detected_at: Optional[datetime] = None
+
+
+# ─── Shadow Performance ──────────────────────────────────────────────────────
+
+class ShadowThreshold(BaseModel):
+    yes: float
+    no: float
+
+
+class ShadowFreshness(BaseModel):
+    asset: str
+    latest_bar: Optional[datetime] = None
+    age_hours: Optional[float] = None
+    is_stale: Optional[bool] = None
+
+
+class ShadowSummary(BaseModel):
+    evaluated_count: int
+    considered_count: int
+    dead_zone_count: int
+    hit_rate: Optional[float] = None
+    brier_score: Optional[float] = None
+    virtual_pnl_pct: float
+
+
+class ShadowPerformancePoint(BaseModel):
+    timestamp: str
+    asset: str
+    market_ticker: str
+    probability_yes: float
+    threshold_side: Optional[str] = None
+    threshold_triggered: bool
+    current_price: float
+    next_hour_price: float
+    realized_yes: int
+    shadow_outcome: str
+    correct: bool
+    virtual_return_pct: float
+
+
+class ShadowPerformanceResponse(BaseModel):
+    domain: str
+    hours: int
+    generated_at: datetime
+    thresholds: Dict[str, ShadowThreshold]
+    summary: ShadowSummary
+    freshness: Dict[str, ShadowFreshness]
+    series: List[ShadowPerformancePoint]
