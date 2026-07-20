@@ -162,6 +162,15 @@ def scan_real_edge():
     except Exception as e:
         print(f"  ⚠️ Soccer engine failed: {e}")
 
+    # ── NBA Props Engine (real predictive signals, not just schedule discovery) ──
+    print("\n🏀 Running NBA Props Engine...")
+    try:
+        nba_signals = NBAEngine().get_signals()
+        all_ops.extend(nba_signals)
+        print(f"  Found {len(nba_signals)} NBA prop signals")
+    except Exception as e:
+        print(f"  ⚠️ NBA props engine failed: {e}")
+
     print(f"\n📊 Total real-edge opportunities: {len(all_ops)}")
     if all_ops:
         for op in all_ops:

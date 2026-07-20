@@ -16,6 +16,7 @@ Usage:
 Paper trading only. All signals are logged to Supabase paper_trades table.
 """
 
+import re
 import requests
 import time
 import numpy as np
@@ -23,26 +24,49 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-# BallDontLie base URL (v1 — free, no API key required)
-BDL_BASE = "https://www.balldontlie.io/api/v1"
+try:
+    from shared.config import BALLDONTLIE_API_KEY
+except ImportError:
+    BALLDONTLIE_API_KEY = ""
+
+# BallDontLie repriced/restructured its API in 2025: the free, keyless
+# www.balldontlie.io/api/v1 path is deprecated. Current API requires a key
+# (free tier still covers basic games/players/stats) at api.balldontlie.io/v1
+# with an Authorization header. Fall back to the legacy base if no key is
+# configured — it may 404/degrade rather than serve stale data silently.
+if BALLDONTLIE_API_KEY:
+    BDL_BASE = "https://api.balldontlie.io/v1"
+    BDL_HEADERS = {"Authorization": BALLDONTLIE_API_KEY}
+else:
+    BDL_BASE = "https://www.balldontlie.io/api/v1"
+    BDL_HEADERS = {}
+    print("⚠️ No BALLDONTLIE_API_KEY configured — falling back to the legacy free "
+          "endpoint, which BallDontLie may no longer serve. Set BALLDONTLIE_API_KEY "
+          "in .env once a tier is chosen (see KALSHI_SPORTS_CORE_BRIEF.md).")
 
 # ESPN public injury feed (no auth required)
 ESPN_INJURY_URL = "https://site.api.espn.com/apis/v2/injuries?sport=basketball&league=nba"
 
-# Kalshi NBA prop integration (uses existing kalshi_feed module)
+# Kalshi NBA prop integration — Sports-category fetch (see kalshi_feed.py;
+# the generic get_all_active_markets() deliberately excludes Sports).
 try:
-    from src.kalshi_feed import get_all_active_markets
+    from src.kalshi_feed import get_active_sports_markets
     KALSHI_AVAILABLE = True
 except ImportError:
     KALSHI_AVAILABLE = False
     print("⚠️ Kalshi feed unavailable — NBA signals will not cross-reference market prices")
 
-# Supabase paper trade logger
 try:
-    from src.supabase_client import log_paper_trade
-    SUPABASE_AVAILABLE = True
+    from shared.kalshi_fees import net_edge_pct
 except ImportError:
-    SUPABASE_AVAILABLE = False
+    def net_edge_pct(model_prob_pct, kalshi_price_cents, **_kwargs):
+        return model_prob_pct - kalshi_price_cents
+
+# Signal ledger logger (see supabase_client.log_signal_event)
+try:
+    from src.supabase_client import log_signal_event
+except ImportError:
+    log_signal_event = None
 
 
 # ─── Team defensive rating lookup ────────────────────────────────────────────
@@ -72,7 +96,12 @@ class NBAEngine:
     def _fetch_players(self, name: str) -> list:
         """Search for a player by name."""
         try:
-            r = requests.get(f"{BDL_BASE}/players", params={"search": name, "per_page": 5}, timeout=10)
+            r = requests.get(
+                f"{BDL_BASE}/players",
+                params={"search": name, "per_page": 5},
+                headers=BDL_HEADERS,
+                timeout=10,
+            )
             if r.status_code == 200:
                 return r.json().get("data", [])
         except Exception as e:
@@ -93,6 +122,7 @@ class NBAEngine:
                     "sort": "game.date:desc",
                     "seasons[]": 2024,  # Current season
                 },
+                headers=BDL_HEADERS,
                 timeout=15,
             )
             if r.status_code == 200:
@@ -129,6 +159,7 @@ class NBAEngine:
             r = requests.get(
                 f"{BDL_BASE}/games",
                 params={"dates[]": today, "per_page": 30},
+                headers=BDL_HEADERS,
                 timeout=10,
             )
             if r.status_code == 200:
@@ -190,6 +221,14 @@ class NBAEngine:
 
     # ─── Feature Engineering ─────────────────────────────────────────────────
 
+    # _fetch_recent_stats() builds columns from the BDL response using its
+    # abbreviated field names (pts/reb/ast); the rest of the engine uses the
+    # full stat name ("points"/"rebounds"/"assists") for tickers and prop
+    # lines. This mapping is the one place that gap needs to be bridged —
+    # previously stat ("points") was looked up directly as a DataFrame
+    # column that never existed, so this always silently returned {}.
+    STAT_COLUMN = {"points": "pts", "rebounds": "reb", "assists": "ast"}
+
     def _engineer_features(self, stats_df: pd.DataFrame, stat: str,
                              opp_abbr: str, is_home: bool, is_b2b: bool) -> dict:
         """
@@ -203,12 +242,13 @@ class NBAEngine:
         - home_flag: 1 if home game
         - b2b_flag: 1 if back-to-back (fatigue)
         """
-        if stats_df.empty or stat not in stats_df.columns:
+        column = self.STAT_COLUMN.get(stat, stat)
+        if stats_df.empty or column not in stats_df.columns:
             return {}
 
         recent = stats_df.head(self.rolling_games)
-        rolling_avg = recent[stat].mean()
-        rolling_std = recent[stat].std() if len(recent) > 1 else 2.0
+        rolling_avg = recent[column].mean()
+        rolling_std = recent[column].std() if len(recent) > 1 else 2.0
         min_avg     = recent["min"].mean() if "min" in recent.columns else 28.0
         opp_drtg    = TEAM_DRTG.get(opp_abbr, 114.5)
 
@@ -298,20 +338,55 @@ class NBAEngine:
 
     # ─── Kalshi Cross-Reference ──────────────────────────────────────────────
 
-    def _find_kalshi_market(self, player_name: str, stat: str,
-                             line: float, kalshi_markets: list) -> Optional[dict]:
+    STAT_TICKER_PREFIX = {"points": "PTS", "rebounds": "REB", "assists": "AST"}
+
+    def _find_kalshi_props(self, player_name: str, kalshi_markets: list) -> list[dict]:
         """
-        Fuzzy-matches a player prop to an open Kalshi market.
-        Kalshi NBA prop tickers look like: NBAPTS-LEBRON-O29.5
+        Finds every live Kalshi prop market for a player and parses the
+        actual line Kalshi is offering out of the ticker (the "O29.5" in
+        NBAPTS-LEBRON-O29.5), instead of guessing a fixed line and hoping
+        Kalshi happens to be offering a market at exactly that number.
+
+        NOTE: this ticker convention is a starting assumption, not a
+        verified Kalshi contract — confirm against a live response before
+        trusting it in production. See KALSHI_SPORTS_CORE_BRIEF.md.
+
+        Returns: [{"stat": "points", "line": 29.5, "market": {...}}, ...]
         """
         player_last = player_name.split()[-1].upper() if player_name else ""
-        stat_key = {"points": "PTS", "rebounds": "REB", "assists": "AST"}.get(stat, stat.upper())
-
+        found = []
         for m in kalshi_markets:
-            ticker = m.get("ticker", "").upper()
-            if player_last in ticker and stat_key in ticker:
-                return m
-        return None
+            ticker = (m.get("ticker") or "").upper()
+            if player_last not in ticker:
+                continue
+            for stat, prefix in self.STAT_TICKER_PREFIX.items():
+                if prefix not in ticker:
+                    continue
+                line_match = re.search(r"O(\d+(?:\.\d+)?)", ticker)
+                if not line_match:
+                    continue
+                found.append({"stat": stat, "line": float(line_match.group(1)), "market": m})
+        return found
+
+    @staticmethod
+    def _todays_matchups(todays_games: list) -> dict:
+        """
+        Maps team abbreviation -> {"is_home": bool, "opponent": abbr} for
+        today's games. Also fixes a real bug in the original code: features
+        were built by passing a player's own team abbreviation in as the
+        *opponent* DRTG lookup key, so "opponent defensive rating" was
+        silently scoring a team against its own defense.
+        """
+        matchups = {}
+        for g in todays_games:
+            home = g.get("home_team") or {}
+            away = g.get("visitor_team") or {}
+            home_abbr = home.get("abbreviation")
+            away_abbr = away.get("abbreviation")
+            if home_abbr and away_abbr:
+                matchups[home_abbr] = {"is_home": True, "opponent": away_abbr}
+                matchups[away_abbr] = {"is_home": False, "opponent": home_abbr}
+        return matchups
 
     # ─── Main Signal Generator ───────────────────────────────────────────────
 
@@ -330,30 +405,20 @@ class NBAEngine:
                 "Shai Gilgeous-Alexander", "Damian Lillard", "Tyrese Haliburton",
             ]
 
-        # Fetch today's games for B2B detection
+        # Fetch today's games for B2B detection and real home/away/opponent resolution
         todays_games = self._fetch_todays_games()
-        game_dates = {}
-        for g in todays_games:
-            for tid in [g.get("home_team_id"), g.get("visitor_team_id")]:
-                if tid:
-                    game_dates[tid] = g.get("date", "")
+        matchups = self._todays_matchups(todays_games)
 
-        # Fetch Kalshi markets once
+        # Fetch Kalshi Sports markets once (Sports category, NBA keyword-filtered)
         kalshi_markets = []
         if KALSHI_AVAILABLE:
             try:
-                all_markets = get_all_active_markets(limit_pages=5)
-                kalshi_markets = [m for m in all_markets if "NBA" in m.get("ticker", "").upper()]
+                kalshi_markets = get_active_sports_markets(leagues=["NBA"], limit_pages=5)
                 print(f"  🏀 {len(kalshi_markets)} Kalshi NBA markets loaded")
             except Exception as e:
                 print(f"  ⚠️ Kalshi fetch error: {e}")
 
         signals = []
-        prop_lines = [
-            ("points",   22.5),  # Representative prop lines
-            ("rebounds",  7.5),
-            ("assists",   5.5),
-        ]
 
         for player_name in player_names:
             # Fetch player ID
@@ -381,82 +446,91 @@ class NBAEngine:
                 str(d)[:10] == yesterday for d in stats.get("date", [])
             )
 
-            # Placeholder: assume home (real impl would check today's games)
-            is_home = True
+            matchup = matchups.get(team_abbr)
+            if matchup is None:
+                print(f"  ⚠️ No game today found for {team_abbr}; skipping {player_name}")
+                continue
+            is_home = matchup["is_home"]
+            opponent_abbr = matchup["opponent"]
 
-            for stat, line in prop_lines:
-                features = self._engineer_features(
-                    stats, stat, team_abbr, is_home, is_b2b
-                )
+            # Only price props Kalshi is actually offering right now — the
+            # line itself comes from the market ticker, not a guessed constant.
+            live_props = self._find_kalshi_props(player_name, kalshi_markets)
+            if not live_props:
+                time.sleep(0.1)
+                continue
+
+            for prop in live_props:
+                stat, line, kalshi_mkt = prop["stat"], prop["line"], prop["market"]
+                features = self._engineer_features(stats, stat, opponent_abbr, is_home, is_b2b)
                 if not features:
                     continue
 
                 model_prob = self._estimate_prob_over(features, line)
+                kalshi_price = float(kalshi_mkt.get("price") or 0)
+                if kalshi_price <= 0:
+                    continue
 
-                # Cross-reference Kalshi
-                kalshi_mkt = self._find_kalshi_market(player_name, stat, line, kalshi_markets)
-                kalshi_price = kalshi_mkt["price"] if kalshi_mkt else None
-                edge_pct = (model_prob - kalshi_price) if kalshi_price else None
+                net_edge = net_edge_pct(model_prob, kalshi_price)
                 action = None
-                if edge_pct is not None:
-                    if edge_pct > self.min_edge_pct:
-                        action = "BUY YES"
-                    elif edge_pct < -self.min_edge_pct:
-                        action = "BUY NO"
+                if net_edge > self.min_edge_pct:
+                    action = "BUY YES"
+                elif net_edge < -self.min_edge_pct:
+                    action = "BUY NO"
 
-                # Only add if there's a Kalshi market with edge, OR injury flag
-                if (edge_pct is not None and abs(edge_pct) >= self.min_edge_pct) or injury_flag:
-                    # INSTANTIATE NEW DICTIONARY (Fixes Loop Bug)
+                if abs(net_edge) >= self.min_edge_pct or injury_flag:
                     opportunity = {
                         "engine": "NBA",
                         "asset": player_name,
                         "market_title": f"NBA Prop: {player_name} {stat.capitalize()} (O/U {line})",
-                        "market_id": f"nba_prop_{stat}_{player_name.replace(' ', '_').upper()}",
+                        "market_id": kalshi_mkt.get("ticker") or f"nba_prop_{stat}_{player_name.replace(' ', '_').upper()}",
+                        "edge_type": "SPORTS",
                         "action": action if action else "MONITOR",
-                        "edge": abs(edge_pct) if edge_pct else 0.0,
+                        "edge": abs(net_edge),
                         "confidence": model_prob,
-                        "reasoning": f"Model forecasts {model_prob}% probability of OVER {line} {stat}. " + 
-                                     (f"Kalshi price: {kalshi_price}¢." if kalshi_price else "No live price.") +
-                                     (f" ⚠️ INJURY STATUS: {injury_status}" if injury_flag else ""),
+                        "reasoning": (
+                            f"Model forecasts {model_prob}% probability of OVER {line} {stat}. "
+                            f"Kalshi price: {kalshi_price:.0f}c, net-of-fees edge {net_edge:+.1f}pp."
+                            + (f" ⚠️ INJURY STATUS: {injury_status}" if injury_flag else "")
+                        ),
                         "data_source": "BallDontLie + Gaussian Regression",
                         "ui_reasoning": False,
                         "raw_payload": {
                             "player": player_name,
                             "stat": stat,
                             "line": line,
+                            "kalshi_ticker": kalshi_mkt.get("ticker"),
+                            "kalshi_price": kalshi_price,
+                            "net_edge_pct": net_edge,
                             "injury_flag": injury_flag,
-                            "is_b2b": is_b2b
+                            "is_b2b": is_b2b,
+                            "is_home": is_home,
+                            "opponent": opponent_abbr,
                         }
                     }
                     signals.append(opportunity)
 
+                    if log_signal_event is not None:
+                        try:
+                            log_signal_event(
+                                domain="nba",
+                                asset=player_name,
+                                source_market_ticker=kalshi_mkt.get("ticker") or "",
+                                desired_side="YES" if (action == "BUY YES") else ("NO" if action == "BUY NO" else ""),
+                                model_probability_yes=round(model_prob / 100, 4),
+                                kalshi_price_dollars=round(kalshi_price / 100, 4),
+                                edge=round(net_edge / 100, 4),
+                                payload=opportunity["raw_payload"],
+                            )
+                        except Exception as e:
+                            print(f"  ⚠️ Failed to log signal event: {e}")
+
                 time.sleep(0.1)  # Rate limit BallDontLie
 
         # Sort by absolute edge
-        signals.sort(
-            key=lambda x: abs(x.get("edge_pct") or 0),
-            reverse=True
-        )
+        signals.sort(key=lambda x: abs(x.get("edge", 0)), reverse=True)
 
         print(f"  🏀 NBA Engine: {len(signals)} signals generated")
-
-        # Log to Supabase
-        if SUPABASE_AVAILABLE and signals:
-            try:
-                from src.supabase_client import log_paper_trade
-                for s in signals:
-                    if s.get("action"):
-                        log_paper_trade({
-                            "engine":     "nba_props",
-                            "ticker":     s.get("kalshi_ticker", "UNKNOWN"),
-                            "action":     s["action"],
-                            "edge_pct":   s.get("edge_pct"),
-                            "model_prob": s["model_prob_over"],
-                            "status":     "signal",
-                        })
-            except Exception:
-                pass
-
         return signals
 
 
@@ -469,11 +543,11 @@ if __name__ == "__main__":
     ])
     print(f"\n✅ Signals found: {len(signals)}")
     for s in signals[:5]:
-        edge = s.get("edge_pct")
+        rp = s["raw_payload"]
         print(
-            f"  {s['player']} {s['stat']} O/U {s['line']} | "
-            f"Model: {s['model_prob_over']}% | "
-            f"Kalshi: {s.get('kalshi_yes_ask', 'N/A')}¢ | "
-            f"Edge: {f'+{edge:.1f}%' if edge else 'no mkt'} | "
-            f"{'⚠️ INJURED' if s['injury_flag'] else ''}"
+            f"  {rp['player']} {rp['stat']} O/U {rp['line']} | "
+            f"Model: {s['confidence']}% | "
+            f"Kalshi: {rp.get('kalshi_price', 'N/A')}c | "
+            f"Edge: +{s['edge']:.1f}% | "
+            f"{'⚠️ INJURED' if rp['injury_flag'] else ''}"
         )

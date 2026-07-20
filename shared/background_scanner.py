@@ -92,6 +92,26 @@ def fetch_and_store_kalshi_macro():
     except Exception as e:
         log.error(f"Failed to fetch Kalshi MACRO markets: {e}")
 
+def fetch_and_store_football():
+    """
+    Runs the soccer engine and upserts any opportunities into kalshi_edges.
+
+    Was previously called by main_loop() below without ever being defined —
+    a guaranteed NameError the moment is_profitable_regime() returned True.
+    Reuses the canonical upsert_opportunities() field-mapping instead of a
+    second hand-rolled Supabase insert, so this scanner and the main
+    SP500 Predictor/scripts/background_scanner.py daemon stay consistent.
+    """
+    log.info("Scanning Kalshi for SOCCER edges...")
+    try:
+        from src.supabase_client import upsert_opportunities
+        opportunities = FootballKalshiEngine().find_opportunities()
+        upsert_opportunities(opportunities)
+        log.info(f"Football scan complete. Found {len(opportunities)} opportunities.")
+    except Exception as e:
+        log.error(f"Failed to run football engine: {e}")
+
+
 # This dictionary represents backtested "Green Islands" (Win Rate > 60%, Trades > 20)
 # Format: {day_index: [list_of_profitable_hours]}
 # day_index: 0=Monday, 6=Sunday
