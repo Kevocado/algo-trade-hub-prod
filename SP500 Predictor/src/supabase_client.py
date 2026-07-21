@@ -103,6 +103,42 @@ def upsert_opportunities(opportunities: list):
         print(f"Failed to upsert kalshi_edges: {e}")
 
 
+# ── Signal Ledger (cross-domain shadow-validation log) ────────────────
+#
+# Mirrors how the crypto worker logs to signal_events, so
+# shadow_performance.py-style scoring (Brier score, calibration, hit rate)
+# can eventually be extended to football and NBA the same way it already
+# works for crypto. This function only logs the signal at detection time;
+# it does not settle/score outcomes — that requires fetching finished match
+# results (football-data.org) or box scores (BallDontLie) and is tracked as
+# a follow-up, not implemented here.
+
+def log_signal_event(
+    *,
+    domain: str,
+    asset: str,
+    source_market_ticker: str = "",
+    desired_side: str = "",
+    model_probability_yes: float | None = None,
+    kalshi_price_dollars: float | None = None,
+    edge: float | None = None,
+    payload: dict | None = None,
+):
+    """Insert one row into the shared signal_events ledger for a non-crypto domain."""
+    client = get_client()
+    client.table("signal_events").insert({
+        "domain": domain,
+        "asset": asset,
+        "source_market_ticker": source_market_ticker or "",
+        "desired_side": desired_side or "",
+        "status": "signal_detected",
+        "model_probability_yes": model_probability_yes,
+        "kalshi_price_dollars": kalshi_price_dollars,
+        "edge": edge,
+        "payload": payload or {},
+    }).execute()
+
+
 def get_latest_opportunities(limit=50):
     """Fetch the most recent opportunities."""
     client = get_client()

@@ -174,6 +174,90 @@ def get_all_active_markets(limit_pages=10):
     # ── CLEAN ──
     return clean_market_data(all_raw_markets, event_cat_map)
 
+# ═══════════════════════════════════════════════════════════════════════
+# SPORTS FETCH — Dedicated, keyword-filtered path around the Sports exclusion
+# ═══════════════════════════════════════════════════════════════════════
+#
+# get_all_active_markets() above deliberately excludes the 'Sports' category
+# to avoid the ~15k-market parlay/props flood on the raw /markets endpoint.
+# That exclusion is still correct for callers who want non-sports categories
+# (src/market_scanner.py, f1_engine.py's non-sports paths). Sports-specific
+# engines need their own narrower fetch instead of reworking the shared one.
+#
+# NOTE: the league keyword lists below are a starting point for matching
+# event/market tickers and titles, not a verified Kalshi contract. Confirm
+# actual ticker prefixes against a live `/events?status=open` response
+# before trusting the keyword filter in production — see
+# SP500 Predictor/KALSHI_SPORTS_CORE_BRIEF.md.
+SPORTS_LEAGUE_KEYWORDS = {
+    'NBA': ['NBA'],
+    'EPL': ['EPL', 'PREM', 'PREMIER LEAGUE'],
+    'LALIGA': ['LALIGA', 'LA LIGA'],
+}
+
+
+def get_active_sports_markets(leagues=None, limit_pages=10):
+    """
+    Fetches only Sports-category events, optionally narrowed to specific
+    leagues by keyword match against the event ticker/title. This keeps the
+    per-league market count small instead of pulling every sport Kalshi
+    offers (tennis, golf, MMA, parlays, etc).
+
+    Args:
+        leagues: list of keys into SPORTS_LEAGUE_KEYWORDS (e.g. ['NBA']),
+                 or None to return all Sports-category events unfiltered.
+        limit_pages: forwarded to the underlying event pagination.
+
+    Returns:
+        Cleaned market dicts (same shape as get_all_active_markets).
+    """
+    headers = _headers()
+
+    keyword_set = set()
+    if leagues:
+        for lg in leagues:
+            keyword_set.update(k.upper() for k in SPORTS_LEAGUE_KEYWORDS.get(lg.upper(), [lg.upper()]))
+
+    print("📋 Pass 1: Scanning Sports event catalog...")
+    all_events = _fetch_all_events(max_pages=limit_pages)
+
+    target_events = []
+    for e in all_events:
+        if e.get('category') != 'Sports':
+            continue
+        ticker = (e.get('event_ticker') or '').upper()
+        title = (e.get('title') or '').upper()
+        if keyword_set and not any(kw in ticker or kw in title for kw in keyword_set):
+            continue
+        target_events.append({
+            'event_ticker': e.get('event_ticker', ''),
+            'category': 'Sports',
+            'title': e.get('title', ''),
+        })
+
+    print(f"   ✅ Found {len(target_events)} matching sports events from {len(all_events)} total")
+
+    event_cat_map = {ev['event_ticker']: 'Sports' for ev in target_events}
+    all_raw_markets = []
+
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        futures = {
+            executor.submit(_fetch_markets_for_event, ev['event_ticker'], headers): ev
+            for ev in target_events
+        }
+        for future in as_completed(futures):
+            try:
+                markets = future.result()
+                for m in markets:
+                    m['_category'] = 'Sports'
+                all_raw_markets.extend(markets)
+            except Exception:
+                pass
+
+    print(f"   ✅ Got {len(all_raw_markets)} sports markets from {len(target_events)} events")
+    return clean_market_data(all_raw_markets, event_cat_map)
+
+
 def get_fast_active_markets(limit=1000):
     """
     Fast fetch of just the top N markets using a single API call.

@@ -5,7 +5,9 @@ from typing import Any
 SIGNAL_EVENTS_TABLE = "signal_events"
 LEGACY_CRYPTO_SIGNAL_EVENTS_VIEW = "crypto_signal_events"
 CRYPTO_DOMAIN = "crypto"
-SUPPORTED_SIGNAL_EVENT_DOMAINS = frozenset({CRYPTO_DOMAIN})
+FOOTBALL_DOMAIN = "football"
+NBA_DOMAIN = "nba"
+SUPPORTED_SIGNAL_EVENT_DOMAINS = frozenset({CRYPTO_DOMAIN, FOOTBALL_DOMAIN, NBA_DOMAIN})
 
 
 def normalize_signal_event(event: dict[str, Any], *, domain: str = CRYPTO_DOMAIN) -> dict[str, Any]:
