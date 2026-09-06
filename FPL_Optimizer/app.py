@@ -1,246 +1,165 @@
-from flask import Flask, render_template, request, jsonify
-from data_manager import AdvancedFPLDataManager
-from optimizer import AdvancedFPLOptimizer
-from collections import defaultdict
-from typing import Dict
-import os
-import json
-import numpy as np
-from chatbot import FPLChatbot  # Add this import at the top
-##this is a test
-class EnhancedFPLWebApp:
-    """Enhanced web application with advanced features"""
-    
-    def __init__(self):
-        self.app = Flask(__name__)
-        self.data_manager = AdvancedFPLDataManager()
-        self.optimizer = None
-        self.players_df = None
-        self.chatbot = None  # Add this line
-        
-        # Helper function to clean data for JSON serialization
-        def clean_for_json(obj):
-            if isinstance(obj, dict):
-                return {k: clean_for_json(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [clean_for_json(item) for item in obj]
-            elif isinstance(obj, float) and np.isnan(obj):
-                return None
-            elif isinstance(obj, (np.integer, np.floating)):
-                return obj.item()
-            else:
-                return obj
-        
-        self.clean_for_json = clean_for_json
-        self.setup_routes()
-    
-    def initialize_data(self):
-        """Initialize enhanced FPL data"""
-        try:
-            print("🔄 Fetching bootstrap data...")
-            bootstrap_data = self.data_manager.fetch_bootstrap_data()
-            if not bootstrap_data:
-                return False
-            
-            print("📊 Processing enhanced player data...")
-            self.players_df = self.data_manager.process_enhanced_player_data(bootstrap_data)
-            
-            print("🏟️ Fetching fixture data...")
-            self.data_manager.fetch_fixtures()
-            
-            print("🧠 Initializing advanced optimizer...")
-            self.optimizer = AdvancedFPLOptimizer(self.players_df)
-            
-            print("🤖 Initializing chatbot...")  # Add this
-            self.chatbot = FPLChatbot(self.optimizer, self.players_df, self.data_manager)
-            
-            return True
-        except Exception as e:
-            print(f"Error initializing data: {e}")
-            return False
-    
-    def extract_team_id_from_url(self, url_or_id: str) -> str:
-        """Extract team ID from FPL URL or return if already an ID"""
-        import re
-        
-        if url_or_id.isdigit():
-            return url_or_id
-        
-        patterns = [
-            r'fantasy\.premierleague\.com/entry/(\d+)',
-            r'/entry/(\d+)/',
-            r'/entry/(\d+)',
-            r'team/(\d+)',
-            r'(\d+)',
+"""
+app.py — FPL Scout dashboard.
+
+Run with:
+    streamlit run app.py
+"""
+
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+import model as model_lib
+import train as train_pipeline
+from scout import build_gameweek_scout_table
+
+st.set_page_config(page_title="FPL Scout", page_icon="⚽", layout="wide")
+
+POSITION_ORDER = ["GK", "DEF", "MID", "FWD"]
+
+
+@st.cache_data(ttl=1800, show_spinner="Fetching live FPL data and scoring players...")
+def get_scout_table() -> pd.DataFrame:
+    return build_gameweek_scout_table()
+
+
+@st.cache_data(ttl=1800)
+def get_manifest():
+    return model_lib.load_manifest()
+
+
+def models_available() -> bool:
+    return model_lib.MANIFEST_PATH.exists()
+
+
+def render_sidebar():
+    st.sidebar.title("⚽ FPL Scout")
+    st.sidebar.caption("Predicted points + feature importance, per position.")
+
+    if st.sidebar.button("\U0001f504 Refresh live data"):
+        get_scout_table.clear()
+        st.rerun()
+
+    if st.sidebar.button("\U0001f3cb️ Retrain models"):
+        with st.status("Training models on historical seasons...", expanded=True) as status:
+            seasons = train_pipeline.default_completed_seasons()
+            st.write(f"Seasons: {seasons}")
+            df = train_pipeline.load_training_data(seasons)
+            st.write(f"Loaded {len(df)} rows")
+            df, lag_cols = train_pipeline.build_lag_features(
+                df, group_cols=["season", "element"], sort_cols=["season", "GW"]
+            )
+            feature_cols = train_pipeline.full_feature_list(lag_cols)
+            df = df.dropna(subset=[lag_cols[0]]) if lag_cols else df
+            train_pipeline.train_all_positions(df, feature_cols)
+            status.update(label="Done", state="complete")
+        get_manifest.clear()
+        get_scout_table.clear()
+        st.rerun()
+
+    if models_available():
+        manifest = get_manifest()
+        st.sidebar.caption(f"Models trained: {manifest['trained_at'][:19]} UTC")
+
+
+def render_scout_tab():
+    table = get_scout_table()
+    playable = table[table["predicted_points"].notna()].copy()
+
+    low_data_share = playable["low_data"].mean() if len(playable) else 0
+    if low_data_share > 0.3:
+        n_prior = int((playable["data_confidence"] == "prior_season").sum())
+        n_pos = int((playable["data_confidence"] == "position_avg").sum())
+        st.info(
+            f"{int(playable['low_data'].sum())}/{len(playable)} players have played fewer "
+            "than 5 games so far this season, so their prediction blends in **last season's "
+            f"form** ({n_prior} players) or a **position-average prior** for players with no "
+            f"FPL history at all ({n_pos} players) — marked **low data** below. This fades out "
+            "automatically as more current-season games are played."
+        )
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        positions = st.multiselect("Position", POSITION_ORDER, default=POSITION_ORDER)
+    with col2:
+        max_price = st.slider("Max price (£m)", 4.0, 15.0, 15.0, 0.5)
+    with col3:
+        search = st.text_input("Search player/team")
+    with col4:
+        hide_low_data = st.checkbox("Hide low-data players", value=False)
+
+    filtered = playable[playable["position"].isin(positions) & (playable["price"] <= max_price)]
+    if hide_low_data:
+        filtered = filtered[~filtered["low_data"]]
+    if search:
+        s = search.lower()
+        filtered = filtered[
+            filtered["web_name"].str.lower().str.contains(s)
+            | filtered["team"].str.lower().str.contains(s)
         ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, url_or_id)
-            if match:
-                return match.group(1)
-        
-        numbers = re.findall(r'\d+', url_or_id)
-        if numbers:
-            return max(numbers, key=len)
-        
-        return None
-    
-    def analyze_user_team(self, url_or_id: str) -> Dict:
-        """Enhanced user team analysis"""
-        team_id = self.extract_team_id_from_url(url_or_id)
-        
-        if not team_id:
-            return {"error": "Could not extract team ID from the provided URL/ID"}
-        
-        user_team = self.data_manager.fetch_user_team(team_id)
-        if not user_team:
-            return {"error": f"Could not fetch team data for ID: {team_id}"}
-        
-        picks = user_team['picks']['picks']
-        team_info = user_team['team_info']
-        
-        # Analyze current team
-        current_team = []
-        total_cost = 0
-        total_points = 0
-        
-        for pick in picks:
-            player_row = self.players_df[self.players_df['id'] == pick['element']]
-            if not player_row.empty:
-                player = player_row.iloc[0].to_dict()
-                player['is_captain'] = pick['is_captain']
-                player['is_vice_captain'] = pick['is_vice_captain']
-                player['multiplier'] = pick['multiplier']
-                current_team.append(player)
-                total_cost += player['price']
-                total_points += player['total_points']
-        
-        team_by_position = defaultdict(list)
-        for player in current_team:
-            team_by_position[player['position']].append(player)
-        
-        # Run multiple optimization strategies
-        strategies = ['balanced', 'form', 'expected', 'fixture', 'differential']
-        optimal_comparisons = {}
-        
-        for strategy in strategies:
-            optimal_result = self.optimizer.optimize_team(strategy=strategy)
-            if 'error' not in optimal_result:
-                optimal_comparisons[strategy] = optimal_result
-        
-        # Generate transfer suggestions
-        best_optimal = optimal_comparisons.get('balanced', {})
-        transfer_suggestions = {}
-        if 'all_players' in best_optimal:
-            transfer_suggestions = self.optimizer.suggest_transfers(
-                current_team, best_optimal['all_players']
-            )
-        
-        return {
-            'team_info': team_info,
-            'current_team': current_team,
-            'team_by_position': dict(team_by_position),
-            'total_cost': round(total_cost, 1),
-            'total_points': total_points,
-            'gameweek': user_team['gameweek'],
-            'optimal_comparisons': optimal_comparisons,
-            'transfer_suggestions': transfer_suggestions,
-            'extracted_team_id': team_id,
-            'team_analysis': self.optimizer.analyze_team_composition(current_team) if current_team else {}
-        }
-    
-    def setup_routes(self):
-        """Setup enhanced Flask routes"""
-        
-        @self.app.route('/')
-        def index():
-            return render_template('modern_index.html')
-        
-        @self.app.route('/api/initialize')
-        def initialize():
-            success = self.initialize_data()
-            player_count = len(self.players_df) if self.players_df is not None else 0
-            return jsonify({
-                'success': success,
-                'player_count': player_count,
-                'current_gameweek': self.data_manager.current_gameweek
-            })
-        
-        @self.app.route('/api/optimize')
-        def optimize():
-            strategy = request.args.get('strategy', 'balanced')
-            min_minutes = int(request.args.get('min_minutes', 300))
-            
-            if not self.optimizer:
-                return jsonify({'error': 'Data not initialized'})
-            
-            result = self.optimizer.optimize_team(
-                strategy=strategy,
-                min_minutes=min_minutes
-            )
-            return jsonify(self.clean_for_json(result))
-        
-        @self.app.route('/api/analyze_team')
-        def analyze_team():
-            url_or_id = request.args.get('team_url_or_id')
-            if not url_or_id:
-                return jsonify({'error': 'Team URL or ID required'})
-            
-            if not self.optimizer:
-                return jsonify({'error': 'Data not initialized'})
-            
-            result = self.analyze_user_team(url_or_id)
-            return jsonify(self.clean_for_json(result))
-        
-        @self.app.route('/api/players')
-        def get_players():
-            position = request.args.get('position')
-            limit = int(request.args.get('limit', 20))
-            sort_by = request.args.get('sort_by', 'comprehensive_value')
-            
-            if self.players_df is None:
-                return jsonify({'error': 'Data not initialized'})
-            
-            df = self.players_df.copy()
-            if position:
-                df = df[df['position'] == position]
-            
-            # Sort by the specified metric
-            if sort_by in df.columns:
-                top_players = df.nlargest(limit, sort_by)
-            else:
-                top_players = df.nlargest(limit, 'comprehensive_value')
-            
-            return jsonify(self.clean_for_json(top_players.to_dict('records')))
-        
-        @self.app.route('/api/compare_strategies')
-        def compare_strategies():
-            if not self.optimizer:
-                return jsonify({'error': 'Data not initialized'})
-            
-            strategies = ['balanced', 'form', 'expected', 'fixture', 'differential', 'defensive']
-            results = {}
-            
-            for strategy in strategies:
-                result = self.optimizer.optimize_team(strategy=strategy)
-                if 'error' not in result:
-                    results[strategy] = {
-                        'total_cost': result['total_cost'],
-                        'total_score': result['total_score'],
-                        'captaincy': result['captaincy'],
-                        'team_analysis': result['team_analysis']
-                    }
-            
-            return jsonify(self.clean_for_json(results))
-        
-        @self.app.route('/api/fixture_analysis')
-        def fixture_analysis():
-            if not self.data_manager.fixture_difficulty:
-                return jsonify({'error': 'Fixture data not available'})
-            
-            return jsonify(self.data_manager.fixture_difficulty)
-        
-        @self.app.route('/api/transfer_suggestions')
-        def transfer_suggestions():
-            current_team_ids = request.args.get('current_team_ids', '').split(',')
-            strategy = request.args.get('strategy', 'balanced')
+
+    filtered = filtered.sort_values("predicted_points", ascending=False)
+
+    st.dataframe(
+        filtered[
+            [
+                "web_name", "team", "position", "price", "predicted_points",
+                "predicted_points_per_million", "next_opponent", "was_home",
+                "opponent_difficulty", "status", "news", "selected_by_percent", "data_confidence",
+            ]
+        ].rename(
+            columns={
+                "web_name": "Player", "team": "Team", "position": "Pos", "price": "£m",
+                "predicted_points": "Pred pts", "predicted_points_per_million": "Pred pts / £m",
+                "next_opponent": "Opponent", "was_home": "Home", "opponent_difficulty": "FDR",
+                "status": "Status", "news": "News", "selected_by_percent": "Selected %",
+                "data_confidence": "Data source",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+        height=600,
+    )
+
+
+def render_importance_tab():
+    manifest = get_manifest()
+    metric = st.radio("Importance metric", ["permutation", "gain"], horizontal=True,
+                       help="Permutation importance = how much validation accuracy drops when a "
+                            "feature is shuffled (more trustworthy). Gain = XGBoost's internal split-gain score.")
+
+    cols = st.columns(2)
+    for i, position in enumerate(POSITION_ORDER):
+        pos_data = manifest["positions"].get(position)
+        if not pos_data:
+            continue
+        importance = pos_data["importance"][metric]
+        top = sorted(importance.items(), key=lambda x: -x[1])[:12]
+        imp_df = pd.DataFrame(top, columns=["feature", "importance"]).sort_values("importance")
+
+        m = pos_data["metrics"]
+        with cols[i % 2]:
+            st.subheader(position)
+            st.caption(f"MAE {m['mae']:.2f} · R² {m['r2']:.2f} · trained on {m['n_train']} rows")
+            fig = px.bar(imp_df, x="importance", y="feature", orientation="h", height=400)
+            fig.update_layout(margin=dict(l=0, r=0, t=10, b=0))
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def main():
+    render_sidebar()
+
+    if not models_available():
+        st.title("⚽ FPL Scout")
+        st.warning("No trained models yet. Click **Retrain models** in the sidebar (or run `python train.py`) to get started.")
+        return
+
+    tab1, tab2 = st.tabs(["\U0001f50d Gameweek Scout", "\U0001f4ca Feature Importance by Position"])
+    with tab1:
+        render_scout_tab()
+    with tab2:
+        render_importance_tab()
+
+
+if __name__ == "__main__":
+    main()

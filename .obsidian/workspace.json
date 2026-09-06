@@ -4,17 +4,17 @@
     "type": "split",
     "children": [
       {
-        "id": "61dafcbfec1b2d41",
+        "id": "4e51591736b635bf",
         "type": "tabs",
         "children": [
           {
-            "id": "58aee678a73340f5",
+            "id": "f3f1a526e161530f",
             "type": "leaf",
             "state": {
-              "type": "graph",
+              "type": "empty",
               "state": {},
-              "icon": "lucide-git-fork",
-              "title": "Graph view"
+              "icon": "lucide-file",
+              "title": "New tab"
             }
           }
         ]
@@ -176,7 +176,7 @@
       "bases:Create new base": false
     }
   },
-  "active": "58aee678a73340f5",
+  "active": "f3f1a526e161530f",
   "lastOpenFiles": [
     "market_sentiment_tool/dist/index.html",
     "market_sentiment_tool/dist/assets/index-xOrGhbQ8.css",

@@ -1,94 +1,61 @@
-# 🧠 Advanced FPL Optimizer
+# FPL Scout
 
-A comprehensive Fantasy Premier League (FPL) optimization tool with advanced analytics, multiple optimization strategies, and transfer suggestions.
-PUBLIC LINK: [https://fploptimizer-76qdwha8usvji3ncz9kvat.streamlit.app/](url)
+A small local tool for Fantasy Premier League decisions:
 
-## 🚀 Features
+1. **Predicts each player's points for the next gameweek**, using one
+   XGBoost model per position (GK / DEF / MID / FWD) trained on real
+   historical gameweek data.
+2. **Shows which stats actually drive points, per position** — feature
+   importance broken out by role, since a goalkeeper's points come from
+   completely different things than a forward's.
+3. **Ranks the upcoming gameweek** so you can scout who to bring in, filtered
+   by position/price/team.
 
-- **Multiple Optimization Strategies**: Balanced, Form-based, xG/xA focused, Fixture difficulty, Differentials, and Defensive
-- **Advanced Analytics**: Expected Goals (xG), Expected Assists (xA), defensive metrics, fixture difficulty analysis
-- **Team Analysis**: Analyze your current FPL team and get personalized recommendations
-- **Transfer Suggestions**: Get specific transfer recommendations with value calculations
-- **Real-time Data**: Fetches live data from the official FPL API
-- **Modern Web Interface**: Clean, responsive design with intuitive controls
+## Quick start
 
-## 📋 Quick Start
+```bash
+pip install -r requirements.txt
+python train.py        # trains the 4 position models (~a minute, one-time)
+streamlit run app.py    # opens the dashboard
+```
 
-1. **Install Dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Re-run `python train.py` (or click "Retrain models" in the sidebar)
+whenever you want the models to pick up more recent seasons' data.
 
-2. **Run the Application**:
-   ```bash
-   python3 app.py
-   ```
+## How it works
 
-3. **Open Your Browser**:
-   Navigate to `http://localhost:5500`
+- **Training data**: the last 4 completed Premier League seasons, pulled
+  from [vaastav's Fantasy-Premier-League
+  repo](https://github.com/vaastav/Fantasy-Premier-League) (real per-player,
+  per-gameweek stats), cached locally in `data_cache/` after the first run.
+- **Features**: for each stat (minutes, points, goals, assists, bps,
+  ict_index, xG, xA, etc.), the rolling average over the player's last 3 and
+  last 5 gameweeks — plus the upcoming opponent's official FPL difficulty
+  rating and home/away. The exact same feature logic (`features.py`) is used
+  for training and for live scouting, so there's no train/serve mismatch.
+- **Model**: a separate XGBoost regressor per position, validated on the
+  most recent held-out season. Feature importance is computed two ways —
+  XGBoost's gain score and permutation importance — and shown per position
+  in the dashboard.
+- **Scouting the next gameweek**: live current-season data comes straight
+  from the official FPL API (prices, availability/injury status, fixtures).
+  Early in a season (or right after a gameweek), players who haven't played
+  much yet are flagged **low data** rather than silently mis-scored.
 
-4. **Use the Tool**:
-   - Click "Load Enhanced FPL Data" to initialize
-   - Enter your FPL team URL or ID
-   - Choose an optimization strategy
-   - Get personalized recommendations!
+## Files
 
-## 🎯 How to Use
+| File | Purpose |
+|---|---|
+| `historical_data.py` | Fetches/caches past-season gameweek data for training |
+| `fpl_data.py` | Live FPL API client (current players, prices, fixtures) |
+| `features.py` | Shared lag/fixture-difficulty feature engineering |
+| `model.py` | Train/save/load per-position models + feature importance |
+| `train.py` | CLI: builds the 4 models |
+| `scout.py` | Builds the ranked next-gameweek scouting table |
+| `app.py` | Streamlit dashboard |
 
-### Getting Your FPL Team ID
-1. Go to your FPL team page: `https://fantasy.premierleague.com/entry/YOUR_TEAM_ID/`
-2. Copy either the full URL or just the team ID number
-3. Paste it into the "Your FPL Team Analysis" field
+## Notes
 
-### Optimization Strategies
-
-- **Balanced**: Best overall combination of all metrics
-- **Form**: Focus on players in current good form
-- **Expected (xG/xA)**: Prioritizes expected goals and assists
-- **Fixture**: Optimized for upcoming fixture difficulty
-- **Differential**: Lower-owned players for rank climbing
-- **Defensive**: High-scoring defenders and clean sheet potential
-
-## 🔧 Technical Details
-
-- **Backend**: Flask (Python)
-- **Optimization**: PuLP linear programming
-- **Data Source**: Official FPL API
-- **Frontend**: HTML5, CSS3, JavaScript
-- **Analytics**: Pandas, NumPy for data processing
-
-## 📊 Advanced Metrics
-
-The tool calculates comprehensive player values using:
-- Points per million
-- Form analysis
-- Expected goals and assists (xG/xA)
-- Defensive contributions
-- Fixture difficulty ratings
-- Transfer momentum
-- Ownership percentages
-
-## 🛠️ API Endpoints
-
-- `GET /api/initialize` - Load FPL data
-- `GET /api/optimize?strategy=X` - Get optimized team
-- `GET /api/analyze_team?team_url_or_id=X` - Analyze user team
-- `GET /api/players?position=X&sort_by=Y` - Get top players
-- `GET /api/compare_strategies` - Compare all strategies
-
-## 📝 Requirements
-
-- Python 3.7+
-- Flask 2.3.3
-- requests 2.31.0
-- pandas 2.1.1
-- numpy 1.24.3
-- pulp 2.7.0
-
-## 🤝 Contributing
-
-Feel free to submit issues and enhancement requests!
-
-## 📄 License
-
-This project is for educational and personal use. Please respect the FPL API terms of service.
+`market_scanner_app.py`, `requirements_minimal.txt`, and
+`INTEGRATION_PROMPT.md` in this folder are leftovers from an unrelated
+project and aren't part of this tool.
