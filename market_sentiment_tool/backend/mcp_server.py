@@ -447,10 +447,6 @@ def submit_kalshi_order(
         return {"status": "error", "detail": str(exc)}
 
 
-if __name__ == "__main__":
-    log.info("Starting FastMCP server on 127.0.0.1:5100 …")
-    mcp.run(transport="stdio")
-
 @mcp.tool()
 def close_position(trade_id: str) -> dict:
     """
@@ -459,25 +455,25 @@ def close_position(trade_id: str) -> dict:
     """
     if supa is None or alpaca is None:
         return {"status": "error", "reason": "Clients not connected."}
-        
+
     try:
         # Fetch the open trade
         res = supa.table("trades").select("*").eq("id", trade_id).single().execute()
         if not res.data:
             return {"status": "error", "reason": "Trade not found"}
-            
+
         trade = res.data
         if trade.get("status") != "OPEN":
             return {"status": "error", "reason": "Trade is not exactly OPEN."}
-            
+
         symbol = trade["symbol"]
         qty = float(trade["qty"])
         side = trade["side"].upper()
         entry = float(trade.get("entry_price") or trade.get("execution_price") or 0.0)
-        
+
         # Determine opposite side
         close_side = OrderSide.SELL if side == "BUY" else OrderSide.BUY
-        
+
         # Execute closing trade on Alpaca
         ord_req = MarketOrderRequest(
             symbol=symbol,
@@ -486,25 +482,31 @@ def close_position(trade_id: str) -> dict:
             time_in_force=TimeInForce.DAY,
         )
         order = alpaca.submit_order(ord_req)
-        
+
         # For paper trading, assume immediate or near immediate fill price, or let's fetch current quote
         # Actually doing a market close might not fill instantly, but we approximate for the agent
         snap = alpaca.get_snapshot(symbol)
         exit_price = float(snap.latest_trade.price) if snap.latest_trade else entry
-        
+
         # Calc realized PnL
         diff = (exit_price - entry)
         pnl = (diff * qty) if side == "BUY" else (-diff * qty)
-        
+
         # Update Row in Supabase
         supa.table("trades").update({
             "status": "CLOSED",
-            "pnl": pnl, 
+            "realized_pnl": pnl,
+            "unrealized_pnl": 0.0,
         }).eq("id", trade_id).execute()
-        
+
         log.info(f"Closed {trade_id}: Exit ${exit_price:.2f}, PnL ${pnl:.2f}")
         return {"status": "CLOSED", "pnl": round(pnl, 2), "exit_price": round(exit_price, 2)}
-        
+
     except Exception as exc:
         log.error("close_position failed: %s", exc)
         return {"status": "error", "reason": str(exc)}
+
+
+if __name__ == "__main__":
+    log.info("Starting FastMCP server on 127.0.0.1:5100 …")
+    mcp.run(transport="stdio")

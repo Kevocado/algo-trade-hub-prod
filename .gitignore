@@ -27,6 +27,16 @@ ENV/
 *.key
 !*.pem.example
 
+# Key/credential-shaped filenames that have leaked into git history before
+# (see quant_research_lab/) even when saved as .txt instead of .pem/.key.
+*API*Key*.txt
+*Api*Key*.txt
+*api*key*.txt
+*Trading*Bot*.txt
+*Trading*Key*.txt
+*credentials*
+secrets/
+
 # ── macOS ────────────────────────────────────────
 .DS_Store
 .AppleDouble

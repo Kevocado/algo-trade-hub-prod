@@ -293,7 +293,7 @@ def write_trade_to_supabase(trade: dict):
         "execution_price": trade.get("execution_price"),
         "status": trade.get("status", "PENDING"),
         "agent_confidence": trade.get("agent_confidence"),
-        "pnl": trade.get("pnl"),
+        "realized_pnl": trade.get("pnl"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "engine": trade.get("engine"),
         "market_ticker": trade.get("market_ticker"),
@@ -3040,7 +3040,7 @@ async def heartbeat_loop():
                         
                         # Update the specific trade row so UI ActivePositions table updates
                         supa.table("trades").update({
-                            "pnl": round(u_pnl, 2),
+                            "unrealized_pnl": round(u_pnl, 2),
                             # Optional: could update current_price but frontend might not need it
                         }).eq("id", row["id"]).execute()
                         
