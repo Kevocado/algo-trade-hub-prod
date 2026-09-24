@@ -86,3 +86,6 @@ orchestrator.log
 .claude/
 .lovable/
 midterm.html
+
+# ── Cleanup scratch (baseline test reports) ──────
+.cleanup/
