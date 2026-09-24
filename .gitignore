@@ -92,3 +92,6 @@ midterm.html
 
 # ── Untracked leftovers from the repo cleanup (user deletes manually) ──
 _attic/
+
+# ── Generated knowledge graph (rebuild locally; see AGENTS.md) ──
+graphify-out/

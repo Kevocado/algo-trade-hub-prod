@@ -1,5 +1,9 @@
 # Settlement + Realized P&L Writer Implementation Plan
 
+> **SUPERSEDED (2026-09-24).** Do not execute as written. The repo cleanup removed `heartbeat_loop` (Task 5 target)
+> and the spec moved to suggest-only, scale-to-zero jobs, so settlement must score *predictions* against Kalshi
+> market results via a cron entrypoint (spec §4.5, §9 step 2). Its pure-math Tasks 1–2 are reusable in the rewrite.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give trades a real path from `OPEN` to `SETTLED`, with a Kalshi settlement payout turned into `realized_pnl` on the matching `trades` row, so downstream track-record/calibration work (Phase 2 of the roadmap) has real settled data to aggregate.

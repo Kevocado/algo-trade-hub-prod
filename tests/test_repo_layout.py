@@ -127,3 +127,13 @@ def test_single_dependency_manifest():
     reqs = [f for f in tracked("*requirements*.txt") if not f.startswith(("archive/", "_attic/"))]
     assert reqs == []
     assert (REPO / "pyproject.toml").is_file()
+
+
+def test_generated_output_not_tracked():
+    assert tracked("graphify-out") == []
+
+
+def test_docs_do_not_point_at_removed_paths():
+    stale = re.compile(r"SP500 Predictor|FPL_Optimizer|hf_space_deployment|quant_research_lab")
+    docs = ["README.md", "SYSTEM_ARCH.md", ".agent/index/SYSTEM_MAP.md", ".agent/index/notes_manifest.md"]
+    assert [d for d in docs if stale.search((REPO / d).read_text(encoding="utf-8"))] == []

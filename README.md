@@ -1,6 +1,6 @@
 # Algo-Trade-Hub
 
-A unified, production-grade Kalshi trading and analytics monorepo. The canonical product surface is the `SP500 Predictor` engine/operator package plus the `market_sentiment_tool` backend/frontend surface, with shared infrastructure living in `shared/`, `Weather/`, `quant_research_lab/`, and `.agent/`.
+A unified, production-grade Kalshi trading and analytics monorepo. The canonical product surface is the `tradehub` engine/operator package plus the `market_sentiment_tool` backend/frontend surface, with shared infrastructure living in `shared/` and `.agent/`.
 
 > **Canonical references:** [`SYSTEM_ARCH.md`](./SYSTEM_ARCH.md), [`.agent/index/SYSTEM_MAP.md`](./.agent/index/SYSTEM_MAP.md), and [`AGENTS.md`](./AGENTS.md)
 
@@ -19,13 +19,11 @@ Algo-Trade-Hub operates on a separated hybrid model to maximize VPS performance 
 
 ```text
 Algo-Trade-Hub/
-├── SP500 Predictor/        # Canonical Python engine/operator package
+├── tradehub/                # Canonical Python engine/operator package
 ├── market_sentiment_tool/  # Canonical backend/frontend service surface
-├── Weather/                # Weather settlement research and contracts
 ├── shared/                 # Universal shared contracts and utilities
-├── quant_research_lab/     # Active research notebooks and model experiments
+├── research/               # parked research, not imported by runtime (see research/README.md)
 ├── archive/                # Archived legacy docs and duplicate prompt material
-├── FPL_Optimizer/          # Legacy auxiliary content
 ├── ecosystem.config.js     # PM2 Orchestrator config
 ├── SYSTEM_ARCH.md          # ← Master architecture reference (read this first)
 └── README.md
@@ -39,15 +37,10 @@ Algo-Trade-Hub/
 Ensure you have created a `.env` in the root mapping your API connections and `SUPABASE_SERVICE_ROLE_KEY`.
 
 ```bash
-cd "SP500 Predictor"
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-# Run a single manual scan:
-python scripts/background_scanner.py
-
-# Or launch as a background daemon using PM2:
-pm2 start ../ecosystem.config.js
+uv venv .venv --python 3.12
+uv pip install --python .venv/bin/python -r pyproject.toml --extra dev --extra scanner
+.venv/bin/python -m pytest            # run from the repo root
+.venv/bin/python -m tradehub.scripts.background_scanner
 ```
 
 ### 2. Launching the Frontend Dashboard (Local Dev)

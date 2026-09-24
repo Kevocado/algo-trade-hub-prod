@@ -20,7 +20,7 @@ Algo-Trade-Hub is a unified quantitative trading and sports analytics platform o
 ```
 Algo-Trade-Hub/                          ← Root monorepo (one git repo)
 │
-├── SP500 Predictor/                     ← Canonical Python compute + operator package
+├── tradehub/                     ← Canonical Python compute + operator package
 │   ├── src/                             ← Core library modules & shared tools
 │   │   ├── supabase_client.py           ← Unified Supabase write client (upsert_opportunities)
 │   │   └── ...
@@ -47,10 +47,8 @@ Algo-Trade-Hub/                          ← Root monorepo (one git repo)
 │   └── .env                             ← FRONTEND CONFIG (VITE_ API URLs & Anon Keys)
 │
 ├── shared/                              ← Shared cross-domain contracts and utilities
-├── Weather/                             ← Weather research, settlement rules, and feature schema
-├── quant_research_lab/                  ← Active notebooks and experimental backtests
+├── research/                            ← parked research, not imported by runtime (see research/README.md)
 ├── archive/                             ← Archived legacy docs, duplicate prompt packs, scratch material
-├── FPL_Optimizer/                       ← Legacy standalone FPL tools
 │
 ├── ecosystem.config.js                  ← PM2 Daemon configuration
 ├── SYSTEM_ARCH.md                       ← You are here
