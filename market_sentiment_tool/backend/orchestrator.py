@@ -90,6 +90,21 @@ CRYPTO_ALPACA_VOLUME_MULTIPLIER = float(os.getenv("CRYPTO_ALPACA_VOLUME_MULTIPLI
 # Optional explicit model paths (otherwise auto-discover).
 BTC_MODEL_PATH = os.getenv("BTC_MODEL_PATH") or os.getenv("KALSHI_BTC_MODEL_PATH")
 ETH_MODEL_PATH = os.getenv("ETH_MODEL_PATH") or os.getenv("KALSHI_ETH_MODEL_PATH")
+# Sniper models precede the legacy model/ dir, whose lgbm_model_* files fail the crypto feature contract.
+BTC_MODEL_CANDIDATES = [
+    "/root/kalshibot/btc_model.pkl",
+    "models/btc_model.pkl",
+    "models/btc_sniper.pkl",
+    "model/btc_model.pkl",
+    "btc_sniper.pkl",
+]
+ETH_MODEL_CANDIDATES = [
+    "/root/kalshibot/eth_model.pkl",
+    "models/eth_model.pkl",
+    "models/eth_sniper.pkl",
+    "model/eth_model.pkl",
+    "eth_sniper.pkl",
+]
 
 # Kalshi runtime selection
 KALSHI_ENV = KALSHI_RUNTIME.mode
@@ -375,30 +390,8 @@ def load_crypto_models() -> tuple[Any, Any]:
     if _BTC_MODEL is not None and _ETH_MODEL is not None:
         return _BTC_MODEL, _ETH_MODEL
 
-    btc_path = _resolve_model_path(
-        BTC_MODEL_PATH,
-        candidates=[
-            "/root/kalshibot/btc_model.pkl",
-            "models/btc_model.pkl",
-            "model/btc_model.pkl",
-            "model/lgbm_model_BTC.pkl",
-            "models/btc_sniper.pkl",
-            "btc_sniper.pkl",
-        ],
-        label="BTC",
-    )
-    eth_path = _resolve_model_path(
-        ETH_MODEL_PATH,
-        candidates=[
-            "/root/kalshibot/eth_model.pkl",
-            "models/eth_model.pkl",
-            "model/eth_model.pkl",
-            "model/lgbm_model_ETH.pkl",
-            "models/eth_sniper.pkl",
-            "eth_sniper.pkl",
-        ],
-        label="ETH",
-    )
+    btc_path = _resolve_model_path(BTC_MODEL_PATH, candidates=BTC_MODEL_CANDIDATES, label="BTC")
+    eth_path = _resolve_model_path(ETH_MODEL_PATH, candidates=ETH_MODEL_CANDIDATES, label="ETH")
 
     log.info("Resolved BTC model path: %s", btc_path)
     log.info("Loading BTC model: %s", btc_path)
