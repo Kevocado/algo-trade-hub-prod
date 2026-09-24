@@ -104,3 +104,20 @@ def test_no_fpl_or_hf_space_references_in_runtime_code():
     assert [f for f, t in runtime.items() if "FPL_Optimizer" in t or "fpl_optimizations" in t] == []
     hook = (REPO / "market_sentiment_tool/src/hooks/useSupabaseData.ts").read_text(encoding="utf-8")
     assert "useFPLOptimizations" not in hook
+
+
+def test_old_sp500_folder_is_gone_and_package_exists():
+    assert tracked("SP500 Predictor") == []
+    for pkg in ("tradehub", "tradehub/core", "tradehub/engines", "tradehub/scripts", "tradehub/api"):
+        assert (REPO / pkg / "__init__.py").is_file(), pkg
+    assert (REPO / "tradehub/config/settings.yaml").is_file()
+
+
+def test_no_sys_path_hacks_or_old_import_roots():
+    scoped = {
+        f: t for f, t in tracked_python_text().items()
+        if f.startswith(("tradehub/", "tests/", "shared/", "market_sentiment_tool/")) and f not in {"tests/test_repo_layout.py", "tests/test_compare_junit.py", "tests/test_rewrite_imports.py"}
+    }
+    assert [f for f, t in scoped.items() if re.search(r"sys\.path\.(insert|append)", t)] == []
+    old = re.compile(r"(?m)^\s*(from|import)\s+(src|scripts|api)(\.|\s)|SP500 Predictor|SP500_Predictor")
+    assert [f for f, t in scoped.items() if old.search(t)] == []

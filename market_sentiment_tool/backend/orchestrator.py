@@ -1783,11 +1783,7 @@ def _log_hourly_feature_snapshot(
 
 
 def _load_async_telegram_notifier():
-    predictor_root = Path(__file__).resolve().parents[2] / "SP500 Predictor"
-    predictor_root_text = str(predictor_root)
-    if predictor_root_text not in sys.path:
-        sys.path.insert(0, predictor_root_text)
-    from src.telegram_notifier import TelegramNotifier
+    from tradehub.core.telegram_notifier import TelegramNotifier
 
     return TelegramNotifier
 

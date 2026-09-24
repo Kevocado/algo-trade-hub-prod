@@ -20,7 +20,6 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from shared import config  # noqa: E402  — loaded after sys.path fix
 from supabase import create_client
