@@ -19,7 +19,6 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-import sys, os
 
 from shared import config
 from supabase import create_client

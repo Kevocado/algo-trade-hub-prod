@@ -10,8 +10,6 @@ Alerts:
 Called from background_scanner.py on each scan cycle.
 """
 
-import os
-from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()

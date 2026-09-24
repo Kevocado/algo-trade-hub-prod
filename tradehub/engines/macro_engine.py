@@ -24,7 +24,7 @@ DATA: FREE - https://fred.stlouisfed.org/docs/api/api_key.html
 
 import fredapi
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from dotenv import load_dotenv
 
 from tradehub.core.kalshi_feed import get_economics_markets, get_kalshi_event_url

@@ -1,4 +1,3 @@
-import lightgbm as lgb
 import pandas as pd
 import numpy as np
 import joblib
@@ -6,8 +5,6 @@ import os
 import scipy.stats as stats
 import requests
 from scipy.stats import norm
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_squared_error, mean_absolute_error
 from datetime import datetime, timezone, timedelta
 
 MODEL_DIR = "model"

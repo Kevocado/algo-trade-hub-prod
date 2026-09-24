@@ -10,13 +10,10 @@ import contextlib
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 import aiohttp
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PREDICTOR_ROOT = Path(__file__).resolve().parents[1]
 
 from shared.kalshi_ws import load_rsa_private_key, sign_kalshi_message
 from market_sentiment_tool.backend.runtime_bootstrap import resolve_kalshi_runtime_settings

@@ -1,13 +1,11 @@
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pandas as pd
 import requests
 import yfinance as yf
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from shared.crypto_features import build_features
 

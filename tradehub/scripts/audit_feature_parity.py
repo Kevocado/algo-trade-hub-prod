@@ -4,14 +4,12 @@ import argparse
 import math
 import os
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import yfinance as yf
 from supabase import create_client
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from market_sentiment_tool.backend.runtime_bootstrap import load_canonical_env
 from shared.crypto_features import CANONICAL_CRYPTO_FEATURES, build_features

@@ -5,7 +5,6 @@ description = "Kalshi trade hub: edge engines, settlement and track record"
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp",
-    "alpaca-py",
     "cryptography>=41.0.0",
     "fastapi>=0.110.0",
     "fastmcp",
@@ -15,7 +14,6 @@ dependencies = [
     "numpy>=1.24.0",
     "pandas>=2.0.0",
     "python-dotenv>=1.0.0",
-    "python-telegram-bot>=21.0",
     "pyyaml>=6.0",
     "requests>=2.31.0",
     "scikit-learn>=1.3.0",

@@ -8,8 +8,6 @@ import requests
 import os
 import time
 from dotenv import load_dotenv
-import pandas as pd
-from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 

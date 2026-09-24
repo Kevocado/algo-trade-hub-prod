@@ -16,8 +16,7 @@ NWS provides: temperature, precipitation probability, wind speed, snowfall estim
 """
 
 import requests
-from datetime import datetime, timedelta
-import os
+from datetime import datetime
 
 from tradehub.core.kalshi_feed import get_weather_markets, get_kalshi_event_url
 

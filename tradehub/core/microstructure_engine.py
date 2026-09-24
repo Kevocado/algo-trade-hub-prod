@@ -6,7 +6,7 @@ import time
 import threading
 import numpy as np
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 from pathlib import Path
 

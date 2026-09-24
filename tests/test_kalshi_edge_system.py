@@ -6,7 +6,6 @@ Run with: python -m pytest tests/ -v
 Tests are designed to work offline (no real API calls) using mocks.
 """
 
-import json
 import asyncio
 import pytest
 from unittest.mock import MagicMock, patch

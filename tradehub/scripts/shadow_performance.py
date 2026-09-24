@@ -4,7 +4,6 @@ import argparse
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -12,8 +11,6 @@ import pandas as pd
 import requests
 from supabase import create_client
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-PREDICTOR_ROOT = Path(__file__).resolve().parents[1]
 
 from market_sentiment_tool.backend.runtime_bootstrap import load_canonical_env
 from market_sentiment_tool.backend.signal_events import CRYPTO_DOMAIN, SIGNAL_EVENTS_TABLE, is_supported_signal_event_domain

@@ -8,9 +8,7 @@ ARCHITECTURE:
   Tier 2 (Paper):     Quant Engine → Supabase paper_trading_signals
 """
 
-import os
 import re
-import json
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 import pandas as pd
@@ -19,21 +17,16 @@ import pandas as pd
 
 from tradehub.engines.weather_engine import WeatherEngine
 from tradehub.engines.macro_engine import MacroEngine
-from tradehub.core.data_loader import fetch_data
-from tradehub.core.feature_engineering import create_features
 from tradehub.core.discord_notifier import DiscordNotifier
 from tradehub.engines.quant_engine import (
     load_model,
     predict_next_hour,
-    calculate_probability,
     get_market_volatility,
     kelly_criterion,
 )
 from tradehub.core.ai_validator import AIValidator
-from tradehub.core.news_analyzer import NewsAnalyzer
-from tradehub.core.predictit_engine import PredictItEngine
 from tradehub.core.kalshi_feed import get_real_kalshi_markets
-from tradehub.core.supabase_client import get_client, insert_paper_signal, upsert_opportunities, upsert_portfolio_metrics
+from tradehub.core.supabase_client import upsert_opportunities, upsert_portfolio_metrics
 from tradehub.core.kalshi_portfolio import KalshiPortfolio
 
 # ─── Environment ─────────────────────────────────────────────────────

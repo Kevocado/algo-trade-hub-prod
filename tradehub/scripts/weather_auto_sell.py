@@ -15,9 +15,7 @@ Usage:
   Called from background_scanner.py on each scan cycle.
 """
 
-import os
 import re
-from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
