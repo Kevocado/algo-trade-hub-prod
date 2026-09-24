@@ -121,3 +121,9 @@ def test_no_sys_path_hacks_or_old_import_roots():
     assert [f for f, t in scoped.items() if re.search(r"sys\.path\.(insert|append)", t)] == []
     old = re.compile(r"(?m)^\s*(from|import)\s+(src|scripts|api)(\.|\s)|SP500 Predictor|SP500_Predictor")
     assert [f for f, t in scoped.items() if old.search(t)] == []
+
+
+def test_single_dependency_manifest():
+    reqs = [f for f in tracked("*requirements*.txt") if not f.startswith(("archive/", "_attic/"))]
+    assert reqs == []
+    assert (REPO / "pyproject.toml").is_file()
