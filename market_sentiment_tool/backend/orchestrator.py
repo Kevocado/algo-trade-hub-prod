@@ -1,9 +1,11 @@
 """
-orchestrator.py — LangGraph Continuous Orchestration Engine
+orchestrator.py — Crypto Kalshi Edge Worker
 ============================================================
-Core state machine running in a continuous heartbeat loop. Polls the local
-SQLite WAL for fresh tick data, runs the Quant → Sentiment → Risk → Execute
-pipeline, and writes results to Supabase (trades, agent_logs, portfolio_state).
+Listens to Kalshi WS ticker updates for BTC/ETH markets and evaluates edges
+with the loaded crypto models via a small LangGraph graph
+(evaluate_crypto_edge -> market_resolution), gated by the crypto trade
+switch. Writes results to Supabase (trades, agent_logs, portfolio_state,
+signal_events) and runs the Telegram operator plane alongside the worker.
 """
 
 import asyncio
@@ -160,7 +162,6 @@ _STALE_DATA_ALERT_LAST_HOUR: dict[str, str] = {}
 class DataRecencyError(RuntimeError):
     pass
 
-# ── pgvector RAG is handled via news_rag.query_news() — no local DB client needed ──
 
 def validate_runtime_bootstrap(*, require_supabase: bool = True, require_kalshi: bool = True) -> None:
     errors = validate_runtime_env(
@@ -702,7 +703,7 @@ def _fetch_yfinance_crypto_bars(asset: str, *, lookback_hours: int = CRYPTO_FEAT
         import yfinance as yf
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
-            "yfinance is required for crypto historical backfill; install market_sentiment_tool/backend/requirements.txt into the PM2 interpreter environment."
+            "yfinance is required for crypto historical backfill; install it from pyproject.toml (e.g. `uv pip install -r pyproject.toml`) into the PM2 interpreter environment."
         ) from exc
 
     period_days = max(int(np.ceil(lookback_hours / 24)) + 5, 14)

@@ -1,8 +1,7 @@
 """
 mcp_server.py — FastMCP Tool Bridge for Kalshi Execution
 =========================================================
-Exposes Kalshi order tools over FastMCP, bound strictly to 127.0.0.1.
-over FastMCP, bound strictly to 127.0.0.1. Before any trade execution, the
+Exposes Kalshi order tools over FastMCP, bound strictly to 127.0.0.1. Before any trade execution, the
 kill-switch state (auto_trade_enabled) is asserted from Supabase user_settings.
 
 Boot order: Step 2 (after the local LLM server).

@@ -21,18 +21,22 @@ Algo-Trade-Hub is a unified quantitative trading and sports analytics platform o
 Algo-Trade-Hub/                          ← Root monorepo (one git repo)
 │
 ├── tradehub/                     ← Canonical Python compute + operator package
-│   ├── src/                             ← Core library modules & shared tools
+│   ├── core/                             ← Core library modules & shared tools
 │   │   ├── supabase_client.py           ← Unified Supabase write client (upsert_opportunities)
 │   │   └── ...
-│   ├── scripts/                         
-│   │   ├── engines/                     ← Standalone specialized edge models
-│   │   │   ├── quant_engine.py          ← Paper trading ML engine (Crypto/SPX)
-│   │   │   ├── weather_engine.py        ← NWS → Kalshi weather arbitrage
-│   │   │   ├── macro_engine.py          ← FRED → Kalshi CPI/macro arbitrage
-│   │   │   ├── football_engine.py       ← Understat xPTS Poisson prediction
-│   │   │   └── tsa_engine.py            ← TSA Passenger volume metrics
+│   ├── engines/                          ← Standalone specialized edge models
+│   │   ├── quant_engine.py              ← Paper trading ML engine (Crypto/SPX)
+│   │   ├── weather_engine.py            ← NWS → Kalshi weather arbitrage
+│   │   ├── macro_engine.py              ← FRED → Kalshi CPI/macro arbitrage
+│   │   └── weather_maker.py             ← Weather market-making helper
+│   ├── scripts/                          ← Operator scripts & daemons
 │   │   └── background_scanner.py        ← Central Daemon (runs all engines, pushes to Supabase)
-│   └── .env                             ← BACKEND SECRETS (Role Keys, APIs)
+│   ├── api/                              ← FastAPI service (main.py, schemas.py, dependencies.py)
+│   └── config/                           ← settings.yaml
+│
+├── tests/                                ← Root-level pytest suite
+├── tools/                                ← Repo maintenance scripts (rewrite_imports.py, compare_junit.py)
+├── models/                               ← Untracked runtime model artifacts (BTC/ETH .pkl, gitignored)
 │
 ├── market_sentiment_tool/               ← Canonical backend/frontend service surface
 │   ├── src/                             ← React app source
@@ -67,7 +71,7 @@ The VPS focuses entirely on running heavy machine learning inference (LightGBM/F
 
 **Key Flow:**
 1. `ecosystem.config.js` keeps `background_scanner.py` running in a constant loop.
-2. The scanner initializes specific engines (`weather_engine`, `macro_engine`, `quant_engine`, `football_engine`, `tsa_engine`, `eia_engine`).
+2. The scanner initializes specific engines (`weather_engine`, `macro_engine`, `quant_engine`). TSA/EIA engines now live as parked research under `research/engines` and are not run.
 3. **Threshold-Free Discovery:** Engines ingest raw data and compute mathematical edges. Instead of filtering out low-edge markets, engines return *all* strictly tracked live markets (e.g., creating a massive grid of 100+ upcoming weather markets).
 4. **Dynamic Data Tagging:** The `background_scanner` assigns a strict `edge_type` string to the payload: `'WEATHER'`, `'MACRO'`, `'CRYPTO'`, or `'SPORTS'`.
 5. **Supabase Injection:** `supabase_client.py` uses the `SUPABASE_SERVICE_ROLE_KEY` to securely `UPSERT` normalized records into the `kalshi_edges` database table.

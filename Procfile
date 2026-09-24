@@ -4,14 +4,14 @@
 # `from shared.config import ...` resolves without sys.path hacks.
 # ==========================================================
 
-# React frontend API: FPL optimizations + Kalshi scanner status
+# React frontend API: Kalshi scanner status
 api: PYTHONPATH=. uvicorn shared.api_server:app --host 0.0.0.0 --port 8000
 
-# FastMCP Alpaca bridge: strictly internal, bound to 127.0.0.1:5100
+# FastMCP Kalshi order bridge: strictly internal, bound to 127.0.0.1:5100
 # The LangGraph orchestrator calls this to execute / close paper trades.
 mcp: PYTHONPATH=. python market_sentiment_tool/backend/mcp_server.py
 
-# LangGraph swarm: continuous Quant → Macro → CIO → Execute pipeline
+# LangGraph swarm: continuous crypto Kalshi edge worker
 orchestrator: PYTHONPATH=. python market_sentiment_tool/backend/orchestrator.py
 
 # Slow scanner: FRED macro data + Kalshi market discovery (every 10 min)

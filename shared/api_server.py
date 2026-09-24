@@ -8,7 +8,7 @@ real-time WebSockets — this server is ONLY for Python-computed results
 that cannot come from Supabase directly.
 
 DO NOT use mcp_server.py as the API server.
-mcp_server.py is the FastMCP Alpaca trade-execution bridge (internal-only).
+mcp_server.py is the FastMCP Kalshi order-execution bridge (internal-only).
 
 Boot: PYTHONPATH=. uvicorn shared.api_server:app --host 0.0.0.0 --port 8000
 """
@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import sys, os
 
-from shared import config  # noqa: E402  — loaded after sys.path fix
+from shared import config
 from supabase import create_client
 
 logging.basicConfig(
