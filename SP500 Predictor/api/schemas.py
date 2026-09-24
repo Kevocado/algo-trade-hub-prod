@@ -67,38 +67,6 @@ class NWSReading(BaseModel):
     fetched_at: datetime
 
 
-# ─── NBA Props ────────────────────────────────────────────────────────────────
-
-class NBASignal(BaseModel):
-    player: str
-    team: str
-    stat: str            # "points", "rebounds", "assists"
-    line: float          # DK/BallDontLie prop line
-    model_prob_over: float
-    kalshi_yes_ask: Optional[float] = None
-    edge_pct: Optional[float] = None
-    action: Optional[str] = None  # "BUY YES" | "BUY NO" | None
-    injury_flag: bool = False
-    game_date: Optional[str] = None
-    detected_at: Optional[datetime] = None
-
-
-# ─── F1 ──────────────────────────────────────────────────────────────────────
-
-class F1Signal(BaseModel):
-    driver: str
-    team: str
-    event: str
-    session: str         # "Qualifying", "Race"
-    signal_type: str     # "podium", "fastest_lap", "dnf_risk"
-    model_prob: float
-    kalshi_yes_ask: Optional[float] = None
-    edge_pct: Optional[float] = None
-    action: Optional[str] = None
-    key_metric: Optional[str] = None  # e.g. "sector_z_score: -1.8σ"
-    detected_at: Optional[datetime] = None
-
-
 # ─── Shadow Performance ──────────────────────────────────────────────────────
 
 class ShadowThreshold(BaseModel):

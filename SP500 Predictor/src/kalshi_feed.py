@@ -180,9 +180,9 @@ def get_all_active_markets(limit_pages=10):
 #
 # get_all_active_markets() above deliberately excludes the 'Sports' category
 # to avoid the ~15k-market parlay/props flood on the raw /markets endpoint.
-# That exclusion is still correct for callers who want non-sports categories
-# (src/market_scanner.py, f1_engine.py's non-sports paths). Sports-specific
-# engines need their own narrower fetch instead of reworking the shared one.
+# That exclusion is still correct for callers who want non-sports categories.
+# Sports-specific engines need their own narrower fetch instead of reworking
+# the shared one.
 #
 # NOTE: the league keyword lists below are a starting point for matching
 # event/market tickers and titles, not a verified Kalshi contract. Confirm

@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.schemas import (
     HealthResponse, Position, PnLSummary,
-    Opportunity, NWSReading, NBASignal, F1Signal, ShadowPerformanceResponse,
+    Opportunity, NWSReading, ShadowPerformanceResponse,
 )
 from api.dependencies import get_supabase, get_scanner_cache
 from scripts.shadow_performance import build_shadow_timeline_response
@@ -170,39 +170,6 @@ async def get_nws_weather(
             fetched_at=data.get("fetched_at", datetime.now(timezone.utc)),
         ))
     return result
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# ENDPOINT 6: /api/nba_props
-# ════════════════════════════════════════════════════════════════════════════
-@app.get("/api/nba_props", response_model=List[NBASignal], tags=["Sports"])
-async def get_nba_props(
-    min_edge: float = Query(0.0),
-    injury_only: bool = Query(False, description="Only return injury-repriced signals"),
-    cache: dict = Depends(get_scanner_cache),
-):
-    """Latest NBA player prop signals from the NBAEngine."""
-    signals = cache.get("nba_signals", [])
-    if min_edge > 0:
-        signals = [s for s in signals if abs(s.get("edge_pct", 0)) >= min_edge]
-    if injury_only:
-        signals = [s for s in signals if s.get("injury_flag")]
-    return signals
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# ENDPOINT 7: /api/f1_signals
-# ════════════════════════════════════════════════════════════════════════════
-@app.get("/api/f1_signals", response_model=List[F1Signal], tags=["Sports"])
-async def get_f1_signals(
-    min_edge: float = Query(0.0),
-    cache: dict = Depends(get_scanner_cache),
-):
-    """Latest F1 telemetry-derived signals from the F1Engine."""
-    signals = cache.get("f1_signals", [])
-    if min_edge > 0:
-        signals = [s for s in signals if abs(s.get("edge_pct", 0)) >= min_edge]
-    return signals
 
 
 # ════════════════════════════════════════════════════════════════════════════

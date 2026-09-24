@@ -41,8 +41,6 @@ def get_supabase():
 # This avoids hammering Supabase on every API request.
 _scanner_cache: dict = {
     "opportunities": [],
-    "nba_signals": [],
-    "f1_signals": [],
     "nws_readings": {},
     "last_updated": None,
 }

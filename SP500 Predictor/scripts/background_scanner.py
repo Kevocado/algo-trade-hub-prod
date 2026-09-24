@@ -25,10 +25,6 @@ from scripts.engines.weather_engine import WeatherEngine
 from scripts.engines.macro_engine import MacroEngine
 from scripts.engines.tsa_engine import TSAEngine
 from scripts.engines.eia_engine import EIAEngine
-from scripts.engines.nba_engine import NBAEngine
-from scripts.engines.f1_engine import F1Engine
-from scripts.engines.ncaa_engine import NCAAEngine
-from scripts.engines.football_engine import FootballKalshiEngine
 from src.data_loader import fetch_data
 from src.feature_engineering import create_features
 from src.discord_notifier import DiscordNotifier
@@ -128,48 +124,6 @@ def scan_real_edge():
         all_ops.extend(eia_ops)
     except Exception as e:
         print(f"  ⚠️ EIA Engine failed: {e}")
-
-    # ── Sports Schedule Fetchers ──
-    print("\n🏀 Running NBA Schedule Fetcher...")
-    try:
-        nba_ops = NBAEngine().fetch_upcoming_games()
-        all_ops.extend(nba_ops)
-        print(f"  Found {len(nba_ops)} NBA upcoming games")
-    except Exception as e:
-        print(f"  ⚠️ NBA fetcher failed: {e}")
-        
-    print("\n🏎️ Running F1 Schedule Fetcher...")
-    try:
-        f1_ops = F1Engine().fetch_upcoming_races()
-        all_ops.extend(f1_ops)
-        print(f"  Found {len(f1_ops)} F1 upcoming races")
-    except Exception as e:
-        print(f"  ⚠️ F1 fetcher failed: {e}")
-        
-    print("\n🏀 Running NCAA March Madness Fetcher...")
-    try:
-        ncaa_ops = NCAAEngine().fetch_upcoming_march_madness()
-        all_ops.extend(ncaa_ops)
-        print(f"  Found {len(ncaa_ops)} NCAA tournament games")
-    except Exception as e:
-        print(f"  ⚠️ NCAA fetcher failed: {e}")
-
-    print("\n⚽ Running Soccer Engine...")
-    try:
-        soccer_ops = FootballKalshiEngine().find_opportunities()
-        all_ops.extend(soccer_ops)
-        print(f"  Found {len(soccer_ops)} Soccer upcoming opportunities")
-    except Exception as e:
-        print(f"  ⚠️ Soccer engine failed: {e}")
-
-    # ── NBA Props Engine (real predictive signals, not just schedule discovery) ──
-    print("\n🏀 Running NBA Props Engine...")
-    try:
-        nba_signals = NBAEngine().get_signals()
-        all_ops.extend(nba_signals)
-        print(f"  Found {len(nba_signals)} NBA prop signals")
-    except Exception as e:
-        print(f"  ⚠️ NBA props engine failed: {e}")
 
     print(f"\n📊 Total real-edge opportunities: {len(all_ops)}")
     if all_ops:
