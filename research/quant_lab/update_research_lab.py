@@ -2,7 +2,7 @@ import json
 import os
 
 # --- SHARED CONSTANTS ---
-LAB_DIR = '/Users/sigey/Documents/Projects/algo-trade-hub-prod/quant_research_lab'
+LAB_DIR = str(__import__("pathlib").Path(__file__).resolve().parent)
 BACKTEST_NB = os.path.join(LAB_DIR, 'lightgbm_backtest.ipynb')
 WEATHER_NB = os.path.join(LAB_DIR, 'kalshi_weather_research.ipynb')
 

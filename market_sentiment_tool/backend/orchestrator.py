@@ -379,10 +379,9 @@ def load_crypto_models() -> tuple[Any, Any]:
         candidates=[
             "/root/kalshibot/btc_model.pkl",
             "models/btc_model.pkl",
-            "quant_research_lab/models/btc_model.pkl",
             "model/btc_model.pkl",
             "model/lgbm_model_BTC.pkl",
-            "quant_research_lab/models/btc_sniper.pkl",
+            "models/btc_sniper.pkl",
             "btc_sniper.pkl",
         ],
         label="BTC",
@@ -392,10 +391,9 @@ def load_crypto_models() -> tuple[Any, Any]:
         candidates=[
             "/root/kalshibot/eth_model.pkl",
             "models/eth_model.pkl",
-            "quant_research_lab/models/eth_model.pkl",
             "model/eth_model.pkl",
             "model/lgbm_model_ETH.pkl",
-            "quant_research_lab/models/eth_sniper.pkl",
+            "models/eth_sniper.pkl",
             "eth_sniper.pkl",
         ],
         label="ETH",

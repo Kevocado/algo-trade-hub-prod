@@ -89,3 +89,6 @@ midterm.html
 
 # ── Cleanup scratch (baseline test reports) ──────
 .cleanup/
+
+# ── Untracked leftovers from the repo cleanup (user deletes manually) ──
+_attic/

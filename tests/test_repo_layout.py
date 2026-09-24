@@ -75,3 +75,15 @@ def test_equities_only_backend_files_removed():
         "market_sentiment_tool/backend/supabase_hard_reset.sql",
     ]
     assert tracked(*gone) == []
+
+
+def test_research_is_parked_and_not_imported():
+    assert tracked("quant_research_lab") == []
+    assert tracked("Weather") == []
+    assert tracked("research/engines/tsa_engine.py", "research/engines/eia_engine.py") != []
+    offenders = [
+        f for f, text in tracked_python_text().items()
+        if re.search(r"^\s*(from|import)\s+research\b|quant_research_lab|tsa_engine|eia_engine|TSAEngine|EIAEngine", text, re.M)
+        and f != "tests/test_repo_layout.py"
+    ]
+    assert offenders == []

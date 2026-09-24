@@ -23,8 +23,6 @@ sys.path.append(os.getcwd())
 
 from scripts.engines.weather_engine import WeatherEngine
 from scripts.engines.macro_engine import MacroEngine
-from scripts.engines.tsa_engine import TSAEngine
-from scripts.engines.eia_engine import EIAEngine
 from src.data_loader import fetch_data
 from src.feature_engineering import create_features
 from src.discord_notifier import DiscordNotifier
@@ -102,28 +100,6 @@ def scan_real_edge():
         all_ops.extend(macro_ops)
     except Exception as e:
         print(f"  ⚠️ Macro Engine failed: {e}")
-
-    # ── TSA Travel Engine ──
-    print("\n✈️ Running TSA Engine...")
-    try:
-        tsa_engine = TSAEngine()
-        tsa_ops = tsa_engine.find_opportunities()
-        for op in tsa_ops: op["edge_type"] = "MACRO"
-        print(f"  Found {len(tsa_ops)} TSA opportunities")
-        all_ops.extend(tsa_ops)
-    except Exception as e:
-        print(f"  ⚠️ TSA Engine failed: {e}")
-
-    # ── EIA Energy Engine ──
-    print("\n⛽ Running EIA Engine...")
-    try:
-        eia_engine = EIAEngine()
-        eia_ops = eia_engine.find_opportunities()
-        for op in eia_ops: op["edge_type"] = "MACRO"
-        print(f"  Found {len(eia_ops)} EIA opportunities")
-        all_ops.extend(eia_ops)
-    except Exception as e:
-        print(f"  ⚠️ EIA Engine failed: {e}")
 
     print(f"\n📊 Total real-edge opportunities: {len(all_ops)}")
     if all_ops:

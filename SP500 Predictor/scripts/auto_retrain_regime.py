@@ -66,10 +66,9 @@ def _candidate_model_path(asset: str) -> Path:
     candidates = [
         "/root/kalshibot/btc_model.pkl" if asset == "BTC" else "/root/kalshibot/eth_model.pkl",
         f"models/{asset.lower()}_model.pkl",
-        f"quant_research_lab/models/{asset.lower()}_model.pkl",
         f"model/{asset.lower()}_model.pkl",
         f"model/lgbm_model_{asset}.pkl",
-        f"quant_research_lab/models/{asset.lower()}_sniper.pkl",
+        f"models/{asset.lower()}_sniper.pkl",
         f"{asset.lower()}_sniper.pkl",
     ]
     try:
