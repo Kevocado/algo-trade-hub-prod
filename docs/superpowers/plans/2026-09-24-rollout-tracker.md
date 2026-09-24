@@ -43,7 +43,7 @@ An implementing agent (Claude, Codex, Muse, or another) must:
 
 **Review:** when the branch is done, hand the branch name to the reviewing session. The reviewer checks the branch diff against the plan and spec (superpowers:requesting-code-review) and reports findings. Fixes go back to the implementing agent on the same branch. Merge to `main` locally only after the review is clean.
 
-## Step 3 — Backtesting suite (detailed plan to write next)
+## Step 3 — Backtesting suite (planned: 2026-09-24-backtesting-suite.md; original scope notes below)
 
 **Goal (spec §5a):** a point-in-time backtest harness that every engine must pass before it ships, sharing its metric code with the promotion gate.
 
@@ -71,7 +71,7 @@ An implementing agent (Claude, Codex, Muse, or another) must:
 - Open-Meteo Previous Runs coverage per model.
 - Whether the Cleveland Fed archives historical nowcasts (this affects step 6).
 
-## Step 4 — Shared data layer + `weather` + `gas` engines (suggest-only)
+## Step 4 — Shared data layer + `weather` + `gas` engines (planned: 2026-09-24-data-layer-weather-gas-engines.md; original scope notes below)
 
 **Goal (spec §3.1, §4):** the P&L core producing real `kalshi_edges` rows and `predictions` rows, suggest-only.
 
@@ -93,7 +93,7 @@ An implementing agent (Claude, Codex, Muse, or another) must:
 - AAA daily-average source format and terms.
 - How the edge layer reads the live orderbook without an always-on worker.
 
-## Step 5 — Azure deploy (scale-to-zero)
+## Step 5 — Azure deploy (planned: 2026-09-24-azure-deploy.md; original scope notes below)
 
 **Goal (spec §5):** move off the VPS onto Container Apps in `predictor-hub-rg`, following `NFL_Predictor/.github/workflows/deploy-azure-nfl.yml`.
 
