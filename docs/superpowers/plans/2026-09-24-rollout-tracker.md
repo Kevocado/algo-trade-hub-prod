@@ -10,12 +10,17 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 |---|---|---|---|
 | 1 | Repo cleanup | ✅ merged to `main` | [2026-09-24-repo-cleanup.md](2026-09-24-repo-cleanup.md) |
 | 2 | Predictions ledger + settlement by market result + track record | 🟢 plan reviewed, ready to implement | [2026-09-24-predictions-ledger-settlement-track-record.md](2026-09-24-predictions-ledger-settlement-track-record.md) |
-| 3 | Backtesting suite | 📝 needs detailed plan (scope below) | — |
-| 4 | Shared data layer + `weather` + `gas` engines, suggest-only | 📝 needs detailed plan (scope below) | — |
-| 5 | Azure deploy: scheduled jobs + API + web; retire VPS | 📝 needs detailed plan (scope below) | — |
+| 3 | Backtesting suite | 🟢 plan written + verified, ready to implement | [2026-09-24-backtesting-suite.md](2026-09-24-backtesting-suite.md) |
+| 4 | Shared data layer + `weather` + `gas` engines, suggest-only | 🟢 plan written + verified, ready to implement | [2026-09-24-data-layer-weather-gas-engines.md](2026-09-24-data-layer-weather-gas-engines.md) |
+| 5 | Azure deploy: scheduled jobs + API + web (VPS keeps only the crypto worker) | 🟢 plan written + verified, ready to implement | [2026-09-24-azure-deploy.md](2026-09-24-azure-deploy.md) |
 | 6 | `cpi_nowcast` | 🗺️ outline only; detail after step 4 lands | — |
 | 7 | Sports adapters + LLM reviewer | 🗺️ outline only; detail after step 4 lands | — |
 | 8 | `labor_nowcast` + Jobs Scorecard | 🗺️ outline only; detail after step 4 lands | — |
+
+**Implementation order:** 2 → 3 → 4 → 5, each on its own `plan/<basename>` branch, reviewed and merged before the next one starts. Each plan's code was validated before publishing:
+- **Step 2:** 39/39 of the plan's own tests pass.
+- **Steps 3 + 4:** 88/88 pass together on top of step 2's code. A live check against real Kalshi and Open-Meteo data found the v1 weather model not yet beating the market on a small sample, and the gate holds it in SHADOW as designed.
+- **Step 5:** 127/127 pass. A real Docker build and container smoke test were run, which found and fixed an out-of-sync frontend lockfile.
 
 Parked (not scheduled): code-enforced risk controls and live execution (spec §7, only after the "pays for itself" trigger); model registry / `feature_hash` (old roadmap Phase 7); remaining frontend cleanup (old roadmap Phase 10), which is done alongside the Track Record and Sports UI work.
 
