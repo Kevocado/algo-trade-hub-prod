@@ -35,7 +35,29 @@
 
 ## Task 2 — Prediction writer
 
-_Pending implementation._
+- **Files changed:** `tradehub/predictions.py`, `tests/test_predictions.py`.
+- **RED command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_predictions.py -v
+  ```
+  Expected failing output tail:
+  ```text
+  E   ImportError: cannot import name 'predictions' from 'tradehub' (/Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/tradehub/__init__.py)
+  =========================== short test summary info ============================
+  ERROR tests/test_predictions.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  ============================== 1 error in 0.11s ===============================
+  ```
+- **GREEN command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_predictions.py -v
+  ```
+  Passing output tail:
+  ```text
+  tests/test_predictions.py::test_record_predictions_batch_inserts PASSED [100%]
+  ============================== 8 passed in 0.01s ===============================
+  ```
+- **Deviation:** None. The RED run produced the brief-approved collection error variant (`ImportError` rather than `ModuleNotFoundError`).
 
 ## Task 3 — Settlement math
 
