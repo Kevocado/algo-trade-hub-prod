@@ -137,3 +137,15 @@ def test_docs_do_not_point_at_removed_paths():
     stale = re.compile(r"SP500 Predictor|FPL_Optimizer|hf_space_deployment|quant_research_lab")
     docs = ["README.md", "SYSTEM_ARCH.md", ".agent/index/SYSTEM_MAP.md", ".agent/index/notes_manifest.md"]
     assert [d for d in docs if stale.search((REPO / d).read_text(encoding="utf-8"))] == []
+
+
+def test_predictions_ledger_migration_defines_both_tables():
+    path = REPO / "market_sentiment_tool/supabase/migrations/20260416000003_predictions_ledger.sql"
+    assert path.is_file(), "predictions ledger migration is missing"
+    sql = path.read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS predictions" in sql
+    assert "CREATE TABLE IF NOT EXISTS track_record" in sql
+    assert '"predictions_owner"' in sql
+    assert '"track_record_owner"' in sql
+    for column in ("market_ticker", "our_prob", "as_of", "status", "brier"):
+        assert column in sql, f"predictions table missing column {column}"
