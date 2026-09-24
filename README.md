@@ -1,6 +1,6 @@
 # Algo-Trade-Hub
 
-A unified, production-grade Kalshi trading and analytics monorepo. The canonical product surface is the `SP500 Predictor` engine/operator package plus the `market_sentiment_tool` backend/frontend surface, with shared infrastructure living in `shared/`, `Weather/`, `quant_research_lab/`, and `.agent/`.
+A unified, production-grade Kalshi trading and analytics monorepo. The canonical product surface is the `tradehub` engine/operator package plus the `market_sentiment_tool` backend/frontend surface, with shared infrastructure living in `shared/` and `.agent/`.
 
 > **Canonical references:** [`SYSTEM_ARCH.md`](./SYSTEM_ARCH.md), [`.agent/index/SYSTEM_MAP.md`](./.agent/index/SYSTEM_MAP.md), and [`AGENTS.md`](./AGENTS.md)
 
@@ -19,13 +19,11 @@ Algo-Trade-Hub operates on a separated hybrid model to maximize VPS performance 
 
 ```text
 Algo-Trade-Hub/
-├── SP500 Predictor/        # Canonical Python engine/operator package
+├── tradehub/                # Canonical Python engine/operator package
 ├── market_sentiment_tool/  # Canonical backend/frontend service surface
-├── Weather/                # Weather settlement research and contracts
 ├── shared/                 # Universal shared contracts and utilities
-├── quant_research_lab/     # Active research notebooks and model experiments
+├── research/               # parked research, not imported by runtime (see research/README.md)
 ├── archive/                # Archived legacy docs and duplicate prompt material
-├── FPL_Optimizer/          # Legacy auxiliary content
 ├── ecosystem.config.js     # PM2 Orchestrator config
 ├── SYSTEM_ARCH.md          # ← Master architecture reference (read this first)
 └── README.md
@@ -39,15 +37,10 @@ Algo-Trade-Hub/
 Ensure you have created a `.env` in the root mapping your API connections and `SUPABASE_SERVICE_ROLE_KEY`.
 
 ```bash
-cd "SP500 Predictor"
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-# Run a single manual scan:
-python scripts/background_scanner.py
-
-# Or launch as a background daemon using PM2:
-pm2 start ../ecosystem.config.js
+uv venv .venv --python 3.12
+uv pip install --python .venv/bin/python -r pyproject.toml --extra dev --extra scanner
+.venv/bin/python -m pytest            # run from the repo root
+.venv/bin/python -m tradehub.scripts.background_scanner
 ```
 
 ### 2. Launching the Frontend Dashboard (Local Dev)
@@ -77,14 +70,19 @@ The system relies on a strict split of secrets.
 - Telegram operator-plane vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 - Before restarting the VPS worker after operator-plane changes, apply the Supabase migrations `market_sentiment_tool/supabase/migrations/20260408224000_crypto_operator_plane.sql` and `market_sentiment_tool/supabase/migrations/20260415090000_signal_events_unification.sql` so the canonical `signal_events` table and the `crypto_signal_events` compatibility view exist.
 - Install the crypto backend runtime dependencies into the PM2 interpreter environment before starting the worker:
-- Prefer the lean VPS/runtime dependency set in `requirements.vps.txt` for servers. It excludes offline research and unused local tooling so the VPS only installs what the live stack and validation path need.
+- Install from the single `pyproject.toml` (which replaced the old per-service `requirements*.txt` files); add `--extra scanner` if the host runs `tradehub.scripts.background_scanner`.
 
 ```bash
 cd /root/kalshibot
-/root/kalshibot/.venv/bin/pip install -r requirements.vps.txt
+pip install uv && uv pip install --python /root/kalshibot/.venv/bin/python -r pyproject.toml
 /root/kalshibot/.venv/bin/python -c "import yfinance; print(yfinance.__version__)"
 /root/kalshibot/.venv/bin/python -c "import ta; print(ta.__version__ if hasattr(ta, '__version__') else 'ta-ok')"
 ```
+
+**Deploy note (post-restructure):**
+- After `git pull` on the VPS, do NOT run `git clean`: untracked pre-restructure `*.pem` key files and legacy model `.pkl` files on the host may still be referenced.
+- Ensure `KALSHI_PRIVATE_KEY_PATH` is set explicitly in `.env`.
+- If `BTC_MODEL_PATH` / `ETH_MODEL_PATH` are unset, move the model files to `models/` first (the old pre-restructure candidate paths were removed).
 
 - `KALSHI_ENV=demo` uses `https://demo-api.kalshi.co/trade-api/v2` and `wss://demo-api.kalshi.co/trade-api/ws/v2`.
 - `KALSHI_ENV=live` uses `https://api.elections.kalshi.com/trade-api/v2` and `wss://api.elections.kalshi.com/trade-api/ws/v2`.
@@ -106,7 +104,7 @@ Apply the latest code + runtime dependencies on VPS:
 ```bash
 cd /root/kalshibot
 git pull
-/root/kalshibot/.venv/bin/pip install -r requirements.vps.txt
+pip install uv && uv pip install --python /root/kalshibot/.venv/bin/python -r pyproject.toml
 pm2 restart crypto-sniper --update-env
 pm2 logs crypto-sniper --lines 120 --nostream
 ```

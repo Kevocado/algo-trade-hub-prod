@@ -13,12 +13,6 @@ import logging
 import requests
 from datetime import datetime, timezone
 from supabase import create_client
-import sys
-import os
-
-# Add "SP500 Predictor" to sys.path so we can import its scripts module despite the space in the folder name
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'SP500 Predictor')))
-from scripts.engines.football_engine import FootballKalshiEngine
 
 from shared import config
 
@@ -92,26 +86,6 @@ def fetch_and_store_kalshi_macro():
     except Exception as e:
         log.error(f"Failed to fetch Kalshi MACRO markets: {e}")
 
-def fetch_and_store_football():
-    """
-    Runs the soccer engine and upserts any opportunities into kalshi_edges.
-
-    Was previously called by main_loop() below without ever being defined —
-    a guaranteed NameError the moment is_profitable_regime() returned True.
-    Reuses the canonical upsert_opportunities() field-mapping instead of a
-    second hand-rolled Supabase insert, so this scanner and the main
-    SP500 Predictor/scripts/background_scanner.py daemon stay consistent.
-    """
-    log.info("Scanning Kalshi for SOCCER edges...")
-    try:
-        from src.supabase_client import upsert_opportunities
-        opportunities = FootballKalshiEngine().find_opportunities()
-        upsert_opportunities(opportunities)
-        log.info(f"Football scan complete. Found {len(opportunities)} opportunities.")
-    except Exception as e:
-        log.error(f"Failed to run football engine: {e}")
-
-
 # This dictionary represents backtested "Green Islands" (Win Rate > 60%, Trades > 20)
 # Format: {day_index: [list_of_profitable_hours]}
 # day_index: 0=Monday, 6=Sunday
@@ -142,8 +116,7 @@ def main_loop():
         else:
             fetch_and_store_fred()
             fetch_and_store_kalshi_macro()
-            fetch_and_store_football()
-        
+
         time.sleep(600)  # 10 minutes
 
 if __name__ == "__main__":

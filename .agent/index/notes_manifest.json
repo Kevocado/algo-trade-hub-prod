@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-04-15T15:19:40.005742+00:00",
+  "generated_at_utc": "2026-09-24T16:16:07.582217+00:00",
   "vault_root": "/Users/sigey/Documents/Projects/algo-trade-hub-prod",
   "required_frontmatter_keys": [
     "title",
@@ -27,7 +27,7 @@
         "2026-04-13 Graph Architecture Pass",
         "2026-04-15 Cleanup And Unification Pass"
       ],
-      "modified_utc": "2026-04-15T15:14:10.905024+00:00"
+      "modified_utc": "2026-04-15T15:23:02.951516+00:00"
     },
     {
       "path": ".agent/rules/context_hygiene.md",
@@ -46,7 +46,7 @@
         "Domain Switch Procedure",
         "Context Budget"
       ],
-      "modified_utc": "2026-04-13T15:32:09.526845+00:00"
+      "modified_utc": "2026-04-15T15:23:02.950677+00:00"
     },
     {
       "path": ".agent/rules/execution_safety.md",
@@ -184,48 +184,6 @@
       "modified_utc": "2026-04-15T15:09:59.934023+00:00"
     },
     {
-      "path": "FPL_Optimizer/INTEGRATION_PROMPT.md",
-      "title": "Prompt for AI: Integrate Market Scanner with Existing SP500-Predictor",
-      "domain": "unknown",
-      "type": "note",
-      "status": "unclassified",
-      "settlement_source": "unspecified",
-      "tags": [],
-      "summary": "Indexed note at FPL_Optimizer/INTEGRATION_PROMPT.md.",
-      "headings": [
-        "Prompt for AI: Integrate Market Scanner with Existing SP500-Predictor",
-        "Context",
-        "Files I'm Providing",
-        "Integration Requirements",
-        "Current structure (keep this):",
-        "Existing yfinance logic",
-        "Add this:",
-        "Use sentiment_loader.py module"
-      ],
-      "modified_utc": "2026-02-11T10:11:04+00:00"
-    },
-    {
-      "path": "FPL_Optimizer/README.md",
-      "title": "\ud83e\udde0 Advanced FPL Optimizer",
-      "domain": "unknown",
-      "type": "note",
-      "status": "unclassified",
-      "settlement_source": "unspecified",
-      "tags": [],
-      "summary": "Indexed note at FPL_Optimizer/README.md.",
-      "headings": [
-        "\ud83e\udde0 Advanced FPL Optimizer",
-        "\ud83d\ude80 Features",
-        "\ud83d\udccb Quick Start",
-        "\ud83c\udfaf How to Use",
-        "\ud83d\udd27 Technical Details",
-        "\ud83d\udcca Advanced Metrics",
-        "\ud83d\udee0\ufe0f API Endpoints",
-        "\ud83d\udcdd Requirements"
-      ],
-      "modified_utc": "2025-12-04T01:32:01.647888+00:00"
-    },
-    {
       "path": "README.md",
       "title": "Algo-Trade-Hub",
       "domain": "unknown",
@@ -244,7 +202,7 @@
         "The Dashboard will load at http://localhost:5173",
         "Environment Variables"
       ],
-      "modified_utc": "2026-04-15T15:19:31.276518+00:00"
+      "modified_utc": "2026-09-24T15:59:30.250888+00:00"
     },
     {
       "path": "Rules.md",
@@ -265,102 +223,6 @@
       "modified_utc": "2026-03-31T05:27:25.050548+00:00"
     },
     {
-      "path": "SP500 Predictor/CLAUDE_CODE_PROMPT.md",
-      "title": "CLAUDE CODE CLI PROMPT (Copy & Paste This Exactly)",
-      "domain": "unknown",
-      "type": "note",
-      "status": "unclassified",
-      "settlement_source": "unspecified",
-      "tags": [],
-      "summary": "Indexed note at SP500 Predictor/CLAUDE_CODE_PROMPT.md.",
-      "headings": [
-        "CLAUDE CODE CLI PROMPT (Copy & Paste This Exactly)",
-        "PART 1: INITIAL CONTEXT SETTING",
-        "PART 2: PHASE-BY-PHASE EXECUTION",
-        "PART 3: FINAL VALIDATION",
-        "PART 4: TROUBLESHOOTING PROMPTS",
-        "PART 5: POST-REBUILD CHECKLIST",
-        "1. No yfinance",
-        "Should return: nothing"
-      ],
-      "modified_utc": "2026-02-22T23:24:22.846635+00:00"
-    },
-    {
-      "path": "SP500 Predictor/CODEBASE_OVERVIEW.md",
-      "title": "Codebase Overview \u2014 Prediction Market Edge Finder",
-      "domain": "unknown",
-      "type": "note",
-      "status": "unclassified",
-      "settlement_source": "unspecified",
-      "tags": [],
-      "summary": "Indexed note at SP500 Predictor/CODEBASE_OVERVIEW.md.",
-      "headings": [
-        "Codebase Overview \u2014 Prediction Market Edge Finder",
-        "Architecture",
-        "File-by-File Reference",
-        "Data Flow",
-        "Environment Variables",
-        "Removed Files (Cleanup)"
-      ],
-      "modified_utc": "2026-04-15T15:10:22.037149+00:00"
-    },
-    {
-      "path": "SP500 Predictor/HUGGING_FACE_SETUP.md",
-      "title": "HUGGING FACE SETUP GUIDE",
-      "domain": "unknown",
-      "type": "note",
-      "status": "unclassified",
-      "settlement_source": "unspecified",
-      "tags": [],
-      "summary": "Indexed note at SP500 Predictor/HUGGING_FACE_SETUP.md.",
-      "headings": [
-        "HUGGING FACE SETUP GUIDE",
-        "DO YOU NEED AN ACCOUNT?",
-        "TECHNICAL DETAILS",
-        "First time you run this:",
-        "Behind the scenes:",
-        "1. Downloads model from huggingface.co",
-        "2. Saves to: ~/.cache/huggingface/hub/",
-        "3. Future runs use cached version (no download)"
-      ],
-      "modified_utc": "2026-02-22T23:24:22.870418+00:00"
-    },
-    {
-      "path": "SP500 Predictor/README.md",
-      "title": "Kalshi Market Scanner",
-      "domain": "unknown",
-      "type": "note",
-      "status": "unclassified",
-      "settlement_source": "unspecified",
-      "tags": [],
-      "summary": "Indexed note at SP500 Predictor/README.md.",
-      "headings": [
-        "Prediction Market Edge Finder",
-        "\u26a1 Key Features",
-        "\ud83c\udfd7 Architecture",
-        "\ud83d\udcc2 Project Structure",
-        "\ud83d\ude80 Setup & Installation",
-        "\u2699\ufe0f Configuration (.env)",
-        "Kalshi Trading API (Required for Portfolio Tab)",
-        "Alpaca Paper Trading (Required for Backtesting Quant Trades)"
-      ],
-      "modified_utc": "2026-04-08T20:52:18.756841+00:00"
-    },
-    {
-      "path": "SP500 Predictor/app_changes_1_3_25.md",
-      "title": "SP500 Predictor \u2014 Architecture Overhaul Spec (Final)",
-      "domain": "unknown",
-      "type": "note",
-      "status": "unclassified",
-      "settlement_source": "unspecified",
-      "tags": [],
-      "summary": "Indexed note at SP500 Predictor/app_changes_1_3_25.md.",
-      "headings": [
-        "SP500 Predictor \u2014 Architecture Overhaul Spec (Final)"
-      ],
-      "modified_utc": "2026-03-01T09:01:45.127198+00:00"
-    },
-    {
       "path": "SYSTEM_ARCH.md",
       "title": "SYSTEM_ARCH.md \u2014 Algo-Trade-Hub Master Architecture Reference",
       "domain": "unknown",
@@ -378,156 +240,108 @@
         "Integration Rules (Hard Rules \u2014 Never Break These)",
         "Cleanup And Unification Notes"
       ],
-      "modified_utc": "2026-04-15T15:09:59.935936+00:00"
+      "modified_utc": "2026-09-24T15:59:30.272541+00:00"
     },
     {
-      "path": "Weather/APIs/NWS_API_Spec.md",
-      "title": "NWS API Spec",
-      "domain": "weather",
-      "type": "api_spec",
-      "status": "active",
-      "settlement_source": "['CLI', 'CF6']",
-      "tags": [
-        "weather",
-        "api",
-        "nws"
-      ],
-      "summary": "Defines the NWS endpoints and fields needed to anchor official settlement-aware weather workflows.",
-      "headings": [
-        "NWS API Spec",
-        "Purpose",
-        "Core Endpoints",
-        "Required Concepts",
-        "Implementation Constraints"
-      ],
-      "modified_utc": "2026-04-09T21:39:12.248969+00:00"
-    },
-    {
-      "path": "Weather/APIs/OpenMeteo_Ensemble_API.md",
-      "title": "Open-Meteo Ensemble API",
-      "domain": "weather",
-      "type": "api_spec",
-      "status": "active",
-      "settlement_source": "unspecified",
-      "tags": [
-        "weather",
-        "api",
-        "open-meteo",
-        "ensemble"
-      ],
-      "summary": "Captures the request and response schema assumptions for Open-Meteo ensemble forecasts used in weather probability modeling.",
-      "headings": [
-        "Open-Meteo Ensemble API",
-        "Purpose",
-        "Example Request",
-        "Response Shape to Preserve",
-        "Required Fields",
-        "Ensemble Modeling Notes",
-        "Units and Timezone Assumptions",
-        "Horizon Mapping"
-      ],
-      "modified_utc": "2026-04-09T21:39:12.248850+00:00"
-    },
-    {
-      "path": "Weather/Features/weather_features_schema.md",
-      "title": "Weather Features Schema",
-      "domain": "weather",
-      "type": "feature_schema",
-      "status": "active",
-      "settlement_source": "['CLI', 'CF6']",
-      "tags": [
-        "weather",
-        "features",
-        "schema"
-      ],
-      "summary": "Defines the first weather feature contract for ensemble-based Kalshi probability modeling.",
-      "headings": [
-        "Weather Features Schema",
-        "Core Fields",
-        "Derived Values",
-        "Constraints"
-      ],
-      "modified_utc": "2026-04-09T21:39:12.249301+00:00"
-    },
-    {
-      "path": "Weather/Markets/Kalshi_Weather_Market_Mapping.md",
-      "title": "Kalshi Weather Market Mapping",
-      "domain": "weather",
-      "type": "market_mapping",
-      "status": "active",
-      "settlement_source": "['CLI', 'CF6']",
-      "tags": [
-        "weather",
-        "kalshi",
-        "mapping"
-      ],
-      "summary": "Maps city-level weather contracts to station IDs, settlement sources, and strike interpretation rules.",
-      "headings": [
-        "Kalshi Weather Market Mapping",
-        "Daily High Temperature Markets",
-        "Initial Mapping Table",
-        "Strike Handling"
-      ],
-      "modified_utc": "2026-04-09T21:39:12.249169+00:00"
-    },
-    {
-      "path": "Weather/Research/Weather_Market_Research.md",
-      "title": "Weather Market Research",
-      "domain": "weather",
-      "type": "research",
-      "status": "active",
-      "settlement_source": "['CLI', 'CF6']",
-      "tags": [
-        "weather",
-        "research",
-        "kalshi"
-      ],
-      "summary": "Consolidates the first-pass research questions and implementation assumptions for the Weather Oracle.",
-      "headings": [
-        "Weather Market Research",
-        "Objective",
-        "Immediate Research Questions",
-        "Initial Modeling Direction"
-      ],
-      "modified_utc": "2026-04-09T21:39:12.249414+00:00"
-    },
-    {
-      "path": "Weather/Settlement/NWS_Settlement_Rules.md",
-      "title": "NWS Settlement Rules",
-      "domain": "weather",
-      "type": "settlement",
-      "status": "active",
-      "settlement_source": "['CLI', 'CF6']",
-      "tags": [
-        "weather",
-        "settlement",
-        "nws",
-        "kalshi"
-      ],
-      "summary": "Defines the official NWS settlement sources, station IDs, and publication timing assumptions for Kalshi weather markets.",
-      "headings": [
-        "NWS Settlement Rules",
-        "Official Settlement Sources",
-        "Station Mapping",
-        "Publication Timing",
-        "City-Specific Caveats",
-        "Implementation Constraints"
-      ],
-      "modified_utc": "2026-04-09T21:39:12.248591+00:00"
-    },
-    {
-      "path": "hf_space_deployment/README.md",
-      "title": "Algo Trade Hub Monitor",
+      "path": "docs/superpowers/plans/2026-09-23-algo-trade-hub-roadmap.md",
+      "title": "Algo-Trade-Hub: Improvement Roadmap",
       "domain": "unknown",
       "type": "note",
       "status": "unclassified",
       "settlement_source": "unspecified",
       "tags": [],
-      "summary": "Indexed note at hf_space_deployment/README.md.",
+      "summary": "Indexed note at docs/superpowers/plans/2026-09-23-algo-trade-hub-roadmap.md.",
       "headings": [
-        "Algo-Trade-Hub Walk-Forward Quant Factory"
+        "Algo-Trade-Hub: Improvement Roadmap",
+        "Context",
+        "Recommended Approach",
+        "Verification"
       ],
-      "modified_utc": "2026-03-23T23:06:13.931382+00:00"
+      "modified_utc": "2026-09-24T01:53:37.467138+00:00"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-23-settlement-realized-pnl.md",
+      "title": "Settlement + Realized P&L Writer Implementation Plan",
+      "domain": "unknown",
+      "type": "note",
+      "status": "unclassified",
+      "settlement_source": "unspecified",
+      "tags": [],
+      "summary": "Indexed note at docs/superpowers/plans/2026-09-23-settlement-realized-pnl.md.",
+      "headings": [
+        "Settlement + Realized P&L Writer Implementation Plan",
+        "Global Constraints",
+        "File Structure",
+        "Task 1: Pure settlement math",
+        "market_sentiment_tool/backend/tests/test_settlement.py",
+        "Bought at 10, exit at 12, 5 contracts -> +10",
+        "Sold at 10 (short), exit at 8, 5 contracts -> +10",
+        "market_sentiment_tool/backend/settlement.py"
+      ],
+      "modified_utc": "2026-09-24T01:52:33.661729+00:00"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-24-predictions-ledger-settlement-track-record.md",
+      "title": "Predictions Ledger + Settlement by Market Result + Track Record Implementation Plan",
+      "domain": "unknown",
+      "type": "note",
+      "status": "unclassified",
+      "settlement_source": "unspecified",
+      "tags": [],
+      "summary": "Indexed note at docs/superpowers/plans/2026-09-24-predictions-ledger-settlement-track-record.md.",
+      "headings": [
+        "Predictions Ledger + Settlement by Market Result + Track Record Implementation Plan",
+        "Global Constraints",
+        "Review Focus",
+        "File Structure",
+        "Task 1: Predictions ledger + track_record migrations",
+        "Task 2: Prediction writer (`tradehub/predictions.py`)",
+        "tests/test_predictions.py",
+        "tradehub/predictions.py"
+      ],
+      "modified_utc": "2026-09-24T15:59:30.302755+00:00"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-24-repo-cleanup.md",
+      "title": "Repo Cleanup Implementation Plan",
+      "domain": "unknown",
+      "type": "note",
+      "status": "unclassified",
+      "settlement_source": "unspecified",
+      "tags": [],
+      "summary": "Indexed note at docs/superpowers/plans/2026-09-24-repo-cleanup.md.",
+      "headings": [
+        "Repo Cleanup Implementation Plan",
+        "Global Constraints",
+        "Prerequisites (do these before Task 1)",
+        "File Structure (end state)",
+        "Task 1: Baseline test run + JUnit comparison tool",
+        "\u2500\u2500 Cleanup scratch (baseline test reports) \u2500\u2500\u2500\u2500\u2500\u2500",
+        "Task 2: Remove the sports engines",
+        "Add \"SP500 Predictor\" to sys.path so we can import its scripts module despite the space in the folder name"
+      ],
+      "modified_utc": "2026-09-24T10:56:56.760063+00:00"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-23-trade-hub-prediction-scope-design.md",
+      "title": "Trade Hub Prediction Scope \u2014 Design",
+      "domain": "unknown",
+      "type": "note",
+      "status": "unclassified",
+      "settlement_source": "unspecified",
+      "tags": [],
+      "summary": "Indexed note at docs/superpowers/specs/2026-09-23-trade-hub-prediction-scope-design.md.",
+      "headings": [
+        "Trade Hub Prediction Scope \u2014 Design",
+        "1. Problem",
+        "2. Evidence that drove the choices",
+        "3. Scope",
+        "4. Architecture",
+        "5. Hosting: Azure, scale to zero",
+        "5a. Backtesting suite",
+        "6. Promotion gate: shadow to promoted"
+      ],
+      "modified_utc": "2026-09-24T15:59:30.273579+00:00"
     },
     {
       "path": "implementation_plan.md",
@@ -546,7 +360,7 @@
         "High-Value System Edges",
         "Delivery Sequence"
       ],
-      "modified_utc": "2026-04-15T15:14:10.903619+00:00"
+      "modified_utc": "2026-09-24T15:59:30.274930+00:00"
     },
     {
       "path": "market_sentiment_tool/.lovable/plan.md",
@@ -584,14 +398,28 @@
       "modified_utc": "2026-02-23T18:43:32.199500+00:00"
     },
     {
-      "path": "quant_research_lab/Kalshi_historical_API_docmuntation.md",
+      "path": "research/README.md",
+      "title": "research/",
+      "domain": "unknown",
+      "type": "note",
+      "status": "unclassified",
+      "settlement_source": "unspecified",
+      "tags": [],
+      "summary": "Indexed note at research/README.md.",
+      "headings": [
+        "research/"
+      ],
+      "modified_utc": "2026-09-24T13:12:38.414774+00:00"
+    },
+    {
+      "path": "research/quant_lab/Kalshi_historical_API_docmuntation.md",
       "title": "Historical Data",
       "domain": "unknown",
       "type": "note",
       "status": "unclassified",
       "settlement_source": "unspecified",
       "tags": [],
-      "summary": "Indexed note at quant_research_lab/Kalshi_historical_API_docmuntation.md.",
+      "summary": "Indexed note at research/quant_lab/Kalshi_historical_API_docmuntation.md.",
       "headings": [
         "Historical Data",
         "Overview",
@@ -604,14 +432,14 @@
       "modified_utc": "2026-03-31T05:40:53.856630+00:00"
     },
     {
-      "path": "quant_research_lab/RESEARCH_EXPLAINED.md",
+      "path": "research/quant_lab/RESEARCH_EXPLAINED.md",
       "title": "\ud83e\uddec Research Lab: Technical Documentation",
       "domain": "unknown",
       "type": "note",
       "status": "unclassified",
       "settlement_source": "unspecified",
       "tags": [],
-      "summary": "Indexed note at quant_research_lab/RESEARCH_EXPLAINED.md.",
+      "summary": "Indexed note at research/quant_lab/RESEARCH_EXPLAINED.md.",
       "headings": [
         "\ud83e\uddec Research Lab: Technical Documentation",
         "\ud83c\udfd7\ufe0f The Quant Pipeline Overview",
@@ -623,6 +451,155 @@
         "\ud83d\udee0\ufe0f How to use this Lab"
       ],
       "modified_utc": "2026-03-30T17:25:57.586440+00:00"
+    },
+    {
+      "path": "research/weather_notes/APIs/NWS_API_Spec.md",
+      "title": "NWS API Spec",
+      "domain": "weather",
+      "type": "api_spec",
+      "status": "active",
+      "settlement_source": "['CLI', 'CF6']",
+      "tags": [
+        "weather",
+        "api",
+        "nws"
+      ],
+      "summary": "Defines the NWS endpoints and fields needed to anchor official settlement-aware weather workflows.",
+      "headings": [
+        "NWS API Spec",
+        "Purpose",
+        "Core Endpoints",
+        "Required Concepts",
+        "Implementation Constraints"
+      ],
+      "modified_utc": "2026-04-09T21:39:12.248969+00:00"
+    },
+    {
+      "path": "research/weather_notes/APIs/OpenMeteo_Ensemble_API.md",
+      "title": "Open-Meteo Ensemble API",
+      "domain": "weather",
+      "type": "api_spec",
+      "status": "active",
+      "settlement_source": "unspecified",
+      "tags": [
+        "weather",
+        "api",
+        "open-meteo",
+        "ensemble"
+      ],
+      "summary": "Captures the request and response schema assumptions for Open-Meteo ensemble forecasts used in weather probability modeling.",
+      "headings": [
+        "Open-Meteo Ensemble API",
+        "Purpose",
+        "Example Request",
+        "Response Shape to Preserve",
+        "Required Fields",
+        "Ensemble Modeling Notes",
+        "Units and Timezone Assumptions",
+        "Horizon Mapping"
+      ],
+      "modified_utc": "2026-04-09T21:39:12.248850+00:00"
+    },
+    {
+      "path": "research/weather_notes/Features/weather_features_schema.md",
+      "title": "Weather Features Schema",
+      "domain": "weather",
+      "type": "feature_schema",
+      "status": "active",
+      "settlement_source": "['CLI', 'CF6']",
+      "tags": [
+        "weather",
+        "features",
+        "schema"
+      ],
+      "summary": "Defines the first weather feature contract for ensemble-based Kalshi probability modeling.",
+      "headings": [
+        "Weather Features Schema",
+        "Core Fields",
+        "Derived Values",
+        "Constraints"
+      ],
+      "modified_utc": "2026-04-09T21:39:12.249301+00:00"
+    },
+    {
+      "path": "research/weather_notes/Markets/Kalshi_Weather_Market_Mapping.md",
+      "title": "Kalshi Weather Market Mapping",
+      "domain": "weather",
+      "type": "market_mapping",
+      "status": "active",
+      "settlement_source": "['CLI', 'CF6']",
+      "tags": [
+        "weather",
+        "kalshi",
+        "mapping"
+      ],
+      "summary": "Maps city-level weather contracts to station IDs, settlement sources, and strike interpretation rules.",
+      "headings": [
+        "Kalshi Weather Market Mapping",
+        "Daily High Temperature Markets",
+        "Initial Mapping Table",
+        "Strike Handling"
+      ],
+      "modified_utc": "2026-04-09T21:39:12.249169+00:00"
+    },
+    {
+      "path": "research/weather_notes/Research/Weather_Market_Research.md",
+      "title": "Weather Market Research",
+      "domain": "weather",
+      "type": "research",
+      "status": "active",
+      "settlement_source": "['CLI', 'CF6']",
+      "tags": [
+        "weather",
+        "research",
+        "kalshi"
+      ],
+      "summary": "Consolidates the first-pass research questions and implementation assumptions for the Weather Oracle.",
+      "headings": [
+        "Weather Market Research",
+        "Objective",
+        "Immediate Research Questions",
+        "Initial Modeling Direction"
+      ],
+      "modified_utc": "2026-04-09T21:39:12.249414+00:00"
+    },
+    {
+      "path": "research/weather_notes/Settlement/NWS_Settlement_Rules.md",
+      "title": "NWS Settlement Rules",
+      "domain": "weather",
+      "type": "settlement",
+      "status": "active",
+      "settlement_source": "['CLI', 'CF6']",
+      "tags": [
+        "weather",
+        "settlement",
+        "nws",
+        "kalshi"
+      ],
+      "summary": "Defines the official NWS settlement sources, station IDs, and publication timing assumptions for Kalshi weather markets.",
+      "headings": [
+        "NWS Settlement Rules",
+        "Official Settlement Sources",
+        "Station Mapping",
+        "Publication Timing",
+        "City-Specific Caveats",
+        "Implementation Constraints"
+      ],
+      "modified_utc": "2026-04-09T21:39:12.248591+00:00"
+    },
+    {
+      "path": "shared/migrations/README.md",
+      "title": "Superseded",
+      "domain": "unknown",
+      "type": "note",
+      "status": "unclassified",
+      "settlement_source": "unspecified",
+      "tags": [],
+      "summary": "Indexed note at shared/migrations/README.md.",
+      "headings": [
+        "Superseded"
+      ],
+      "modified_utc": "2026-09-24T01:46:46.194689+00:00"
     },
     {
       "path": "task.md",
@@ -639,7 +616,7 @@
         "Immediate Next Steps",
         "Stop Point"
       ],
-      "modified_utc": "2026-04-15T15:14:10.903080+00:00"
+      "modified_utc": "2026-09-24T15:59:30.277128+00:00"
     }
   ]
 }

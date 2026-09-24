@@ -3,15 +3,11 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import sys
 import time
 from pathlib import Path
 
 import requests
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 from shared.kalshi_ws import load_rsa_private_key, sign_kalshi_message
 

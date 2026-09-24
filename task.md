@@ -1,7 +1,8 @@
 # Active Task
 
 ## Current Focus
-- Complete the cleanup and unification pass across runtime storage, operator interfaces, and primary discovery paths.
+- Rollout step 1 (repo cleanup) complete. Next: step 2, predictions ledger + settlement by market result + track record.
+  Draft plan: docs/superpowers/plans/2026-09-24-predictions-ledger-settlement-track-record.md (needs review fixes before execution).
 
 ## Immediate Next Steps
 - Re-run `graphify update .` from a normal shell so the post-cleanup graph snapshot replaces the April 13 baseline.

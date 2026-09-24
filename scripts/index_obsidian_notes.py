@@ -25,6 +25,7 @@ IGNORED_PARTS = {
     "node_modules",
     "dist",
     "build",
+    ".superpowers",
 }
 REQUIRED_KEYS = ("title", "type", "domain", "status", "settlement_source", "tags", "summary")
 
