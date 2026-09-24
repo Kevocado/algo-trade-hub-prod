@@ -200,31 +200,3 @@ export function useKalshiEdges() {
   return { edges, loading };
 }
 
-export function useFPLOptimizations() {
-  const [optimizations, setOptimizations] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const fetchOpts = async () => {
-      const { data } = await supabase
-        .from("fpl_optimizations" as any)
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(20);
-      if (data) setOptimizations(data);
-      setLoading(false);
-    };
-    fetchOpts();
-
-    const channel = supabase
-      .channel("fpl_opts_changes")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "fpl_optimizations" }, (payload) => {
-        setOptimizations((prev) => [payload.new, ...prev].slice(0, 50));
-      })
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, []);
-
-  return { optimizations, loading };
-}

@@ -87,3 +87,20 @@ def test_research_is_parked_and_not_imported():
         and f != "tests/test_repo_layout.py"
     ]
     assert offenders == []
+
+
+def test_dead_code_and_retired_targets_removed():
+    gone = [
+        "SP500 Predictor/src/features.py", "SP500 Predictor/src/market_scanner.py", "SP500 Predictor/src/model_daily.py",
+        "SP500 Predictor/src/modeling.py", "SP500 Predictor/src/sentiment.py", "SP500 Predictor/src/utils.py",
+        "SP500 Predictor/streamlit_app.py", "SP500 Predictor/.github", "SP500 Predictor/scripts/push_to_hf.sh",
+        "hf_space_deployment", "FPL_Optimizer", "website", "ncca_api-1.json", ".bolt",
+    ]
+    assert tracked(*gone) == []
+
+
+def test_no_fpl_or_hf_space_references_in_runtime_code():
+    runtime = {f: t for f, t in tracked_python_text().items() if f != "tests/test_repo_layout.py"}
+    assert [f for f, t in runtime.items() if "FPL_Optimizer" in t or "fpl_optimizations" in t] == []
+    hook = (REPO / "market_sentiment_tool/src/hooks/useSupabaseData.ts").read_text(encoding="utf-8")
+    assert "useFPLOptimizations" not in hook

@@ -2,7 +2,7 @@
 config.py — Canonical configuration loader for Algo-Trade-Hub
 =============================================================
 Single source of truth for all environment variables. Every sub-system
-(market_sentiment_tool, SP500 Predictor, FPL_Optimizer, shared scanners)
+(market_sentiment_tool, SP500 Predictor, shared scanners)
 imports from here. No sub-system keeps its own .env or load_dotenv call.
 
 Usage (with PYTHONPATH=. set in Procfile):
