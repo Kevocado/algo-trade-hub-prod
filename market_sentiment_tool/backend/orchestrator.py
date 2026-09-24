@@ -982,7 +982,7 @@ def _model_yes_probability(model: Any, feature_frame: pd.DataFrame) -> float:
         return 1.0 if pred_val > 0 else 0.0
 
     if callable(model):
-        pred_val = float(model(price_dollars))
+        pred_val = float(model(x))
         return max(0.0, min(1.0, pred_val))
 
     raise TypeError("Unsupported model type (no predict/predict_proba and not callable).")
