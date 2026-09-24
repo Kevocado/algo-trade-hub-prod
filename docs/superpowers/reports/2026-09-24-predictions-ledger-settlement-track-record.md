@@ -61,7 +61,43 @@
 
 ## Task 3 — Settlement math
 
-_Pending implementation._
+- **Files changed:** `tradehub/settlement.py`, `tests/test_settlement.py`.
+- **RED command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_settlement.py -v
+  ```
+  RED output tail:
+  ```text
+  collecting ... collected 0 items / 1 error
+
+  ==================================== ERRORS ====================================
+  __________________ ERROR collecting tests/test_settlement.py ___________________
+  ImportError while importing test module '/Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/tests/test_settlement.py'.
+  Hint: make sure your test modules/packages have valid Python names.
+  Traceback:
+  ../../../.local/share/uv/python/cpython-3.12.14-macos-aarch64-none/lib/python3.12/importlib/__init__.py:90: in import_module
+      return _bootstrap._gcd_import(name[level:], package, level)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  tests/test_settlement.py:3: in <module>
+      from tradehub import settlement
+  E   ImportError: cannot import name 'settlement' from 'tradehub' (/Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/tradehub/__init__.py)
+  =========================== short test summary info ============================
+  ERROR tests/test_settlement.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  ============================== 1 error in 0.15s ===============================
+  ```
+- **GREEN command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_settlement.py -v
+  ```
+  GREEN output tail:
+  ```text
+  tests/test_settlement.py::test_settle_prediction_row_open_market_returns_none PASSED [ 92%]
+  tests/test_settlement.py::test_settle_prediction_row_canceled_marks_canceled_without_fabricating_result PASSED [100%]
+
+  ============================== 13 passed in 0.02s ==============================
+  ```
+- **Deviation:** None. The RED run produced the brief-approved collection-error variant (`ImportError` rather than `ModuleNotFoundError`).
 
 ## Task 4 — Settlement I/O
 
