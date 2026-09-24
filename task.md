@@ -2,7 +2,7 @@
 
 ## Current Focus
 - Rollout step 1 (repo cleanup) complete. Next: step 2, predictions ledger + settlement by market result + track record.
-  Draft plan: docs/superpowers/plans/2026-09-24-predictions-ledger-settlement-track-record.md (needs review fixes before execution).
+  Plan (reviewed, ready): docs/superpowers/plans/2026-09-24-predictions-ledger-settlement-track-record.md
 
 ## Immediate Next Steps
 - Re-run `graphify update .` from a normal shell so the post-cleanup graph snapshot replaces the April 13 baseline.
