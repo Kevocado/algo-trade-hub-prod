@@ -158,6 +158,23 @@ def test_max_drawdown_follows_market_settlement_order():
     assert result.max_drawdown == pytest.approx(1.06)
 
 
+def test_max_drawdown_uses_explicit_settlement_time_not_market_close():
+    histories = {
+        "A": MarketHistory("A", "no", T0 + timedelta(hours=4), [Candle(T0 - timedelta(hours=1), 0.20, 0.80, 1.0)], [], T0 + timedelta(hours=1)),
+        "B": MarketHistory("B", "no", T0 + timedelta(hours=5), [Candle(T0 - timedelta(hours=1), 0.20, 0.80, 1.0)], [], T0 + timedelta(hours=3)),
+        "C": MarketHistory("C", "yes", T0 + timedelta(hours=6), [Candle(T0 - timedelta(hours=1), 0.30, 0.40, 1.0)], [], T0 + timedelta(hours=2)),
+    }
+    decisions = [
+        Decision("A", T0, 0.90),
+        Decision("B", T0 + timedelta(minutes=1), 0.90),
+        Decision("C", T0 + timedelta(minutes=2), 0.60),
+    ]
+
+    result = run_backtest(engine="weather", cadence="daily", decisions=decisions, histories=histories)
+
+    assert result.max_drawdown == pytest.approx(1.06)
+
+
 def test_log_loss_is_numerically_clipped_and_propagates_to_result():
     assert backtest_metrics.log_loss(0.0, "yes") == pytest.approx(-math.log(1e-15))
     assert backtest_metrics.log_loss(1.0, "no") == pytest.approx(-math.log(1e-15))

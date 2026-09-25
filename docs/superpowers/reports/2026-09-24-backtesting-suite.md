@@ -556,3 +556,26 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
   ```
 - **Implementation:** retained each fill's `MarketHistory.close_time` as the settlement-order key, sorted by settlement time with deterministic fill tie-breakers, and fed only that ordered P&L sequence to `max_drawdown`; total P&L and fill output order remain unchanged.
 - **Deviation:** the regression was first drafted with two markets, which could not distinguish the two orderings; it was strengthened to three markets before the final RED/GREEN cycle.
+
+## Review follow-up — explicit settlement timestamp
+
+- **Finding from final code review:** `MarketHistory.close_time` is the trading-close boundary, not necessarily Kalshi's payout settlement timestamp; using it alone could still order drawdown incorrectly.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py::test_max_drawdown_uses_explicit_settlement_time_not_market_close -q
+  ```
+  RED output tail:
+  ```text
+  TypeError: MarketHistory.__init__() takes 6 positional arguments but 7 were given
+  1 failed in 0.52s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  GREEN output tail:
+  ```text
+  16 passed in 0.26s
+  ```
+- **Implementation:** added a trailing optional `MarketHistory.settled_at`, used it for settlement ordering when present, retained `close_time` for decision/fill validation and as a legacy fallback, and kept total P&L summation in deterministic decision order.
+- **Cross-branch note:** the stacked data-layer branch has consumers that predate the new explicit `market_settled_at` candle argument. No files from that separate branch were edited here; its integration must pass market `settlement_ts` when rebased, rather than guessing a tier in this branch.

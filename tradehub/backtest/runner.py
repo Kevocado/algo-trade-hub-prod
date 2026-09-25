@@ -43,6 +43,7 @@ class MarketHistory:
     close_time: datetime
     candles: list[Candle]
     trades: list[Trade]
+    settled_at: datetime | None = None
 
 
 @dataclass
@@ -76,6 +77,7 @@ def run_backtest(
         raise ValueError(f"mode must be 'taker' or 'maker', got {mode!r}")
     rows: list[dict[str, Any]] = []
     fills: list[Fill] = []
+    pnls: list[float] = []
     settled_pnls: list[tuple[datetime, Fill, float]] = []
     for decision in sorted(decisions, key=_decision_sort_key):
         check_no_lookahead(decision)
@@ -91,8 +93,11 @@ def run_backtest(
             fill = maker_fill(decision, history.candles, history.trades, history.close_time,
                               contracts=contracts, min_edge_pct=min_edge_pct)
         if fill is not None:
+            pnl = fill_pnl(fill, history.result)
             fills.append(fill)
-            settled_pnls.append((history.close_time, fill, fill_pnl(fill, history.result)))
+            pnls.append(pnl)
+            settlement_time = history.settled_at or history.close_time
+            settled_pnls.append((settlement_time, fill, pnl))
     summary = compute_engine_summary(rows)
     cal_buckets = compute_calibration(rows)
     mean_log_loss = (
@@ -111,7 +116,7 @@ def run_backtest(
             item[1].contracts,
         ),
     )
-    total = sum(pnl for _, _, pnl in settlement_order)
+    total = sum(pnls)
     gate = check_promotion_gate(engine=engine, cadence=cadence, summary=summary, cal_buckets=cal_buckets,
                                 simulated_pnl_after_fees=total if fills else None)
     return BacktestResult(
