@@ -206,3 +206,76 @@ rows.append(prediction_row(decision.our_prob, market_prob, history.result,
 `metrics.py` and `track_record.py` needed no adjustment; their hunk contexts happened to
 survive the PR #4 fixes (`prediction_row` gained a `log_loss` key, which the patch left
 untouched).
+
+---
+
+## Task 3 — Settlement keeps engine inputs, caches markets, isolates errors
+
+`tradehub/settlement.py` and `tests/test_settlement.py`.
+
+### RED
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+    /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python \
+    -m pytest tests/test_settlement.py -q
+E           RuntimeError: PostgREST 500
+tests/test_settlement.py:293: RuntimeError
+=========================== short test summary info ============================
+FAILED tests/test_settlement.py::test_settle_prediction_row_canceled_marks_canceled_without_fabricating_result
+FAILED tests/test_settlement.py::test_run_settlement_pass_settles_finalized_and_skips_others
+FAILED tests/test_settlement.py::test_run_settlement_pass_is_idempotent - Ass...
+FAILED tests/test_settlement.py::test_run_settlement_pass_counts_conditional_update_miss_as_skipped
+FAILED tests/test_settlement.py::test_run_settlement_pass_no_open_predictions
+FAILED tests/test_settlement.py::test_settled_row_keeps_engine_inputs_and_stamps_settlement
+FAILED tests/test_settlement.py::test_run_settlement_pass_fetches_each_ticker_once
+FAILED tests/test_settlement.py::test_run_settlement_pass_failed_fetch_skips_all_rows_for_that_ticker_once
+FAILED tests/test_settlement.py::test_run_settlement_pass_isolates_write_errors
+9 failed, 14 passed in 0.12s
+```
+
+The `RuntimeError` escaping the pass is itself part of the RED evidence: a single failing
+write currently aborts the whole pass.
+
+### GREEN
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+    /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python \
+    -m pytest tests/test_settlement.py -q
+.......................                                                  [100%]
+23 passed in 0.02s
+```
+
+Full suite at this commit:
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+    /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest -q
+349 -> 353 passed in 5.23s        (4 new tests, no failures)
+
+$ ... -m ruff check --select F401,F811,F821 tradehub tests
+All checks passed!
+```
+
+### Implementation summary
+
+- `settle_prediction_row` gained a keyword-only `now` and now writes the Kalshi JSON to
+  `settlement_payload` plus an ISO-UTC `settled_at`, on both the SETTLED and CANCELED
+  paths. The `raw_payload` key is gone from the update, so the engine's inputs survive.
+- `run_settlement_pass` keeps a per-ticker `markets` cache and a `failed` set. A ticker is
+  fetched at most once per pass; a fetch failure records the ticker in `failed`, bumps
+  `fetch_errors` once, and skips that ticker's remaining rows without refetching.
+- The `apply_prediction_settlement` call is wrapped: an exception bumps `write_errors` and
+  `skipped` and continues, so one PostgREST 500 no longer aborts the pass. A conditional
+  update that matches no row still counts as `skipped`, as before.
+- The summary dict now always carries `checked`, `settled`, `canceled`, `skipped`,
+  `fetch_errors` and `write_errors`.
+- `now` is computed once per pass and threaded into every row, so all rows settled in a
+  pass share one consistent timestamp.
+
+### Deviations
+
+None. Both hunks applied cleanly (`Applied patch to 'tests/test_settlement.py' cleanly.`
+and `Applied patch to 'tradehub/settlement.py' cleanly.`); PR #4 had not touched this
+module.

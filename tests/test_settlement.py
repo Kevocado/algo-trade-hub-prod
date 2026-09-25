@@ -79,7 +79,8 @@ def test_settle_prediction_row_canceled_marks_canceled_without_fabricating_resul
     row = {"id": "abc", "our_prob": 0.7, "market_prob": 0.5}
     market = {"market": {"status": "finalized", "result": None}}
     update = settlement.settle_prediction_row(row, market)
-    assert update == {"id": "abc", "status": "CANCELED"}
+    assert update["id"] == "abc" and update["status"] == "CANCELED"
+    assert update["settlement_payload"] == market and update["settled_at"]
     assert "result" not in update and "brier" not in update
 
 
@@ -204,7 +205,8 @@ def test_run_settlement_pass_settles_finalized_and_skips_others():
 
     supa = _FakeSupaIO(rows)
     summary = settlement.run_settlement_pass(supa, fake_fetch)
-    assert summary == {"checked": 4, "settled": 1, "canceled": 1, "skipped": 2}
+    assert summary == {"checked": 4, "settled": 1, "canceled": 1, "skipped": 2,
+                       "fetch_errors": 1, "write_errors": 0}
     statuses = {u["id"]: u["status"] for u in supa.updates}
     assert statuses == {"a": "SETTLED", "c": "CANCELED"}
 
@@ -219,7 +221,7 @@ def test_run_settlement_pass_is_idempotent():
     supa.rows = [{**row, "status": "SETTLED"}]
     supa.updates.clear()
     second = settlement.run_settlement_pass(supa, lambda _t: market)
-    assert second == {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0}
+    assert second == {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0, "fetch_errors": 0, "write_errors": 0}
     assert supa.updates == []
 
 
@@ -232,7 +234,8 @@ def test_run_settlement_pass_counts_conditional_update_miss_as_skipped(monkeypat
 
     summary = settlement.run_settlement_pass(supa, lambda _t: market)
 
-    assert summary == {"checked": 2, "settled": 1, "canceled": 0, "skipped": 1}
+    assert summary == {"checked": 2, "settled": 1, "canceled": 0, "skipped": 1,
+                       "fetch_errors": 0, "write_errors": 0}
     assert [update["id"] for update in supa.updates] == ["a"]
     assert row["status"] == "SETTLED"
 
@@ -240,4 +243,56 @@ def test_run_settlement_pass_counts_conditional_update_miss_as_skipped(monkeypat
 def test_run_settlement_pass_no_open_predictions():
     supa = _FakeSupaIO([])
     summary = settlement.run_settlement_pass(supa, lambda _t: (_ for _ in ()).throw(AssertionError("must not fetch")))
-    assert summary == {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0}
+    assert summary == {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0, "fetch_errors": 0, "write_errors": 0}
+
+
+def test_settled_row_keeps_engine_inputs_and_stamps_settlement():
+    row = {"id": "abc", "our_prob": 0.7, "market_prob": 0.5, "raw_payload": {"highs": {"gfs": 71.2}}}
+    market = {"market": {"status": "finalized", "result": "yes"}}
+    update = settlement.settle_prediction_row(row, market)
+    assert "raw_payload" not in update  # the engine's inputs are never overwritten
+    assert update["settlement_payload"] == market
+    assert update["settled_at"]
+
+
+def test_run_settlement_pass_fetches_each_ticker_once():
+    rows = [_open_row(f"h{i}", "KXFINAL-YES", 0.7, 0.5) for i in range(24)]
+    market = {"market": {"status": "finalized", "result": "yes"}}
+    calls = []
+
+    def fetch(ticker):
+        calls.append(ticker)
+        return market
+
+    summary = settlement.run_settlement_pass(_FakeSupaIO(rows), fetch)
+    assert calls == ["KXFINAL-YES"]
+    assert summary["settled"] == 24
+
+
+def test_run_settlement_pass_failed_fetch_skips_all_rows_for_that_ticker_once():
+    rows = [_open_row(f"h{i}", "KXDOWN", 0.7, 0.5) for i in range(3)]
+    calls = []
+
+    def fetch(ticker):
+        calls.append(ticker)
+        raise ValueError("429 Too Many Requests")
+
+    summary = settlement.run_settlement_pass(_FakeSupaIO(rows), fetch)
+    assert calls == ["KXDOWN"]
+    assert summary["fetch_errors"] == 1 and summary["skipped"] == 3
+
+
+def test_run_settlement_pass_isolates_write_errors(monkeypatch):
+    rows = [_open_row("a", "KXFINAL-YES", 0.7, 0.5), _open_row("b", "KXFINAL-YES", 0.6, 0.5)]
+    market = {"market": {"status": "finalized", "result": "yes"}}
+    supa = _FakeSupaIO(rows)
+    real_apply = settlement.apply_prediction_settlement
+
+    def flaky_apply(client, update):
+        if update["id"] == "a":
+            raise RuntimeError("PostgREST 500")
+        return real_apply(client, update)
+
+    monkeypatch.setattr(settlement, "apply_prediction_settlement", flaky_apply)
+    summary = settlement.run_settlement_pass(supa, lambda _t: market)
+    assert summary["write_errors"] == 1 and summary["settled"] == 1
