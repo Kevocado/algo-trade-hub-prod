@@ -743,3 +743,36 @@ The exact public endpoint paths and 429 evidence above are the final rerun resul
   ```
 - **Implementation:** `scan_weather()` records and continues past a city failure when invoked by the orchestrator; `main()` runs weather and gas independently, logs per-engine/per-city counts, writes successful engine batches separately, preserves a parseable JSON summary, and returns `1` for any scan or write failure. `upsert_opportunities()` no longer catches or prints persistence errors.
 
+### Fix 6 — RBOB roll-safe windows and bounded backtest history
+
+- **Files changed:** `tradehub/data/rbob.py`, `tradehub/engines/gas.py`, `tradehub/scripts/backtest_engines.py`, `tests/test_gas_engine.py`, `tests/test_backtest_engines.py`, and this evidence report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_gas_engine.py -q
+  ```
+  RED output tail:
+  ```text
+  E       ImportError: cannot import name 'rbob_change_window' from 'tradehub.engines.gas'
+  1 error in 0.56s
+  ```
+- **GREEN commands:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_gas_engine.py tests/test_backtest_engines.py::test_gas_decision_omits_rbob_features_for_roll_crossing_window tests/test_backtest_engines.py::test_gas_cli_sizes_rbob_from_backtest_start -q
+  ```
+  ```text
+  10 passed in 0.56s
+  ```
+  ```sh
+  .venv/bin/ruff check --select F401,F811,F821 tradehub tests
+  ```
+  ```text
+  All checks passed!
+  ```
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  ```
+  ```text
+  298 passed in 5.06s
+  ```
+- **Implementation:** RBOB observations carry the expected front contract code and a roll boundary; `rbob_change_window()` rejects any window containing mixed or unknown contracts, and gas decisions attach only the exact same-contract observations used by the feature. The yfinance history call now uses explicit `start`/`end` bounds derived from `--start --train-days` through `--end`; live scans retain the two-year default.
+

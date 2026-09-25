@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 from tradehub.backtest.pit import Observation
 from tradehub.markets import KalshiMarket, event_date, prob_in_interval, yes_interval
@@ -31,22 +31,64 @@ class GasModel:
 DEFAULT_GAS = GasModel(alpha=0.0, beta=0.0, sigma=0.01)
 
 
-def rbob_change(closes: list[Observation], as_of: datetime, window: int = RBOB_WINDOW) -> float | None:
+def _contract_id(observation: Observation) -> str | None:
+    parts = observation.name.split(":")
+    if len(parts) != 3 or not parts[1]:
+        return None
+    return parts[1]
+
+
+def _observation_date(observation: Observation) -> date:
+    return date.fromisoformat(observation.name.rsplit(":", 1)[1])
+
+
+def rbob_change_window(
+    closes: list[Observation],
+    as_of: datetime,
+    window: int = RBOB_WINDOW,
+    *,
+    roll_dates: list[date] | None = None,
+) -> tuple[float, tuple[Observation, ...]] | None:
+    """Return a same-contract RBOB change and its exact six-observation window."""
     known = sorted((o for o in closes if o.published_at <= as_of), key=lambda o: o.published_at)
     if len(known) < window + 1:
         return None
-    return known[-1].value - known[-1 - window].value
+    sample = tuple(known[-(window + 1):])
+    contracts = {_contract_id(observation) for observation in sample}
+    if any(contract is None for contract in contracts) or len(contracts) != 1:
+        return None
+    if roll_dates:
+        first_day = _observation_date(sample[0])
+        last_day = _observation_date(sample[-1])
+        if any(first_day < roll_day <= last_day for roll_day in roll_dates):
+            return None
+    return sample[-1].value - sample[0].value, sample
+
+
+def rbob_change(
+    closes: list[Observation],
+    as_of: datetime,
+    window: int = RBOB_WINDOW,
+    *,
+    roll_dates: list[date] | None = None,
+) -> float | None:
+    result = rbob_change_window(closes, as_of, window, roll_dates=roll_dates)
+    return None if result is None else result[0]
 
 
 def gas_training_pairs(
-    aaa: list[Observation], rbob: list[Observation], window: int = RBOB_WINDOW
+    aaa: list[Observation],
+    rbob: list[Observation],
+    window: int = RBOB_WINDOW,
+    *,
+    roll_dates: list[date] | None = None,
 ) -> list[tuple[float, float, datetime]]:
     ordered = sorted(aaa, key=lambda o: event_date(o.name))
     pairs = []
     for prev, cur in zip(ordered, ordered[1:]):
         if (event_date(cur.name) - event_date(prev.name)).days != 1:
             continue
-        x = rbob_change(rbob, prev.published_at, window)
+        x = rbob_change(rbob, prev.published_at, window, roll_dates=roll_dates)
         if x is None:
             continue
         pairs.append((x, cur.value - prev.value, cur.published_at))

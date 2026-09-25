@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -14,6 +14,7 @@ from tradehub.engines.gas import (
     gas_prob,
     gas_training_pairs,
     rbob_change,
+    rbob_change_window,
 )
 from tradehub.markets import parse_market, prob_in_interval
 
@@ -27,19 +28,64 @@ def test_rbob_closes_publishes_at_1800_new_york():
     frame = pd.DataFrame({"Close": [3.30, 3.40]},
                          index=pd.DatetimeIndex(["2026-09-22", "2026-09-23"]).tz_localize("America/New_York"))
     obs = rbob_closes(history_fn=lambda: frame)
-    assert [o.name for o in obs] == ["RBOB:2026-09-22", "RBOB:2026-09-23"]
+    assert [o.name for o in obs] == ["RBOB:RBV26.NYM:2026-09-22", "RBOB:RBV26.NYM:2026-09-23"]
     assert obs[0].published_at == datetime(2026, 9, 22, 22, 0, tzinfo=timezone.utc)  # 18:00 EDT
     assert obs[1].value == pytest.approx(3.40)
 
 
+def test_rbob_closes_changes_contract_at_the_front_month_boundary():
+    frame = pd.DataFrame(
+        {"Close": [3.30, 3.40]},
+        index=pd.DatetimeIndex(["2026-08-31", "2026-09-01"]).tz_localize("America/New_York"),
+    )
+
+    obs = rbob_closes(history_fn=lambda: frame)
+
+    assert [o.name for o in obs] == ["RBOB:RBU26.NYM:2026-08-31", "RBOB:RBV26.NYM:2026-09-01"]
+
+
+def test_rbob_closes_passes_backtest_bounds_to_history():
+    calls = []
+    frame = pd.DataFrame(
+        {"Close": [3.3]},
+        index=pd.DatetimeIndex(["2026-07-01"]).tz_localize("America/New_York"),
+    )
+
+    def history_fn(start=None, end=None):
+        calls.append({"start": start, "end": end})
+        return frame
+
+    rbob_closes(start=date(2026, 7, 1), end=date(2026, 7, 24), history_fn=history_fn)
+
+    assert calls == [{"start": date(2026, 7, 1), "end": date(2026, 7, 24)}]
+
+
 def _rbob(values):
-    return [Observation(f"RBOB:{i}", v, T0 + timedelta(days=i)) for i, v in enumerate(values)]
+    return [Observation(f"RBOB:RBU26.NYM:{i}", v, T0 + timedelta(days=i)) for i, v in enumerate(values)]
 
 
 def test_rbob_change_uses_only_known_closes():
     closes = _rbob([3.0, 3.1, 3.2, 3.3, 3.4, 3.5, 9.9])
     assert rbob_change(closes, T0 + timedelta(days=5), window=5) == pytest.approx(0.5)
     assert rbob_change(closes, T0 + timedelta(days=4), window=5) is None
+
+
+def test_rbob_change_drops_windows_spanning_a_front_month_roll():
+    closes = [
+        Observation("RBOB:RBU26.NYM:2026-08-17", 3.20, T0),
+        Observation("RBOB:RBU26.NYM:2026-08-18", 3.30, T0 + timedelta(days=1)),
+        Observation("RBOB:RBU26.NYM:2026-08-19", 3.40, T0 + timedelta(days=2)),
+        Observation("RBOB:RBV26.NYM:2026-08-20", 3.00, T0 + timedelta(days=3)),
+        Observation("RBOB:RBV26.NYM:2026-08-21", 3.10, T0 + timedelta(days=4)),
+        Observation("RBOB:RBV26.NYM:2026-08-24", 3.10, T0 + timedelta(days=5)),
+        Observation("RBOB:RBV26.NYM:2026-08-25", 3.20, T0 + timedelta(days=6)),
+        Observation("RBOB:RBV26.NYM:2026-08-26", 3.30, T0 + timedelta(days=7)),
+        Observation("RBOB:RBV26.NYM:2026-08-27", 3.40, T0 + timedelta(days=8)),
+    ]
+
+    assert rbob_change(closes, T0 + timedelta(days=5), window=5) is None
+    assert rbob_change(closes, T0 + timedelta(days=8), window=5) == pytest.approx(0.40)
+    assert rbob_change_window(closes, T0 + timedelta(days=8), window=5)[1][0].name.startswith("RBOB:RBV26.NYM:")
 
 
 def test_gas_training_pairs_consecutive_days_only():

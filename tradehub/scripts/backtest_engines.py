@@ -25,11 +25,10 @@ from tradehub.data.weather import WEATHER_CITIES, City, historical_forecast_high
 from tradehub.engines.gas import (
     GAS_ENGINE_VERSION,
     GAS_SERIES,
-    RBOB_WINDOW,
     fit_gas_model,
     gas_prob,
     gas_training_pairs,
-    rbob_change,
+    rbob_change_window,
 )
 from tradehub.engines.weather import (
     MIN_ERROR_PAIRS,
@@ -110,8 +109,10 @@ def build_gas_decisions(markets: list[KalshiMarket], aaa: list[Observation], rbo
             for x, y, published in gas_training_pairs(known, rbob_sorted)
             if published <= decided_at
         ])
-        prob = gas_prob(market, last.value, horizon, rbob_change(rbob_sorted, decided_at), model)
-        used_rbob = tuple(o for o in rbob_sorted if o.published_at <= decided_at)[-(RBOB_WINDOW + 1):]
+        rbob_window = rbob_change_window(rbob_sorted, decided_at)
+        rbob_x = None if rbob_window is None else rbob_window[0]
+        used_rbob = () if rbob_window is None else rbob_window[1]
+        prob = gas_prob(market, last.value, horizon, rbob_x, model)
         decisions.append(Decision(market.ticker, decided_at, prob, (last,) + used_rbob))
     return decisions
 
@@ -159,9 +160,13 @@ def main(argv: list[str] | None = None) -> int:
         "--train-days",
         type=int,
         default=90,
-        help="days of history before --start used to fit the weather error model",
+        help="days of history before --start used for weather calibration and RBOB loading",
     )
     args = parser.parse_args(argv)
+    if args.train_days < 0:
+        parser.error("--train-days must be >= 0")
+    if args.end < args.start:
+        parser.error("--end must not precede --start")
 
     client = KalshiHistoryClient()
     series = args.series or ("KXHIGHNY" if args.engine == "weather" else GAS_SERIES)
@@ -192,7 +197,8 @@ def main(argv: list[str] | None = None) -> int:
         version = WEATHER_ENGINE_VERSION
     else:
         aaa = settlement_observations(settled_raws)
-        decisions = build_gas_decisions(markets, aaa, rbob_closes())
+        train_from = args.start - timedelta(days=args.train_days)
+        decisions = build_gas_decisions(markets, aaa, rbob_closes(start=train_from, end=args.end))
         version = GAS_ENGINE_VERSION
     histories = _histories(
         client,

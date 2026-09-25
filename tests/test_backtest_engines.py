@@ -76,7 +76,7 @@ def test_gas_decisions_use_only_published_inputs():
     aaa = [Observation(f"KXAAAGASD-{(start + timedelta(days=i)).strftime('%y%b%d').upper()}", 4.00 + 0.001 * i,
                        datetime.combine(start + timedelta(days=i), datetime.min.time(), timezone.utc) + timedelta(hours=12))
            for i in range(40)]
-    rbob = [Observation(f"RBOB:{i}", 3.0 + 0.01 * i,
+    rbob = [Observation(f"RBOB:RBU26.NYM:{i}", 3.0 + 0.01 * i,
                         datetime.combine(start + timedelta(days=i), datetime.min.time(), timezone.utc) - timedelta(hours=2))
             for i in range(40)]
     target = start + timedelta(days=35)
@@ -88,6 +88,24 @@ def test_gas_decisions_use_only_published_inputs():
     last = [o for o in d.features if o.name.startswith("KXAAAGASD")][0]
     assert last.published_at <= d.decided_at
     assert last.name.endswith(target.replace(day=target.day - 1).strftime("%y%b%d").upper())
+
+
+def test_gas_decision_omits_rbob_features_for_roll_crossing_window():
+    target = date(2026, 8, 10)
+    aaa = [Observation("KXAAAGASD-26AUG09", 4.0, datetime(2026, 8, 9, 12, tzinfo=timezone.utc))]
+    rbob = [
+        Observation("RBOB:RBU26.NYM:2026-08-04", 3.0, datetime(2026, 8, 4, 22, tzinfo=timezone.utc)),
+        Observation("RBOB:RBU26.NYM:2026-08-05", 3.1, datetime(2026, 8, 5, 22, tzinfo=timezone.utc)),
+        Observation("RBOB:RBU26.NYM:2026-08-06", 3.2, datetime(2026, 8, 6, 22, tzinfo=timezone.utc)),
+        Observation("RBOB:RBV26.NYM:2026-08-07", 3.0, datetime(2026, 8, 7, 22, tzinfo=timezone.utc)),
+        Observation("RBOB:RBV26.NYM:2026-08-08", 3.1, datetime(2026, 8, 8, 22, tzinfo=timezone.utc)),
+        Observation("RBOB:RBV26.NYM:2026-08-09", 3.2, datetime(2026, 8, 9, 22, tzinfo=timezone.utc)),
+    ]
+
+    decision = build_gas_decisions([_gm(target, 4.0)], aaa, rbob)[0]
+
+    assert [feature.name for feature in decision.features if feature.name.startswith("KXAAAGASD")]
+    assert not [feature for feature in decision.features if feature.name.startswith("RBOB:")]
 
 
 def test_built_decisions_run_through_the_backtester():
@@ -256,6 +274,56 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
     }
     assert captured["date_from"] == datetime(2026, 7, 1, tzinfo=timezone.utc)
     assert captured["date_to"] == datetime(2026, 7, 1, 23, 59, tzinfo=timezone.utc)
+
+
+def test_gas_cli_sizes_rbob_from_backtest_start(monkeypatch):
+    raw = {
+        "ticker": "KXAAAGASD-26JUL24-4.1000",
+        "event_ticker": "KXAAAGASD-26JUL24",
+        "strike_type": "greater",
+        "floor_strike": 4.1,
+        "cap_strike": None,
+        "open_time": "2026-06-01T00:00:00Z",
+        "close_time": "2026-07-25T03:59:00Z",
+        "result": "yes",
+        "title": "US gas",
+    }
+    rbob_calls = []
+    captured = {}
+
+    class FakeClient:
+        def merged_settled_markets(self, series):
+            return [raw]
+
+    monkeypatch.setattr(backtest_engines, "KalshiHistoryClient", FakeClient)
+    monkeypatch.setattr(backtest_engines, "settlement_observations", lambda raws: [Observation("KXAAAGASD-26JUL23", 4.0, datetime(2026, 7, 23, 12, tzinfo=timezone.utc))])
+
+    def fake_rbob_closes(start=None, end=None):
+        rbob_calls.append({"start": start, "end": end})
+        return []
+
+    def fake_gas_decisions(markets, aaa, rbob):
+        captured["markets"] = markets
+        captured["aaa"] = aaa
+        captured["rbob"] = rbob
+        return []
+
+    monkeypatch.setattr(backtest_engines, "rbob_closes", fake_rbob_closes)
+    monkeypatch.setattr(backtest_engines, "build_gas_decisions", fake_gas_decisions)
+    monkeypatch.setattr(backtest_engines, "_histories", lambda *args, **kwargs: {})
+    monkeypatch.setattr(backtest_engines, "run_backtest", lambda **kwargs: object())
+    monkeypatch.setattr(backtest_engines, "data_snapshot_hash", lambda decisions, histories: "hash")
+    monkeypatch.setattr(backtest_engines, "build_backtest_run_row", lambda *args, **kwargs: {
+        "engine": "gas", "mode": "taker", "n_decisions": 0, "n_fills": 0,
+        "pnl_after_fees": 0.0, "max_drawdown": 0.0, "brier_ours": None,
+        "brier_market": None, "gate_status": "SHADOW", "gate_reasons": [],
+    })
+
+    assert backtest_engines.main([
+        "--engine", "gas", "--start", "2026-07-01", "--end", "2026-07-24", "--train-days", "90",
+    ]) == 0
+    assert rbob_calls == [{"start": date(2026, 4, 2), "end": date(2026, 7, 24)}]
+    assert captured["markets"][0].ticker == raw["ticker"]
 
 
 def test_fetch_weather_forecasts_is_bounded_concurrent_and_date_stable():
