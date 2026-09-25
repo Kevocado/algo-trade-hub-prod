@@ -602,3 +602,28 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
   ```
 - **Implementation:** changed the absolute-time calculation to `- lead_days + lag`; updated the July, spring-forward, 12-hour, and fall-back expected timestamps; restored `test_forecast_daily_high_validates_lead_and_empty_payload()` as a separate test.
 - **Deviation:** None. The report intentionally records the corrected availability direction and the restored test.
+
+## User-requested re-review fix — integer Kalshi fee math
+
+- **Requirement:** calculate fees with integer cent arithmetic so float dust cannot round an order up by one cent.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_fees.py -q
+  ```
+  RED output tail:
+  ```text
+  assert 8.0 == 7.0
+  assert 64.0 == 63.0
+  2 failed, 1 passed in 0.55s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_fees.py tests/test_backtest_fills.py -q
+  ```
+  GREEN output tail:
+  ```text
+  22 passed in 0.47s
+  ```
+- **Implementation:** added `ceil_div` and whole-cent price normalization; taker fees use `ceil_div(7*C*p*(100-p), 10000)` and maker fees use denominator `40000`. Added dust regressions (4×50¢ taker and 16×50¢ maker) plus the requested 10¢×100 and 20¢×25 examples.
+- **Fee schedule note:** the official published schedule was not independently re-read in this run; the implementation conservatively continues charging maker fees wherever the caller requests them.
+- **Deviation:** None beyond retaining the existing maker-fee behavior for callers.
