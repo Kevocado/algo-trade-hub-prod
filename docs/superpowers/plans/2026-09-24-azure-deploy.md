@@ -1,5 +1,7 @@
 # Azure Deploy (Scale-to-Zero) Implementation Plan
 
+> **Superseded 2026-09-25 by [2026-09-25-vps-deploy.md](2026-09-25-vps-deploy.md).** The Azure for Students credit ends around 2026-10-27, and every site is moving to one VPS. Don't implement this plan. Its Tasks 1–2 are carried over word for word.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Run the trade hub on Azure Container Apps in the existing `predictor-hub-rg`, using the same GHCR → `az containerapp` pattern as the predictor sites. It consists of:

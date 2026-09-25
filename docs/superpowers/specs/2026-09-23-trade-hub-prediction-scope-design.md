@@ -100,20 +100,21 @@ scheduled job ──► shared data layer ──► engines (pure) ──► edg
 
 **Scaffolding reused as-is:** Supabase schema (including the Phase 0 migrations), the orchestrator kill switch and risk gate, the Kalshi auth and client, `kalshi_edges`, and the War Room UI (plus a Sports tab and a Track Record view).
 
-## 5. Hosting: Azure, scale to zero
+## 5. Hosting: the shared VPS, batch jobs only
 
-Same resource group (`predictor-hub-rg`) and Container Apps environment as the predictors, using the same GHCR → `az containerapp` deploy pattern as `NFL_Predictor/.github/workflows/deploy-azure-nfl.yml`.
+**Revised 2026-09-25.** The Azure for Students credit ends around 2026-10-27, so every predictor is moving to one ~$5/month OVHcloud VPS (x86, 4 GB) managed by the `vps-stack` folder (`/opt/stack` on the server: Docker Compose, Caddy for HTTPS, `bin/deploy` for CI deploys). The trade hub runs on that same box. The original Azure design (Container Apps jobs at min 0) is superseded. Its intent is kept: **no always-on compute for trading.**
 
-| Component | Azure resource | Schedule | Cost model |
-|---|---|---|---|
-| `tradehub-scan` | Container Apps **Job** (cron) | weather and gas hourly; CPI and labor daily plus release-day runs; sports every 3h; crypto shadow hourly | pay per run |
-| `tradehub-settle` | Container Apps Job (cron) | hourly | pay per run |
-| `tradehub-api` | Container App, `--min-replicas 0`, external ingress | on demand | scale to zero |
-| `tradehub-web` | Azure Static Web Apps (or Container App at min 0) | on demand | free/scale to zero |
+| Component | On the VPS | Schedule |
+|---|---|---|
+| `tradehub` | One container (FastAPI + the built War Room SPA, same origin) at `trade.<domain>`, compose profile `tradehub`, `mem_limit` 700 MB | always on (idles at ~100 MB) |
+| `tradehub-scan` | `systemd` timer → `bin/tradehub-job scan` (throwaway container from the same image) | hourly at :05. CPI and labor get release-day runs, and sports every 3h, once those steps land |
+| `tradehub-settle` | `systemd` timer → `bin/tradehub-job settle` | hourly at :35 |
 
-- There is **no always-on worker**, so there is no Kalshi websocket listener. Crypto shadow switches from websocket-driven to a scheduled hourly snapshot.
-- Kalshi and Supabase keys are stored as Container Apps secrets.
-- The VPS (`Procfile`, `ecosystem.config.js`, `requirements.vps.txt`) and `sync_to_hf.yml` (force-push to a public HF Space) are retired.
+- There is **no always-on worker** and no Kalshi websocket listener. Crypto shadow becomes a scheduled snapshot when it returns.
+- The only runtime secrets are `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, in `/opt/stack/.env` on the VPS. Scan and settle use only public Kalshi endpoints, so no Kalshi key goes to the server.
+- CI (`.github/workflows/deploy-tradehub.yml`) tests, builds `ghcr.io/kevocado/tradehub`, then runs `ssh deploy@VPS deploy tradehub <sha>`. That deploy health-checks `/api/health` and rolls back on failure.
+- The PM2 `Procfile`/`ecosystem.config.js` and `sync_to_hf.yml` are retired.
+- Plan: [2026-09-25-vps-deploy.md](../plans/2026-09-25-vps-deploy.md).
 
 ## 5a. Backtesting suite
 
@@ -152,6 +153,11 @@ An engine is promoted, meaning its edges are shown as "trade-worthy" in the UI a
 - positive simulated P&L after fees and spread, using prices it could actually have gotten at the time;
 - no calibration bucket off by more than 10 percentage points.
 
+**Counting rules (added 2026-09-25, step 2b):**
+- **A "contract" is one Kalshi market (`market_ticker`), not one prediction row.** The hourly scan predicts each open market many times. Every row for a market gets weight 1/k (k = that market's rows), so each market counts once in the contract minimum, the Brier comparison and the calibration buckets.
+- **A calibration bucket only counts toward the 10pp rule once it holds at least 20 contracts.** Thinner buckets are still shown, but can't block promotion on their own.
+- **Each `engine_version` has its own track record.** A new version starts in shadow; it never inherits its predecessor's promotion.
+
 The gate is re-evaluated on every settlement run, and engines that drift below it are demoted. It applies to every engine, including crypto and the flagships. Engines that haven't been promoted still show edges, labeled "shadow".
 
 ## 7. "Pays for itself" trigger for live execution
@@ -185,7 +191,7 @@ Cleanup runs as its own plan **before** the new engines are built, so the new co
 2. **Predictions ledger and settlement by market result, plus track record.** This is a revision of `docs/superpowers/plans/2026-09-23-settlement-realized-pnl.md`: keep its pure-math tasks, and replace Task 4 (wiring into the always-on crypto loop) with a cron-job entrypoint and settlement by market result.
 3. **Backtesting suite** (section 5a), including the Kalshi historical client and the `as_of` interface on the data layer. From here on, every engine ships with a passing backtest report.
 4. **Shared data layer, `weather` engine, `gas` engine**, suggest-only, with edges and Kalshi links in the UI.
-5. **Azure deployment** (jobs, API, web) and retirement of the VPS and HF sync.
+5. **VPS deployment** (revised 2026-09-25 from Azure, see section 5): API and War Room container, hourly scan and settle timers, retirement of the PM2 processes and HF sync. Step **2b** (promotion-gate hardening) must merge before the timers are switched on.
 6. **`cpi_nowcast`**.
 7. **Sports adapters plus the LLM reviewer**, NFL and CFB first.
 8. **`labor_nowcast` plus the Jobs Scorecard**, reusing the ACCY BLS/FRED fetchers.

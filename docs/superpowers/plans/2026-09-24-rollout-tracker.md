@@ -9,18 +9,24 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 | Step | What | Status | Plan |
 |---|---|---|---|
 | 1 | Repo cleanup | ✅ merged to `main` | [2026-09-24-repo-cleanup.md](2026-09-24-repo-cleanup.md) |
-| 2 | Predictions ledger + settlement by market result + track record | 🟡 implemented on branch, review pending | [2026-09-24-predictions-ledger-settlement-track-record.md](2026-09-24-predictions-ledger-settlement-track-record.md) |
-| 3 | Backtesting suite | 🟢 plan written + verified, ready to implement | [2026-09-24-backtesting-suite.md](2026-09-24-backtesting-suite.md) |
-| 4 | Shared data layer + `weather` + `gas` engines, suggest-only | 🟢 plan written + verified, ready to implement | [2026-09-24-data-layer-weather-gas-engines.md](2026-09-24-data-layer-weather-gas-engines.md) |
-| 5 | Azure deploy: scheduled jobs + API + web (VPS keeps only the crypto worker) | 🟢 plan written + verified, ready to implement | [2026-09-24-azure-deploy.md](2026-09-24-azure-deploy.md) |
+| 2 | Predictions ledger + settlement by market result + track record | ✅ merged (PR #2) | [2026-09-24-predictions-ledger-settlement-track-record.md](2026-09-24-predictions-ledger-settlement-track-record.md) |
+| 2b | Promotion-gate + settlement hardening (PR #2 review follow-ups) | 🟢 plan written + verified, implement after PR #4 merges | [2026-09-25-gate-hardening.md](2026-09-25-gate-hardening.md) |
+| 3 | Backtesting suite | 🟡 PR #3 open, review fixes requested 2026-09-25 | [2026-09-24-backtesting-suite.md](2026-09-24-backtesting-suite.md) |
+| 4 | Shared data layer + `weather` + `gas` engines, suggest-only | 🟡 PR #4 open (stacked on PR #3), review fixes requested 2026-09-25 | [2026-09-24-data-layer-weather-gas-engines.md](2026-09-24-data-layer-weather-gas-engines.md) |
+| 5 | VPS deploy: API + War Room container, hourly scan/settle timers (replaces the Azure plan) | 🟢 plan written + verified, ready after steps 3–4 merge; timers only after 2b | [2026-09-25-vps-deploy.md](2026-09-25-vps-deploy.md) (supersedes [2026-09-24-azure-deploy.md](2026-09-24-azure-deploy.md)) |
 | 6 | `cpi_nowcast` | 🗺️ outline only; detail after step 4 lands | — |
 | 7 | Sports adapters + LLM reviewer | 🗺️ outline only; detail after step 4 lands | — |
 | 8 | `labor_nowcast` + Jobs Scorecard | 🗺️ outline only; detail after step 4 lands | — |
 
-**Implementation order:** 2 → 3 → 4 → 5, each on its own `plan/<basename>` branch, reviewed and merged before the next one starts. Each plan's code was validated before publishing:
+**Implementation order:** 2 ✅ → fix and merge 3 → fix and merge 4 → 2b → 5, each on its own `plan/<basename>` branch, reviewed and merged before the next one starts. (5 can be implemented in parallel with 2b; its Task 5 timers must wait for 2b.) Each plan's code was validated before publishing:
 - **Step 2:** 42/42 of the plan's own tests pass.
 - **Steps 3 + 4:** 88/88 pass together on top of step 2's code. A live check against real Kalshi and Open-Meteo data found the v1 weather model not yet beating the market on a small sample, and the gate holds it in SHADOW as designed.
-- **Step 5:** 127/127 pass. A real Docker build and container smoke test were run, which found and fixed an out-of-sync frontend lockfile.
+- **Step 5 (Azure, superseded):** 127/127 pass. A real Docker build and container smoke test were run, which found and fixed an out-of-sync frontend lockfile.
+- **Step 5 (VPS), validated 2026-09-25 on top of PR #4's head:**
+  - 287 tests pass and actionlint is OK.
+  - The image is 889 MB with no torch, `.env` or models. `/api/health` is OK, the SPA route `/shadow` returns 200, an unknown `/api/*` path returns 404, and `/api/track-record` returns 503 without Supabase.
+  - The scan in the container takes 3.5 s at a 126 MB peak.
+- **Step 2b:** validated on top of PR #4's head. 292 tests pass, and the migration applied twice to a throwaway Postgres 16.
 
 Parked (not scheduled): code-enforced risk controls and live execution (spec §7, only after the "pays for itself" trigger); model registry / `feature_hash` (old roadmap Phase 7); remaining frontend cleanup (old roadmap Phase 10), which is done alongside the Track Record and Sports UI work.
 
@@ -93,7 +99,7 @@ An implementing agent (Claude, Codex, Muse, or another) must:
 - AAA daily-average source format and terms.
 - How the edge layer reads the live orderbook without an always-on worker.
 
-## Step 5 — Azure deploy (planned: 2026-09-24-azure-deploy.md; original scope notes below)
+## Step 5 — Deploy (now the VPS plan, 2026-09-25-vps-deploy.md; original Azure scope notes below, kept for history)
 
 **Goal (spec §5):** move off the VPS onto Container Apps in `predictor-hub-rg`, following `NFL_Predictor/.github/workflows/deploy-azure-nfl.yml`.
 
@@ -121,7 +127,7 @@ An implementing agent (Claude, Codex, Muse, or another) must:
 
 ## Step 7 — Sports adapters + LLM reviewer (outline)
 
-- **Scope:** read-only adapters for the NFL/CFB predictor APIs first (`*.proudbay-f56b8dfa.eastus2.azurecontainerapps.io`), then NBA/PL/F1 once their base URLs are recorded.
+- **Scope:** read-only adapters for the NFL/CFB predictor APIs first (on the VPS: `https://nfl.<domain>/api`, `https://cfb.<domain>/api`; the Azure `*.azurecontainerapps.io` URLs go away with the cutover), then NBA/PL/F1 (`https://nba.<domain>`, `https://pl.<domain>`, `https://f1.<domain>`).
 - **Game-to-Kalshi mapping:** a per-sport mapping table plus fixtures.
 - **Candidate filter:** a deterministic filter (edge after fees, predictor calibration in that bucket within 10pp, liquidity).
 - **LLM reviewer:** an OpenRouter free model, model name in config.
