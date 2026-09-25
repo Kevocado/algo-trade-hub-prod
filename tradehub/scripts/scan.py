@@ -58,7 +58,7 @@ def scan_weather(
         by_date = defaultdict(list)
         for lm in live.open_markets(series):
             target = event_date(lm.market.event_ticker)
-            if target >= today:
+            if target > today:
                 by_date[target].append(lm)
         for target, markets in sorted(by_date.items()):
             highs = forecast_fn(city, target, now)

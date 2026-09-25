@@ -576,3 +576,40 @@ The exact public endpoint paths and 429 evidence above are the final rerun resul
 - The required evidence report is included in each task's single task commit because the handoff contract requires a committed report while also requiring one commit per task.
 - Step 2 and step 3 are locally merged prerequisites; their PRs are open remotely and are not required to be remotely merged for this local implementation order.
 - The user authorized opening a PR for this plan after final verification.
+
+## Follow-up fixes — 2026-09-25
+
+### Merge baseline
+
+- `git merge plan/2026-09-24-backtesting-suite` completed with `Already up to date.` The prerequisite branch is already an ancestor of this target branch, so no rebase or synthetic merge commit was created.
+- Post-merge full-suite baseline:
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  ```
+  ```text
+  280 passed in 5.50s
+  ```
+
+### Fix 1 — strictly future weather climate days
+
+- **Files changed:** `tradehub/scripts/scan.py`, `tests/test_scan.py`, and this evidence report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py::test_scan_weather_predicts_only_strictly_future_lst_climate_days -q
+  ```
+  RED output tail:
+  ```text
+  E       assert [datetime.dat...(2026, 9, 25)] == [datetime.date(2026, 9, 25)]
+  E         Left contains one more item: datetime.date(2026, 9, 25)
+  1 failed in 0.65s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py -q
+  ```
+  GREEN output tail:
+  ```text
+  4 passed in 0.32s
+  ```
+- **Implementation:** Weather scan eligibility is now `target > today_LST`; markets for today and past climate days are neither forecast nor predicted.
+

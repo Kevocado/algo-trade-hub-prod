@@ -43,7 +43,7 @@ def test_edge_row_shape():
     assert row["edge_type"] == "WEATHER" and row["maker"] is True
 
 
-def test_scan_weather_predicts_every_market_and_flags_edges():
+def test_scan_weather_predicts_only_strictly_future_lst_climate_days():
     today = _m("KXHIGHNY-26SEP24-T74", "KXHIGHNY-26SEP24", close="2026-09-25T05:00:00Z")
     tomorrow = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
     past = _m("KXHIGHNY-26SEP23-T74", "KXHIGHNY-26SEP23", close="2026-09-24T05:00:00Z")
@@ -56,10 +56,10 @@ def test_scan_weather_predicts_every_market_and_flags_edges():
 
     preds, edges = scan.scan_weather(live, NOW, CFG, forecast_fn=forecast_fn,
                                      cities={"KXHIGHNY": scan.WEATHER_CITIES["KXHIGHNY"]})
-    assert sorted(calls) == [date(2026, 9, 24), date(2026, 9, 25)]
-    assert {p["market_ticker"] for p in preds} == {today.ticker, tomorrow.ticker}
+    assert calls == [date(2026, 9, 25)]
+    assert {p["market_ticker"] for p in preds} == {tomorrow.ticker}
     assert all(p["engine"] == "weather" for p in preds)
-    assert {e["market_ticker"] for e in edges} == {today.ticker, tomorrow.ticker}  # P(>=75 | mu 77) >> 0.34 ask
+    assert {e["market_ticker"] for e in edges} == {tomorrow.ticker}  # P(>=75 | mu 77) >> 0.34 ask
     assert all(e["edge_type"] == "WEATHER" for e in edges)
 
 
