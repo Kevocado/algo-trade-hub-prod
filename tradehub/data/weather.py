@@ -42,10 +42,15 @@ WEATHER_CITIES: dict[str, City] = {
 
 
 def live_forecast_highs(
-    city: City, target_date: date, now: datetime, get_json: Callable[..., Any] = default_get_json
+    city: City,
+    target_date: date,
+    now: datetime,
+    get_json: Callable[..., Any] = default_get_json,
+    *,
+    deadline: float | None = None,
 ) -> list[Observation]:
     day = target_date.isoformat()
-    data = get_json(FORECAST_URL, {
+    request_params = {
         "latitude": city.latitude,
         "longitude": city.longitude,
         "hourly": "temperature_2m",
@@ -54,7 +59,9 @@ def live_forecast_highs(
         "timezone": city.lst_timezone,
         "start_date": day,
         "end_date": day,
-    })
+    }
+    request_kwargs = {"deadline": deadline} if deadline is not None else {}
+    data = get_json(FORECAST_URL, request_params, **request_kwargs)
     hourly = data.get("hourly") or {}
     out = []
     for model in WEATHER_MODELS:
@@ -69,6 +76,8 @@ def historical_forecast_highs_range(
     start_date: date,
     end_date: date,
     get_json: Callable[..., Any] = default_get_json,
+    *,
+    deadline: float | None = None,
 ) -> list[Observation]:
     """Fetch all seven leads for the date range with one request per model."""
     out: list[Observation] = []
@@ -83,6 +92,7 @@ def historical_forecast_highs_range(
                 timezone_name=city.lst_timezone,
                 lead_days=WEATHER_LEAD_DAYS,
                 get_json=get_json,
+                deadline=deadline,
             ))
         except ValueError:
             continue

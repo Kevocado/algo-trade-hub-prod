@@ -1187,3 +1187,28 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   37 passed in 0.73s
   ```
 
+## Finding 8 — bounded HTTP retries and scan deadline — 2026-09-25
+
+- **Files changed:** `tradehub/backtest/http.py`, `tradehub/backtest/kalshi_history.py`, `tradehub/backtest/sources/open_meteo.py`, `tradehub/data/rbob.py`, `tradehub/data/weather.py`, `tradehub/scripts/scan.py`, `tests/test_backtest_http.py`, `tests/test_backtest_kalshi_history.py`, `tests/test_scan.py`, and this report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_http.py::test_default_get_json_fails_fast_when_retry_after_exceeds_60_seconds tests/test_backtest_http.py::test_default_get_json_per_call_deadline_clips_request_timeout tests/test_backtest_http.py::test_default_get_json_per_call_deadline_prevents_retry_sleep tests/test_scan.py::test_scan_main_assigns_one_fifteen_minute_deadline_to_network_scan -q
+  ```
+  RED output tail:
+  ```text
+  Failed: DID NOT RAISE <class 'requests.exceptions.HTTPError'>
+  TypeError: default_get_json() got an unexpected keyword argument 'deadline'
+  AttributeError: module 'tradehub.scripts.scan' has no attribute 'time'
+  4 failed in 0.53s
+  ```
+- `default_get_json()` now accepts a monotonic per-call deadline, clips each request timeout to the remaining budget, and refuses a retry sleep that would meet or exceed that deadline. `Retry-After` values above 60 seconds raise the original HTTP error immediately; 60 seconds and below remain honored.
+- The deadline is threaded through `KalshiHistoryClient`, Open-Meteo range/live requests, and RBOB fetches. `scan.main()` creates one `SCAN_DEADLINE_SECONDS = 15 * 60` budget, passes it to the live client and all scan data fetchers, and checks it before/after each engine.
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_http.py tests/test_backtest_kalshi_history.py tests/test_kalshi_live.py tests/test_weather_data.py tests/test_backtest_sources.py tests/test_backtest_engines.py tests/test_gas_engine.py tests/test_scan.py -q
+  ```
+  GREEN output tail:
+  ```text
+  99 passed in 0.57s
+  ```
+

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import inspect
+import time as monotonic_time
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -85,8 +86,13 @@ def rbob_closes(
     end: date | None = None,
     *,
     history_fn: Callable[..., Any] = _default_history,
+    deadline: float | None = None,
 ) -> list[Observation]:
+    if deadline is not None and monotonic_time.monotonic() >= deadline:
+        raise TimeoutError("RBOB scan deadline exceeded")
     frame = _call_history(history_fn, start, end)
+    if deadline is not None and monotonic_time.monotonic() >= deadline:
+        raise TimeoutError("RBOB scan deadline exceeded")
     if frame is None or "Close" not in frame:
         return []
     contract_column = next(

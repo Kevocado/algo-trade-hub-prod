@@ -28,6 +28,7 @@ def forecast_daily_highs_range(
     lead_days: tuple[int, ...] = tuple(range(1, 8)),
     availability_lag: timedelta | None = None,
     get_json: Callable[..., Any] = default_get_json,
+    deadline: float | None = None,
 ) -> list[Observation]:
     """Fetch all requested previous-run leads for a date range in one request."""
     if end_date < start_date:
@@ -35,7 +36,7 @@ def forecast_daily_highs_range(
     if not lead_days or any(not 1 <= lead <= 7 for lead in lead_days):
         raise ValueError(f"lead_days must contain values in 1..7, got {lead_days!r}")
     variables = tuple(f"temperature_2m_previous_day{lead}" for lead in lead_days)
-    data = get_json(PREVIOUS_RUNS_URL, {
+    request_params = {
         "latitude": latitude,
         "longitude": longitude,
         "hourly": ",".join(variables),
@@ -44,7 +45,9 @@ def forecast_daily_highs_range(
         "timezone": timezone_name,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
-    })
+    }
+    request_kwargs = {"deadline": deadline} if deadline is not None else {}
+    data = get_json(PREVIOUS_RUNS_URL, request_params, **request_kwargs)
     hourly = data.get("hourly") or {}
     timestamps = hourly.get("time") or []
     lag = availability_lag if availability_lag is not None else MODEL_AVAILABILITY_LAGS.get(model, DEFAULT_AVAILABILITY_LAG)

@@ -68,6 +68,19 @@ def test_cutoff_reads_market_settled_ts():
     assert kh.KalshiHistoryClient(get_json=get).cutoff() == datetime(2026, 7, 25, tzinfo=timezone.utc)
 
 
+def test_history_client_threads_per_call_deadline_to_json_getter():
+    calls = []
+
+    def get_json(url, params=None, *, deadline=None):
+        calls.append((url, params, deadline))
+        return {"market_settled_ts": "2026-07-25T00:00:00Z", "trades_created_ts": "2026-07-25T00:00:00Z"}
+
+    client = kh.KalshiHistoryClient(get_json=get_json, deadline=123.5)
+    client.cutoff_timestamps()
+
+    assert calls[0][2] == 123.5
+
+
 def test_settled_markets_follows_cursor_pagination():
     get = FakeGet({
         "/historical/markets": [

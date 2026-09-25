@@ -452,6 +452,34 @@ def test_scan_weather_isolates_city_failures_when_requested(caplog):
     assert "scan engine=weather city=KXHIGHCHI predictions=0 edges=0" in caplog.text
 
 
+def test_scan_main_assigns_one_fifteen_minute_deadline_to_network_scan(monkeypatch):
+    captured = {}
+
+    class FakeLive:
+        def __init__(self, deadline=None):
+            captured["deadline"] = deadline
+
+    monkeypatch.setattr(scan, "KalshiLive", FakeLive)
+    monkeypatch.setattr(scan, "load_engine_config", lambda engine: EngineConfig(min_edge_pct=3.0))
+    monkeypatch.setattr(scan, "scan_weather", lambda *args, **kwargs: ([], []))
+    monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([], []))
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, engines: {"weather": "SHADOW", "gas": "SHADOW"})
+    monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
+
+    from tradehub.core import supabase_client
+    import tradehub.predictions as predictions_module
+
+    monkeypatch.setattr(predictions_module, "record_predictions", lambda client, rows: None)
+    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: None)
+
+    before = scan.time.monotonic()
+    assert scan.main(now=NOW, client=object()) == 0
+    remaining = captured["deadline"] - before
+
+    assert 890 <= remaining <= scan.SCAN_DEADLINE_SECONDS + 0.1
+    assert scan.SCAN_DEADLINE_SECONDS == 15 * 60
+
+
 def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, capsys, caplog):
     caplog.set_level(logging.INFO)
     gas_prediction = {"market_ticker": "KXAAAGASD-26SEP25-4.5200", "our_prob": 0.9}

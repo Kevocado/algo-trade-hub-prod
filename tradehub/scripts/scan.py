@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
@@ -38,6 +39,12 @@ from tradehub.predictions import build_prediction_row
 
 
 log = logging.getLogger(__name__)
+SCAN_DEADLINE_SECONDS = 15 * 60
+
+
+def _ensure_scan_deadline(deadline: float) -> None:
+    if time.monotonic() >= deadline:
+        raise TimeoutError("scan deadline exceeded")
 
 
 def edge_row(
@@ -287,31 +294,46 @@ def main(
     now: datetime | None = None,
     live=None,
     client=None,
+    deadline: float | None = None,
 ) -> int:
     from tradehub.core.supabase_client import get_client, upsert_opportunities
     from tradehub.predictions import record_predictions
 
     now = now or datetime.now(timezone.utc)
+    deadline = time.monotonic() + SCAN_DEADLINE_SECONDS if deadline is None else float(deadline)
     failures: list[str] = []
     engine_states: dict[str, dict[str, Any]] = {}
     if live is None:
-        live = KalshiLive()
+        live = KalshiLive(deadline=deadline)
+
+    def forecast_with_deadline(city, target, as_of):
+        return live_forecast_highs(city, target, as_of, deadline=deadline)
+
+    def historical_forecast_with_deadline(city, start, end):
+        return historical_forecast_highs_range(city, start, end, deadline=deadline)
+
+    def rbob_with_deadline():
+        return rbob_closes(deadline=deadline)
 
     def run_engine(name: str) -> tuple[list[dict], list[dict]]:
         state = {"predictions": [], "edges": [], "errors": [], "complete": False, "ran": False}
         engine_states[name] = state
         city_failures: list[str] = []
         try:
+            _ensure_scan_deadline(deadline)
             cfg = load_engine_config(name)
             if name == "weather":
                 predictions, edges = scan_weather(
                     live,
                     now,
                     cfg,
+                    forecast_fn=forecast_with_deadline,
+                    historical_forecast_range_fn=historical_forecast_with_deadline,
                     failures=city_failures,
                 )
             else:
-                predictions, edges = scan_gas(live, now, cfg)
+                predictions, edges = scan_gas(live, now, cfg, rbob_fn=rbob_with_deadline)
+            _ensure_scan_deadline(deadline)
         except Exception as exc:
             message = f"{name}: {type(exc).__name__}: {exc}"
             state["errors"].append(message)

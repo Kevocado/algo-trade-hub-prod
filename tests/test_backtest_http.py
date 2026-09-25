@@ -68,6 +68,41 @@ def test_default_get_json_honors_retry_after_longer_than_backoff_cap(monkeypatch
     assert sleeps == [60.0]
 
 
+def test_default_get_json_fails_fast_when_retry_after_exceeds_60_seconds(monkeypatch):
+    responses = [FakeResponse(429, headers={"Retry-After": "61"}), FakeResponse()]
+    sleeps = []
+    calls = []
+    monkeypatch.setattr(http.requests, "get", lambda url, **kwargs: calls.append(url) or responses.pop(0))
+    monkeypatch.setattr(http.time, "sleep", sleeps.append)
+
+    with pytest.raises(requests.HTTPError):
+        http.default_get_json("https://example.test")
+
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_default_get_json_per_call_deadline_clips_request_timeout(monkeypatch):
+    calls = []
+    monkeypatch.setattr(http.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(http.requests, "get", lambda url, **kwargs: calls.append(kwargs) or FakeResponse())
+
+    assert http.default_get_json("https://example.test", deadline=102.5) == {"ok": True}
+    assert calls[0]["timeout"] == pytest.approx(2.5)
+
+
+def test_default_get_json_per_call_deadline_prevents_retry_sleep(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(http.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(http.requests, "get", lambda url, **kwargs: FakeResponse(429, headers={"Retry-After": "10"}))
+    monkeypatch.setattr(http.time, "sleep", sleeps.append)
+
+    with pytest.raises(requests.Timeout, match="deadline"):
+        http.default_get_json("https://example.test", deadline=105.0)
+
+    assert sleeps == []
+
+
 def test_default_get_json_retries_transport_errors(monkeypatch):
     calls = []
     sleeps = []
