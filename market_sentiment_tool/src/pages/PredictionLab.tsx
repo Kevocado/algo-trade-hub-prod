@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMarketEdges, KalshiEdge } from "@/hooks/useMarketEdges";
 import { Loader2, TrendingUp, Cloud, Globe, Trophy, Brain, ExternalLink, Zap, Activity } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { GateBadge } from "@/components/GateBadge";
 
 const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
   const getIcon = (type: string) => {
@@ -37,6 +38,7 @@ const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
               </CardDescription>
             </div>
           </div>
+          <div className="flex flex-col items-end gap-1">
           <Badge variant="outline" className={`
             ${Math.abs(edge.edge_pct) > 15 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 
               Math.abs(edge.edge_pct) > 10 ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' : 
@@ -45,6 +47,8 @@ const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
           `}>
             {edgePct}% EDGE
           </Badge>
+          <GateBadge edge={edge} />
+          </div>
         </div>
       </CardHeader>
       <CardContent className="pt-4 space-y-4">

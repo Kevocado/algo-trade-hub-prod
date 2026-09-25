@@ -5,6 +5,7 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { TrendingUp, Wallet, ArrowUpRight, Activity, Loader2, Brain } from "lucide-react";
 import { usePortfolio, usePortfolioMetrics } from "@/hooks/usePortfolio";
 import { useMarketEdges } from "@/hooks/useMarketEdges";
+import { GateBadge } from "@/components/GateBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 
 // Mock Data for Equity Curve
@@ -71,7 +72,10 @@ export default function Home() {
                 <CardHeader className="pb-2">
                   <div className="flex justify-between items-start">
                     <Badge className="bg-emerald-500 text-emerald-950 text-[10px] font-bold uppercase tracking-tighter">{edge.edge_type}</Badge>
-                    <span className="text-xl font-black text-emerald-400">+{edge.edge_pct.toFixed(1)}%</span>
+                    <div className="flex items-center gap-2">
+                      <GateBadge edge={edge} />
+                      <span className="text-xl font-black text-emerald-400">+{edge.edge_pct.toFixed(1)}%</span>
+                    </div>
                   </div>
                   <CardTitle className="text-sm font-bold text-white mt-2 line-clamp-1">{edge.market_title}</CardTitle>
                 </CardHeader>

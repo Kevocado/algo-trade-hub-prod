@@ -8,8 +8,7 @@ from datetime import datetime
 from shared.kalshi_fees import kalshi_fee_cents, net_edge_pct
 from tradehub.backtest.kalshi_history import Candle, Trade
 from tradehub.backtest.pit import Decision
-
-MIN_TAKER_PRICE = 0.10
+from tradehub.edges import MIN_TAKER_PRICE, best_side
 
 
 @dataclass(frozen=True)
@@ -29,36 +28,26 @@ def quote_at(candles: list[Candle], at: datetime) -> Candle | None:
     return visible[-1] if visible else None
 
 
-def _best_side(
-    our_prob: float,
-    yes_price: float,
-    no_price: float,
-    *,
-    maker: bool,
-    contracts: int,
-) -> tuple[str, float, float]:
-    yes_edge = net_edge_pct(our_prob * 100.0, yes_price * 100.0, contracts=contracts, maker=maker)
-    no_edge = net_edge_pct((1.0 - our_prob) * 100.0, no_price * 100.0, contracts=contracts, maker=maker)
-    if yes_edge >= no_edge:
-        return "yes", yes_price, yes_edge
-    return "no", no_price, no_edge
-
-
 def _fee_dollars(price: float, contracts: int, maker: bool) -> float:
     return kalshi_fee_cents(price * 100.0, contracts=contracts, maker=maker) / 100.0
+
+
+def _edge_for_side(our_prob: float, side: str, price: float, *, contracts: int, maker: bool) -> float:
+    model_prob = our_prob if side == "yes" else 1.0 - our_prob
+    return net_edge_pct(model_prob * 100.0, price * 100.0, contracts=contracts, maker=maker)
 
 
 def taker_fill(decision: Decision, candles: list[Candle], *, contracts: int = 1, min_edge_pct: float = 0.0) -> Fill | None:
     quote = quote_at(candles, decision.decided_at)
     if quote is None:
         return None
-    side, price, edge = _best_side(
+    side, price, _ = best_side(
         decision.our_prob,
         quote.yes_ask,
         1.0 - quote.yes_bid,
         maker=False,
-        contracts=contracts,
     )
+    edge = _edge_for_side(decision.our_prob, side, price, contracts=contracts, maker=False)
     if edge <= 0 or edge < min_edge_pct or price < MIN_TAKER_PRICE:
         return None
     return Fill(decision.market_ticker, side, price, contracts, _fee_dollars(price, contracts, False),
@@ -77,13 +66,13 @@ def maker_fill(
     quote = quote_at(candles, decision.decided_at)
     if quote is None:
         return None
-    side, limit, edge = _best_side(
+    side, limit, _ = best_side(
         decision.our_prob,
         quote.yes_bid,
         1.0 - quote.yes_ask,
         maker=True,
-        contracts=contracts,
     )
+    edge = _edge_for_side(decision.our_prob, side, limit, contracts=contracts, maker=True)
     if edge <= 0 or edge < min_edge_pct or not 0.0 < limit < 1.0:
         return None
     qualifying_count = 0.0

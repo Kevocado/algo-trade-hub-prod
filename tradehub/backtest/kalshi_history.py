@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import Lock
 from typing import Any, Callable
 
 from tradehub.backtest.http import default_get_json
@@ -83,12 +84,22 @@ def parse_trade(raw: dict[str, Any]) -> Trade:
 
 
 class KalshiHistoryClient:
-    def __init__(self, get_json: Callable[..., Any] = default_get_json, base_url: str = KALSHI_PUBLIC_BASE):
+    def __init__(
+        self,
+        get_json: Callable[..., Any] = default_get_json,
+        base_url: str = KALSHI_PUBLIC_BASE,
+        *,
+        deadline: float | None = None,
+    ):
         self._get_json = get_json
         self._base = base_url.rstrip("/")
+        self._deadline = deadline
+        self._cutoff_lock = Lock()
+        self._cutoff_cache: dict[str, datetime] | None = None
 
     def _get(self, path: str, params: dict | None = None) -> Any:
-        return self._get_json(f"{self._base}{path}", params)
+        kwargs = {"deadline": self._deadline} if self._deadline is not None else {}
+        return self._get_json(f"{self._base}{path}", params, **kwargs)
 
     def _paginate(self, path: str, key: str, params: dict) -> list[dict]:
         out: list[dict] = []
@@ -105,11 +116,14 @@ class KalshiHistoryClient:
 
     def cutoff_timestamps(self) -> dict[str, datetime]:
         """Return the independent market and trade historical/live boundaries."""
-        raw = self._get("/historical/cutoff")
-        return {
-            "market_settled_ts": parse_ts(raw["market_settled_ts"]),
-            "trades_created_ts": parse_ts(raw["trades_created_ts"]),
-        }
+        with self._cutoff_lock:
+            if self._cutoff_cache is None:
+                raw = self._get("/historical/cutoff")
+                self._cutoff_cache = {
+                    "market_settled_ts": parse_ts(raw["market_settled_ts"]),
+                    "trades_created_ts": parse_ts(raw["trades_created_ts"]),
+                }
+            return dict(self._cutoff_cache)
 
     def cutoff(self) -> datetime:
         """Return the market-settlement cutoff used by candle history queries."""

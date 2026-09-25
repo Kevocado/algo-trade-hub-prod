@@ -61,6 +61,9 @@ class BacktestResult:
     gate: dict[str, Any]
     fills: list[Fill] = field(default_factory=list)
     log_loss: float | None = None
+    # Decisions skipped because the market had no quote yet at decision time
+    # (untradeable, and no market Brier to compare against).
+    n_unquoted: int = 0
 
 
 def run_backtest(
@@ -79,6 +82,7 @@ def run_backtest(
     fills: list[Fill] = []
     pnls: list[float] = []
     settled_pnls: list[tuple[datetime, Fill, float]] = []
+    n_unquoted = 0
     for decision in sorted(decisions, key=_decision_sort_key):
         check_no_lookahead(decision)
         history = histories[decision.market_ticker]
@@ -86,7 +90,11 @@ def run_backtest(
             raise LeakageError(f"{decision.market_ticker}: decision at/after market close {history.close_time.isoformat()}")
         if history.result not in ("yes", "no"):
             continue
-        rows.append(prediction_row(decision.our_prob, market_mid(quote_at(history.candles, decision.decided_at)), history.result))
+        market_prob = market_mid(quote_at(history.candles, decision.decided_at))
+        if market_prob is None:
+            n_unquoted += 1
+            continue
+        rows.append(prediction_row(decision.our_prob, market_prob, history.result))
         if mode == "taker":
             fill = taker_fill(decision, history.candles, contracts=contracts, min_edge_pct=min_edge_pct)
         else:
@@ -125,6 +133,7 @@ def run_backtest(
         turnover=sum(f.price * f.contracts for f in fills),
         summary=summary, cal_buckets=cal_buckets, gate=gate, fills=fills,
         log_loss=mean_log_loss,
+        n_unquoted=n_unquoted,
     )
 
 

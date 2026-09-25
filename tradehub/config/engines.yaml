@@ -1,0 +1,9 @@
+# Per-engine edge settings (spec §4.2/§4.3). Tune from step 3 backtests, not by hand.
+weather:
+  min_edge_pct: 5.0      # net edge after fees, percentage points
+  prefer_maker: true
+  error_bias: 0.0        # °F added to the model-blend high (fit via backtest_engines)
+  error_sigma: 2.5       # °F base forecast error (fit via backtest_engines)
+gas:
+  min_edge_pct: 3.0
+  prefer_maker: true

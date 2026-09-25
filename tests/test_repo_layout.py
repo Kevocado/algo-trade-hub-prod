@@ -168,3 +168,21 @@ def test_backtest_log_loss_migration_adds_nullable_column():
     assert "ALTER TABLE backtest_runs" in sql
     assert "log_loss numeric(12,8)" in sql
     assert "log_loss numeric(12,8) NOT NULL" not in sql
+
+
+def test_kalshi_edges_urls_energy_migration():
+    path = REPO / "market_sentiment_tool/supabase/migrations/20260416000005_kalshi_edges_urls_energy.sql"
+    assert path.is_file(), "kalshi_edges urls/energy migration is missing"
+    sql = path.read_text(encoding="utf-8")
+    for needle in ("market_url", "source_url", "engine", "gate_status", "updated_at", "expires_at", "'ENERGY'", "kalshi_edges_market_id_key"):
+        assert needle in sql, f"migration missing {needle}"
+
+
+def test_kalshi_edges_migration_never_hands_legacy_rows_to_scan_engines():
+    sql = (REPO / "market_sentiment_tool/supabase/migrations/20260416000005_kalshi_edges_urls_energy.sql").read_text(encoding="utf-8")
+    # Existing rows come from the legacy scanners; tagging them 'weather'/'gas' would let the
+    # scan's stale-edge cleanup (scoped by engine) delete another writer's rows.
+    assert "SET engine = lower(edge_type)" not in sql
+    assert "'legacy_' || lower(edge_type)" in sql
+    # The unique index on market_id fails if the legacy inserters left duplicates: dedupe first.
+    assert sql.index("DELETE FROM kalshi_edges") < sql.index("CREATE UNIQUE INDEX IF NOT EXISTS kalshi_edges_market_id_key")
