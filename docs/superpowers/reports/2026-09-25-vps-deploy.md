@@ -8,6 +8,61 @@
 Every pytest run is prefixed with `SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder` and uses
 `/Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python`.
 
+## Merge notes — this branch vs. `plan/2026-09-25-docs-vps-and-gate`
+
+This branch **starts from Claude's PR #4 head `98432bc`**, not from `origin/main` and not from the
+sibling docs branch. The plan document and the docs that accompany it were authored on the sibling
+branch:
+
+- **Commit `59b4062`** ("docs: VPS deploy plan replaces Azure; add step 2b gate-hardening plan") on
+  branch **`plan/2026-09-25-docs-vps-and-gate`** adds
+  `docs/superpowers/plans/2026-09-25-vps-deploy.md` (670 lines),
+  `docs/superpowers/plans/2026-09-25-gate-hardening.md`, the **Azure superseded banner** at the top
+  of `docs/superpowers/plans/2026-09-24-azure-deploy.md`, and the tracker/spec updates.
+- **`59b4062` is not an ancestor of this branch** (`git merge-base --is-ancestor 59b4062
+  plan/2026-09-25-vps-deploy` → false). The two branches diverged at `8ebf0f4`: the docs branch is
+  one commit on top of the PR #2 merge (`b6c4f8e`), while this branch is on top of the ~70 PR #3/#4
+  commits that end at `98432bc`.
+- The **tracker Step 5 section header** — `## Step 5 — Deploy (now the VPS plan,
+  2026-09-25-vps-deploy.md; original Azure scope notes below, kept for history)` — also lives only
+  on the docs branch. This branch still carries the old `## Step 5 — Azure deploy (planned:
+  2026-09-24-azure-deploy.md; …)` header. It is a line this branch never touched, so Git applies the
+  docs branch's version without a conflict, but a human should confirm the merged file reads
+  correctly.
+- The Azure superseded banner likewise arrives with `59b4062`; see Task 4's residual inventory for
+  why no source change was made for it here.
+- **This branch now carries a byte-identical copy of the plan file**
+  (`docs/superpowers/plans/2026-09-25-vps-deploy.md`, sha256
+  `ad7b118d6c862334d7179afe0e2a01d694812178f3e020e2f275951d012bfa77`, identical to the source
+  `.superpowers/sdd/2026-09-25-vps-deploy/plan.md` and to `59b4062`'s blob) so the tracker's step 5
+  row and this report's header link resolve on this branch in isolation.
+
+### Expected conflicts, for manual merge reconciliation
+
+Only `docs/superpowers/plans/2026-09-24-rollout-tracker.md` conflicts. Both branches edited the same
+two regions; `git merge-tree 8ebf0f4 59b4062 plan/2026-09-25-vps-deploy` (read-only) shows exactly
+two `<<<<<<<` hunks, at the status table and at the Step 7 scope bullet:
+
+1. **Status table, step rows 2–5.** The docs branch rewrote rows 2/2b/3/4/5 (PR status, gate-hardening
+   row, "supersedes the Azure plan" note); this branch rewrote only row 5. Take the docs branch's
+   rows and keep **this branch's row 5 status cell** — `✅ implemented, pending Kevin's first deploy
+   (Task 5)` — because Tasks 1–4 are now actually done. Its "What"/"Plan" cells are identical in
+   both sides apart from the "(supersedes …)" parenthetical, which the docs branch has.
+2. **Step 7 scope bullet.** Both branches replaced the Azure `*.azurecontainerapps.io` URLs with the
+   VPS URLs, in slightly different wording. Both are semantically equivalent; pick one (the docs
+   branch's is the more explicit — it says the Azure URLs "go away with the cutover").
+
+`docs/superpowers/plans/2026-09-25-vps-deploy.md` is an add/add on both sides, but because the two
+blobs are **byte-identical** Git's `ort` strategy resolves it silently and it is **not** a conflict
+(verified twice: by the matching sha256 above, and by a scratch-repo `add/add` merge with identical
+blobs, which reported "Merge made by the 'ort' strategy" with a clean `git status`).
+
+Also expect a benign one-sided change: this branch leaves the tracker's "Implementation order" line
+and its Step 5 validation bullets at their `98432bc` text, while the docs branch rewrote them
+(including the "Step 5 (VPS), validated 2026-09-25" bullet). No conflict is possible, because this
+branch never edited those lines — but the merged tracker's step 5 status and the validation bullets
+should be read together once, since both branches now describe the same plan from different angles.
+
 ## Baseline (before Task 1)
 
 ```
@@ -32,7 +87,7 @@ the same scope used by the previous plans' reports).
 | Tool | State |
 |---|---|
 | `docker` | available — `/Users/sigey/.docker/bin/docker`, Docker version 29.7.2 |
-| `actionlint` | **not installed** on this machine (`command not found`); Task 3's actionlint check is therefore reported as not run, and the Docker-based actionlint container was not used (see Task 3) |
+| `actionlint` | **not installed as a host binary** (`command not found`); the plan's own container-based command was used instead and **passed** — see Task 3, "actionlint — actually run" |
 | `npm` / `node` | available — npm 11.6.2, node v24.11.1 |
 
 ---
@@ -436,22 +491,53 @@ $ grep -rln 'ecosystem.config\.js\|Procfile' --include='*.md' --include='*.py' .
 No source file was changed to satisfy this; the exclusion of the SDD ledger is a property of the
 working copy, not an edit.
 
-### Residual "PM2" strings outside this task's scope (recorded, not touched)
+### Complete residual PM2 / `Procfile` / `ecosystem.config.js` inventory (recorded, not touched)
 
-A case-insensitive sweep for `pm2` over tracked `*.md`/`*.py` leaves only:
+The first version of this section claimed a "case-insensitive sweep for `pm2` over tracked
+`*.md`/`*.py`" left only four files. **That claim was wrong**: the sweep was restricted to `*.md`
+and `*.py`, so it could not see a `.json` file, and its result list also omitted the `.md` files
+that do contain the strings. The sweep below is over **every tracked file** and every one of the
+three tokens, and its result is the complete inventory:
 
-- `README.md:84` — the new sentence written by this task ("their old PM2 files are in git history").
-- `archive/legacy/root/STATE.md` (3 lines) — deliberately archived historical state notes, not
-  instructions. Outside the plan's Task 4 file list.
-- `market_sentiment_tool/backend/orchestrator.py:698` — an error-message string in the **parked**
-  crypto orchestrator ("...into the PM2 interpreter environment"). Outside the plan's Task 4 file
-  list, and not matched by the plan's grep (it names neither `Procfile` nor `ecosystem.config.js`).
-- `tests/test_repo_layout.py` — the test that asserts the retirement.
+```
+$ git ls-files -z | xargs -0 grep -inE '(^|[^A-Za-z0-9+/=_-])(pm2|Procfile|ecosystem\.config)' \
+    | grep -viE '\.ipynb:'
+ 19 docs/superpowers/reports/2026-09-25-vps-deploy.md      # this report (incl. the section below)
+ 11 docs/superpowers/plans/2026-09-24-azure-deploy.md      # superseded plan
+  3 tests/test_repo_layout.py                             # the test asserting the retirement
+  3 archive/legacy/root/STATE.md                          # archived historical state notes
+  1 README.md                                             # the sentence this task wrote
+  1 market_sentiment_tool/backend/orchestrator.py         # parked worker, error-message string
+  1 docs/superpowers/specs/2026-09-23-trade-hub-prediction-scope-design.md
+  1 docs/superpowers/plans/2026-09-24-rollout-tracker.md
+  1 docs/superpowers/plans/2026-09-24-repo-cleanup.md
+  1 .agent/index/notes_manifest.json
+```
 
-Neither `archive/` nor `orchestrator.py` is in the plan's Task 4 file list, and both were left
-untouched to keep this commit to the specified scope. Flagging them here so the reviewer can decide
-whether a follow-up cleanup is wanted; neither affects the running system (the crypto orchestrator
-is parked per spec §7, and no process config remains on disk).
+(The two `research/quant_lab/*.ipynb` notebooks also match a naive substring search, but only as
+`Pm2` inside base64 image payloads — e.g. `.../369e3cc8+1OXPm2J9/...`. The regex above requires a
+non-base64 character before the token, which excludes them; they contain no real reference.)
+
+| Tracked file | Lines | What it is | Why it is still there |
+|---|---|---|---|
+| `docs/superpowers/plans/2026-09-24-azure-deploy.md` | 58, 567, 572, 578–580, 591, 593, 597, 606, 664 | The **superseded** Azure plan. Line 58 and Step 3 (593–606) are *live-sounding* instructions: "Modify `Procfile` and `ecosystem.config.js` to keep only the crypto orchestrator", and they show the replacement contents. Line 572 says the VPS runs the orchestrator via `pm2 … --name crypto-sniper`. | **Marked superseded by `59b4062`** ("VPS deploy plan replaces Azure"), which adds the banner *"Superseded 2026-09-25 by 2026-09-25-vps-deploy.md … Don't implement this plan. Its Tasks 1–2 are carried over word for word."* The live instruction is therefore **not to implement it**, and **no source change is needed on this branch** — the banner arrives with the sibling docs branch (see "Merge notes"). Touching the plan from here would duplicate that commit and collide with it. |
+| `.agent/index/notes_manifest.json` | 201 | A generated index entry — the heading string `"Or launch as a background daemon using PM2:"`, captured from a `README.md` snapshot (`modified_utc: 2026-09-24T15:59:30Z`) that predates Task 4. | Not an instruction to anyone: it is a machine-generated index of a *past* heading, and the heading no longer exists in `README.md` (Task 4 deleted that section). It is outside the plan's Task 4 file list, so it was not regenerated. **It is stale** and should be regenerated by whatever re-indexes `.agent/`; flagging it for the reviewer rather than hand-editing a generated file. |
+| `docs/superpowers/reports/2026-09-25-vps-deploy.md` | 19, incl. this section | **This report** — it names the retired files, the sweep, and the Task 5 checklist. | Unavoidable and correct: an evidence report has to name what it removed. These are descriptions of the retirement, not run instructions. |
+| `docs/superpowers/specs/2026-09-23-trade-hub-prediction-scope-design.md` | 116 | Spec line: "The VPS (`Procfile`, `ecosystem.config.js`, `requirements.vps.txt`) … **are retired**." | Already correct — it is the authority that says they are retired. The plan's handoff contract also forbids editing the spec. |
+| `docs/superpowers/plans/2026-09-24-rollout-tracker.md` | 109 | Step 5 scope line: "Retire the VPS: `Procfile`, `ecosystem.config.js`, the VPS runbook section of `README.md`." | Correct as written — it is the instruction that was carried out by this commit. |
+| `docs/superpowers/plans/2026-09-24-repo-cleanup.md` | 26 | Executed-plan line: "Don't touch `Procfile` or `ecosystem.config.js` (the VPS is retired in a later rollout step)". | Correct and historical — it records the scope constraint of step 1, which this task's later retirement then honoured. |
+| `archive/legacy/root/STATE.md` | 11, 40, 48 | Archived state notes: the `ta`/`yfinance` **PM2 venv** requirements, the orchestrator booting "under PM2 as `crypto-sniper`", and a "restart PM2" deploy line. | Deliberately archived historical state, outside the plan's Task 4 file list. Not instructions; left untouched to keep the commit to the specified scope. |
+| `market_sentiment_tool/backend/orchestrator.py` | 698 | An error-message string: "… into the PM2 interpreter environment." | The **parked** crypto orchestrator (spec §7). It is not matched by the plan's grep, which names neither `Procfile` nor `ecosystem.config.js`, and it is outside the Task 4 file list. It affects no running system. |
+| `README.md` | 84 | "their old PM2 files are in git history (removed in this commit)". | The sentence this task wrote; it is the replacement text, not an instruction. |
+| `tests/test_repo_layout.py` | 3 | `test_pm2_process_files_are_retired` and its assertion strings. | The regression test that keeps them retired. |
+
+**Corrected completeness claim.** The earlier wording — "Nothing in the repo still tells a reader to
+run PM2 processes ✔" — overstated what was checked. What is actually true: **no tracked file that is
+still *current* guidance tells a reader to run a PM2 process.** The exceptions are all historical or
+inert: the superseded Azure plan (which now carries a "don't implement this" banner, from the sibling
+docs branch), a stale generated index heading, an archived state file, a parked worker's error string,
+and the descriptions/assertions in the spec, tracker, report and test. None of them is a live
+deployment instruction, and no PM2 process config remains on disk.
 
 ### Regression check
 
@@ -587,8 +673,10 @@ Review-focus checklist from the plan, all verified above:
 - Image contains no `.env`, `*.pem` or model files, and no `torch` ✔
 - Deploy job only after `test` → `build` → `vps`, only when `VPS_HOST` is set, sends exactly
   `deploy tradehub <full sha>` ✔
-- Nothing in the repo still tells a reader to run PM2 processes ✔ (see the residual-strings note in
-  Task 4 for three archived/parked mentions outside this plan's scope)
+- Nothing that is still *current* guidance tells a reader to run a PM2 process ✔ (the complete
+  all-files inventory, including the superseded Azure plan and one stale generated index heading,
+  is in Task 4's residual-inventory table — it supersedes the narrower claim made in the first
+  version of this report)
 - Workflow contains no Azure reference ✔
 
 ## What was deliberately NOT done
@@ -637,3 +725,221 @@ container removed
 The final tree builds reproducibly from scratch, and the Task 1 behaviours (SPA fallback on
 `/shadow` and `/lab`, 404 JSON for unknown `/api/...`, 503 for an unconfigured Supabase) all hold in
 the real image at 889 MB with ~100 MB idle memory.
+
+---
+
+## Review fix round 1
+
+Four approved findings (F1–F4) were fixed. F5–F11 were **not** implemented — they remain open for
+the reviewer. Everything below was actually run; no result is assumed.
+
+### F1 — `.dockerignore` secret/model patterns were root-anchored (TDD)
+
+Docker matches `.dockerignore` patterns against the context-root-relative path, so the plan's
+`*.pem`, `*.key`, `models`, `model`, `*.pkl` only excluded the **top level**. A nested
+`subdir/keys/private.pem`, `subdir/.env` or `subdir/models/` would still be sent to the daemon in the
+build context. The existing `**/node_modules`, `**/__pycache__` and `**/.pytest_cache` lines show the
+intent was per-depth; the secret/model block just never got the same treatment.
+
+**Files changed:** `tests/test_repo_layout.py` (assertions appended to
+`test_dockerfile_and_dockerignore`), `.dockerignore`. `Dockerfile` and
+`market_sentiment_tool/package-lock.json` were **not** touched.
+
+#### RED — assertions first, run before touching `.dockerignore`
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest \
+  tests/test_repo_layout.py::test_dockerfile_and_dockerignore -q
+    for pattern in ("**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/models", "**/model", "**/*.pkl"):
+>           assert pattern in ignore, f".dockerignore must exclude {pattern} at any depth"
+E           AssertionError: .dockerignore must exclude **/.env at any depth
+E           assert '**/.env' in ['.git', '.github', '.venv', '.venv-*', '**/node_modules', '**/__pycache__', ...]
+tests/test_repo_layout.py:203: AssertionError
+1 failed in 0.06s
+```
+
+#### GREEN
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest \
+  tests/test_repo_layout.py::test_dockerfile_and_dockerignore -q
+.                                                                        [100%]
+1 passed in 0.01s
+```
+
+The plan's original token assertions (`.env`, `.env.*`, `*.pem`, `*.key`, `_attic`, `.venv`,
+`**/node_modules`, `models`, `*.pkl`) are still present and still pass: every root-anchored line was
+**kept**, and the seven `**/`-prefixed lines were **added** below them.
+
+#### Proof the fix is real, not just a string match
+
+A throwaway context directory was built with the committed `.dockerignore` vs. the fixed one,
+containing `root.pem`, `sub/keys/private.pem`, `sub/.env`, `sub/deep/.env.prod`, `sub/models/` and
+`sub/model/`, and an `alpine` Dockerfile that `COPY . /ctx` then lists:
+
+```
+=== BEFORE the fix (git show HEAD:.dockerignore) ===
+/ctx/.dockerignore
+/ctx/Dockerfile
+/ctx/sub/.env
+/ctx/sub/deep/.env.prod
+/ctx/sub/keys/private.pem
+/ctx/sub/model/thing.pkl
+/ctx/sub/models/weights.pkl
+
+=== AFTER the fix (working tree .dockerignore) ===
+/ctx/.dockerignore
+/ctx/Dockerfile
+```
+
+Five secret/model paths in the context before (the root `root.pem` and root `.env` were already
+excluded by the original root-anchored lines, so only the nested ones leaked), zero after. The probe
+directory was deleted; no scratch file remains in the repo.
+
+The real image still builds and still imports with the stricter ignore file, so nothing needed by the
+build was over-excluded:
+
+```
+$ docker build --no-cache -t tradehub:reviewfix .
+ 2 warnings found (use docker --debug to expand):
+  - SecretsUsedInArgOrEnv: Do not use ARG or ENV instructions for sensitive data (ENV "VITE_SUPABASE_PUBLISHABLE_KEY") (line 10)
+  - SecretsUsedInArgOrEnv: Do not use ARG or ENV instructions for sensitive data (ARG "VITE_SUPABASE_PUBLISHABLE_KEY") (line 9)
+
+$ docker images tradehub:reviewfix --format '{{.Size}}'
+889MB
+
+$ docker run --rm tradehub:reviewfix python -c "import tradehub.api.main, tradehub.scripts.scan, tradehub.scripts.settle_predictions; print('imports ok')"
+imports ok
+```
+
+Same 889 MB, same two expected publishable-key warnings as the original build. The probe directory
+was deleted; no scratch file remains in the repo.
+
+### F2 — the tracker row and this report linked a plan file that was not on this branch
+
+`docs/superpowers/plans/2026-09-25-vps-deploy.md` did not exist on this branch, so the step 5 row in
+`docs/superpowers/plans/2026-09-24-rollout-tracker.md:15` and the **Plan:** line at the top of this
+report were both dead links. The file is now added as a **byte-identical** copy of the source plan:
+
+```
+$ cp .superpowers/sdd/2026-09-25-vps-deploy/plan.md docs/superpowers/plans/2026-09-25-vps-deploy.md
+$ shasum -a 256 .superpowers/sdd/2026-09-25-vps-deploy/plan.md \
+                   docs/superpowers/plans/2026-09-25-vps-deploy.md
+ad7b118d6c862334d7179afe0e2a01d694812178f3e020e2f275951d012bfa77  .superpowers/sdd/2026-09-25-vps-deploy/plan.md
+ad7b118d6c862334d7179afe0e2a01d694812178f3e020e2f275951d012bfa77  docs/superpowers/plans/2026-09-25-vps-deploy.md
+
+$ git show 59b4062:docs/superpowers/plans/2026-09-25-vps-deploy.md | shasum -a 256
+ad7b118d6c862334d7179afe0e2a01d694812178f3e020e2f275951d012bfa77  -
+```
+
+All three agree, so the copy matches both the working-copy source and the blob on the sibling docs
+branch, and the links now resolve on this branch in isolation.
+
+A **"Merge notes"** section was added near the top of this report. It records commit **`59b4062`** on
+branch **`plan/2026-09-25-docs-vps-and-gate`**; that this branch starts from **Claude's PR #4 head
+`98432bc`**; that `59b4062` is *not* an ancestor of this branch (merge base `8ebf0f4`); and that the
+sibling docs branch carries both the **Azure superseded banner** and the **tracker Step 5 section
+header** (`## Step 5 — Deploy (now the VPS plan, …)`), neither of which is on this branch. The
+expected conflicts for manual reconciliation are enumerated there and were verified with the
+read-only `git merge-tree`: **two** hunks in
+`docs/superpowers/plans/2026-09-24-rollout-tracker.md` (the step 2–5 status table, and the Step 7
+scope bullet), with the recommended resolution for each, plus the one-sided tracker lines that need a
+human read. The identical add/add of the plan file is **not** a conflict — verified by matching
+sha256 and by a scratch-repo `add/add` merge of identical blobs, which reported
+`Merge made by the 'ort' strategy` with a clean `git status`.
+
+### F3 — the actionlint line contradicted Task 3
+
+The "Tool availability" table said the actionlint check "is therefore reported as not run, and the
+Docker-based actionlint container was not used". That was false: Task 3 ran the plan's own container
+command and it passed. The row now reads that `actionlint` is **not installed as a host binary**, and
+that the plan's container-based command was used instead and **passed** (pointing at Task 3). No
+other claim was changed.
+
+Re-run at this head, with the actual observed output recorded (actionlint prints nothing when clean):
+
+```
+$ docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -shellcheck= \
+    .github/workflows/deploy-tradehub.yml
+exit=0        # 0 bytes of output, i.e. no findings
+```
+
+The workflow file itself was not modified in this round. (Minor record note: the "actionlint ok"
+string quoted in Task 3 and in the earlier "Final verification" block is an echo, not actionlint's
+own output; the substantive claim — exit 0, no findings — is correct and re-confirmed above.)
+
+### F4 — the residual PM2 / `Procfile` / `ecosystem.config.js` inventory was incomplete
+
+The old section claimed a sweep over tracked `*.md`/`*.py` "leaves only" four files. That sweep
+could not see `.json`, and its result list also omitted `.md` files that do contain the strings, so
+the claim was both methodologically and factually wrong. It is replaced by a sweep over **every
+tracked file** and all three tokens, with a per-file table covering:
+
+- `docs/superpowers/plans/2026-09-24-azure-deploy.md` (11 lines) — **marked superseded by
+  `59b4062`**, whose banner says "Don't implement this plan"; its live-looking Task 3 instructions
+  to edit `Procfile`/`ecosystem.config.js` are therefore **not to be implemented**, and **no source
+  change is needed on this branch** because the banner arrives with the sibling docs branch.
+  Editing it here would duplicate `59b4062` and collide with it.
+- `.agent/index/notes_manifest.json:201` — a **stale generated index heading**
+  (`"Or launch as a background daemon using PM2:"`) captured from a `README.md` snapshot dated
+  2026-09-24, i.e. before Task 4 deleted that section. Not an instruction; flagged for whoever
+  re-indexes `.agent/` rather than hand-edited.
+- `docs/superpowers/reports/2026-09-25-vps-deploy.md` — **this report**, which necessarily names the
+  retired files.
+- plus `docs/superpowers/specs/2026-09-23-trade-hub-prediction-scope-design.md:116` (already says
+  they are retired), `docs/superpowers/plans/2026-09-24-rollout-tracker.md:109` (the retirement
+  instruction that was carried out), `docs/superpowers/plans/2026-09-24-repo-cleanup.md:26`
+  (historical step-1 scope constraint), `archive/legacy/root/STATE.md` (3 archived lines),
+  `market_sentiment_tool/backend/orchestrator.py:698` (error string in the parked worker),
+  `README.md:84` (the sentence Task 4 wrote) and `tests/test_repo_layout.py` (the regression test).
+- The two `research/quant_lab/*.ipynb` hits are noted and explained as `Pm2` inside base64 image
+  payloads, not references.
+
+The overstated "Nothing in the repo still tells a reader to run PM2 processes ✔" checklist bullet was
+replaced with the accurate, narrower claim: **no tracked file that is still current guidance tells a
+reader to run a PM2 process**; every exception is historical, inert, or superseded, and no PM2
+process config remains on disk. No source file was changed to satisfy F4 — it is a report correction
+only.
+
+### Verification at this head
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest \
+  tests/test_repo_layout.py -q
+.....................                                                    [100%]
+21 passed in 0.39s
+
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest -q
+348 passed in 4.90s
+
+$ /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m ruff check \
+    --select F401,F811,F821 tradehub tests shared
+All checks passed!
+
+$ docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -shellcheck= \
+    .github/workflows/deploy-tradehub.yml
+exit=0
+
+$ docker build --no-cache -t tradehub:reviewfix . && docker images tradehub:reviewfix --format '{{.Size}}'
+889MB
+```
+
+**Test counts are unchanged from the previous round: 348 full, 21 in `tests/test_repo_layout.py`.**
+No test was added or removed in this round — F1 appended assertions to an existing test, so the RED
+for `test_dockerfile_and_dockerignore` is an assertion failure inside an already-counted test, not a
+new test id. There are no regressions against the 348 recorded at `9531b94` and no regressions
+against the 341 baseline. Ruff stays clean over `tradehub tests shared`.
+
+### Not done in this round
+
+F5–F11 are **not** implemented. Also not done: no push, no PR, no merge, no workflow run, no secrets
+or variables set, no SSH to the VPS, no GitHub configuration change, no subagents dispatched, no
+`.env` read or written, no history rewritten (no amend/reset/rebase/squash), and no other worktree,
+branch or file touched. `Dockerfile`, `market_sentiment_tool/package-lock.json`, the workflow and
+every source file are byte-identical to `9531b94`; the only changes in this round are
+`.dockerignore`, `tests/test_repo_layout.py`,
+`docs/superpowers/plans/2026-09-25-vps-deploy.md` (new, byte-identical copy) and this report.

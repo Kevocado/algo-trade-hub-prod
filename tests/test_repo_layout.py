@@ -196,6 +196,11 @@ def test_dockerfile_and_dockerignore():
     assert "npm run build" in docker and "ENV PYTHONPATH=/app" in docker
     for pattern in (".env", ".env.*", "*.pem", "*.key", "_attic", ".venv", "**/node_modules", "models", "*.pkl"):
         assert pattern in ignore, f".dockerignore must exclude {pattern}"
+    # Docker matches .dockerignore patterns against the context-root-relative path, so a bare
+    # `*.pem` / `models` only excludes the top level. Without the `**/` prefix a nested
+    # `subdir/.env`, `subdir/keys/private.pem` or `subdir/models/` would still enter the context.
+    for pattern in ("**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/models", "**/model", "**/*.pkl"):
+        assert pattern in ignore, f".dockerignore must exclude {pattern} at any depth"
 
 
 def test_deploy_workflow_builds_then_deploys_to_vps():
