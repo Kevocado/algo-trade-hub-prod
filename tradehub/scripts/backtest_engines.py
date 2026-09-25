@@ -11,8 +11,9 @@ import argparse
 import json
 import statistics
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Mapping
+from typing import Callable, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from tradehub.backtest.kalshi_history import KalshiHistoryClient
@@ -36,6 +37,26 @@ from tradehub.markets import KalshiMarket, event_date, parse_market
 
 WEATHER_DECISION_TIME = time(23, 30)
 GAS_DECISION_LEAD = timedelta(hours=2)
+WEATHER_FETCH_MAX_WORKERS = 8
+
+
+def fetch_weather_forecasts(
+    city: City,
+    days: Iterable[date],
+    *,
+    forecast_fn: Callable[[City, date, int], list[Observation]] = historical_forecast_highs,
+    lead_days: int = 1,
+    max_workers: int = WEATHER_FETCH_MAX_WORKERS,
+) -> dict[date, list[Observation]]:
+    """Fetch each requested date with a finite worker pool and stable date keys."""
+    if max_workers < 1:
+        raise ValueError(f"max_workers must be >= 1, got {max_workers!r}")
+    ordered_days = sorted(set(days))
+    if not ordered_days:
+        return {}
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(ordered_days))) as executor:
+        results = executor.map(lambda day: forecast_fn(city, day, lead_days), ordered_days)
+        return {day: result for day, result in zip(ordered_days, results)}
 
 
 def weather_decision_time(target: date, lead_days: int, city: City) -> datetime:
@@ -151,7 +172,12 @@ def main(argv: list[str] | None = None) -> int:
             {event_date(market.event_ticker) for market in markets}
             | {event_date(obs.name) for obs in actuals}
         )
-        forecasts = {day: historical_forecast_highs(city, day, 1) for day in days}
+        forecasts = fetch_weather_forecasts(
+            city,
+            days,
+            forecast_fn=historical_forecast_highs,
+            lead_days=1,
+        )
         decisions = build_weather_decisions(markets, forecasts, actuals, city)
         version = WEATHER_ENGINE_VERSION
     else:

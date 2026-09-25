@@ -392,6 +392,72 @@
 - **Tracker:** Step 4 only was changed to `🟡 implemented on branch, review pending`.
 - **Deviation:** The two exact public backtest commands exceeded the execution timeout; actual timeout results are recorded. No Supabase access, orders, migrations, dependency changes, spec/other-plan edits, `.env` edits, push/reset/clean, or subagent dispatches occurred.
 
+## Task 10 bounded-performance follow-up
+
+- **Files changed:** `tradehub/scripts/backtest_engines.py`, `tests/test_backtest_engines.py`, and this evidence report. The ignored fix report was extended at `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-10-fix-report.md`.
+- **Focused RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_engines.py::test_fetch_weather_forecasts_is_bounded_concurrent_and_date_stable -q
+  ```
+  RED output tail:
+  ```text
+  FAILED tests/test_backtest_engines.py::test_fetch_weather_forecasts_is_bounded_concurrent_and_date_stable
+  AttributeError: module 'tradehub.scripts.backtest_engines' has no attribute 'fetch_weather_forecasts'
+  1 failed in 1.14s
+  ```
+- **Focused GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_engines.py::test_fetch_weather_forecasts_is_bounded_concurrent_and_date_stable -q
+  ```
+  GREEN output tail:
+  ```text
+  1 passed in 0.43s
+  ```
+  The complete `tests/test_backtest_engines.py` run passed: `10 passed in 0.50s`.
+- **Implementation:** Added finite `ThreadPoolExecutor` forecast fetching with `WEATHER_FETCH_MAX_WORKERS = 8`, sorted/deduplicated date keys, deterministic ordered results, bounded worker count, propagated errors, and no skipped training dates. The CLI retains `--train-days` and routes all target/training dates through the helper.
+- **Full verification:**
+  ```text
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  278 passed in 5.20s
+
+  .venv/bin/ruff check --select F401,F811,F821 tradehub tests
+  All checks passed!
+
+  grep -rn "shared.config" tradehub/markets.py tradehub/edges.py tradehub/data tradehub/engines/weather.py tradehub/engines/gas.py tradehub/engine_config.py tradehub/scripts/scan.py tradehub/scripts/backtest_engines.py
+  (no matches; grep exit status 1 is expected)
+  ```
+- **Live dry run output (no `--record`, no Supabase):**
+  ```text
+  weather 36 preds 12 edges
+  gas 0 preds 0 edges
+  KXHIGHNY-26SEP25-T67 yes 12.0 pp maker
+  KXHIGHNY-26SEP25-B73.5 yes 6.9 pp maker
+  KXHIGHNY-26SEP25-B71.5 no 29.6 pp maker
+  KXHIGHNY-26SEP25-B69.5 no 10.1 pp maker
+  KXHIGHNY-26SEP25-B67.5 yes 5.1 pp maker
+  ```
+- **Weather backtest output:** The exact command completed within 300 seconds:
+  ```text
+  {
+    "engine": "weather",
+    "mode": "taker",
+    "n_decisions": 324,
+    "n_fills": 152,
+    "pnl_after_fees": -1.5319,
+    "max_drawdown": 4.3077,
+    "brier_ours": 0.12569,
+    "brier_market": 0.10255,
+    "gate_status": "SHADOW",
+    "gate_reasons": [
+      "model Brier 0.12569 is not below market Brier 0.10255",
+      "simulated P&L after fees/spread is not positive",
+      "calibration miss 15.3% in bucket 50-60 (limit 10pp)"
+    ]
+  }
+  ```
+- **Gas backtest:** The exact command was attempted at 300 seconds and retried at 600 seconds. Both attempts produced no stdout/stderr before timeout; no gas JSON was fabricated.
+- **Deviation:** The gas backtest remains an actual timeout. No Supabase access, orders, migrations, dependency changes, spec/other-plan edits, `.env` edits, push/reset/clean, or subagent dispatches occurred.
+
 ## Verification
 
 _Pending implementation._

@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from threading import Barrier, Lock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -227,3 +228,37 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
     }
     assert captured["date_from"] == datetime(2026, 7, 1, tzinfo=timezone.utc)
     assert captured["date_to"] == datetime(2026, 7, 1, 23, 59, tzinfo=timezone.utc)
+
+
+def test_fetch_weather_forecasts_is_bounded_concurrent_and_date_stable():
+    days = [
+        date(2026, 7, 1),
+        date(2026, 7, 2),
+        date(2026, 7, 3),
+        date(2026, 7, 4),
+    ]
+    barrier = Barrier(2)
+    lock = Lock()
+    active = 0
+    peak_active = 0
+
+    def fake_forecast(city, day, lead_days):
+        nonlocal active, peak_active
+        with lock:
+            active += 1
+            peak_active = max(peak_active, active)
+        barrier.wait(timeout=2)
+        with lock:
+            active -= 1
+        return [Observation(f"forecast:{day}", float(day.day), datetime(2026, 7, 1, tzinfo=timezone.utc))]
+
+    first = backtest_engines.fetch_weather_forecasts(
+        NYC, days, forecast_fn=fake_forecast, max_workers=2,
+    )
+    second = backtest_engines.fetch_weather_forecasts(
+        NYC, list(reversed(days)), forecast_fn=fake_forecast, max_workers=2,
+    )
+
+    assert set(first) == set(days)
+    assert first == second
+    assert peak_active == 2
