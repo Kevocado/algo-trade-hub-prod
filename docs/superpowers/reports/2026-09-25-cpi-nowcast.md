@@ -124,3 +124,90 @@ git diff --check: clean
 - Added release-morning/extra-lead point-in-time decisions, complete feature capture, quote-only CPI scoring, bounded history lookback, monthly cadence, headline/core versions and stored `lead_days` config.
 - Deviation: the current merged client exposes `settled_markets` (the review-fixed merger of historical and live settled markets), not the plan's older `merged_settled_markets` name; the CLI test uses the current interface. PR #4's `n_unquoted` behavior is preserved, and CPI decisions are additionally filtered before the runner so market/model Briers share one scoring set.
 
+## Task 6 — Live verification, evidence and tracker
+
+### Live scan smoke — public sources only, no Supabase writes
+
+```text
+2026-09-25T21:14:45.539146+00:00 predictions 25 edges 7
+Counter({'cpi-v1': 14, 'cpi-core-v1': 11})
+KXCPI-26SEP-T0.9 0.0005 None CPI:2026-09@2026-09-24 0.136
+KXCPI-26SEP-T0.8 0.0051 None CPI:2026-09@2026-09-24 0.136
+KXCPI-26SEP-T0.7 0.0333 0.035 CPI:2026-09@2026-09-24 0.136
+edge KXCPI-26SEP-T0.6 cpi_nowcast MACRO SHADOW no 0.77 True
+edge KXCPI-26SEP-T0.5 cpi_nowcast MACRO SHADOW no 0.39 True
+edge KXCPI-26SEP-T0.4 cpi_nowcast MACRO SHADOW no 0.07 True
+```
+
+The latest usable nowcast is labelled 2026-09-24, exactly yesterday ET. Every sampled edge carries `engine=cpi_nowcast`, `edge_type=MACRO`, `gate_status=SHADOW` and `maker=true`.
+
+### Live headline backtest — read-only, no `--record`
+
+```json
+{
+  "engine": "cpi_nowcast",
+  "mode": "taker",
+  "n_decisions": 461,
+  "n_fills": 110,
+  "pnl_after_fees": -3.26,
+  "max_drawdown": 4.51,
+  "brier_ours": 0.09877,
+  "brier_market": 0.07076,
+  "gate_status": "SHADOW",
+  "gate_reasons": [
+    "model Brier 0.09877 is not below market Brier 0.07076",
+    "simulated P&L after fees/spread is not positive"
+  ],
+  "n_unquoted": 0
+}
+```
+
+### Live core backtest — read-only, no `--record`
+
+```json
+{
+  "engine": "cpi_nowcast",
+  "mode": "taker",
+  "n_decisions": 383,
+  "n_fills": 83,
+  "pnl_after_fees": 7.64,
+  "max_drawdown": 2.13,
+  "brier_ours": 0.0841,
+  "brier_market": 0.07823,
+  "gate_status": "SHADOW",
+  "gate_reasons": [
+    "model Brier 0.0841 is not below market Brier 0.07823"
+  ],
+  "n_unquoted": 0
+}
+```
+
+The Briers match the plan's recorded run. Fill counts and P&L differ because this implementation uses the committed `cpi_nowcast.min_edge_pct: 5.0` directly; the plan's earlier figures used a `min_edge_pct=0` wrapper. The honest result is unchanged: both versions stay SHADOW because the model Brier loses to Kalshi.
+
+### Final verification
+
+```text
+Full pytest: 384 passed in 4.30s (baseline 353; +31)
+Scoped Ruff F401,F811,F821: All checks passed!
+git diff --check: clean
+shared.config import-boundary grep: no output
+```
+
+- Tracker row 6 now says implemented-on-branch/shadow/review-pending and links to the committed plan.
+- The plan file was added with trailing whitespace normalized; SHA-256 `f71c93e3ba3896a19615435e87cf1c4126973b24dc0bcf4a503bcc51ccc25fa0`.
+- No Supabase write, `--record`, migration, order placement or deployment was performed.
+
+## Controller handover — direct review, stacked prerequisites, no Claude capacity
+
+Kevin reported that Claude subagent capacity is exhausted and explicitly authorized continuing the roadmap as a stacked chain, accepting risk from unreviewed upstream work. This branch therefore starts at PR #5 head `9cc6d86`, not `origin/main`. No upstream PR was merged by this agent.
+
+Check specifically:
+
+- PR #5 must merge before this PR; rebase/retest if its head changes.
+- `tradehub/data/cleveland_fed.py` is intentionally force-added because case-insensitive `.gitignore` pattern `Data/` matches the source directory on macOS. Confirm the file is tracked in review output.
+- CPI edges deliberately remain outside gate-status promotion and therefore stay SHADOW; do not hide or suppress them.
+- `scan.main()` deliberately retains PR #4's exit 1 on any engine failure while still writing weather/gas; the plan's older exit 0 expectation was deliberately not restored.
+- The CLI uses current `settled_markets`, bounded `lookback`, quote-only CPI scoring, monthly cadence and per-version `lead_days` config. Verify those interfaces remain after upstream merges.
+- Live results are genuinely SHADOW; do not reinterpret or suppress them.
+- Step 7b may be stacked from this branch's PR head, but do not merge any PR yourself.
+
