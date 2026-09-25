@@ -184,7 +184,7 @@
 
 ## Task 7 — Edge layer and shared side selection
 
-- **Files changed:** `tradehub/edges.py`, `tradehub/backtest/fills.py`, `tests/test_edges.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-7-report.md`.
+- **Files changed:** `tradehub/edges.py`, `tradehub/backtest/fills.py`, `tests/test_edges.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-7-report.md`; the review fix is documented in `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-7-fix-report.md`.
 - **RED command:**
   ```sh
   SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_edges.py -q
@@ -208,8 +208,40 @@
   .....................................                                    [100%]
   37 passed in 0.52s
   ```
-- **Implementation:** Replaced the Task 3 `Quote`-only module with the complete frozen quote/edge model, `MIN_TAKER_PRICE = 0.10`, after-fee `best_side`, and maker-first `evaluate_edge`. `evaluate_edge` checks maker bid/NO `1 - ask` first, falls back to taker ask/NO `1 - bid`, enforces positive/min-edge rules, returns the midpoint as `market_prob`, and suppresses missing quotes. The fill model now imports and re-exports `MIN_TAKER_PRICE` and `best_side`; its unchanged fill and runner suites remain green.
-- **Deviation:** The brief's exact `best_side` signature omits the existing fill model's contract-count parameter, but the unchanged step-3 tests require contract-count-dependent fee thresholds. `best_side` therefore accepts optional keyword `contracts` (default `1`) and the fill call sites pass their requested count; all edge-layer callers retain the specified one-contract default. The brief's stated `28 passed` count is stale for this checkout: the exact GREEN command collects and passes 37 tests (5 edge, 17 fill, 15 runner). The repository graph rebuild command was attempted but could not run because the `graphify` module is not installed (`ModuleNotFoundError: No module named 'graphify'`); no dependency changes were made. No dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed.
+- **Review-fix RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_edges.py -q
+  ```
+  Review-fix RED output tail:
+  ```text
+  F.....                                                                   [100%]
+  tests/test_edges.py:13: in test_best_side_public_signature_has_no_contract_count
+      assert list(parameters) == ["our_prob", "yes_price", "no_price", "maker"]
+  E   AssertionError: assert ['our_prob', ..., 'contracts'] == ['our_prob', ...ice', 'maker']
+  =========================== short test summary info ============================
+  FAILED tests/test_edges.py::test_best_side_public_signature_has_no_contract_count
+  1 failed, 5 passed in 0.48s
+  ```
+- **Review-fix GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_edges.py -q
+  ```
+  Review-fix GREEN output tail:
+  ```text
+  ......                                                                   [100%]
+  6 passed in 0.34s
+  ```
+- **Unchanged fill/runner command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_edges.py tests/test_backtest_fills.py tests/test_backtest_runner.py -q
+  ```
+  Unchanged fill/runner output tail:
+  ```text
+  ......................................                                   [100%]
+  38 passed in 0.24s
+  ```
+- **Implementation:** Replaced the Task 3 `Quote`-only module with the complete frozen quote/edge model, `MIN_TAKER_PRICE = 0.10`, after-fee `best_side`, and maker-first `evaluate_edge`. `evaluate_edge` checks maker bid/NO `1 - ask` first, falls back to taker ask/NO `1 - bid`, enforces positive/min-edge rules, returns the midpoint as `market_prob`, and suppresses missing quotes. The fill model imports and re-exports `MIN_TAKER_PRICE` and `best_side`, uses that exact public selector for side/price, and recomputes the selected side's after-fee edge with the requested contract count so the hardened fill thresholds remain intact.
+- **Deviation:** The public `best_side` signature is now exactly `(our_prob, yes_price, no_price, *, maker)`. Fill threshold behavior is preserved by selecting side/price through that public function and recomputing the selected side's after-fee edge with `net_edge_pct(..., contracts=requested_contracts, maker=...)`. The checkout has 38 tests in the requested command after adding the interface regression (6 edge, 17 fill, 15 runner), rather than the brief's stale `28 passed` count. The repository graph rebuild command was attempted but could not run because the `graphify` module is not installed (`ModuleNotFoundError: No module named 'graphify'`); no dependency changes were made. The tracked evidence report is included in the task commit as authorized scope required by the handoff contract; the separate handoff/fix report remains repository-ignored. No dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No amend/reset/clean/push/subagent operation was performed.
 
 ## Task 8 — Per-engine config
 

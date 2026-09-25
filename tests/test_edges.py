@@ -1,9 +1,17 @@
+import inspect
+
 import pytest
 
 from shared.kalshi_fees import net_edge_pct
 from tradehub.edges import MIN_TAKER_PRICE, Quote, best_side, evaluate_edge
 
 Q = Quote(yes_bid=0.40, yes_ask=0.44, yes_bid_size=100.0, yes_ask_size=100.0)
+
+
+def test_best_side_public_signature_has_no_contract_count():
+    parameters = inspect.signature(best_side).parameters
+    assert list(parameters) == ["our_prob", "yes_price", "no_price", "maker"]
+    assert parameters["maker"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 def test_best_side_picks_larger_net_edge():

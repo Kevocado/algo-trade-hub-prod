@@ -28,12 +28,10 @@ class EdgeSuggestion:
     market_prob: float | None
 
 
-def best_side(
-    our_prob: float, yes_price: float, no_price: float, *, maker: bool, contracts: int = 1
-) -> tuple[str, float, float]:
+def best_side(our_prob: float, yes_price: float, no_price: float, *, maker: bool) -> tuple[str, float, float]:
     """(side, price, net edge in pct points) for whichever of YES/NO has the larger after-fee edge."""
-    yes_edge = net_edge_pct(our_prob * 100.0, yes_price * 100.0, contracts=contracts, maker=maker)
-    no_edge = net_edge_pct((1.0 - our_prob) * 100.0, no_price * 100.0, contracts=contracts, maker=maker)
+    yes_edge = net_edge_pct(our_prob * 100.0, yes_price * 100.0, maker=maker)
+    no_edge = net_edge_pct((1.0 - our_prob) * 100.0, no_price * 100.0, maker=maker)
     if yes_edge >= no_edge:
         return "yes", yes_price, yes_edge
     return "no", no_price, no_edge
