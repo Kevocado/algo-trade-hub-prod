@@ -1,12 +1,14 @@
 """
 kalshi_fees.py — Kalshi's exact fee formula, shared across sports engines.
 
-Per the current published fee schedule (kalshi.com/docs/kalshi-fee-schedule.pdf):
-    taker_fee_dollars = ceil(0.07 * contracts * P * (1 - P) * 100) / 100
-    maker_fee_dollars = ceil(0.25 * (0.07 * contracts * P * (1 - P) * 100)) / 100
-where P is price expressed as a probability in [0, 1] (a 45c contract is
-P=0.45). Fee peaks at the 50c price point (1.75% of notional) and shrinks
-toward the extremes.
+Kalshi's published general fee schedule rounds the total fee for an order
+up to the next cent. With P expressed as a probability in [0, 1] and C as
+the number of contracts:
+    taker fee = round_up(0.07 * C * P * (1 - P)) dollars
+    maker fee = round_up(0.0175 * C * P * (1 - P)) dollars
+The maker rate is 25% of the taker rate for the markets that charge maker
+fees. This helper returns cents, so it rounds the calculated cent amount
+once, after applying the contract count.
 
 Each Kalshi contract has $1 notional, so a fee expressed in cents is
 numerically the same as a fee expressed in percentage points of edge on a
@@ -15,24 +17,37 @@ from a model-vs-market edge expressed in percentage points.
 """
 from __future__ import annotations
 
-import math
+from decimal import Decimal, ROUND_HALF_UP
+
 
 TAKER_RATE = 0.07
 MAKER_SHARE = 0.25
 
 
+def _ceil_div(numerator: int, denominator: int) -> int:
+    return (numerator + denominator - 1) // denominator
+
+
+def _whole_price_cents(price_cents: float) -> int:
+    value = Decimal(str(price_cents))
+    rounded = value.to_integral_value(rounding=ROUND_HALF_UP)
+    return max(0, min(100, int(rounded)))
+
+
 def kalshi_fee_cents(price_cents: float, *, contracts: int = 1, maker: bool = False) -> float:
     """
-    Returns the total fee, in cents, for trading `contracts` contracts at
-    `price_cents` (e.g. 45.0 for a 45c YES contract).
+    Returns the total fee, in whole cents, for trading `contracts` contracts
+    at `price_cents` (e.g. 45.0 for a 45c YES contract).
+
+    The fee is calculated with integer cent arithmetic so floating-point dust
+    cannot turn an exact fee into an extra cent.
     """
     if contracts <= 0:
         return 0.0
-    probability = max(min(price_cents / 100.0, 1.0), 0.0)
-    raw_taker_cents = TAKER_RATE * contracts * probability * (1.0 - probability) * 100.0
-    if maker:
-        return math.ceil(MAKER_SHARE * raw_taker_cents * 100) / 100.0
-    return math.ceil(raw_taker_cents * 100) / 100.0
+    p = _whole_price_cents(price_cents)
+    numerator = 7 * contracts * p * (100 - p)
+    denominator = 40000 if maker else 10000
+    return float(_ceil_div(numerator, denominator))
 
 
 def net_edge_pct(model_prob_pct: float, kalshi_price_cents: float, *, contracts: int = 1, maker: bool = False) -> float:
@@ -43,6 +58,4 @@ def net_edge_pct(model_prob_pct: float, kalshi_price_cents: float, *, contracts:
     gross_edge_pct = model_prob_pct - kalshi_price_cents
     fee_cents_total = kalshi_fee_cents(kalshi_price_cents, contracts=contracts, maker=maker)
     fee_pct_per_contract = fee_cents_total / contracts
-    if gross_edge_pct >= 0:
-        return gross_edge_pct - fee_pct_per_contract
-    return gross_edge_pct + fee_pct_per_contract
+    return gross_edge_pct - fee_pct_per_contract
