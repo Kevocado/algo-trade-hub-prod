@@ -104,3 +104,15 @@ GREEN: pytest tests/test_sports_pricing.py -q → 5 passed in 0.36s
 - Added winner/spread/total pricing with home orientation and the predictor's frozen distributions.
 - Deviation: none.
 
+## Task 6 — Deterministic candidate filter
+
+### RED/GREEN
+
+```text
+RED: ModuleNotFoundError tradehub.sports.candidates (1 error)
+GREEN: pytest tests/test_sports_candidates.py -q → 5 passed in 0.35s
+```
+
+- Added after-fee edge, liquidity, timing and calibration gates with explicit rejection reasons.
+- Deviation: none.
+
