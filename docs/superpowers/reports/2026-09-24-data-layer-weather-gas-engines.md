@@ -184,7 +184,32 @@
 
 ## Task 7 — Edge layer and shared side selection
 
-_Pending implementation._
+- **Files changed:** `tradehub/edges.py`, `tradehub/backtest/fills.py`, `tests/test_edges.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-7-report.md`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_edges.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_edges.py:4: in <module>
+      from tradehub.edges import MIN_TAKER_PRICE, Quote, best_side, evaluate_edge
+  E   ImportError: cannot import name 'MIN_TAKER_PRICE' from 'tradehub.edges' (/Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/tradehub/edges.py)
+  =========================== short test summary info ============================
+  ERROR tests/test_edges.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.59s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_edges.py tests/test_backtest_fills.py tests/test_backtest_runner.py -q
+  ```
+  GREEN output tail:
+  ```text
+  .....................................                                    [100%]
+  37 passed in 0.52s
+  ```
+- **Implementation:** Replaced the Task 3 `Quote`-only module with the complete frozen quote/edge model, `MIN_TAKER_PRICE = 0.10`, after-fee `best_side`, and maker-first `evaluate_edge`. `evaluate_edge` checks maker bid/NO `1 - ask` first, falls back to taker ask/NO `1 - bid`, enforces positive/min-edge rules, returns the midpoint as `market_prob`, and suppresses missing quotes. The fill model now imports and re-exports `MIN_TAKER_PRICE` and `best_side`; its unchanged fill and runner suites remain green.
+- **Deviation:** The brief's exact `best_side` signature omits the existing fill model's contract-count parameter, but the unchanged step-3 tests require contract-count-dependent fee thresholds. `best_side` therefore accepts optional keyword `contracts` (default `1`) and the fill call sites pass their requested count; all edge-layer callers retain the specified one-contract default. The brief's stated `28 passed` count is stale for this checkout: the exact GREEN command collects and passes 37 tests (5 edge, 17 fill, 15 runner). The repository graph rebuild command was attempted but could not run because the `graphify` module is not installed (`ModuleNotFoundError: No module named 'graphify'`); no dependency changes were made. No dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed.
 
 ## Task 8 — Per-engine config
 
