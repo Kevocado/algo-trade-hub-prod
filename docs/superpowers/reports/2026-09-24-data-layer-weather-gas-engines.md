@@ -155,7 +155,32 @@
 
 ## Task 6 — RBOB input and gas engine
 
-_Pending implementation._
+- **Files changed:** `tradehub/data/rbob.py`, `tradehub/engines/gas.py`, `tests/test_gas_engine.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-6-report.md`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_gas_engine.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_gas_engine.py:8: in <module>
+      from tradehub.data.rbob import rbob_closes
+  E   ModuleNotFoundError: No module named 'tradehub.data.rbob'
+  =========================== short test summary info ============================
+  ERROR tests/test_gas_engine.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.59s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_gas_engine.py -q
+  ```
+  GREEN output tail:
+  ```text
+  .....                                                                    [100%]
+  5 passed in 0.41s
+  ```
+- **Implementation:** Added `RBOB_SYMBOL = "RB=F"` and injected `rbob_closes(history_fn)` with 18:00 America/New_York settlement timestamps converted to UTC, dated observation names, and publication-time sorting. Added the pure gas engine constants and frozen `GasModel`, known-close `rbob_change`, consecutive-calendar-day training pairs, OLS fitting with `n-2` residual sigma and the `MIN_GAS_SIGMA` floor, and horizon-scaled normal `gas_prob`. The exact five specified tests cover all requested behavior; no yfinance request was made.
+- **Deviation:** None. The case-insensitive working directory's broad `Data/` ignore rule matched the required `tradehub/data/rbob.py`; it is explicitly force-staged without editing `.gitignore`. No dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed. The handoff report is not included in the requested staging list and remains repository-ignored.
 
 ## Task 7 — Edge layer and shared side selection
 
