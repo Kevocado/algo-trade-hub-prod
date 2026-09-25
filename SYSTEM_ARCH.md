@@ -10,7 +10,7 @@
 Algo-Trade-Hub is a unified quantitative trading and sports analytics platform operating on a modern **Hybrid Architecture**:
 
 1. **Frontend (Vercel)** — A React/Vite web application (`market_sentiment_tool`) serving as the unified "Kalshi Terminal" and "War Room" dashboard.
-2. **Backend Compute (Custom VPS)** — Diverse Python engines (Quant, Weather, Macro, Sports) running autonomously separated from the frontend to optimize resources. Orchestrated via PM2 (`ecosystem.config.js`).
+2. **Backend Compute (Custom VPS)** — Diverse Python engines (Quant, Weather, Macro, Sports) running autonomously separated from the frontend to optimize resources. Scheduled as hourly systemd timers on the VPS (see README, VPS deployment).
 3. **Data Bridge (Supabase PostgreSQL)** — The central state layer bridging the Vercel UI and the VPS Daemons. 
 
 ---
@@ -54,7 +54,6 @@ Algo-Trade-Hub/                          ← Root monorepo (one git repo)
 ├── research/                            ← parked research, not imported by runtime (see research/README.md)
 ├── archive/                             ← Archived legacy docs, duplicate prompt packs, scratch material
 │
-├── ecosystem.config.js                  ← PM2 Daemon configuration
 ├── SYSTEM_ARCH.md                       ← You are here
 ├── README.md                            ← Monorepo quick-start guide
 └── .gitignore                           ← Root gitignore
@@ -70,7 +69,7 @@ The system separates concerns to heavily optimize the $5/mo VPS server limit whi
 The VPS focuses entirely on running heavy machine learning inference (LightGBM/FinBERT) and data scraping (NWS, FRED, Understat).
 
 **Key Flow:**
-1. `ecosystem.config.js` keeps `background_scanner.py` running in a constant loop.
+1. The hourly `tradehub-scan` timer runs `python -m tradehub.scripts.scan` (weather + gas, suggest-only).
 2. The scanner initializes specific engines (`weather_engine`, `macro_engine`, `quant_engine`). TSA/EIA engines now live as parked research under `research/engines` and are not run.
 3. **Threshold-Free Discovery:** Engines ingest raw data and compute mathematical edges. Instead of filtering out low-edge markets, engines return *all* strictly tracked live markets (e.g., creating a massive grid of 100+ upcoming weather markets).
 4. **Dynamic Data Tagging:** The `background_scanner` assigns a strict `edge_type` string to the payload: `'WEATHER'`, `'MACRO'`, `'CRYPTO'`, or `'SPORTS'`.

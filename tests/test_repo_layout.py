@@ -221,3 +221,13 @@ def test_deploy_workflow_builds_then_deploys_to_vps():
         assert azure not in text, f"workflow must not reference Azure ({azure})"
 
 
+def test_pm2_process_files_are_retired():
+    assert not (REPO / "Procfile").exists()
+    assert not (REPO / "ecosystem.config.js").exists()
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "## VPS deployment" in readme
+    assert "tradehub-scan.timer" in readme and "deploy tradehub" in readme
+    assert "pm2 start" not in readme
+
+
+

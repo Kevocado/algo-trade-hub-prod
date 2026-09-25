@@ -12,7 +12,7 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 | 2 | Predictions ledger + settlement by market result + track record | 🟡 implemented on branch, review pending | [2026-09-24-predictions-ledger-settlement-track-record.md](2026-09-24-predictions-ledger-settlement-track-record.md) |
 | 3 | Backtesting suite | 🟡 implemented on branch, review pending | [2026-09-24-backtesting-suite.md](2026-09-24-backtesting-suite.md) |
 | 4 | Shared data layer + `weather` + `gas` engines, suggest-only | 🟡 implemented on branch, review pending | [2026-09-24-data-layer-weather-gas-engines.md](2026-09-24-data-layer-weather-gas-engines.md) |
-| 5 | Azure deploy: scheduled jobs + API + web (VPS keeps only the crypto worker) | 🟢 plan written + verified, ready to implement | [2026-09-24-azure-deploy.md](2026-09-24-azure-deploy.md) |
+| 5 | VPS deploy: API + War Room container, hourly scan/settle timers (replaces the Azure plan) | ✅ implemented, pending Kevin's first deploy (Task 5) | [2026-09-25-vps-deploy.md](2026-09-25-vps-deploy.md) |
 | 6 | `cpi_nowcast` | 🗺️ outline only; detail after step 4 lands | — |
 | 7 | Sports adapters + LLM reviewer | 🗺️ outline only; detail after step 4 lands | — |
 | 8 | `labor_nowcast` + Jobs Scorecard | 🗺️ outline only; detail after step 4 lands | — |
@@ -121,7 +121,7 @@ An implementing agent (Claude, Codex, Muse, or another) must:
 
 ## Step 7 — Sports adapters + LLM reviewer (outline)
 
-- **Scope:** read-only adapters for the NFL/CFB predictor APIs first (`*.proudbay-f56b8dfa.eastus2.azurecontainerapps.io`), then NBA/PL/F1 once their base URLs are recorded.
+- **Scope:** read-only adapters for the NFL/CFB predictor APIs first (`https://nfl.<domain>/api`, `https://cfb.<domain>/api` on the VPS), then NBA/PL/F1 (`https://nba.<domain>`, `https://pl.<domain>`, `https://f1.<domain>`).
 - **Game-to-Kalshi mapping:** a per-sport mapping table plus fixtures.
 - **Candidate filter:** a deterministic filter (edge after fees, predictor calibration in that bucket within 10pp, liquidity).
 - **LLM reviewer:** an OpenRouter free model, model name in config.
