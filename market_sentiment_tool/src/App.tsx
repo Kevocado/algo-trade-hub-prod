@@ -3,8 +3,9 @@ import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
 import Home from "@/pages/Home";
 import PredictionLab from "@/pages/PredictionLab";
 import ShadowBacktester from "@/pages/ShadowBacktester";
+import SportsEdges from "@/pages/SportsEdges";
 import { usePortfolio } from "@/hooks/usePortfolio";
-import { LayoutDashboard, Activity, Wallet, Brain, LineChart } from "lucide-react";
+import { LayoutDashboard, Activity, Wallet, Brain, LineChart, Trophy } from "lucide-react";
 
 const Sidebar = () => {
   const { portfolio } = usePortfolio();
@@ -39,6 +40,12 @@ const Sidebar = () => {
           className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
         >
           <LineChart className="w-5 h-5 text-amber-400" /> Shadow
+        </NavLink>
+        <NavLink
+          to="/sports"
+          className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
+        >
+          <Trophy className="w-5 h-5 text-cyan-400" /> Sports
         </NavLink>
       </nav>
 
@@ -79,6 +86,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/lab" element={<PredictionLab />} />
           <Route path="/shadow" element={<ShadowBacktester />} />
+          <Route path="/sports" element={<SportsEdges />} />
         </Routes>
       </AppShell>
     </BrowserRouter>

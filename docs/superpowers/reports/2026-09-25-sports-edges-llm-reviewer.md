@@ -153,3 +153,15 @@ GREEN: pytest tests/test_sports_scorecard_api.py -q → 6 passed
 - Added the keep-or-drop reviewer scorecard and `/api/sports-edges`, registered before the SPA mount.
 - Deviation: none.
 
+## Task 10 — War Room Sports page
+
+### RED/GREEN
+
+```text
+RED: vitest could not resolve @/lib/sportsEdges (1 failed suite)
+GREEN: focused 4 passed; full frontend 4 files / 12 tests passed; vite build OK
+```
+
+- Added the Sports page, tier/rejection formatting helpers, navigation and route.
+- Deviation: none.
+
