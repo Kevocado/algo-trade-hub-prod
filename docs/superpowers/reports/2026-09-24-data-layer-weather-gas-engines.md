@@ -39,7 +39,32 @@
 
 ## Task 2 — Market geometry
 
-_Pending implementation._
+- **Files changed:** `tradehub/markets.py`, `tests/test_markets.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-2-report.md`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_markets.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_markets.py:6: in <module>
+      from tradehub.markets import event_date, market_url, parse_market, prob_in_interval, yes_interval
+  E   ModuleNotFoundError: No module named 'tradehub.markets'
+  =========================== short test summary info ============================
+  ERROR tests/test_markets.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.08s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_markets.py -q
+  ```
+  GREEN output tail:
+  ```text
+  .......                                                                  [100%]
+  7 passed in 0.01s
+  ```
+- **Implementation:** Added the frozen `KalshiMarket` model and pure parser, event-date parsing, half-resolution strike intervals with infinite bounds, normal-CDF interval probability with positive-sigma validation, and the Kalshi market URL helper. The seven specified tests cover parsing, dates, weather/gas geometry, unknown strikes, probability, and URLs.
+- **Deviation:** None. The tests were written before production code, the exact RED and GREEN commands were run with the requested environment and interpreter, and no dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed.
 
 ## Task 3 — Kalshi live markets and settled values
 
