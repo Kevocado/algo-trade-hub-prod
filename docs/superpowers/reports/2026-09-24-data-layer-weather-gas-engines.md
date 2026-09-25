@@ -126,7 +126,32 @@
 
 ## Task 5 — Weather engine
 
-_Pending implementation._
+- **Files changed:** `tradehub/engines/weather.py`, `tests/test_weather_engine.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-5-report.md`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_weather_engine.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_weather_engine.py:5: in <module>
+      from tradehub.engines.weather import DEFAULT_ERROR, MIN_SIGMA, ErrorModel, fit_error_model, weather_prob
+  E   ModuleNotFoundError: No module named 'tradehub.engines.weather'
+  =========================== short test summary info ============================
+  ERROR tests/test_weather_engine.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.09s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_weather_engine.py -q
+  ```
+  GREEN output tail:
+  ```text
+  ......                                                                   [100%]
+  6 passed in 0.01s
+  ```
+- **Implementation:** Added the pure weather engine with `ErrorModel`, `DEFAULT_ERROR`, `MIN_SIGMA`, `TEMP_RESOLUTION`, and `WEATHER_ENGINE_VERSION` constants. `fit_error_model` returns the default below the minimum pair count, otherwise fits mean bias and sample standard deviation with the sigma floor. `weather_prob` shifts the blended forecast mean by bias, adds forecast-model pvariance to error variance, maps the result through the market YES interval, and rejects empty forecast highs with `ValueError`. The exact six tests cover default fallback, bias/sample-sigma fitting, sigma flooring, normal probability equivalence, bias/disagreement widening behavior, and empty-highs validation.
+- **Deviation:** None. The exact six tests, RED command, implementation, and GREEN command from the brief were followed. No dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed. The handoff report is not included in the requested staging list and remains repository-ignored.
 
 ## Task 6 — RBOB input and gas engine
 
