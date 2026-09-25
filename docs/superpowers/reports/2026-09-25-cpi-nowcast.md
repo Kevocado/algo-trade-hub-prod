@@ -34,3 +34,24 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_cp
 - Added the trimmed recorded Kalshi fixture and six focused tests.
 - Deviation: none.
 
+## Task 2 — Cleveland Fed nowcast as point-in-time observations
+
+### RED
+
+```text
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_cleveland_fed.py -q
+ModuleNotFoundError: No module named 'tradehub.data.cleveland_fed'
+1 error in 0.17s
+```
+
+### GREEN
+
+```text
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_cleveland_fed.py -q
+6 passed in 0.01s
+```
+
+- Added the keyless FusionCharts parser, publication-time rules, headline/core selection and one-call fetcher exactly as specified.
+- Added the trimmed recorded payload and six tests covering vlines, December rollover, missing release, core series and the exact URL.
+- Deviation: none.
+

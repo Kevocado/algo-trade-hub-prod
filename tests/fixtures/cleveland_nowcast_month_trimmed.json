@@ -1,0 +1,35 @@
+[
+ {
+  "chart": {"_comment": "2026-09-24 00:00", "caption": "Inflation Nowcasting", "subcaption": "2021-12", "yaxisname": "Month-over-month percent change"},
+  "categories": [{"category": [{"label": "12/01"}, {"label": "12/10"}, {"label": "CPI Nov", "vline": "true"}, {"label": "12/31"}, {"label": "01/11"}, {"label": "01/12"}, {"label": "CPI Dec", "vline": "true"}, {"label": "01/13"}]}],
+  "dataset": [
+   {"seriesname": "CPI Inflation", "data": [{"value": "0.135092008807369"}, {"value": "0.420285410429762"}, {"value": "0.388985413110369"}, {"value": "0.388985413110369"}, {"value": ""}, {"value": ""}]},
+   {"seriesname": "Core CPI Inflation", "data": [{"value": "0.391334142249688"}, {"value": "0.404667075043658"}, {"value": "0.404667075043658"}, {"value": "0.404667075043658"}, {"value": ""}, {"value": ""}]},
+   {"seriesname": "PCE Inflation", "data": [{"value": "0.215716068609123"}, {"value": "0.378713276235002"}, {"value": "0.369967901607565"}, {"value": "0.369967901607565"}, {"value": "0.379818997142973"}, {"value": "0.379818997142973"}]},
+   {"seriesname": "Actual CPI Inflation", "data": [{"value": ""}, {"value": ""}, {"value": ""}, {"value": ""}, {"value": "0.470453241537583"}, {"value": ""}]},
+   {"seriesname": "Actual Core CPI Inflation", "data": [{"value": ""}, {"value": ""}, {"value": ""}, {"value": ""}, {"value": "0.550139300355568"}, {"value": ""}]}
+  ]
+ },
+ {
+  "chart": {"_comment": "2026-09-24 00:00", "caption": "Inflation Nowcasting", "subcaption": "2025-10", "yaxisname": "Month-over-month percent change"},
+  "categories": [{"category": [{"label": "10/01"}, {"label": "12/17"}, {"label": "12/18"}, {"label": "CPI Nov", "vline": "true"}]}],
+  "dataset": [
+   {"seriesname": "CPI Inflation", "data": [{"value": "0.198552626727325"}, {"value": "0.183254751516416"}, {"value": ""}]},
+   {"seriesname": "Core CPI Inflation", "data": [{"value": "0.251132146717158"}, {"value": "0.248744105819295"}, {"value": ""}]},
+   {"seriesname": "PCE Inflation", "data": [{"value": "0.198079893921763"}, {"value": "0.187752977774929"}, {"value": "0.179281309437696"}]},
+   {"seriesname": "Actual CPI Inflation", "data": [{"value": ""}, {"value": ""}, {"value": ""}]},
+   {"seriesname": "Actual Core CPI Inflation", "data": [{"value": ""}, {"value": ""}, {"value": ""}]}
+  ]
+ },
+ {
+  "chart": {"_comment": "2026-09-24 00:00", "caption": "Inflation Nowcasting", "subcaption": "2026-8", "yaxisname": "Month-over-month percent change"},
+  "categories": [{"category": [{"label": "08/03"}, {"label": "09/10"}, {"label": "09/11"}, {"label": "CPI Aug", "vline": "true"}, {"label": "09/14"}]}],
+  "dataset": [
+   {"seriesname": "CPI Inflation", "data": [{"value": "0.320941031024802"}, {"value": "0.359180537639179"}, {"value": ""}, {"value": ""}]},
+   {"seriesname": "Core CPI Inflation", "data": [{"value": "0.203008223327511"}, {"value": "0.203341742698412"}, {"value": ""}, {"value": ""}]},
+   {"seriesname": "PCE Inflation", "data": [{"value": "0.329204026425306"}, {"value": "0.35365703803959"}, {"value": "0.342798456247959"}, {"value": "0.342798456247959"}]},
+   {"seriesname": "Actual CPI Inflation", "data": [{"value": ""}, {"value": ""}, {"value": "0.396018184385816"}, {"value": ""}]},
+   {"seriesname": "Actual Core CPI Inflation", "data": [{"value": ""}, {"value": ""}, {"value": "0.289795688101457"}, {"value": ""}]}
+  ]
+ }
+]
