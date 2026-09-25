@@ -31,3 +31,15 @@ GREEN: pytest tests/test_alfred_vintages.py -q → 4 passed
 
 - Added CSV parsing, 12-vintage batching, disk cache and the injected-text fetcher.
 - Deviation: `tradehub/data` is matched by the case-insensitive `Data/` ignore rule, so the new module is force-added; `.gitignore` was not broadened.
+
+## Task 2 — Labor engine part 1
+
+### RED/GREEN
+
+```text
+RED: ModuleNotFoundError tradehub.engines.labor (1 error)
+GREEN: pytest tests/test_labor_engine.py -q → 19 passed
+```
+
+- Added month/decision geometry, strict-greater strike snapping, first prints/revisions and labor constants.
+- Deviation: none.
