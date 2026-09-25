@@ -579,3 +579,26 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
   ```
 - **Implementation:** added a trailing optional `MarketHistory.settled_at`, used it for settlement ordering when present, retained `close_time` for decision/fill validation and as a legacy fallback, and kept total P&L summation in deterministic decision order.
 - **Cross-branch note:** the stacked data-layer branch has consumers that predate the new explicit `market_settled_at` candle argument. No files from that separate branch were edited here; its integration must pass market `settlement_ts` when rebased, rather than guessing a tier in this branch.
+
+## User-requested re-review fix — Open-Meteo availability lag
+
+- **Requirement:** a `previous_dayN` value becomes available after the run finishes, so the availability lag is added after subtracting the lead duration.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert datetime.datetime(2026, 7, 23, 21, 0, tzinfo=datetime.timezone.utc) == datetime.datetime(2026, 7, 24, 9, 0, tzinfo=datetime.timezone.utc)
+  4 failed, 3 passed in 0.07s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  GREEN output tail:
+  ```text
+  7 passed in 0.02s
+  ```
+- **Implementation:** changed the absolute-time calculation to `- lead_days + lag`; updated the July, spring-forward, 12-hour, and fall-back expected timestamps; restored `test_forecast_daily_high_validates_lead_and_empty_payload()` as a separate test.
+- **Deviation:** None. The report intentionally records the corrected availability direction and the restored test.

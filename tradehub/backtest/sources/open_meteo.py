@@ -47,5 +47,5 @@ def forecast_daily_high(
         raise ValueError(f"no {variable} values for {day} ({model})")
     last_hour_local = datetime.combine(target_date, time(23, 0), ZoneInfo(timezone_name))
     lag = availability_lag if availability_lag is not None else MODEL_AVAILABILITY_LAGS.get(model, DEFAULT_AVAILABILITY_LAG)
-    issued = last_hour_local.astimezone(timezone.utc) - timedelta(days=lead_days) - lag
+    issued = last_hour_local.astimezone(timezone.utc) - timedelta(days=lead_days) + lag
     return Observation(name=f"openmeteo:{model}:high:{day}:lead{lead_days}", value=max(values), published_at=issued)

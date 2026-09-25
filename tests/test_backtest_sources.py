@@ -56,9 +56,9 @@ def test_forecast_daily_high_max_of_previous_day_series_and_issue_time():
     assert params["start_date"] == params["end_date"] == "2026-07-24"
     assert params["temperature_unit"] == "fahrenheit" and params["models"] == "ncep_gfs_seamless"
     assert obs.value == pytest.approx(84.4)
-    # 23:00 EDT on Jul 24 minus 1 day and the default 6h availability lag
-    # is Jul 23 21:00 UTC.
-    assert obs.published_at == datetime(2026, 7, 23, 21, 0, tzinfo=timezone.utc)
+    # 23:00 EDT on Jul 24 minus 1 day plus the default 6h availability lag
+    # is Jul 24 09:00 UTC.
+    assert obs.published_at == datetime(2026, 7, 24, 9, 0, tzinfo=timezone.utc)
     assert obs.name == "openmeteo:ncep_gfs_seamless:high:2026-07-24:lead1"
 
 
@@ -78,7 +78,7 @@ def test_forecast_daily_high_applies_default_lag_across_spring_forward():
         get_json=rec,
     )
 
-    assert obs.published_at == datetime(2026, 3, 7, 21, 0, tzinfo=timezone.utc)
+    assert obs.published_at == datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc)
 
 
 def test_forecast_daily_high_accepts_a_model_specific_availability_lag():
@@ -98,9 +98,10 @@ def test_forecast_daily_high_accepts_a_model_specific_availability_lag():
         get_json=rec,
     )
 
-    assert obs.published_at == datetime(2026, 7, 23, 15, 0, tzinfo=timezone.utc)
+    assert obs.published_at == datetime(2026, 7, 24, 15, 0, tzinfo=timezone.utc)
 
 
+def test_forecast_daily_high_validates_lead_and_empty_payload():
     kwargs = dict(latitude=40.7, longitude=-73.9, target_date=date(2026, 7, 24),
                   model="ncep_gfs_seamless", timezone_name="America/New_York")
     with pytest.raises(ValueError):
@@ -126,4 +127,4 @@ def test_forecast_daily_high_subtracts_lead_days_in_utc_across_fall_back():
         timezone_name="America/New_York",
         get_json=rec,
     )
-    assert obs.published_at == datetime(2026, 10, 31, 22, 0, tzinfo=timezone.utc)
+    assert obs.published_at == datetime(2026, 11, 1, 10, 0, tzinfo=timezone.utc)
