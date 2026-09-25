@@ -11,7 +11,7 @@ import argparse
 import json
 import statistics
 import sys
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Mapping
 from zoneinfo import ZoneInfo
 
@@ -52,15 +52,20 @@ def build_weather_decisions(
     decisions = []
     for market in markets:
         target = event_date(market.event_ticker)
-        highs = forecasts.get(target) or []
+        decided_at = weather_decision_time(target, lead_days, city)
+        highs = [observation for observation in (forecasts.get(target) or [])
+                 if observation.published_at <= decided_at]
         if not highs:
             continue
-        decided_at = weather_decision_time(target, lead_days, city)
         pairs = []
         for actual in actuals:
             day = event_date(actual.name)
-            if actual.published_at <= decided_at and forecasts.get(day):
-                pairs.append((statistics.fmean(o.value for o in forecasts[day]), actual.value))
+            if actual.published_at > decided_at:
+                continue
+            known_forecasts = [observation for observation in (forecasts.get(day) or [])
+                               if observation.published_at <= decided_at]
+            if known_forecasts:
+                pairs.append((statistics.fmean(observation.value for observation in known_forecasts), actual.value))
         prob = weather_prob(market, [o.value for o in highs], fit_error_model(pairs))
         decisions.append(Decision(market.ticker, decided_at, prob, tuple(highs)))
     return decisions
@@ -100,8 +105,13 @@ def _histories(
             ticker=market.ticker,
             result=results.get(market.ticker),
             close_time=market.close_time,
-            candles=client.candles(market.ticker, market.open_time, market.close_time),
-            trades=client.trades(market.ticker),
+            candles=client.merged_candles(
+                market.ticker,
+                market.open_time,
+                market.close_time,
+                series_ticker=market.series_ticker,
+            ),
+            trades=client.merged_trades(market.ticker, start=market.open_time, end=market.close_time),
         )
     return out
 
@@ -124,16 +134,17 @@ def main(argv: list[str] | None = None) -> int:
 
     client = KalshiHistoryClient()
     series = args.series or ("KXHIGHNY" if args.engine == "weather" else GAS_SERIES)
+    settled_raws = client.merged_settled_markets(series)
     raws = [
         raw
-        for raw in client.settled_markets(series)
+        for raw in settled_raws
         if args.start <= event_date(raw["event_ticker"]) <= args.end
     ]
     markets = [parse_market(raw) for raw in raws]
     results = {raw["ticker"]: raw.get("result") for raw in raws}
     if args.engine == "weather":
         city = WEATHER_CITIES[series]
-        actuals = settlement_observations(client.settled_markets(series))
+        actuals = settlement_observations(settled_raws)
         train_from = args.start - timedelta(days=args.train_days)
         actuals = [obs for obs in actuals if train_from <= event_date(obs.name) <= args.end]
         days = sorted(
@@ -144,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         decisions = build_weather_decisions(markets, forecasts, actuals, city)
         version = WEATHER_ENGINE_VERSION
     else:
-        aaa = settlement_observations(client.settled_markets(series))
+        aaa = settlement_observations(settled_raws)
         decisions = build_gas_decisions(markets, aaa, rbob_closes())
         version = GAS_ENGINE_VERSION
     histories = _histories(
@@ -165,14 +176,15 @@ def main(argv: list[str] | None = None) -> int:
         "mode": args.mode,
         "start": str(args.start),
         "end": str(args.end),
+        "train_days": args.train_days,
     }
     row = build_backtest_run_row(
         result,
         engine_version=version,
         config=config,
         data_hash=data_snapshot_hash(decisions, histories),
-        date_from=datetime.combine(args.start, time(0)).astimezone(),
-        date_to=datetime.combine(args.end, time(23, 59)).astimezone(),
+        date_from=datetime.combine(args.start, time(0), tzinfo=timezone.utc),
+        date_to=datetime.combine(args.end, time(23, 59), tzinfo=timezone.utc),
     )
     print(
         json.dumps(

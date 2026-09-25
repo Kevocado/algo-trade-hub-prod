@@ -339,7 +339,58 @@
   (no matches)
   ```
 - **Implementation:** Added the exact `WEATHER_DECISION_TIME = time(23, 30)` and `GAS_DECISION_LEAD = timedelta(hours=2)` constants; LST-zone weather decision timestamps; walk-forward weather error fitting from actuals and forecasts knowable at each decision; decision-time AAA and RBOB filtering for gas decisions; point-in-time `Decision` features; public history construction; and the `--engine`, date range, `--mode`, `--series`, `--train-days`, and `--record` CLI. The CLI selects the default weather or gas series, pulls Kalshi history, runs `run_backtest`, preserves the additive `log_loss` field through `build_backtest_run_row`, emits the result JSON, and records through `record_backtest_run` only when requested.
-- **Deviation:** None. The exact five tests and exact RED/GREEN commands from the brief were followed. No live services were contacted, no orders were placed, and no dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed.
+- **Deviation:** None in the initial Task 10 round. The exact five tests and exact RED/GREEN commands from the brief were followed. The final review-fix evidence below records the explicitly requested public-data attempts; no Supabase writes or orders were made.
+
+## Task 10 final review fix — point-in-time inputs and tier coverage
+
+- **Files changed:** `tradehub/scripts/backtest_engines.py`, `tradehub/backtest/kalshi_history.py`, `tests/test_backtest_engines.py`, `tests/test_backtest_kalshi_history.py`, this evidence report, and the Step 4 status in `docs/superpowers/plans/2026-09-24-rollout-tracker.md`.
+- **Focused RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_engines.py tests/test_backtest_kalshi_history.py -q
+  ```
+  RED output tail:
+  ```text
+  FAILED tests/test_backtest_engines.py::test_weather_decisions_filter_current_forecasts_published_after_decision
+  FAILED tests/test_backtest_engines.py::test_weather_training_ignores_forecasts_published_after_decision
+  FAILED tests/test_backtest_engines.py::test_histories_use_merged_candles_and_trades_with_series_context
+  FAILED tests/test_backtest_engines.py::test_backtest_cli_uses_merged_markets_and_reproducible_metadata
+  FAILED tests/test_backtest_kalshi_history.py::test_merged_settled_markets_combines_tiers_and_deduplicates_ticker
+  5 failed, 20 passed in 0.54s
+  ```
+- **Focused GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_engines.py tests/test_backtest_kalshi_history.py -q
+  ```
+  GREEN output tail:
+  ```text
+  25 passed in 0.47s
+  ```
+- **Implementation:** Current and training weather forecasts are filtered by publication time before use; `merged_settled_markets` combines historical/live settled markets by ticker; `_histories` uses `merged_candles` with series context and bounded `merged_trades`; CLI config includes `train_days`; and date bounds are explicit UTC-aware timestamps. The additive `log_loss` field remains preserved.
+- **Full verification:**
+  ```text
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  277 passed in 4.61s
+
+  .venv/bin/ruff check --select F401,F811,F821 tradehub tests
+  All checks passed!
+
+  grep -rn "shared.config" tradehub/markets.py tradehub/edges.py tradehub/data tradehub/engines/weather.py tradehub/engines/gas.py tradehub/engine_config.py tradehub/scripts/scan.py tradehub/scripts/backtest_engines.py
+  (no matches; grep exit status 1 is expected)
+  ```
+- **Public-data dry run:** Succeeded without Supabase or `--record`.
+  ```text
+  weather 36 preds 12 edges
+  gas 17 preds 3 edges
+  KXHIGHNY-26SEP25-T67 yes 5.0 pp maker
+  KXHIGHNY-26SEP25-B73.5 yes 11.5 pp maker
+  KXHIGHNY-26SEP25-B71.5 no 24.4 pp maker
+  KXHIGHNY-26SEP25-B69.5 no 10.1 pp maker
+  KXHIGHCHI-26SEP25-T64 yes 31.5 pp maker
+  ```
+- **Weather backtest command:** `.venv/bin/python -m tradehub.scripts.backtest_engines --engine weather --series KXHIGHNY --start 2026-06-01 --end 2026-07-24` produced no stdout/stderr before the 300000 ms execution timeout; no JSON was fabricated.
+- **Gas backtest command:** `.venv/bin/python -m tradehub.scripts.backtest_engines --engine gas --start 2026-06-01 --end 2026-07-24` produced no stdout/stderr before the 300000 ms execution timeout; no JSON was fabricated.
+- **Tracker:** Step 4 only was changed to `🟡 implemented on branch, review pending`.
+- **Deviation:** The two exact public backtest commands exceeded the execution timeout; actual timeout results are recorded. No Supabase access, orders, migrations, dependency changes, spec/other-plan edits, `.env` edits, push/reset/clean, or subagent dispatches occurred.
 
 ## Verification
 

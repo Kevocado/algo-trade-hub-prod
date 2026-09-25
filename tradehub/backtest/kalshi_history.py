@@ -115,6 +115,21 @@ class KalshiHistoryClient:
     def settled_markets(self, series_ticker: str) -> list[dict]:
         return self._paginate("/historical/markets", "markets", {"series_ticker": series_ticker, "limit": PAGE_LIMIT})
 
+    def merged_settled_markets(self, series_ticker: str) -> list[dict]:
+        """Combine historical and live settled markets, deduplicated by ticker."""
+        historical = self.settled_markets(series_ticker)
+        live = self._paginate(
+            "/markets",
+            "markets",
+            {"series_ticker": series_ticker, "status": "settled", "limit": PAGE_LIMIT},
+        )
+        by_ticker: dict[str, dict] = {}
+        for market in historical + live:
+            ticker = market.get("ticker")
+            if ticker is not None:
+                by_ticker.setdefault(ticker, market)
+        return list(by_ticker.values())
+
     def candles(
         self,
         ticker: str,

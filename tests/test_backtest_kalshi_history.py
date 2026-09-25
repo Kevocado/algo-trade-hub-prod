@@ -78,6 +78,33 @@ def test_settled_markets_follows_cursor_pagination():
     assert get.calls[1][1]["cursor"] == "c1"
 
 
+def test_merged_settled_markets_combines_tiers_and_deduplicates_ticker():
+    get = FakeGet({
+        "/historical/markets": {
+            "markets": [{"ticker": "A", "result": "yes"}],
+            "cursor": "",
+        },
+        "/markets": {
+            "markets": [
+                {"ticker": "A", "result": "yes"},
+                {"ticker": "B", "result": "no"},
+            ],
+            "cursor": "",
+        },
+    })
+
+    markets = kh.KalshiHistoryClient(get_json=get).merged_settled_markets("KXHIGHNY")
+
+    assert [market["ticker"] for market in markets] == ["A", "B"]
+    assert [path for path, _ in get.calls] == ["/historical/markets", "/markets"]
+    assert get.calls[0][1] == {"series_ticker": "KXHIGHNY", "limit": kh.PAGE_LIMIT}
+    assert get.calls[1][1] == {
+        "series_ticker": "KXHIGHNY",
+        "status": "settled",
+        "limit": kh.PAGE_LIMIT,
+    }
+
+
 def test_candles_historical_path_params_and_sorting():
     later = dict(CANDLE, end_period_ts=1784898000)
     get = FakeGet({"/historical/markets/T/candlesticks": {"candlesticks": [later, CANDLE], "ticker": "T"}})
