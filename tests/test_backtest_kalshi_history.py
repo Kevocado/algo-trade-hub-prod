@@ -69,14 +69,41 @@ def test_cutoff_reads_market_settled_ts():
 
 
 def test_settled_markets_follows_cursor_pagination():
-    get = FakeGet({"/historical/markets": [
-        {"markets": [{"ticker": "A"}], "cursor": "c1"},
-        {"markets": [{"ticker": "B"}], "cursor": ""},
-    ]})
+    get = FakeGet({
+        "/historical/markets": [
+            {"markets": [{"ticker": "A"}], "cursor": "c1"},
+            {"markets": [{"ticker": "B"}], "cursor": ""},
+        ],
+        "/markets": {"markets": [], "cursor": ""},
+    })
     markets = kh.KalshiHistoryClient(get_json=get).settled_markets("KXHIGHNY")
     assert [m["ticker"] for m in markets] == ["A", "B"]
     assert get.calls[0][1]["series_ticker"] == "KXHIGHNY"
     assert get.calls[1][1]["cursor"] == "c1"
+
+
+def test_settled_markets_merges_historical_and_live_tiers_by_ticker():
+    get = FakeGet({
+        "/historical/markets": {
+            "markets": [{"ticker": "A", "source": "historical"}],
+            "cursor": "",
+        },
+        "/markets": {
+            "markets": [
+                {"ticker": "A", "source": "live-duplicate"},
+                {"ticker": "B", "source": "live"},
+            ],
+            "cursor": "",
+        },
+    })
+
+    markets = kh.KalshiHistoryClient(get_json=get).settled_markets("S")
+
+    assert [market["ticker"] for market in markets] == ["A", "B"]
+    assert markets[0]["source"] == "historical"
+    assert [path for path, _ in get.calls] == ["/historical/markets", "/markets"]
+    assert get.calls[1][1]["status"] == "settled"
+    assert get.calls[1][1]["series_ticker"] == "S"
 
 
 def test_candles_historical_path_params_and_sorting():

@@ -115,7 +115,25 @@ class KalshiHistoryClient:
         return self.cutoff_timestamps()["market_settled_ts"]
 
     def settled_markets(self, series_ticker: str) -> list[dict]:
-        return self._paginate("/historical/markets", "markets", {"series_ticker": series_ticker, "limit": PAGE_LIMIT})
+        historical = self._paginate(
+            "/historical/markets",
+            "markets",
+            {"series_ticker": series_ticker, "limit": PAGE_LIMIT},
+        )
+        live = self._paginate(
+            "/markets",
+            "markets",
+            {"status": "settled", "series_ticker": series_ticker, "limit": PAGE_LIMIT},
+        )
+        by_ticker: dict[str, dict] = {}
+        without_ticker: list[dict] = []
+        for market in [*historical, *live]:
+            ticker = market.get("ticker")
+            if ticker is None:
+                without_ticker.append(market)
+            elif ticker not in by_ticker:
+                by_ticker[ticker] = market
+        return [*by_ticker.values(), *without_ticker]
 
     def candles(
         self,

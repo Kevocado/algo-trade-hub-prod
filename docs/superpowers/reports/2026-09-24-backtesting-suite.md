@@ -460,3 +460,27 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
   16 passed in 0.02s
   ```
 - **Implementation:** added a trailing backward-compatible `trade_id` field, populated it from the raw payload, used IDs as the primary dedupe key, retained a composite fallback for ID-less fixtures, and deleted the discarded cutoff call. Stable tier order is retained for equal trade fields.
+
+## Post-review fix wave — finding 4
+
+- **Requirement:** `settled_markets` must also read live-tier settled markets from `/markets?status=settled&series_ticker=...` and deduplicate the combined result by ticker.
+- **Root cause:** the client queried only `/historical/markets`, omitting markets that settled after the historical partition boundary.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py::test_settled_markets_merges_historical_and_live_tiers_by_ticker -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert ['A'] == ['A', 'B']
+  1 failed in 0.06s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  GREEN output tail:
+  ```text
+  17 passed in 0.03s
+  ```
+- **Implementation:** paginated both tiers with the required live filters, retained the first (historical) record for duplicate tickers, and preserved records without a ticker rather than collapsing them.
+- **Deviation:** the existing historical-pagination fixture was extended with an empty live response because the client now always checks both partitions.
