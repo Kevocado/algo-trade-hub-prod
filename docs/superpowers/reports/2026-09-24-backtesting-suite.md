@@ -155,7 +155,33 @@
 
 ## Task 6 — ALFRED and Open-Meteo sources
 
-_Pending implementation._
+- **Files changed:** `tradehub/backtest/sources/__init__.py`, `tradehub/backtest/sources/alfred.py`, `tradehub/backtest/sources/open_meteo.py`, `tests/test_backtest_sources.py`, this evidence report, and `.superpowers/sdd/2026-09-24-backtesting-suite/task-6-report.md` (handoff report; repository-ignored and not staged).
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_backtest_sources.py:5: in <module>
+      from tradehub.backtest.sources.alfred import FRED_OBSERVATIONS_URL, AlfredSource
+  E   ModuleNotFoundError: No module named 'tradehub.backtest.sources'
+  =========================== short test summary info ============================
+  ERROR tests/test_backtest_sources.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.09s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  GREEN output tail:
+  ```text
+  ....                                                                     [100%]
+  4 passed in 0.02s
+  ```
+- **Behavior:** Added the exact ALFRED and Open-Meteo Previous Runs URLs, injected `get_json` clients, and `Observation` construction. ALFRED queries the prior UTC day's vintage, skips `None`, empty, and `.` values, preserves descending vintage order, and publishes values at the vintage date plus one day. Open-Meteo validates `lead_days` in `1..7`, requests the previous-day hourly temperature variable in Fahrenheit, removes null values, returns the maximum, and converts target-date 23:00 local time minus the lead lag to UTC.
+- **Tests:** Created the exact four focused tests from the brief before production code; all use canned payloads and perform no live network requests.
+- **Deviation:** None. The handoff report is intentionally not staged because the requested commit staging list is explicit.
 
 ## Task 7 — Reproducible run storage
 
