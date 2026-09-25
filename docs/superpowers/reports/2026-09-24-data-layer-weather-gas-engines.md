@@ -272,7 +272,33 @@
 
 ## Task 9 — One-shot scan and deep links
 
-_Pending implementation._
+- **Files changed:** `tradehub/scripts/scan.py`, `tradehub/core/supabase_client.py`, `tests/test_scan.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-9-report.md`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_scan.py:10: in <module>
+      from tradehub.scripts import scan
+  E   ImportError: cannot import name 'scan' from 'tradehub.scripts' (/Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/tradehub/scripts/__init__.py)
+  =========================== short test summary info ============================
+  ERROR tests/test_scan.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.65s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py -q
+  ```
+  GREEN output tail:
+  ```text
+  ....                                                                     [100%]
+  4 passed in 1.41s
+  ```
+- **Implementation:** Added the one-shot suggest-only `tradehub/scripts/scan.py` with exact edge-row keys and deep links, midpoint market probabilities, LST weather-date filtering, forecast-based weather prediction rows, published-at-filtered AAA gas inputs and training pairs, positive-horizon gas predictions, `WEATHER`/`ENERGY` edge typing, and the one-shot JSON summary main entry point. The scan writes predictions and upserts edges only; it never places orders. `upsert_opportunities` now accepts `ENERGY` and writes `market_url` and `source_url`.
+- **Deviation:** None. The exact four tests, RED command, implementation, and GREEN command from the brief were followed. No live services were contacted, no orders were placed, and no dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed. The handoff report is not included in the requested staging list and remains repository-ignored.
+
 
 ## Task 10 — Point-in-time backtests
 

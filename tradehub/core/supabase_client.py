@@ -83,7 +83,7 @@ def upsert_opportunities(opportunities: list):
         if edge_pct > 1 or edge_pct < -1: edge_pct = edge_pct / 100.0
         
         edge_type = op.get("edge_type", "MACRO").upper()
-        if edge_type not in ["WEATHER", "MACRO", "SPORTS", "CRYPTO"]:
+        if edge_type not in ["WEATHER", "MACRO", "SPORTS", "CRYPTO", "ENERGY"]:
             edge_type = "MACRO"
             
         unique_rows[market_id] = {
@@ -93,6 +93,8 @@ def upsert_opportunities(opportunities: list):
             "our_prob": round(float(our_prob), 4),
             "market_prob": round(float(market_prob), 4),
             "edge_pct": round(float(abs(edge_pct)), 4),
+            "market_url": op.get("market_url"),
+            "source_url": op.get("source_url"),
             "raw_payload": op
         }
         
