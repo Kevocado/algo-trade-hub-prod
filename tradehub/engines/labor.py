@@ -13,9 +13,12 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
+import numpy as np
+
+from tradehub.backtest.pit import Observation
 from tradehub.markets import KalshiMarket, parse_market, prob_in_interval
 
 LABOR_ENGINE_VERSION = "labor-v1"
@@ -202,3 +205,164 @@ def estimate_path(vintages: Mapping[date, Vintage], month: date, *, change: bool
             break
     return EstimatePath(first[0], first[1], second[0], second[1], third[0], third[1],
                         bench[0], bench[1], latest[0], latest[1])
+
+
+
+# ── point-in-time features ───────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class LaborFeatures:
+    month: date
+    values: dict[str, float]
+    sources: tuple[Observation, ...]  # every input with the moment it became public
+
+
+def _reference_week(series: Mapping[date, float], month: date, publish_lag_days: int,
+                    as_of: datetime) -> tuple[date, float] | None:
+    """Latest weekly value for a week ending on/before the 12th-18th reference Saturday and public by `as_of`."""
+    candidates = [
+        week for week in series
+        if week <= date(month.year, month.month, 18)
+        and datetime.combine(week + timedelta(days=publish_lag_days), time(8, 30), _ET) <= as_of
+    ]
+    if not candidates:
+        return None
+    week = max(candidates)
+    return week, series[week]
+
+
+def _weekly_obs(name: str, week: date, value: float, lag: int) -> Observation:
+    return Observation(f"{name}:{week.isoformat()}", value,
+                       datetime.combine(week + timedelta(days=lag), time(8, 30), _ET))
+
+
+def labor_features(
+    month: date,
+    *,
+    payems: Mapping[date, Vintage],
+    icsa: Mapping[date, float],
+    ccsa: Mapping[date, float],
+    hires: Mapping[date, float],
+    openings: Mapping[date, float],
+    adp: Mapping[date, Vintage],
+    release: date,
+) -> LaborFeatures | None:
+    """Features for reference month `month`, using only what was public by the end of that month.
+
+    Payrolls come from the PAYEMS vintage dated month_end(month). Claims and
+    JOLTS come from one recent vintage, filtered by their publication lag.
+    ADP for `month` itself comes from the vintage the day before the jobs
+    release (ADP publishes two days earlier).
+    """
+    vintage_day = month_end(month)
+    as_of = end_of_day_et(vintage_day)
+    pay = payems.get(vintage_day)
+    if not pay:
+        return None
+    latest = max(pay)
+    changes = [_change(pay, add_months(latest, -k)) for k in range(3)]
+    if any(c is None for c in changes):
+        return None
+    sources = [Observation(f"PAYEMS@{vintage_day.isoformat()}:{latest.isoformat()}", pay[latest], as_of)]
+    icsa_now = _reference_week(icsa, month, 5, as_of)
+    icsa_prev = _reference_week(icsa, add_months(month, -1), 5, as_of)
+    ccsa_now = _reference_week(ccsa, month, 12, as_of)
+    ccsa_prev = None
+    if ccsa_now is not None:
+        week_prev = ccsa_now[0] - timedelta(days=28)
+        if week_prev in ccsa:
+            ccsa_prev = (week_prev, ccsa[week_prev])
+    if icsa_now is None or icsa_prev is None or ccsa_now is None or ccsa_prev is None:
+        return None
+    for name, lag, point in (("ICSA", 5, icsa_now), ("ICSA", 5, icsa_prev), ("CCSA", 12, ccsa_now), ("CCSA", 12, ccsa_prev)):
+        sources.append(_weekly_obs(name, point[0], point[1], lag))
+
+    jolts_known = [m for m in hires if m in openings
+                   and end_of_day_et(month_end(m) + timedelta(days=JOLTS_LAG_DAYS)) <= as_of]
+    hires_3m = ghost_3m = 0.0
+    if jolts_known:
+        j = max(jolts_known)
+        j3 = add_months(j, -3)
+        if j3 in hires and j3 in openings:
+            def gap(m: date) -> float:
+                weight = GHOST_DISCOUNT if m >= POST_2021 else 1.0
+                return weight * openings[m] - hires[m]
+            hires_3m = hires[j] - hires[j3]
+            ghost_3m = gap(j) - gap(j3)
+            sources.append(Observation(f"JTSHIL:{j.isoformat()}", hires[j],
+                                       end_of_day_et(month_end(j) + timedelta(days=JOLTS_LAG_DAYS))))
+
+    adp_vintage_day = release - timedelta(days=1)
+    adp_values = adp.get(adp_vintage_day) or {}
+    adp_change = _change(adp_values, month) if month == max(adp_values, default=None) else None
+    if adp_change is not None:
+        sources.append(Observation(f"ADP@{adp_vintage_day.isoformat()}:{month.isoformat()}",
+                                   adp_values[month], end_of_day_et(adp_vintage_day)))
+
+    values = {
+        "pay_last": changes[0],
+        "pay_3m": sum(changes) / 3.0,
+        "icsa_ref_chg": (icsa_now[1] - icsa_prev[1]) / 1000.0,
+        "ccsa_ref_chg": (ccsa_now[1] - ccsa_prev[1]) / 1000.0,
+        "adp_chg": 0.0 if adp_change is None else adp_change,
+        "adp_missing": 1.0 if adp_change is None else 0.0,
+        "jolts_hires_3m": hires_3m,
+        "ghost_gap_3m": ghost_3m,
+        "post_2021": 1.0 if month >= POST_2021 else 0.0,
+    }
+    return LaborFeatures(month, values, tuple(sources))
+
+
+# ── ridge nowcast ────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class PayrollModel:
+    features: tuple[str, ...]
+    center: tuple[float, ...]
+    scale: tuple[float, ...]
+    intercept: float
+    coef: tuple[float, ...]
+    sigma: float
+    n_train: int
+
+    def predict(self, values: Mapping[str, float]) -> float:
+        z = [(values[f] - c) / s for f, c, s in zip(self.features, self.center, self.scale)]
+        return self.intercept + float(np.dot(self.coef, z))
+
+
+def is_trainable(month: date) -> bool:
+    return month >= TRAIN_START and not (COVID_EXCLUDED[0] <= month <= COVID_EXCLUDED[1])
+
+
+def fit_payroll_model(
+    rows: Sequence[tuple[LaborFeatures, float]],
+    features: Sequence[str] = CORE_FEATURES,
+    lam: float = RIDGE_LAMBDA,
+) -> PayrollModel:
+    """Ridge on standardized features; sigma = RMS of the last SIGMA_WINDOW in-sample residuals."""
+    usable = sorted((r for r in rows if is_trainable(r[0].month)), key=lambda r: r[0].month)
+    if len(usable) < MIN_TRAIN_ROWS:
+        raise ValueError(f"need >= {MIN_TRAIN_ROWS} training months, got {len(usable)}")
+    x = np.array([[feats.values[f] for f in features] for feats, _ in usable], dtype=float)
+    y = np.array([target for _, target in usable], dtype=float)
+    center = x.mean(axis=0)
+    scale = x.std(axis=0)
+    scale[scale == 0] = 1.0
+    z = (x - center) / scale
+    intercept = float(y.mean())
+    coef = np.linalg.solve(z.T @ z + lam * np.eye(z.shape[1]), z.T @ (y - intercept))
+    residuals = y - (intercept + z @ coef)
+    recent = residuals[-SIGMA_WINDOW:]
+    sigma = max(MIN_PAYROLL_SIGMA, float(np.sqrt(np.mean(recent ** 2))))
+    return PayrollModel(tuple(features), tuple(center.tolist()), tuple(scale.tolist()), intercept,
+                        tuple(coef.tolist()), sigma, len(usable))
+
+
+def training_rows(
+    features_by_month: Mapping[date, LaborFeatures],
+    targets: Mapping[date, float],
+    before: date,
+) -> list[tuple[LaborFeatures, float]]:
+    """(features, first print) for months strictly before `before` -- walk-forward safe."""
+    return [(features_by_month[m], targets[m]) for m in sorted(features_by_month)
+            if m < before and m in targets]

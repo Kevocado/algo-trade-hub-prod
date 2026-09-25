@@ -43,3 +43,15 @@ GREEN: pytest tests/test_labor_engine.py -q → 19 passed
 
 - Added month/decision geometry, strict-greater strike snapping, first prints/revisions and labor constants.
 - Deviation: none.
+
+## Task 3 — Labor engine part 2
+
+### RED/GREEN
+
+```text
+RED: ImportError cannot import LaborFeatures (1 error)
+GREEN: pytest tests/test_labor_engine.py tests/test_labor_model.py -q → 23 passed
+```
+
+- Added point-in-time feature assembly and the walk-forward ridge nowcast with sigma floor.
+- Deviation: none.
