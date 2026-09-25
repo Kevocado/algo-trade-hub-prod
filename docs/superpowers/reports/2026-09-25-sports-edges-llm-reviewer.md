@@ -52,3 +52,23 @@ pytest tests/test_sports_config.py tests/test_engine_config.py -q
 - Added NFL/CFB series metadata, Azure fallback URLs with environment overrides, numeric candidate thresholds and the free OpenRouter reviewer configuration.
 - Deviation: none.
 
+## Task 3 — Predictor feed client
+
+### RED
+
+```text
+pytest tests/test_sports_feed.py -q
+ModuleNotFoundError: No module named 'tradehub.sports.feed'
+1 error in 0.09s
+```
+
+### GREEN
+
+```text
+pytest tests/test_sports_feed.py -q
+5 passed in 0.01s
+```
+
+- Added the frozen-feed parser, calibration/rejection handling, one-retry client and recorded NFL/CFB fixtures.
+- Deviation: none.
+
