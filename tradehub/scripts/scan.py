@@ -15,11 +15,17 @@ from zoneinfo import ZoneInfo
 
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.data.rbob import rbob_closes
-from tradehub.data.weather import WEATHER_CITIES, City, live_forecast_highs
+from tradehub.data.weather import WEATHER_CITIES, City, historical_forecast_highs, live_forecast_highs
 from tradehub.edges import EdgeSuggestion, evaluate_edge
 from tradehub.engine_config import EngineConfig, load_engine_config
 from tradehub.engines.gas import GAS_ENGINE_VERSION, GAS_SERIES, fit_gas_model, gas_prob, gas_training_pairs, rbob_change
-from tradehub.engines.weather import WEATHER_ENGINE_VERSION, ErrorModel, weather_prob
+from tradehub.engines.weather import (
+    MIN_ERROR_PAIRS,
+    WEATHER_ENGINE_VERSION,
+    ErrorModel,
+    walk_forward_error_model,
+    weather_prob,
+)
 from tradehub.markets import KalshiMarket, event_date, market_url
 from tradehub.predictions import build_prediction_row
 
@@ -48,9 +54,16 @@ def _mid(quote) -> float | None:
 def scan_weather(
     live, now: datetime, cfg: EngineConfig, *,
     forecast_fn: Callable[..., list] = live_forecast_highs,
+    historical_forecast_fn: Callable[..., list] = historical_forecast_highs,
     cities: dict[str, City] = WEATHER_CITIES,
+    min_error_pairs: int = MIN_ERROR_PAIRS,
 ) -> tuple[list[dict], list[dict]]:
-    error = ErrorModel(bias=cfg.params.get("error_bias", 0.0), sigma=cfg.params.get("error_sigma", 2.5))
+    if min_error_pairs < 1:
+        raise ValueError(f"min_error_pairs must be >= 1, got {min_error_pairs!r}")
+    fallback = ErrorModel(
+        bias=float(cfg.params.get("error_bias", 0.0)),
+        sigma=float(cfg.params.get("error_sigma", 2.5)),
+    )
     predictions: list[dict] = []
     edges: list[dict] = []
     for series, city in cities.items():
@@ -60,6 +73,28 @@ def scan_weather(
             target = event_date(lm.market.event_ticker)
             if target > today:
                 by_date[target].append(lm)
+        if not by_date:
+            continue
+
+        actuals = [
+            observation
+            for observation in (live.settled_values(series) or [])
+            if observation.published_at <= now
+        ]
+        actuals.sort(key=lambda observation: event_date(observation.name))
+        calibration_forecasts = {}
+        if len(actuals) >= min_error_pairs:
+            for actual in actuals[-min_error_pairs:]:
+                day = event_date(actual.name)
+                calibration_forecasts[day] = historical_forecast_fn(city, day, 1)
+        error = walk_forward_error_model(
+            actuals,
+            calibration_forecasts,
+            now,
+            fallback=fallback,
+            min_pairs=min_error_pairs,
+        )
+
         for target, markets in sorted(by_date.items()):
             highs = forecast_fn(city, target, now)
             if not highs:

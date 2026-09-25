@@ -31,13 +31,19 @@ def test_weather_prob_matches_normal_model():
     assert p == pytest.approx(prob_in_interval(75.0, 2.0, (74.5, math.inf)))
 
 
-def test_weather_prob_bias_shifts_and_disagreement_widens():
+def test_weather_prob_bias_shifts_without_adding_model_spread_twice():
     m = parse_market(BASE)
     base = weather_prob(m, [75.0, 75.0], ErrorModel(0.0, 2.0))
     assert weather_prob(m, [75.0, 75.0], ErrorModel(2.0, 2.0)) > base
-    # Same mean, models disagree -> wider -> closer to 0.5 from above.
-    wide = weather_prob(m, [70.0, 80.0], ErrorModel(0.0, 2.0))
-    assert 0.5 < wide < base
+    # The fitted error sigma is the complete uncertainty term; forecast-model
+    # disagreement must not be added to it a second time here.
+    assert weather_prob(m, [70.0, 80.0], ErrorModel(0.0, 2.0)) == pytest.approx(base)
+
+
+def test_weather_probability_is_clamped_away_from_zero_and_one():
+    m = parse_market(BASE)
+    assert weather_prob(m, [1000.0], ErrorModel(0.0, 1.0)) == pytest.approx(1.0 - 1e-4)
+    assert weather_prob(m, [-1000.0], ErrorModel(0.0, 1.0)) == pytest.approx(1e-4)
 
 
 def test_weather_prob_requires_highs():

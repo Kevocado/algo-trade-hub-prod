@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta, timezone
@@ -32,7 +31,12 @@ from tradehub.engines.gas import (
     gas_training_pairs,
     rbob_change,
 )
-from tradehub.engines.weather import WEATHER_ENGINE_VERSION, fit_error_model, weather_prob
+from tradehub.engines.weather import (
+    MIN_ERROR_PAIRS,
+    WEATHER_ENGINE_VERSION,
+    walk_forward_error_model,
+    weather_prob,
+)
 from tradehub.markets import KalshiMarket, event_date, parse_market
 
 WEATHER_DECISION_TIME = time(23, 30)
@@ -78,16 +82,13 @@ def build_weather_decisions(
                  if observation.published_at <= decided_at]
         if not highs:
             continue
-        pairs = []
-        for actual in actuals:
-            day = event_date(actual.name)
-            if actual.published_at > decided_at:
-                continue
-            known_forecasts = [observation for observation in (forecasts.get(day) or [])
-                               if observation.published_at <= decided_at]
-            if known_forecasts:
-                pairs.append((statistics.fmean(observation.value for observation in known_forecasts), actual.value))
-        prob = weather_prob(market, [o.value for o in highs], fit_error_model(pairs))
+        error = walk_forward_error_model(
+            actuals,
+            forecasts,
+            decided_at,
+            min_pairs=MIN_ERROR_PAIRS,
+        )
+        prob = weather_prob(market, [o.value for o in highs], error)
         decisions.append(Decision(market.ticker, decided_at, prob, tuple(highs)))
     return decisions
 

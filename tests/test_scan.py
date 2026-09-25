@@ -7,7 +7,7 @@ from tradehub.data.kalshi_live import LiveMarket
 from tradehub.edges import EdgeSuggestion, Quote
 from tradehub.engine_config import EngineConfig
 from tradehub.markets import parse_market
-from tradehub.scripts import scan
+from tradehub.scripts import backtest_engines, scan
 
 NOW = datetime(2026, 9, 24, 18, 0, tzinfo=timezone.utc)  # 13:00 LST NYC -> "today" = Sep 24
 
@@ -61,6 +61,40 @@ def test_scan_weather_predicts_only_strictly_future_lst_climate_days():
     assert all(p["engine"] == "weather" for p in preds)
     assert {e["market_ticker"] for e in edges} == {tomorrow.ticker}  # P(>=75 | mu 77) >> 0.34 ask
     assert all(e["edge_type"] == "WEATHER" for e in edges)
+
+
+def test_scan_and_backtest_share_walk_forward_weather_error_model():
+    city = scan.WEATHER_CITIES["KXHIGHNY"]
+    target = date(2026, 9, 25)
+    now = backtest_engines.weather_decision_time(target, 1, city)
+    training_days = [target - timedelta(days=i) for i in range(25, 4, -1)]
+    actuals = [
+        Observation(f"KXHIGHNY-{day.strftime('%y%b%d').upper()}", 77.0, now - timedelta(hours=1))
+        for day in training_days
+    ]
+    historical = {
+        day: [Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 75.0, now - timedelta(hours=2))]
+        for day in training_days
+    }
+    current = [Observation("openmeteo:gfs_seamless:high:2026-09-25:live", 75.0, now)]
+    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
+    live = FakeLive([LiveMarket(market, GOOD_QUOTE)], actuals)
+
+    predictions, _ = scan.scan_weather(
+        live,
+        now,
+        CFG,
+        forecast_fn=lambda city, day, as_of: current,
+        historical_forecast_fn=lambda city, day, lead: historical[day],
+        cities={"KXHIGHNY": city},
+    )
+    decision = backtest_engines.build_weather_decisions(
+        [market], {**historical, target: current}, actuals, city
+    )[0]
+
+    # The ledger contract stores probabilities to four decimals; the fitted
+    # engine probability is the same before that serialization rounding.
+    assert predictions[0]["our_prob"] == pytest.approx(decision.our_prob, abs=1e-4)
 
 
 def test_scan_gas_uses_only_published_aaa_and_positive_horizons():

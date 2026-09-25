@@ -613,3 +613,42 @@ The exact public endpoint paths and 429 evidence above are the final rerun resul
   ```
 - **Implementation:** Weather scan eligibility is now `target > today_LST`; markets for today and past climate days are neither forecast nor predicted.
 
+### Fix 2 — one point-in-time weather error model and bounded probabilities
+
+- **Files changed:** `tradehub/engines/weather.py`, `tradehub/markets.py`, `tradehub/scripts/scan.py`, `tradehub/scripts/backtest_engines.py`, `tests/test_scan.py`, `tests/test_weather_engine.py`, `tests/test_markets.py`, and this evidence report.
+- **RED commands:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py::test_scan_and_backtest_share_walk_forward_weather_error_model -q
+  ```
+  ```text
+  E       TypeError: scan_weather() got an unexpected keyword argument 'historical_forecast_fn'
+  1 failed in 0.56s
+  ```
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_weather_engine.py::test_weather_prob_bias_shifts_without_adding_model_spread_twice tests/test_weather_engine.py::test_weather_probability_is_clamped_away_from_zero_and_one -q
+  ```
+  ```text
+  FF
+  2 failed, 2 passed in 0.06s
+  ```
+- **GREEN commands:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py::test_scan_and_backtest_share_walk_forward_weather_error_model -q
+  ```
+  ```text
+  1 passed in 0.63s
+  ```
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_weather_engine.py tests/test_backtest_engines.py -q
+  ```
+  ```text
+  18 passed in 0.62s
+  ```
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  ```
+  ```text
+  282 passed in 4.09s
+  ```
+- **Implementation:** `walk_forward_error_model()` is now shared by scan and backtest. It accepts only settled actuals and lead-1 forecast observations published by the decision time, and uses YAML `error_bias`/`error_sigma` only when fewer than 20 usable pairs exist. `weather_prob()` no longer adds model spread on top of fitted sigma, and `prob_in_interval()` clamps all engine probabilities to `[1e-4, 1-1e-4]`. The parity test verifies the scan row (four-decimal ledger serialization) matches the backtest decision probability.
+

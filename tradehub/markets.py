@@ -10,6 +10,9 @@ from typing import Any
 from tradehub.backtest.kalshi_history import parse_ts
 
 
+PROBABILITY_EPSILON = 1e-4
+
+
 @dataclass(frozen=True)
 class KalshiMarket:
     ticker: str
@@ -75,7 +78,8 @@ def prob_in_interval(mu: float, sigma: float, interval: tuple[float, float]) -> 
     if sigma <= 0:
         raise ValueError(f"sigma must be positive, got {sigma}")
     lo, hi = interval
-    return min(1.0, max(0.0, _normal_cdf(hi, mu, sigma) - _normal_cdf(lo, mu, sigma)))
+    probability = _normal_cdf(hi, mu, sigma) - _normal_cdf(lo, mu, sigma)
+    return min(1.0 - PROBABILITY_EPSILON, max(PROBABILITY_EPSILON, probability))
 
 
 def market_url(market: KalshiMarket) -> str:

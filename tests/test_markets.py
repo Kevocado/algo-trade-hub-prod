@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from tradehub.markets import event_date, market_url, parse_market, prob_in_interval, yes_interval
+from tradehub.markets import PROBABILITY_EPSILON, event_date, market_url, parse_market, prob_in_interval, yes_interval
 
 RAW = {
     "ticker": "KXHIGHNY-26SEP25-T74", "event_ticker": "KXHIGHNY-26SEP25", "strike_type": "greater",
@@ -47,7 +47,7 @@ def test_yes_interval_rejects_unknown_strike_type():
 
 def test_prob_in_interval():
     assert prob_in_interval(70.0, 2.0, (70.0, math.inf)) == pytest.approx(0.5)
-    assert prob_in_interval(70.0, 2.0, (-math.inf, math.inf)) == pytest.approx(1.0)
+    assert prob_in_interval(70.0, 2.0, (-math.inf, math.inf)) == pytest.approx(1.0 - PROBABILITY_EPSILON)
     assert prob_in_interval(70.0, 2.0, (72.0, math.inf)) == pytest.approx(0.158655, abs=1e-5)
     with pytest.raises(ValueError):
         prob_in_interval(70.0, 0.0, (70.0, math.inf))
