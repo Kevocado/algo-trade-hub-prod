@@ -776,3 +776,92 @@ The exact public endpoint paths and 429 evidence above are the final rerun resul
   ```
 - **Implementation:** RBOB observations carry the expected front contract code and a roll boundary; `rbob_change_window()` rejects any window containing mixed or unknown contracts, and gas decisions attach only the exact same-contract observations used by the feature. The yfinance history call now uses explicit `start`/`end` bounds derived from `--start --train-days` through `--end`; live scans retain the two-year default.
 
+## Final verification — 2026-09-25
+
+- The prerequisite merge was already satisfied (`git merge plan/2026-09-24-backtesting-suite` returned `Already up to date.`); no rebase was used. The six requested implementation commits are `89740f3`, `7801ef8`, `ccd9c4c`, `16d4ae0`, `8a2be47`, and `fa5b179`.
+- Final full suite:
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  ```
+  ```text
+  299 passed in 5.05s
+  ```
+- Final lint:
+  ```sh
+  .venv/bin/ruff check --select F401,F811,F821 tradehub tests
+  ```
+  ```text
+  All checks passed!
+  ```
+- The required graph rebuild was attempted with `python3 -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"`; this checkout does not have the `graphify` module installed, so it returned `ModuleNotFoundError` and no dependency was changed.
+- No prediction dedupe was added and `tradehub/track_record.py` was not changed.
+
+### Gas dry run — 12:00 ET point-in-time public-market replay
+
+The live `KXAAAGASD` endpoint returned zero open markets immediately after the prior close, so a normal quote-backed live call had no rows. To obtain a non-zero, no-write verification without inventing a quote, the production `scan_gas` path was run at **12:00 ET** against the latest public settled AAA/RBOB observations and a real gas-market shape with `Quote(None, None)`. The scan timestamp and input cutoff were explicit; no Supabase writes or orders were made.
+
+```json
+{
+  "mode": "point_in_time_public_market_replay",
+  "scan_at": "2026-09-24T16:00:00+00:00",
+  "scan_at_et": "2026-09-24T12:00:00-04:00",
+  "gas": {
+    "predictions": 1,
+    "edges": 0
+  },
+  "tickers": [
+    "KXAAAGASD-26SEP25-4.5150"
+  ]
+}
+```
+
+### Completed backtests
+
+Weather command:
+
+```sh
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehub.scripts.backtest_engines --engine weather --series KXHIGHNY --start 2026-06-01 --end 2026-07-24
+```
+
+```json
+{
+  "engine": "weather",
+  "mode": "taker",
+  "n_decisions": 324,
+  "n_fills": 151,
+  "pnl_after_fees": -4.4403,
+  "max_drawdown": 6.4677,
+  "brier_ours": 0.12725,
+  "brier_market": 0.10255,
+  "gate_status": "SHADOW",
+  "gate_reasons": [
+    "model Brier 0.12725 is not below market Brier 0.10255",
+    "simulated P&L after fees/spread is not positive",
+    "calibration miss 19.0% in bucket 50-60 (limit 10pp)"
+  ]
+}
+```
+
+Gas command:
+
+```sh
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehub.scripts.backtest_engines --engine gas --start 2026-06-01 --end 2026-07-24
+```
+
+```json
+{
+  "engine": "gas",
+  "mode": "taker",
+  "n_decisions": 937,
+  "n_fills": 176,
+  "pnl_after_fees": -1.4506,
+  "max_drawdown": 5.4479,
+  "brier_ours": 0.12648,
+  "brier_market": null,
+  "gate_status": "SHADOW",
+  "gate_reasons": [
+    "no market Brier recorded; gate cannot be evaluated",
+    "simulated P&L after fees/spread is not positive"
+  ]
+}
+```
