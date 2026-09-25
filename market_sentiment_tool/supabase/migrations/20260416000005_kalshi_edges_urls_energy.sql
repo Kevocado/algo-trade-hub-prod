@@ -5,6 +5,7 @@
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS market_url text;
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS source_url text;
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS engine text;
+UPDATE kalshi_edges SET engine = lower(edge_type) WHERE engine IS NULL;
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS gate_status text NOT NULL DEFAULT 'SHADOW';
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS expires_at timestamptz;
@@ -18,3 +19,4 @@ ALTER TABLE kalshi_edges ADD CONSTRAINT kalshi_edges_gate_status_check
 
 -- upsert(on_conflict="market_id") requires a unique index on market_id.
 CREATE UNIQUE INDEX IF NOT EXISTS kalshi_edges_market_id_key ON kalshi_edges (market_id);
+CREATE INDEX IF NOT EXISTS kalshi_edges_engine_idx ON kalshi_edges (engine);

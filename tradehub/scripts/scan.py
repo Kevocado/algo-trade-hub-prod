@@ -113,14 +113,17 @@ def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[str, str]) -
         row["gate_status"] = statuses.get(row["engine"], "SHADOW")
 
 
-def remove_stale_edges(client, produced_by_type: dict[str, set[str]]) -> None:
-    """Delete only WEATHER/ENERGY rows absent from this scan's edge output."""
-    for edge_type, produced in produced_by_type.items():
-        result = client.table("kalshi_edges").select("market_id").eq("edge_type", edge_type).execute()
+def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
+    """Delete stale rows only for the scan-owned weather/gas engines."""
+    for engine, produced in produced_by_engine.items():
+        if engine not in {"weather", "gas"}:
+            continue
+        current_market_ids = {str(market_id)[:50] for market_id in produced}
+        result = client.table("kalshi_edges").select("market_id").eq("engine", engine).execute()
         for row in result.data or []:
             market_id = row.get("market_id")
-            if market_id and market_id not in produced:
-                client.table("kalshi_edges").delete().eq("market_id", market_id).execute()
+            if market_id and market_id not in current_market_ids:
+                client.table("kalshi_edges").delete().eq("engine", engine).eq("market_id", market_id).execute()
 
 
 def _scan_weather_city(
@@ -379,14 +382,14 @@ def main(
                 edge_writes[name] = "failed"
                 log.exception("scan edge write failed engine=%s", name)
 
-        for name, edge_type, edges in (
-            ("weather", "WEATHER", weather_edges),
-            ("gas", "ENERGY", gas_edges),
+        for name, edges in (
+            ("weather", weather_edges),
+            ("gas", gas_edges),
         ):
             if not engine_states[name]["complete"] or edge_writes.get(name) != "ok":
                 continue
             try:
-                remove_stale_edges(client, {edge_type: {row["market_ticker"] for row in edges}})
+                remove_stale_edges(client, {name: {row["market_ticker"] for row in edges}})
             except Exception as exc:
                 message = f"{name}.cleanup: {type(exc).__name__}: {exc}"
                 failures.append(message)

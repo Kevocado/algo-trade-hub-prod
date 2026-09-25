@@ -1164,3 +1164,26 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   37 passed in 0.95s
   ```
 
+## Finding 7 — engine-scoped stale-edge cleanup — 2026-09-25
+
+- **Files changed:** `tradehub/scripts/scan.py`, `market_sentiment_tool/supabase/migrations/20260416000005_kalshi_edges_urls_energy.sql`, `tests/test_scan.py`, and this report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py::test_remove_stale_edges_is_engine_scoped_and_uses_truncated_upsert_key -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert set() == {('weather', 'weather-old'), ('gas', 'gas-old')}
+  1 failed in 0.42s
+  ```
+- Cleanup now accepts engine keys, canonicalizes every produced market ID with the same `str(value)[:50]` rule used by `upsert_opportunities()`, selects existing rows with `.eq("engine", engine)`, and deletes with both `engine` and `market_id` predicates. Rows from crypto/macro/other writers are never selected or deleted, even when they share a market ID.
+- The migration backfills existing display types to lowercase engine values and adds an engine index for the scoped cleanup query.
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py tests/test_repo_layout.py -q
+  ```
+  GREEN output tail:
+  ```text
+  37 passed in 0.73s
+  ```
+

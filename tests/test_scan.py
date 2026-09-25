@@ -135,12 +135,15 @@ def test_apply_gate_statuses_keys_on_engine_not_edge_type():
     assert edges[1]["gate_status"] == "SHADOW"
 
 
-def test_remove_stale_edges_only_targets_requested_edge_types():
+def test_remove_stale_edges_is_engine_scoped_and_uses_truncated_upsert_key():
+    long_market_id = "W" * 60
     rows = [
-        {"market_id": "weather-new", "edge_type": "WEATHER"},
-        {"market_id": "weather-old", "edge_type": "WEATHER"},
-        {"market_id": "energy-old", "edge_type": "ENERGY"},
-        {"market_id": "macro-old", "edge_type": "MACRO"},
+        {"market_id": "weather-new", "engine": "weather"},
+        {"market_id": long_market_id[:50], "engine": "weather"},
+        {"market_id": "weather-old", "engine": "weather"},
+        {"market_id": "gas-old", "engine": "gas"},
+        {"market_id": "weather-old", "engine": "crypto"},
+        {"market_id": "other-writer", "engine": None, "edge_type": "MACRO"},
     ]
     deleted = []
 
@@ -162,23 +165,31 @@ def test_remove_stale_edges_only_targets_requested_edge_types():
             return self
 
         def execute(self):
-            if self.deleting:
-                deleted.append(self.filters["market_id"])
-                rows[:] = [row for row in rows if row["market_id"] != self.filters["market_id"]]
-            selected = [
+            matches = [
                 row for row in rows
                 if all(row.get(key) == value for key, value in self.filters.items())
             ]
-            return type("Result", (), {"data": selected})()
+            if self.deleting:
+                deleted.extend((self.filters["engine"], row["market_id"]) for row in matches)
+                rows[:] = [row for row in rows if row not in matches]
+            return type("Result", (), {"data": matches})()
 
     class Client:
         def table(self, name):
             return Table(name)
 
-    scan.remove_stale_edges(Client(), {"WEATHER": {"weather-new"}, "ENERGY": set()})
+    scan.remove_stale_edges(
+        Client(),
+        {"weather": {"weather-new", long_market_id}, "gas": set()},
+    )
 
-    assert set(deleted) == {"weather-old", "energy-old"}
-    assert {row["market_id"] for row in rows} == {"weather-new", "macro-old"}
+    assert set(deleted) == {("weather", "weather-old"), ("gas", "gas-old")}
+    assert {(row.get("engine"), row["market_id"]) for row in rows} == {
+        ("weather", "weather-new"),
+        ("weather", long_market_id[:50]),
+        ("crypto", "weather-old"),
+        (None, "other-writer"),
+    }
 
 
 def test_scan_weather_predicts_only_strictly_future_lst_climate_days():
@@ -477,7 +488,7 @@ def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, caps
     output = capsys.readouterr().out
     assert recorded == [gas_prediction]
     assert upserted == [gas_edge]
-    assert pruned == [{"ENERGY": {gas_edge["market_ticker"]}}]
+    assert pruned == [{"gas": {gas_edge["market_ticker"]}}]
     assert "scan engine=gas predictions=1 edges=1" in caplog.text
     assert "scan engine=weather predictions=0 edges=0" in caplog.text
     assert "partial_failure" in output and "weather source unavailable" in output
@@ -507,7 +518,7 @@ def test_scan_main_persists_successful_rows_from_a_partial_weather_scan(monkeypa
     assert scan.main(now=NOW, live=object(), client=object()) == 1
     assert recorded == [prediction]
     assert upserted == [edge]
-    assert pruned == [{"ENERGY": set()}]
+    assert pruned == [{"gas": set()}]
 
 
 def test_scan_main_writes_edges_for_engines_whose_gate_loses(monkeypatch):
