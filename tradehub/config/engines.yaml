@@ -7,6 +7,40 @@ weather:
 gas:
   min_edge_pct: 3.0
   prefer_maker: true
+# Sports edges (rollout step 7): suggestions only, from the predictor sites' frozen pre-game feeds.
+# Numeric only, so load_engine_config() works on these blocks too.
+sports_nfl:
+  min_edge_pct: 4.0
+  prefer_maker: true
+  max_quote_spread: 0.04
+  min_resting_size: 100
+  min_volume: 1000
+  min_hours_to_start: 1
+  max_hours_to_start: 72
+  calibration_max_dev: 0.10
+  calibration_min_n: 20
+sports_cfb:
+  min_edge_pct: 4.0
+  prefer_maker: true
+  max_quote_spread: 0.04
+  min_resting_size: 100
+  min_volume: 500
+  min_hours_to_start: 1
+  max_hours_to_start: 72
+  calibration_max_dev: 0.10
+  calibration_min_n: 20
+sports_sources:
+  nfl:
+    base_url: https://nfl-predictor.proudbay-f56b8dfa.eastus2.azurecontainerapps.io
+    site_url: https://sports-predictor.proudbay-f56b8dfa.eastus2.azurecontainerapps.io
+  cfb:
+    base_url: https://cfb-predictor.proudbay-f56b8dfa.eastus2.azurecontainerapps.io
+    site_url: https://sports-predictor.proudbay-f56b8dfa.eastus2.azurecontainerapps.io
+sports_reviewer:
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  daily_budget: 40
+  timeout_seconds: 60
+  price_bucket_cents: 5
 cpi_nowcast:
   min_edge_pct: 5.0
   prefer_maker: true

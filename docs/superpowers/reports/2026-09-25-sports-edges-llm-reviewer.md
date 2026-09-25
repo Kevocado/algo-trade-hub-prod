@@ -32,3 +32,23 @@ pytest tests/test_markets_sports.py tests/test_markets.py -q
 - Added the series-title/event deep-link helper.
 - Deviation: none.
 
+## Task 2 — Sports configuration
+
+### RED
+
+```text
+pytest tests/test_sports_config.py -q
+ModuleNotFoundError: No module named 'tradehub.sports'
+1 error in 0.10s
+```
+
+### GREEN
+
+```text
+pytest tests/test_sports_config.py tests/test_engine_config.py -q
+7 passed in 0.06s
+```
+
+- Added NFL/CFB series metadata, Azure fallback URLs with environment overrides, numeric candidate thresholds and the free OpenRouter reviewer configuration.
+- Deviation: none.
+
