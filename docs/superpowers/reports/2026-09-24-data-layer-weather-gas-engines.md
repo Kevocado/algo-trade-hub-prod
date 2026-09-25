@@ -302,7 +302,44 @@
 
 ## Task 10 — Point-in-time backtests
 
-_Pending implementation._
+- **Files changed:** `tradehub/scripts/backtest_engines.py`, `tests/test_backtest_engines.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-10-report.md`; that handoff report is not included in the requested staging list.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_engines.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_backtest_engines.py:9: in <module>
+      from tradehub.scripts.backtest_engines import (
+  E   ModuleNotFoundError: No module named 'tradehub.scripts.backtest_engines'
+  =========================== short test summary info ============================
+  ERROR tests/test_backtest_engines.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.75s
+  ```
+  The exact five tests were created before production code; collection failed for the expected missing module.
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_engines.py -q
+  ```
+  GREEN output tail:
+  ```text
+  .....                                                                    [100%]
+  5 passed in 0.62s
+  ```
+- **Supplemental verification:**
+  ```text
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  272 passed in 7.76s
+
+  .venv/bin/ruff check --select F401,F811,F821 tradehub tests
+  All checks passed!
+
+  grep -rn "shared.config" tradehub/markets.py tradehub/edges.py tradehub/data tradehub/engines/weather.py tradehub/engines/gas.py tradehub/engine_config.py tradehub/scripts/scan.py tradehub/scripts/backtest_engines.py
+  (no matches)
+  ```
+- **Implementation:** Added the exact `WEATHER_DECISION_TIME = time(23, 30)` and `GAS_DECISION_LEAD = timedelta(hours=2)` constants; LST-zone weather decision timestamps; walk-forward weather error fitting from actuals and forecasts knowable at each decision; decision-time AAA and RBOB filtering for gas decisions; point-in-time `Decision` features; public history construction; and the `--engine`, date range, `--mode`, `--series`, `--train-days`, and `--record` CLI. The CLI selects the default weather or gas series, pulls Kalshi history, runs `run_backtest`, preserves the additive `log_loss` field through `build_backtest_run_row`, emits the result JSON, and records through `record_backtest_run` only when requested.
+- **Deviation:** None. The exact five tests and exact RED/GREEN commands from the brief were followed. No live services were contacted, no orders were placed, and no dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed.
 
 ## Verification
 
