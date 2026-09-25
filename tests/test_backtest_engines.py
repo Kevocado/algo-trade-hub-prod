@@ -414,3 +414,14 @@ def test_fetch_weather_forecasts_uses_one_range_request_and_is_date_stable():
     assert calls == [(NYC, days[0], days[-1]), (NYC, days[0], days[-1])]
     assert set(first) == set(days)
     assert first == second
+
+
+def test_settled_in_range_skips_malformed_event_tickers():
+    raws = [
+        {"ticker": "HIGHCHI-2-24FEB28-B40.5", "event_ticker": "HIGHCHI-2-24FEB28"},  # real legacy Chicago ticker
+        {"ticker": "KXHIGHCHI-26JUL01-T80", "event_ticker": "KXHIGHCHI-26JUL01"},
+        {"ticker": "KXHIGHCHI-26AUG01-T80", "event_ticker": "KXHIGHCHI-26AUG01"},
+        {"ticker": "NOEVENT"},
+    ]
+    kept = backtest_engines.settled_in_range(raws, date(2026, 7, 1), date(2026, 7, 31))
+    assert [r["ticker"] for r in kept] == ["KXHIGHCHI-26JUL01-T80"]

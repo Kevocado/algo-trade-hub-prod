@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from tradehub.backtest.kalshi_history import PAGE_LIMIT, KalshiHistoryClient, parse_ts
@@ -26,6 +27,14 @@ def quote_from_market_raw(raw: dict[str, Any]) -> Quote:
         yes_bid_size=float(raw.get("yes_bid_size_fp") or 0.0),
         yes_ask_size=float(raw.get("yes_ask_size_fp") or 0.0),
     )
+
+
+def safe_event_date(event_ticker: Any) -> date | None:
+    """event_date() for well-formed tickers; None for legacy/malformed ones (e.g. HIGHCHI-2-24FEB28)."""
+    try:
+        return event_date(event_ticker)
+    except (TypeError, ValueError, IndexError, AttributeError):
+        return None
 
 
 def settlement_observations(raws: list[dict[str, Any]]) -> list[Observation]:

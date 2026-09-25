@@ -19,7 +19,7 @@ from tradehub.backtest.kalshi_history import KalshiHistoryClient
 from tradehub.backtest.pit import Decision, Observation
 from tradehub.backtest.runner import MarketHistory, run_backtest
 from tradehub.backtest.store import build_backtest_run_row, data_snapshot_hash, record_backtest_run
-from tradehub.data.kalshi_live import settlement_observations
+from tradehub.data.kalshi_live import safe_event_date, settlement_observations
 from tradehub.data.rbob import front_month_roll_dates, rbob_closes
 from tradehub.data.weather import WEATHER_CITIES, City, forecast_target_date, historical_forecast_highs_range
 from tradehub.engines.gas import (
@@ -170,6 +170,16 @@ def _histories(
     return out
 
 
+def settled_in_range(raws: Iterable[dict], start: date, end: date) -> list[dict]:
+    """Settled markets whose event date is in [start, end]; unparseable legacy tickers are skipped."""
+    kept = []
+    for raw in raws:
+        day = safe_event_date(raw.get("event_ticker"))
+        if day is not None and start <= day <= end:
+            kept.append(raw)
+    return kept
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Point-in-time backtest for the weather or gas engine.")
     parser.add_argument("--engine", choices=["weather", "gas"], required=True)
@@ -194,11 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     series = args.series or ("KXHIGHNY" if args.engine == "weather" else GAS_SERIES)
     cfg = load_engine_config(args.engine)
     settled_raws = client.settled_markets(series)
-    raws = [
-        raw
-        for raw in settled_raws
-        if args.start <= event_date(raw["event_ticker"]) <= args.end
-    ]
+    raws = settled_in_range(settled_raws, args.start, args.end)
     markets = [parse_market(raw) for raw in raws]
     results = {raw["ticker"]: raw.get("result") for raw in raws}
     if args.engine == "weather":
