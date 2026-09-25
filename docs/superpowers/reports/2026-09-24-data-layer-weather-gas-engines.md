@@ -68,7 +68,32 @@
 
 ## Task 3 — Kalshi live markets and settled values
 
-_Pending implementation._
+- **Files changed:** `tradehub/edges.py`, `tradehub/data/__init__.py`, `tradehub/data/kalshi_live.py`, `tests/test_kalshi_live.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-3-report.md`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_live.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_kalshi_live.py:6: in <module>
+      from tradehub.data.kalshi_live import KalshiLive, quote_from_market_raw, settlement_observations
+  E   ModuleNotFoundError: No module named 'tradehub.data'
+  =========================== short test summary info ============================
+  ERROR tests/test_kalshi_live.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.09s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_live.py -q
+  ```
+  GREEN output tail:
+  ```text
+  .....                                                                    [100%]
+  5 passed in 0.02s
+  ```
+- **Implementation:** Added the frozen `Quote` and `LiveMarket` dataclasses, quote normalization with empty-side suppression, one earliest-settlement observation per event sorted by event date, paginated open-market quote pairing, and merged historical/live settled values. The exactly five specified tests use a local fake getter; no live network was used.
+- **Deviation:** None. The exact tests, RED command, implementation, and GREEN command from the brief were followed. The case-insensitive working directory's broad `Data/` ignore rule matched `tradehub/data/`, so those two required package files were explicitly force-staged without editing `.gitignore`. No dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed.
 
 ## Task 4 — Weather data and station-note fix
 
