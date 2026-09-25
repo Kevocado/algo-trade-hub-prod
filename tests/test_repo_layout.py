@@ -233,6 +233,3 @@ def test_pm2_process_files_are_retired():
     assert "## VPS deployment" in readme
     assert "tradehub-scan.timer" in readme and "deploy tradehub" in readme
     assert "pm2 start" not in readme
-
-
-
