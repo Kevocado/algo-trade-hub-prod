@@ -33,6 +33,7 @@ class Trade:
     count: float
     taker_side: str
     is_block_trade: bool = False
+    trade_id: str | None = None
 
 
 def parse_ts(value: str) -> datetime:
@@ -72,6 +73,7 @@ def parse_trade(raw: dict[str, Any]) -> Trade:
         count=float(raw["count_fp"]),
         taker_side=taker_side,
         is_block_trade=bool(raw.get("is_block_trade", False)),
+        trade_id=raw.get("trade_id"),
     )
 
 
@@ -175,18 +177,38 @@ class KalshiHistoryClient:
         start: datetime | None = None,
         end: datetime | None = None,
     ) -> list[Trade]:
-        """Combine both trade tiers, remove overlap duplicates, and sort oldest first."""
-        self.cutoff_timestamps()["trades_created_ts"]
+        """Combine both trade tiers, deduplicate identities, and sort oldest first."""
         combined = self.trades(ticker, historical=True)
         combined.extend(self.trades(ticker, historical=False))
         seen: set[tuple[Any, ...]] = set()
         merged: list[Trade] = []
-        for trade in sorted(combined, key=lambda item: (item.created_at, item.taker_side, item.yes_price, item.no_price, item.count, item.is_block_trade)):
+        for trade in sorted(
+            combined,
+            key=lambda item: (
+                item.created_at,
+                item.taker_side,
+                item.yes_price,
+                item.no_price,
+                item.count,
+                item.is_block_trade,
+            ),
+        ):
             if start is not None and trade.created_at < start:
                 continue
             if end is not None and trade.created_at > end:
                 continue
-            key = (trade.created_at, trade.yes_price, trade.no_price, trade.count, trade.taker_side, trade.is_block_trade)
+            if trade.trade_id is not None:
+                key = ("trade_id", trade.trade_id)
+            else:
+                key = (
+                    "fields",
+                    trade.created_at,
+                    trade.yes_price,
+                    trade.no_price,
+                    trade.count,
+                    trade.taker_side,
+                    trade.is_block_trade,
+                )
             if key in seen:
                 continue
             seen.add(key)

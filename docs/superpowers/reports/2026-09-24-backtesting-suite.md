@@ -437,3 +437,26 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
   ```
 - **Implementation:** added the explicit per-market `market_settled_at` input, fetched the cutoff once, and issued exactly one `candles` request using the selected tier. Equality with the cutoff selects live data.
 - **Deviation:** the method cannot infer a market's settlement timestamp from its ticker alone, so the caller supplies that metadata explicitly. The existing `candles` and `merge_candles` paths remain unchanged.
+
+## Post-review fix wave — finding 3
+
+- **Requirement:** preserve Kalshi's `trade_id` on `Trade`, deduplicate merged trades by that identity, and remove the unused cutoff request.
+- **Root cause:** `parse_trade` discarded `trade_id`, so the merge key collapsed distinct trades with identical timestamp/price/count/side; `merged_trades` also fetched and ignored `trades_created_ts`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py::test_parse_trade tests/test_backtest_kalshi_history.py::test_merged_trades_deduplicates_by_trade_id_without_a_cutoff_call -q
+  ```
+  RED output tail:
+  ```text
+  AttributeError: 'Trade' object has no attribute 'trade_id'
+  2 failed in 0.06s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  GREEN output tail:
+  ```text
+  16 passed in 0.02s
+  ```
+- **Implementation:** added a trailing backward-compatible `trade_id` field, populated it from the raw payload, used IDs as the primary dedupe key, retained a composite fallback for ID-less fixtures, and deleted the discarded cutoff call. Stable tier order is retained for equal trade fields.

@@ -60,6 +60,7 @@ def test_parse_trade():
     assert t.no_price == pytest.approx(0.99)
     assert t.count == pytest.approx(83.0)
     assert t.taker_side == "yes"
+    assert t.trade_id == TRADE["trade_id"]
 
 
 def test_cutoff_reads_market_settled_ts():
@@ -187,24 +188,21 @@ def test_merged_candles_uses_one_tier_selected_by_market_settlement(market_settl
     assert [path for path, _ in get.calls] == ["/historical/cutoff", expected_path]
 
 
-def test_merged_trades_combines_tiers_and_deduplicates_overlap():
+def test_merged_trades_deduplicates_by_trade_id_without_a_cutoff_call():
     cutoff = {
         "market_settled_ts": "2026-07-25T00:00:00Z",
         "trades_created_ts": "2026-07-24T22:30:00Z",
     }
-    older = dict(TRADE, created_time="2026-07-24T22:19:22.675922Z")
+    older = dict(TRADE, created_time="2026-07-24T22:19:22.675922Z", trade_id="older-id")
     duplicate = dict(older)
-    newer = dict(TRADE, created_time="2026-07-24T23:00:00Z")
+    distinct_same_fields = dict(older, trade_id="distinct-id")
     get = FakeGet({
         "/historical/cutoff": cutoff,
         "/historical/trades": {"trades": [older]},
-        "/markets/trades": {"trades": [duplicate, newer]},
+        "/markets/trades": {"trades": [duplicate, distinct_same_fields]},
     })
+
     trades = kh.KalshiHistoryClient(get_json=get).merged_trades("T")
-    assert [trade.created_at.hour for trade in trades] == [22, 23]
-    assert len(trades) == 2
-    assert [path for path, _ in get.calls] == [
-        "/historical/cutoff",
-        "/historical/trades",
-        "/markets/trades",
-    ]
+
+    assert [trade.trade_id for trade in trades] == ["older-id", "distinct-id"]
+    assert [path for path, _ in get.calls] == ["/historical/trades", "/markets/trades"]
