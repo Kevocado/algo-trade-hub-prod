@@ -1,0 +1,84 @@
+# Evidence Report — Data Layer + Weather & Gas Engines
+
+- Plan: `docs/superpowers/plans/2026-09-24-data-layer-weather-gas-engines.md`
+- Branch: `plan/2026-09-24-data-layer-weather-gas-engines`
+- Base: `6e0ffa2` (local `main` with step 2 and step 3 merged)
+- Venv: `.venv/bin/python`
+- Test environment: every pytest command uses process-only `SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder`.
+- Baseline: pending fresh prerequisite-branch verification.
+
+## Task 1 — `kalshi_edges` migration
+
+- **Files changed:** `market_sentiment_tool/supabase/migrations/20260416000005_kalshi_edges_urls_energy.sql`, `tests/test_repo_layout.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-1-report.md`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_repo_layout.py::test_kalshi_edges_urls_energy_migration -q
+  ```
+  RED output tail:
+  ```text
+  E       AssertionError: kalshi_edges urls/energy migration is missing
+  E       assert False
+  E        +  where False = is_file()
+  E        +    where is_file = PosixPath('/Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/market_sentiment_tool/supabase/migrations/20260416000005_kalshi_edges_urls_energy.sql').is_file
+  tests/test_repo_layout.py:175: AssertionError
+  =========================== short test summary info ============================
+  FAILED tests/test_repo_layout.py::test_kalshi_edges_urls_energy_migration
+  1 failed in 0.05s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_repo_layout.py -q
+  ```
+  GREEN output tail:
+  ```text
+  .................                                                        [100%]
+  17 passed in 0.30s
+  ```
+- **Migration review:** Added idempotent `market_url` and `source_url` text columns, replaced the inline edge-type check with one allowing `WEATHER`, `MACRO`, `SPORTS`, `CRYPTO`, and `ENERGY`, and added the required idempotent unique `market_id` index.
+- **Deviation:** None. The migration was intentionally not applied; production deployment remains a manual step. The detailed handoff report is not included in the requested staging list and remains repository-ignored.
+
+## Task 2 — Market geometry
+
+_Pending implementation._
+
+## Task 3 — Kalshi live markets and settled values
+
+_Pending implementation._
+
+## Task 4 — Weather data and station-note fix
+
+_Pending implementation._
+
+## Task 5 — Weather engine
+
+_Pending implementation._
+
+## Task 6 — RBOB input and gas engine
+
+_Pending implementation._
+
+## Task 7 — Edge layer and shared side selection
+
+_Pending implementation._
+
+## Task 8 — Per-engine config
+
+_Pending implementation._
+
+## Task 9 — One-shot scan and deep links
+
+_Pending implementation._
+
+## Task 10 — Point-in-time backtests
+
+_Pending implementation._
+
+## Verification
+
+_Pending implementation._
+
+## Deviations and rulings
+
+- The required evidence report is included in each task's single task commit because the handoff contract requires a committed report while also requiring one commit per task.
+- Step 2 and step 3 are locally merged prerequisites; their PRs are open remotely and are not required to be remotely merged for this local implementation order.
+- The user authorized opening a PR for this plan after final verification.

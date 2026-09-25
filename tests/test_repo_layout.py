@@ -168,3 +168,11 @@ def test_backtest_log_loss_migration_adds_nullable_column():
     assert "ALTER TABLE backtest_runs" in sql
     assert "log_loss numeric(12,8)" in sql
     assert "log_loss numeric(12,8) NOT NULL" not in sql
+
+
+def test_kalshi_edges_urls_energy_migration():
+    path = REPO / "market_sentiment_tool/supabase/migrations/20260416000005_kalshi_edges_urls_energy.sql"
+    assert path.is_file(), "kalshi_edges urls/energy migration is missing"
+    sql = path.read_text(encoding="utf-8")
+    for needle in ("market_url", "source_url", "'ENERGY'", "kalshi_edges_market_id_key"):
+        assert needle in sql, f"migration missing {needle}"
