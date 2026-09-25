@@ -22,12 +22,15 @@ NYC = WEATHER_CITIES["KXHIGHNY"]
 EST = ZoneInfo("Etc/GMT+5")
 
 
-def _wm(day: date):
+def _wm(day: date, *, settlement_ts: datetime | None = None):
     tag = day.strftime("%y%b%d").upper()
     close = datetime.combine(day + timedelta(days=1), datetime.min.time(), EST).astimezone(timezone.utc)
-    return parse_market({"ticker": f"KXHIGHNY-{tag}-T74", "event_ticker": f"KXHIGHNY-{tag}", "strike_type": "greater",
-                         "floor_strike": 74, "cap_strike": None, "open_time": "2026-06-01T00:00:00Z",
-                         "close_time": close.isoformat().replace("+00:00", "Z"), "title": "NYC high"})
+    raw = {"ticker": f"KXHIGHNY-{tag}-T74", "event_ticker": f"KXHIGHNY-{tag}", "strike_type": "greater",
+           "floor_strike": 74, "cap_strike": None, "open_time": "2026-06-01T00:00:00Z",
+           "close_time": close.isoformat().replace("+00:00", "Z"), "title": "NYC high"}
+    if settlement_ts is not None:
+        raw["settlement_ts"] = settlement_ts.isoformat().replace("+00:00", "Z")
+    return parse_market(raw)
 
 
 def _fc(day: date, value: float):
@@ -168,12 +171,15 @@ def test_histories_use_merged_candles_and_trades_with_series_context():
             self.calls.append(("trades", ticker, kwargs))
             return []
 
-    market = _wm(date(2026, 7, 5))
+    settled_at = datetime(2026, 7, 6, 12, tzinfo=timezone.utc)
+    market = _wm(date(2026, 7, 5), settlement_ts=settled_at)
     client = RecordingClient()
     histories = backtest_engines._histories(client, [market], {market.ticker: "yes"}, mode="maker")
 
     assert histories[market.ticker].result == "yes"
+    assert histories[market.ticker].settled_at == settled_at
     assert client.calls[0][0:2] == ("candles", market.ticker)
+    assert client.calls[0][4]["market_settled_at"] == settled_at
     assert client.calls[0][4]["series_ticker"] == market.series_ticker
     assert client.calls[1][0:2] == ("trades", market.ticker)
 
@@ -208,6 +214,7 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
         "cap_strike": None,
         "open_time": "2026-06-01T00:00:00Z",
         "close_time": "2026-07-02T05:00:00Z",
+        "settlement_ts": "2026-07-02T12:00:00Z",
         "result": "yes",
         "title": "NYC high",
     }
@@ -215,10 +222,6 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
     class FakeClient:
         def __init__(self):
             self.calls = []
-
-        def merged_settled_markets(self, series):
-            self.calls.append(("merged_settled_markets", series))
-            return [raw]
 
         def settled_markets(self, series):
             self.calls.append(("settled_markets", series))
@@ -275,7 +278,7 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
         "--train-days", "17",
     ]) == 0
 
-    assert client.calls == [("merged_settled_markets", "KXHIGHNY")]
+    assert client.calls == [("settled_markets", "KXHIGHNY")]
     assert history_modes == ["taker"]
     assert captured["config"] == {
         "engine": "weather",
@@ -307,7 +310,7 @@ def test_gas_cli_sizes_rbob_from_backtest_start(monkeypatch):
     captured = {}
 
     class FakeClient:
-        def merged_settled_markets(self, series):
+        def settled_markets(self, series):
             return [raw]
 
     monkeypatch.setattr(backtest_engines, "KalshiHistoryClient", FakeClient)

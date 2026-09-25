@@ -138,6 +138,7 @@ def _histories(
             market.ticker,
             market.open_time,
             market.close_time,
+            market_settled_at=market.settlement_ts,
             series_ticker=market.series_ticker,
         )
         trades = (
@@ -151,6 +152,7 @@ def _histories(
             close_time=market.close_time,
             candles=candles,
             trades=trades,
+            settled_at=market.settlement_ts,
         )
     return out
 
@@ -178,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     client = KalshiHistoryClient()
     series = args.series or ("KXHIGHNY" if args.engine == "weather" else GAS_SERIES)
     cfg = load_engine_config(args.engine)
-    settled_raws = client.merged_settled_markets(series)
+    settled_raws = client.settled_markets(series)
     raws = [
         raw
         for raw in settled_raws

@@ -8,7 +8,8 @@ from tradehub.markets import PROBABILITY_EPSILON, event_date, market_url, parse_
 RAW = {
     "ticker": "KXHIGHNY-26SEP25-T74", "event_ticker": "KXHIGHNY-26SEP25", "strike_type": "greater",
     "floor_strike": 74, "cap_strike": None, "open_time": "2026-09-23T14:00:00Z",
-    "close_time": "2026-09-26T05:00:00Z", "title": "Highest temperature in NYC",
+    "close_time": "2026-09-26T05:00:00Z", "settlement_ts": "2026-09-26T12:00:00Z",
+    "title": "Highest temperature in NYC",
 }
 
 
@@ -17,6 +18,7 @@ def test_parse_market():
     assert m.series_ticker == "KXHIGHNY"
     assert m.floor_strike == 74.0 and m.cap_strike is None
     assert m.close_time == datetime(2026, 9, 26, 5, tzinfo=timezone.utc)
+    assert m.settlement_ts == datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
     assert m.open_time == datetime(2026, 9, 23, 14, tzinfo=timezone.utc)
 
 

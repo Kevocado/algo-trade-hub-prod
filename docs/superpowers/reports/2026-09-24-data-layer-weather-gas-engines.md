@@ -1039,3 +1039,27 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   21 passed in 1.20s
   ```
 
+## Finding 2 — propagate explicit market settlement — 2026-09-25
+
+- **Files changed:** `tradehub/markets.py`, `tradehub/scripts/backtest_engines.py`, `tests/test_markets.py`, `tests/test_backtest_engines.py`, and this report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_markets.py::test_parse_market tests/test_backtest_engines.py::test_histories_use_merged_candles_and_trades_with_series_context tests/test_backtest_engines.py::test_backtest_cli_uses_merged_markets_and_reproducible_metadata -q
+  ```
+  RED output tail:
+  ```text
+  AttributeError: 'KalshiMarket' object has no attribute 'settlement_ts'
+  AssertionError: assert None == datetime.datetime(2026, 7, 6, 12, 0, tzinfo=datetime.timezone.utc)
+  AttributeError: 'FakeClient' object has no attribute 'merged_settled_markets'
+  3 failed in 0.54s
+  ```
+- `KalshiMarket` now preserves Kalshi's explicit `settlement_ts`. `_histories()` passes it as `market_settled_at` to PR3's tier-selecting `merged_candles()` and stores it in `MarketHistory.settled_at`; the CLI now uses PR3's `settled_markets()` method directly.
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_markets.py tests/test_backtest_engines.py tests/test_backtest_kalshi_history.py -q
+  ```
+  GREEN output tail:
+  ```text
+  42 passed in 0.58s
+  ```
+
