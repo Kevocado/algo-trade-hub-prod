@@ -511,3 +511,26 @@ does not move, as expected for a docs-only round.
 Findings I1, I2 and I3 are recorded as plan-mandated follow-ups and were deliberately left
 unimplemented, per the review's instruction. The Task 5 / VPS-vs-Azure tracker row
 (deviation 3 above) is also still open and still owned by the VPS deploy plan.
+
+## Controller handover — direct review after Claude capacity was exhausted
+
+Kevin reported that no Claude subagent capacity remained on 2026-09-25. The remaining review was
+therefore completed inline by the controller against the plan, this report, the handoff contract and
+`git diff --check`; no further reviewer subagents were dispatched.
+
+### Handoff checks
+
+- PR #4 merged as `7e4ca68`; this branch's base `98432bc` is its ancestor, so PR #5 is reported
+  mergeable and clean against the current `origin/main`.
+- Commits remain one per Task 1–4 plus the recorded review-fix commit; no history was rewritten.
+- `git diff --check` is clean. The committed plan copy is content-equivalent to the source plan but
+  its trailing whitespace was normalized after the byte-identical review round; its current SHA-256
+  is `24682a7929069c379e494309abb3af2ae74b91a1fdea5af9167f14f05a916a3e`.
+- Full suite and scoped Ruff must be rerun after any review fix. The last verified values are 353
+  passed and zero `F401,F811,F821` findings.
+- Migration `20260416000007` was tested only on a throwaway Postgres container. Kevin must apply
+  migrations `000003`–`000007` to the real service before scan/settle timers are enabled.
+- Do not silently change parked findings I1–I3: row-level market-Brier fail-closed coverage, no
+  upsert for an engine/version with zero settled rows, and settle exit 0 despite write errors are
+  plan-mandated follow-ups. Any change requires a recorded ruling and a test.
+- Wave B may start only after PR #5 is merged. Do not merge PRs or start step 6 from this branch.
