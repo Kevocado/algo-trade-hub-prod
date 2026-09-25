@@ -52,6 +52,29 @@ def event_date(event_ticker: str) -> date:
     return datetime.strptime(event_ticker.split("-")[1], "%y%b%d").date()
 
 
+def event_month(event_ticker: str) -> date:
+    """Monthly-release events: 'KXCPI-26AUG' (and legacy 'CPI-22NOV') -> first day of that month.
+
+    Only the first five characters are read: Kalshi has at least one stray suffix ('KXCPICORE-25DECT').
+    """
+    return datetime.strptime(event_ticker.split("-")[1][:5], "%y%b").date()
+
+
+def parse_cpi_market(raw: dict[str, Any]) -> KalshiMarket:
+    """parse_market for CPI ladders, including legacy 'CPI-*' markets that carry no strike fields.
+
+    Every CPI market is 'more than X%' on the one-decimal BLS value; legacy tickers
+    encode X as '-T0.3', or '-TN0.4' for -0.4.
+    """
+    if raw.get("strike_type") and raw.get("floor_strike") is not None:
+        return parse_market(raw)
+    suffix = raw["ticker"].rsplit("-", 1)[1]
+    if not suffix.startswith("T"):
+        raise ValueError(f"cannot infer strike from {raw['ticker']!r}")
+    strike = -float(suffix[2:]) if suffix.startswith("TN") else float(suffix[1:])
+    return parse_market(dict(raw, strike_type="greater", floor_strike=strike, cap_strike=None))
+
+
 def yes_interval(market: KalshiMarket, resolution: float) -> tuple[float, float]:
     """Continuous interval of the settled value for which the market resolves YES.
 
