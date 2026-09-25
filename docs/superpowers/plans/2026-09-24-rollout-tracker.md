@@ -9,7 +9,7 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 | Step | What | Status | Plan |
 |---|---|---|---|
 | 1 | Repo cleanup | ✅ merged to `main` | [2026-09-24-repo-cleanup.md](2026-09-24-repo-cleanup.md) |
-| 2 | Predictions ledger + settlement by market result + track record | 🟢 plan reviewed, ready to implement | [2026-09-24-predictions-ledger-settlement-track-record.md](2026-09-24-predictions-ledger-settlement-track-record.md) |
+| 2 | Predictions ledger + settlement by market result + track record | 🟡 implemented on branch, review pending | [2026-09-24-predictions-ledger-settlement-track-record.md](2026-09-24-predictions-ledger-settlement-track-record.md) |
 | 3 | Backtesting suite | 🟢 plan written + verified, ready to implement | [2026-09-24-backtesting-suite.md](2026-09-24-backtesting-suite.md) |
 | 4 | Shared data layer + `weather` + `gas` engines, suggest-only | 🟢 plan written + verified, ready to implement | [2026-09-24-data-layer-weather-gas-engines.md](2026-09-24-data-layer-weather-gas-engines.md) |
 | 5 | Azure deploy: scheduled jobs + API + web (VPS keeps only the crypto worker) | 🟢 plan written + verified, ready to implement | [2026-09-24-azure-deploy.md](2026-09-24-azure-deploy.md) |

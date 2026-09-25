@@ -158,13 +158,61 @@
 
 ## Task 6 — Cron entrypoint
 
-_Pending implementation._
+- **Files changed:** `tradehub/scripts/settle_predictions.py`, `tests/test_settle_predictions.py`, this evidence report, and `docs/superpowers/plans/2026-09-24-rollout-tracker.md`. A detailed handoff was written to `.superpowers/sdd/2026-09-24-predictions-ledger-settlement-track-record/task-6-report.md` (ignored by the repository and not staged).
+- **RED command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_settle_predictions.py -v
+  ```
+  RED output tail:
+  ```text
+  E   ImportError: cannot import name 'settle_predictions' from 'tradehub.scripts' (/Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/tradehub/scripts/__init__.py)
+  =========================== short test summary info ============================
+  ERROR tests/test_settle_predictions.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  ============================== 1 error in 0.12s ===============================
+  ```
+- **GREEN command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_settle_predictions.py -v
+  ```
+  GREEN output tail:
+  ```text
+  tests/test_settle_predictions.py::test_main_wires_pass_and_refresh PASSED [100%]
+
+  ============================== 2 passed in 0.03s ===============================
+  ```
+- **Implementation review:** The entrypoint has module-level bindings for the real Supabase client, Kalshi market fetcher, settlement pass, and track-record refresh; runs exactly one settlement pass; refreshes each configured `(engine, cadence)` once; passes `simulated_pnl_after_fees=None`; emits one JSON summary; and exits through `sys.exit(main())` without an always-on loop.
+- **Deviation:** The RED run produced the equivalent package-import collection error (`ImportError`) rather than the brief's illustrative `ModuleNotFoundError`, because `tradehub.scripts` already exists. The brief's unused `pytest` import was omitted from the final test file; the specified assertions and test behavior are unchanged.
 
 ## Verification
 
-_Pending implementation._
+- **Full test suite command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/ -v
+  ```
+  Output tail:
+  ```text
+  tests/test_track_record.py::test_gate_monthly_cadence_needs_only_50_contracts PASSED [100%]
+
+  ============================== 162 passed in 4.20s ==============================
+  ```
+- **Lint command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && .venv/bin/ruff check tradehub/predictions.py tradehub/settlement.py tradehub/track_record.py tradehub/scripts/settle_predictions.py tradehub/core/kalshi_feed.py tests/test_predictions.py tests/test_settlement.py tests/test_track_record.py tests/test_settle_predictions.py tests/test_repo_layout.py
+  ```
+  Output tail:
+  ```text
+  UP017 [*] Use `datetime.UTC` alias
+     --> tradehub/track_record.py:153:36
+  ...
+  Found 21 errors.
+  [*] 4 fixable with the `--fix` option (3 hidden fixes can be enabled with the `--unsafe-fixes` option).
+  ```
+  The exact command exits non-zero on 21 pre-existing findings in the prior task files (`tradehub/predictions.py`, `tradehub/settlement.py`, `tradehub/track_record.py`, `tradehub/core/kalshi_feed.py`, and their existing tests). The new `settle_predictions.py` and `settle_predictions` test are clean when checked independently; unrelated files were not changed.
+- **Tracker update:** Step 2 in `docs/superpowers/plans/2026-09-24-rollout-tracker.md` now reads `🟡 implemented on branch, review pending`, as authorized by the handoff contract.
 
 ## Deviations and rulings
 
 - The required evidence report is included in each task's single task commit because the handoff contract requires a committed report while also requiring one commit per task.
-- The rollout tracker status will be updated in the final task commit, as required by the tracker's same-commit status rule.
+- The rollout tracker status was updated in this final task commit, as required by the tracker's same-commit status rule.
+- No simulated-P&L implementation was added; the cron passes `None` so the promotion gate remains blocked on that criterion.
