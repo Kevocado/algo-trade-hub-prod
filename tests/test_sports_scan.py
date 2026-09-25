@@ -52,6 +52,8 @@ def test_scan_sport_predicts_matched_markets_and_flags_edges():
 
     assert result.edges, "the recorded HOU@IND prices leave an edge against the predictor"
     for edge in result.edges:
+        assert edge["engine"] == "sports_nfl"
+        assert edge["gate_status"] == "SHADOW"
         assert edge["edge_type"] == "SPORTS"
         assert edge["market_url"].startswith("https://kalshi.com/markets/kxnfl")
         assert edge["source_url"] == (f"{cfg.site_url}/?sport=nfl&game={edge['game_id']}")

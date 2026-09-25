@@ -60,7 +60,7 @@ def _fact_pack(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s
 
 
 def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s: EdgeSuggestion,
-              check: CandidateCheck) -> dict[str, Any]:
+              check: CandidateCheck, now: datetime) -> dict[str, Any]:
     series = cfg.series[kind]
     g = mg.game
     return {
@@ -70,6 +70,10 @@ def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s:
         "model_probability": s.our_prob,
         "edge": s.net_edge_pct / 100.0,
         "edge_type": "SPORTS",
+        "engine": cfg.engine,
+        "gate_status": "SHADOW",
+        "updated_at": now.isoformat(),
+        "expires_at": sm.market.close_time.isoformat(),
         "market_url": kalshi_event_url(series, cfg.series_titles[series], sm.market.event_ticker),
         # Sports_Predictor has no per-game route yet; the params are ready for when it does.
         "source_url": f"{cfg.site_url}/?sport={cfg.sport}&game={g.game_id}",
@@ -120,7 +124,7 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
                 if s is None:
                     continue
                 check = check_candidate(kind, sm, mg, s, feed.calibration, cfg.edge.params, now)
-                row = _edge_row(cfg, kind, sm, mg, s, check)
+                row = _edge_row(cfg, kind, sm, mg, s, check, now)
                 if check.ok:
                     bucket = price_bucket(s.entry_price, bucket_cents)
                     req = ReviewRequest(

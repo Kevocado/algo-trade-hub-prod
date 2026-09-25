@@ -165,3 +165,57 @@ GREEN: focused 4 passed; full frontend 4 files / 12 tests passed; vite build OK
 - Added the Sports page, tier/rejection formatting helpers, navigation and route.
 - Deviation: none.
 
+## Task 11 — Live dry run, tracker and handover
+
+### Live dry run — no writes, no LLM
+
+```json
+{
+  "as_of": "2026-09-25T21:50:39.691136+00:00",
+  "reports": {
+    "nfl": {"feed_error": "https://nfl-predictor.proudbay-f56b8dfa.eastus2.azurecontainerapps.io/api/kalshi-feed: 404 Client Error: Not Found"},
+    "cfb": {"feed_error": "https://cfb-predictor.proudbay-f56b8dfa.eastus2.azurecontainerapps.io/api/kalshi-feed: 404 Client Error: Not Found"},
+    "reviews": {}
+  },
+  "predictions": 0,
+  "edges": 0,
+  "candidates": 0,
+  "top_edges": []
+}
+```
+
+The 404s are expected: step 7a is not deployed. They are reported per sport and do not abort the run.
+
+### Direct-review correction
+
+The plan's extracted `_edge_row` omitted `engine`, `gate_status`, `updated_at` and `expires_at`, which would have violated Kevin's binding SHADOW-edge rule and produced null engine rows. The direct review added those fields and assertions that every sports edge carries `engine=sports_nfl|sports_cfb` and `gate_status=SHADOW`; `tests/test_sports_scan.py` passes 12/12.
+
+### Final verification
+
+```text
+Python baseline 391 → final 458 passed
+Scoped Ruff F401,F811,F821: All checks passed
+Frontend: 4 files / 12 vitest tests passed
+Vite production build: OK
+git diff --check: clean
+```
+
+### Merge order / stacking
+
+This branch is stacked on step 6 plus cherry-picked VPS commits. No PR was merged. Review/merge in order: #5 (2b), #6 (VPS), #7 (step 6), then this PR; rebase/retest if any upstream head changes.
+
+### Kevin checklist — pending
+
+1. Apply `20260416000008_sports_reviews.sql` after migrations `000003`–`000007`.
+2. Add `OPENROUTER_API_KEY` and the four `SPORTS_*_URL` variables to the VPS stack environment; use VPS hostnames after cutover.
+3. Record one real OpenRouter review and replace the hand-built OK fixture.
+4. Sports runs on the existing hourly timer every third UTC hour; no new timer.
+5. After ≥100 settled reviewed picks, read `reviewer_scorecard.verdict`; drop the reviewer if it says drop.
+
+### Handover risks
+
+- The live feed is 404 until 7a is deployed; the dry run above is the expected result, not a passing scored run.
+- Do not suppress large predictor-vs-market gaps; the calibration gate blocks them and Kevin's rule keeps all edges visible as SHADOW.
+- CFB spread/total calibration may remain empty because recorded sportsbook lines are mostly null.
+- Reviewer budget/fixture follow-ups are in the plan's Kevin checklist and were not executed.
+- No Supabase write, LLM call, migration application or deployment was performed.
