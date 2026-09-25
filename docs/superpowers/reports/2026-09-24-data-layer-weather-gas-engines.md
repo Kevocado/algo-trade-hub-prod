@@ -1139,3 +1139,28 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   44 passed in 0.33s
   ```
 
+## Finding 6 — engine identity and two-gate promotion — 2026-09-25
+
+- **Files changed:** `tradehub/scripts/scan.py`, `tradehub/core/supabase_client.py`, `market_sentiment_tool/supabase/migrations/20260416000005_kalshi_edges_urls_energy.sql`, `tests/test_scan.py`, `tests/test_repo_layout.py`, and this report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py::test_edge_row_shape tests/test_scan.py::test_edge_row_requires_engine_keyword tests/test_scan.py::test_latest_gate_statuses_requires_latest_backtest_and_matching_track_record tests/test_scan.py::test_apply_gate_statuses_keys_on_engine_not_edge_type tests/test_scan.py::test_scan_main_writes_edges_for_engines_whose_gate_loses tests/test_scan.py::test_upsert_opportunities_writes_urls_and_energy tests/test_repo_layout.py::test_kalshi_edges_urls_energy_migration -q
+  ```
+  RED output tail:
+  ```text
+  TypeError: edge_row() got an unexpected keyword argument 'engine'
+  AttributeError: 'Table' object has no attribute 'in_'
+  KeyError: 'engine'
+  6 failed, 1 passed in 0.57s
+  ```
+- `edge_row()` now requires `engine=...`, writes it to every weather/gas edge, and `upsert_opportunities()` persists it. The unapplied migration `20260416000005` adds the nullable `engine` column, leaving other writers compatible.
+- Gate lookup now performs one filtered, newest-first, limit-one `backtest_runs` query per engine. Only a latest `PROMOTED` result can continue to a matching `(engine, engine_version)` `track_record` query; any missing/mismatched/non-promoted row remains `SHADOW`. `apply_gate_statuses()` reads `row["engine"]`, never `edge_type`. Losing engines are still upserted and retained as shadow rows.
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py tests/test_repo_layout.py -q
+  ```
+  GREEN output tail:
+  ```text
+  37 passed in 0.95s
+  ```
+

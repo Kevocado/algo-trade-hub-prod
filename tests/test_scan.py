@@ -37,45 +37,102 @@ GOOD_QUOTE = Quote(yes_bid=0.30, yes_ask=0.34, yes_bid_size=50.0, yes_ask_size=5
 
 def test_edge_row_shape():
     m = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
-    row = scan.edge_row(m, EdgeSuggestion(m.ticker, "yes", 0.30, True, 12.5, 0.45, 0.32), "WEATHER")
+    row = scan.edge_row(
+        m,
+        EdgeSuggestion(m.ticker, "yes", 0.30, True, 12.5, 0.45, 0.32),
+        "WEATHER",
+        engine="weather",
+    )
     assert row["market_url"] == "https://kalshi.com/markets/kxhighny"
     assert row["edge"] == pytest.approx(0.125)
     assert row["model_probability"] == pytest.approx(0.45) and row["market_price"] == pytest.approx(0.32)
     assert row["edge_type"] == "WEATHER" and row["maker"] is True
+    assert row["engine"] == "weather"
     assert row["gate_status"] == "SHADOW"
     assert row["expires_at"] == m.close_time.isoformat()
     assert row["updated_at"]
 
 
-def test_latest_gate_statuses_default_non_promoted_to_shadow():
-    class Result:
-        data = [
-            {"engine": "weather", "gate_status": "SHADOW"},
-            {"engine": "gas", "gate_status": "PROMOTED"},
-        ]
+def test_edge_row_requires_engine_keyword():
+    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
+    suggestion = EdgeSuggestion(market.ticker, "yes", 0.30, True, 12.5, 0.45, 0.32)
+
+    with pytest.raises(TypeError):
+        scan.edge_row(market, suggestion, "WEATHER")
+
+
+def test_latest_gate_statuses_requires_latest_backtest_and_matching_track_record():
+    backtests = {
+        "weather": {"engine": "weather", "engine_version": "weather-v2", "gate_status": "PROMOTED"},
+        "gas": {"engine": "gas", "engine_version": "gas-v9", "gate_status": "PROMOTED"},
+        "crypto": {"engine": "crypto", "engine_version": "crypto-v4", "gate_status": "SHADOW"},
+    }
+    tracks = {
+        ("weather", "weather-v2"): "PROMOTED",
+        ("gas", "gas-v9"): "SHADOW",
+        ("crypto", "crypto-v4"): "PROMOTED",
+    }
+    calls = []
 
     class Table:
+        def __init__(self, name):
+            self.name = name
+            self.filters = {}
+            self.ordered = False
+            self.limit_value = None
+
         def select(self, *args):
             return self
 
-        def in_(self, *args):
+        def eq(self, key, value):
+            self.filters[key] = value
             return self
 
-        def order(self, *args, **kwargs):
+        def order(self, key, *, desc=False):
+            assert (key, desc) == ("created_at", True)
+            self.ordered = True
+            return self
+
+        def limit(self, value):
+            self.limit_value = value
             return self
 
         def execute(self):
-            return Result()
+            calls.append((self.name, dict(self.filters), self.ordered, self.limit_value))
+            if self.name == "backtest_runs":
+                row = backtests.get(self.filters["engine"])
+                return type("Result", (), {"data": [row] if row else []})()
+            key = (self.filters["engine"], self.filters["engine_version"])
+            status = tracks.get(key)
+            return type("Result", (), {"data": [{"gate_status": status}] if status else []})()
 
     class Client:
         def table(self, name):
-            assert name == "backtest_runs"
-            return Table()
+            return Table(name)
 
-    assert scan.latest_gate_statuses(Client(), ["weather", "gas"]) == {
-        "weather": "SHADOW",
-        "gas": "PROMOTED",
+    assert scan.latest_gate_statuses(Client(), ["weather", "gas", "crypto"]) == {
+        "weather": "PROMOTED",
+        "gas": "SHADOW",
+        "crypto": "SHADOW",
     }
+    backtest_calls = [call for call in calls if call[0] == "backtest_runs"]
+    assert len(backtest_calls) == 3
+    assert all(ordered and limit == 1 for _, _, ordered, limit in backtest_calls)
+    assert ("track_record", {"engine": "weather", "engine_version": "weather-v2"}, False, 1) in calls
+    assert ("track_record", {"engine": "gas", "engine_version": "gas-v9"}, False, 1) in calls
+    assert not any(name == "track_record" and filters["engine"] == "crypto" for name, filters, _, _ in calls)
+
+
+def test_apply_gate_statuses_keys_on_engine_not_edge_type():
+    edges = [
+        {"engine": "weather", "edge_type": "MACRO"},
+        {"engine": "gas", "edge_type": "WEATHER"},
+    ]
+
+    scan.apply_gate_statuses(edges, {"weather": "PROMOTED", "gas": "SHADOW"})
+
+    assert edges[0]["gate_status"] == "PROMOTED"
+    assert edges[1]["gate_status"] == "SHADOW"
 
 
 def test_remove_stale_edges_only_targets_requested_edge_types():
@@ -389,6 +446,7 @@ def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, caps
     gas_prediction = {"market_ticker": "KXAAAGASD-26SEP25-4.5200", "our_prob": 0.9}
     gas_edge = {
         "market_ticker": "KXAAAGASD-26SEP25-4.5200",
+        "engine": "gas",
         "edge_type": "ENERGY",
         "gate_status": "SHADOW",
     }
@@ -427,7 +485,7 @@ def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, caps
 
 def test_scan_main_persists_successful_rows_from_a_partial_weather_scan(monkeypatch):
     prediction = {"market_ticker": "KXHIGHNY-26SEP25-T74", "our_prob": 0.9}
-    edge = {"market_ticker": "KXHIGHNY-26SEP25-T74", "edge_type": "WEATHER"}
+    edge = {"market_ticker": "KXHIGHNY-26SEP25-T74", "engine": "weather", "edge_type": "WEATHER"}
     recorded = []
     upserted = []
     pruned = []
@@ -450,6 +508,30 @@ def test_scan_main_persists_successful_rows_from_a_partial_weather_scan(monkeypa
     assert recorded == [prediction]
     assert upserted == [edge]
     assert pruned == [{"ENERGY": set()}]
+
+
+def test_scan_main_writes_edges_for_engines_whose_gate_loses(monkeypatch):
+    weather_prediction = {"market_ticker": "KXHIGHNY-26SEP25-T74", "our_prob": 0.9}
+    weather_edge = {"market_ticker": "KXHIGHNY-26SEP25-T74", "engine": "weather", "edge_type": "WEATHER"}
+    gas_prediction = {"market_ticker": "KXAAAGASD-26SEP25-4.5200", "our_prob": 0.9}
+    gas_edge = {"market_ticker": "KXAAAGASD-26SEP25-4.5200", "engine": "gas", "edge_type": "ENERGY"}
+    upserted = []
+
+    monkeypatch.setattr(scan, "load_engine_config", lambda engine: EngineConfig(min_edge_pct=3.0))
+    monkeypatch.setattr(scan, "scan_weather", lambda *args, **kwargs: ([weather_prediction], [weather_edge]))
+    monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([gas_prediction], [gas_edge]))
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, engines: {"weather": "SHADOW", "gas": "SHADOW"})
+    monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
+
+    from tradehub.core import supabase_client
+    import tradehub.predictions as predictions_module
+
+    monkeypatch.setattr(predictions_module, "record_predictions", lambda client, rows: None)
+    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
+
+    assert scan.main(now=NOW, live=object(), client=object()) == 0
+    assert upserted == [weather_edge, gas_edge]
+    assert all(row["gate_status"] == "SHADOW" for row in upserted)
 
 
 def test_upsert_opportunities_propagates_execute_failure(monkeypatch):
@@ -543,8 +625,10 @@ def test_upsert_opportunities_writes_urls_and_energy(monkeypatch):
     monkeypatch.setattr(supabase_client, "get_client", lambda: type("C", (), {"table": lambda self, n: Table()})())
     supabase_client.upsert_opportunities([{"market_ticker": "KXAAAGASD-26SEP25-4.5200", "market_title": "gas",
                                            "market_price": 0.32, "model_probability": 0.45, "edge": 0.125,
-                                           "edge_type": "ENERGY", "market_url": "https://kalshi.com/markets/kxaaagasd"}])
+                                           "engine": "gas", "edge_type": "ENERGY",
+                                           "market_url": "https://kalshi.com/markets/kxaaagasd"}])
     row = captured["rows"][0]
+    assert row["engine"] == "gas"
     assert row["edge_type"] == "ENERGY"
     assert row["market_url"] == "https://kalshi.com/markets/kxaaagasd"
     assert row["source_url"] is None

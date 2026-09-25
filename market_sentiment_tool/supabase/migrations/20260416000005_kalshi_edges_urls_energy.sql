@@ -4,6 +4,7 @@
 
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS market_url text;
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS source_url text;
+ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS engine text;
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS gate_status text NOT NULL DEFAULT 'SHADOW';
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE kalshi_edges ADD COLUMN IF NOT EXISTS expires_at timestamptz;

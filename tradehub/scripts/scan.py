@@ -45,6 +45,7 @@ def edge_row(
     s: EdgeSuggestion,
     edge_type: str,
     *,
+    engine: str,
     gate_status: str = "SHADOW",
     updated_at: datetime | None = None,
 ) -> dict[str, Any]:
@@ -55,6 +56,7 @@ def edge_row(
         "market_price": s.market_prob,
         "model_probability": s.our_prob,
         "edge": s.net_edge_pct / 100.0,
+        "engine": engine,
         "edge_type": edge_type,
         "market_url": market_url(market),
         "side": s.side,
@@ -73,30 +75,42 @@ def _mid(quote) -> float | None:
 
 
 def latest_gate_statuses(client, engines: list[str]) -> dict[str, str]:
-    """Return the newest backtest gate for each engine, defaulting to SHADOW."""
+    """Promote only when the latest backtest and matching track record agree."""
     requested = list(dict.fromkeys(engines))
-    if not requested:
-        return {}
-    result = (
-        client.table("backtest_runs")
-        .select("engine,gate_status,created_at")
-        .in_("engine", requested)
-        .order("created_at", desc=True)
-        .execute()
-    )
-    rows = list(result.data or [])
     statuses: dict[str, str] = {}
-    for row in rows:
-        engine = row.get("engine")
-        if engine in requested and engine not in statuses:
-            statuses[engine] = "PROMOTED" if row.get("gate_status") == "PROMOTED" else "SHADOW"
-    return {engine: statuses.get(engine, "SHADOW") for engine in requested}
+    for engine in requested:
+        backtest = client.table("backtest_runs") \
+            .select("engine,engine_version,gate_status,created_at") \
+            .eq("engine", engine) \
+            .order("created_at", desc=True) \
+            .limit(1) \
+            .execute()
+        rows = list(backtest.data or [])
+        if not rows or rows[0].get("gate_status") != "PROMOTED":
+            statuses[engine] = "SHADOW"
+            continue
+        version = rows[0].get("engine_version")
+        if not version:
+            statuses[engine] = "SHADOW"
+            continue
+        track = client.table("track_record") \
+            .select("gate_status") \
+            .eq("engine", engine) \
+            .eq("engine_version", version) \
+            .limit(1) \
+            .execute()
+        track_rows = list(track.data or [])
+        statuses[engine] = (
+            "PROMOTED"
+            if track_rows and track_rows[0].get("gate_status") == "PROMOTED"
+            else "SHADOW"
+        )
+    return statuses
 
 
 def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[str, str]) -> None:
     for row in edges:
-        engine = "weather" if row.get("edge_type") == "WEATHER" else "gas"
-        row["gate_status"] = statuses.get(engine, "SHADOW")
+        row["gate_status"] = statuses.get(row["engine"], "SHADOW")
 
 
 def remove_stale_edges(client, produced_by_type: dict[str, set[str]]) -> None:
@@ -175,7 +189,7 @@ def _scan_weather_city(
             suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
                                        prefer_maker=cfg.prefer_maker)
             if suggestion:
-                edges.append(edge_row(lm.market, suggestion, "WEATHER", updated_at=now))
+                edges.append(edge_row(lm.market, suggestion, "WEATHER", engine="weather", updated_at=now))
     return predictions, edges
 
 
@@ -261,7 +275,7 @@ def scan_gas(
         suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
                                    prefer_maker=cfg.prefer_maker)
         if suggestion:
-            edges.append(edge_row(lm.market, suggestion, "ENERGY", updated_at=now))
+            edges.append(edge_row(lm.market, suggestion, "ENERGY", engine="gas", updated_at=now))
     return predictions, edges
 
 

@@ -174,5 +174,5 @@ def test_kalshi_edges_urls_energy_migration():
     path = REPO / "market_sentiment_tool/supabase/migrations/20260416000005_kalshi_edges_urls_energy.sql"
     assert path.is_file(), "kalshi_edges urls/energy migration is missing"
     sql = path.read_text(encoding="utf-8")
-    for needle in ("market_url", "source_url", "gate_status", "updated_at", "expires_at", "'ENERGY'", "kalshi_edges_market_id_key"):
+    for needle in ("market_url", "source_url", "engine", "gate_status", "updated_at", "expires_at", "'ENERGY'", "kalshi_edges_market_id_key"):
         assert needle in sql, f"migration missing {needle}"
