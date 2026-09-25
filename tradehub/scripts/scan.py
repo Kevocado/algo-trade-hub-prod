@@ -10,12 +10,12 @@ import json
 import logging
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from tradehub.data.kalshi_live import KalshiLive
-from tradehub.data.rbob import rbob_closes
+from tradehub.data.rbob import front_month_roll_dates, rbob_closes
 from tradehub.data.weather import (
     WEATHER_CITIES,
     City,
@@ -226,14 +226,25 @@ def scan_weather(
     return predictions, edges
 
 
-def scan_gas(live, now: datetime, cfg: EngineConfig, *, rbob_fn: Callable[[], list] = rbob_closes) -> tuple[list[dict], list[dict]]:
+def scan_gas(
+    live,
+    now: datetime,
+    cfg: EngineConfig,
+    *,
+    rbob_fn: Callable[[], list] = rbob_closes,
+    roll_dates_fn: Callable[[date, date], list[date]] = front_month_roll_dates,
+) -> tuple[list[dict], list[dict]]:
     known = [o for o in live.settled_values(GAS_SERIES) if o.published_at <= now]
     if not known:
         return [], []
     rbob = rbob_fn()
     last = max(known, key=lambda o: event_date(o.name))
-    model = fit_gas_model([(x, y) for x, y, published in gas_training_pairs(known, rbob) if published <= now])
-    x_now = rbob_change(rbob, now)
+    roll_dates = roll_dates_fn(min(event_date(o.name) for o in known), now.astimezone(timezone.utc).date())
+    model = fit_gas_model(
+        [(x, y) for x, y, published in gas_training_pairs(known, rbob, roll_dates=roll_dates) if published <= now],
+        aaa=known,
+    )
+    x_now = rbob_change(rbob, now, roll_dates=roll_dates)
     predictions: list[dict] = []
     edges: list[dict] = []
     for lm in live.open_markets(GAS_SERIES):

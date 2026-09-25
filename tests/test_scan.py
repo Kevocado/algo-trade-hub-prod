@@ -488,6 +488,44 @@ def test_scan_gas_uses_only_published_aaa_and_positive_horizons():
     assert edges and edges[0]["edge_type"] == "ENERGY"
 
 
+def test_scan_gas_passes_nymex_roll_dates_to_training_and_live_change(monkeypatch):
+    market = _m("KXAAAGASD-26SEP25-4.5200", "KXAAAGASD-26SEP25", floor=4.52, close="2026-09-25T03:59:00Z")
+    known = [Observation("KXAAAGASD-26SEP24", 4.50, NOW - timedelta(hours=1))]
+    rbob = [Observation("RBOB:RBU26.NYM:2026-08-31", 3.0, NOW - timedelta(days=1))]
+    roll_dates = [date(2026, 8, 31)]
+    calls = {}
+
+    def roll_dates_fn(start, end):
+        calls["range"] = (start, end)
+        return roll_dates
+
+    def training_pairs(_aaa, _rbob, *, roll_dates):
+        calls["training"] = roll_dates
+        return []
+
+    def change(_rbob, _as_of, *, roll_dates):
+        calls["change"] = roll_dates
+        return None
+
+    monkeypatch.setattr(scan, "front_month_roll_dates", roll_dates_fn)
+    monkeypatch.setattr(scan, "gas_training_pairs", training_pairs)
+    monkeypatch.setattr(scan, "rbob_change", change)
+
+    scan.scan_gas(
+        FakeLive([LiveMarket(market, GOOD_QUOTE)], known),
+        NOW,
+        EngineConfig(min_edge_pct=3.0),
+        rbob_fn=lambda: rbob,
+        roll_dates_fn=roll_dates_fn,
+    )
+
+    assert calls == {
+        "range": (date(2026, 9, 24), date(2026, 9, 24)),
+        "training": roll_dates,
+        "change": roll_dates,
+    }
+
+
 def test_upsert_opportunities_writes_urls_and_energy(monkeypatch):
     from tradehub.core import supabase_client
 

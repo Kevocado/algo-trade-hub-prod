@@ -1,11 +1,12 @@
 import math
+import statistics
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
 
 from tradehub.backtest.pit import Observation
-from tradehub.data.rbob import rbob_closes
+from tradehub.data.rbob import front_month_roll_dates, rbob_closes
 from tradehub.engines.gas import (
     DEFAULT_GAS,
     MIN_GAS_SIGMA,
@@ -28,12 +29,12 @@ def test_rbob_closes_publishes_at_1800_new_york():
     frame = pd.DataFrame({"Close": [3.30, 3.40]},
                          index=pd.DatetimeIndex(["2026-09-22", "2026-09-23"]).tz_localize("America/New_York"))
     obs = rbob_closes(history_fn=lambda: frame)
-    assert [o.name for o in obs] == ["RBOB:unknown:2026-09-22", "RBOB:unknown:2026-09-23"]
+    assert [o.name for o in obs] == ["RBOB:RBV26.NYM:2026-09-22", "RBOB:RBV26.NYM:2026-09-23"]
     assert obs[0].published_at == datetime(2026, 9, 22, 22, 0, tzinfo=timezone.utc)  # 18:00 EDT
     assert obs[1].value == pytest.approx(3.40)
 
 
-def test_rbob_closes_marks_contract_unknown_without_metadata():
+def test_rbob_closes_assigns_front_month_by_nymex_roll_without_metadata():
     frame = pd.DataFrame(
         {"Close": [3.30, 3.40]},
         index=pd.DatetimeIndex(["2026-08-31", "2026-09-01"]).tz_localize("America/New_York"),
@@ -41,8 +42,17 @@ def test_rbob_closes_marks_contract_unknown_without_metadata():
 
     obs = rbob_closes(history_fn=lambda: frame)
 
-    assert [o.name for o in obs] == ["RBOB:unknown:2026-08-31", "RBOB:unknown:2026-09-01"]
-    assert rbob_change(obs, datetime(2026, 9, 2, tzinfo=timezone.utc), window=1) is None
+    assert [o.name for o in obs] == ["RBOB:RBU26.NYM:2026-08-31", "RBOB:RBV26.NYM:2026-09-01"]
+    roll_dates = front_month_roll_dates(date(2026, 8, 1), date(2026, 9, 30))
+    assert rbob_change(obs, datetime(2026, 9, 2, tzinfo=timezone.utc), window=1, roll_dates=roll_dates) is None
+
+
+def test_front_month_roll_dates_are_last_business_days_before_delivery():
+    assert front_month_roll_dates(date(2026, 7, 1), date(2026, 10, 1)) == [
+        date(2026, 7, 31),
+        date(2026, 8, 31),
+        date(2026, 9, 30),
+    ]
 
 
 def test_rbob_closes_preserves_explicit_contract_metadata():
@@ -100,6 +110,23 @@ def test_rbob_change_drops_windows_spanning_a_front_month_roll():
     assert rbob_change_window(closes, T0 + timedelta(days=8), window=5)[1][0].name.startswith("RBOB:RBV26.NYM:")
 
 
+def test_rbob_change_allows_same_contract_window_ending_on_roll_date():
+    closes = [
+        Observation("RBOB:RBU26.NYM:2026-08-27", 3.10, T0),
+        Observation("RBOB:RBU26.NYM:2026-08-28", 3.20, T0 + timedelta(days=1)),
+        Observation("RBOB:RBU26.NYM:2026-08-31", 3.30, T0 + timedelta(days=2)),
+    ]
+
+    result = rbob_change_window(
+        closes,
+        T0 + timedelta(days=2),
+        window=2,
+        roll_dates=[date(2026, 8, 31)],
+    )
+
+    assert result is not None and result[0] == pytest.approx(0.20)
+
+
 def test_gas_training_pairs_consecutive_days_only():
     rbob = _rbob([3.0] * 6 + [3.5] * 10)
     aaa = [Observation("KXAAAGASD-26SEP10", 4.40, T0 + timedelta(days=9, hours=12)),
@@ -119,6 +146,26 @@ def test_fit_gas_model_recovers_linear_relation_and_defaults():
     assert model.beta == pytest.approx(0.05, abs=0.01)
     assert model.alpha == pytest.approx(0.001, abs=0.001)
     assert model.sigma >= MIN_GAS_SIGMA
+
+
+def test_fit_gas_model_without_rbob_uses_aaa_daily_sigma_with_zero_beta():
+    start = date(2026, 9, 1)
+    aaa = [
+        Observation(
+            f"KXAAAGASD-{(start + timedelta(days=index)).strftime('%y%b%d').upper()}",
+            4.0 + index * 0.001 + (0.01 if index % 2 else -0.01),
+            T0 + timedelta(days=index, hours=12),
+        )
+        for index in range(41)
+    ]
+    changes = [current.value - previous.value for previous, current in zip(aaa, aaa[1:])]
+
+    model = fit_gas_model([], aaa=aaa)
+
+    assert model.alpha == pytest.approx(statistics.fmean(changes))
+    assert model.beta == 0.0
+    assert model.sigma == pytest.approx(max(MIN_GAS_SIGMA, statistics.stdev(changes)))
+    assert model.sigma != pytest.approx(DEFAULT_GAS.sigma)
 
 
 def test_gas_prob_normal_model_and_horizon_scaling():

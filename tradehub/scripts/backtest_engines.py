@@ -20,7 +20,7 @@ from tradehub.backtest.pit import Decision, Observation
 from tradehub.backtest.runner import MarketHistory, run_backtest
 from tradehub.backtest.store import build_backtest_run_row, data_snapshot_hash, record_backtest_run
 from tradehub.data.kalshi_live import settlement_observations
-from tradehub.data.rbob import rbob_closes
+from tradehub.data.rbob import front_month_roll_dates, rbob_closes
 from tradehub.data.weather import WEATHER_CITIES, City, forecast_target_date, historical_forecast_highs_range
 from tradehub.engines.gas import (
     GAS_ENGINE_VERSION,
@@ -99,7 +99,13 @@ def build_weather_decisions(
     return decisions
 
 
-def build_gas_decisions(markets: list[KalshiMarket], aaa: list[Observation], rbob: list[Observation]) -> list[Decision]:
+def build_gas_decisions(
+    markets: list[KalshiMarket],
+    aaa: list[Observation],
+    rbob: list[Observation],
+    *,
+    roll_dates: list[date] | None = None,
+) -> list[Decision]:
     rbob_sorted = sorted(rbob, key=lambda o: o.published_at)
     decisions = []
     for market in markets:
@@ -111,12 +117,19 @@ def build_gas_decisions(markets: list[KalshiMarket], aaa: list[Observation], rbo
         horizon = (event_date(market.event_ticker) - event_date(last.name)).days
         if horizon < 1:
             continue
-        model = fit_gas_model([
-            (x, y)
-            for x, y, published in gas_training_pairs(known, rbob_sorted)
-            if published <= decided_at
-        ])
-        rbob_window = rbob_change_window(rbob_sorted, decided_at)
+        model = fit_gas_model(
+            [
+                (x, y)
+                for x, y, published in gas_training_pairs(
+                    known,
+                    rbob_sorted,
+                    roll_dates=roll_dates,
+                )
+                if published <= decided_at
+            ],
+            aaa=known,
+        )
+        rbob_window = rbob_change_window(rbob_sorted, decided_at, roll_dates=roll_dates)
         rbob_x = None if rbob_window is None else rbob_window[0]
         used_rbob = () if rbob_window is None else rbob_window[1]
         prob = gas_prob(market, last.value, horizon, rbob_x, model)
@@ -218,7 +231,9 @@ def main(argv: list[str] | None = None) -> int:
     else:
         aaa = settlement_observations(settled_raws)
         train_from = args.start - timedelta(days=args.train_days)
-        decisions = build_gas_decisions(markets, aaa, rbob_closes(start=train_from, end=args.end))
+        rbob = rbob_closes(start=train_from, end=args.end)
+        roll_dates = front_month_roll_dates(train_from, args.end)
+        decisions = build_gas_decisions(markets, aaa, rbob, roll_dates=roll_dates)
         version = GAS_ENGINE_VERSION
     histories = _histories(
         client,

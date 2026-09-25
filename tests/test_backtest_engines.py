@@ -6,6 +6,7 @@ import pytest
 from tradehub.backtest.kalshi_history import Candle
 from tradehub.backtest.pit import Observation, check_no_lookahead
 from tradehub.backtest.runner import MarketHistory, run_backtest
+from tradehub.data.rbob import front_month_roll_dates
 from tradehub.data.weather import WEATHER_CITIES
 from tradehub.engine_config import EngineConfig
 from tradehub.markets import parse_market
@@ -360,10 +361,11 @@ def test_gas_cli_sizes_rbob_from_backtest_start(monkeypatch):
         rbob_calls.append({"start": start, "end": end})
         return []
 
-    def fake_gas_decisions(markets, aaa, rbob):
+    def fake_gas_decisions(markets, aaa, rbob, *, roll_dates):
         captured["markets"] = markets
         captured["aaa"] = aaa
         captured["rbob"] = rbob
+        captured["roll_dates"] = roll_dates
         return []
 
     monkeypatch.setattr(backtest_engines, "rbob_closes", fake_rbob_closes)
@@ -381,6 +383,7 @@ def test_gas_cli_sizes_rbob_from_backtest_start(monkeypatch):
         "--engine", "gas", "--start", "2026-07-01", "--end", "2026-07-24", "--train-days", "90",
     ]) == 0
     assert rbob_calls == [{"start": date(2026, 4, 2), "end": date(2026, 7, 24)}]
+    assert captured["roll_dates"] == front_month_roll_dates(date(2026, 4, 2), date(2026, 7, 24))
     assert captured["markets"][0].ticker == raw["ticker"]
 
 

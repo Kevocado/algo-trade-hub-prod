@@ -60,7 +60,7 @@ def rbob_change_window(
     if roll_dates:
         first_day = _observation_date(sample[0])
         last_day = _observation_date(sample[-1])
-        if any(first_day < roll_day <= last_day for roll_day in roll_dates):
+        if any(first_day < roll_day < last_day for roll_day in roll_dates):
             return None
     return sample[-1].value - sample[0].value, sample
 
@@ -95,9 +95,30 @@ def gas_training_pairs(
     return pairs
 
 
-def fit_gas_model(pairs: list[tuple[float, float]], min_points: int = 30) -> GasModel:
+def _aaa_daily_changes(aaa: list[Observation]) -> list[float]:
+    ordered = sorted(aaa, key=lambda observation: event_date(observation.name))
+    return [
+        current.value - previous.value
+        for previous, current in zip(ordered, ordered[1:])
+        if (event_date(current.name) - event_date(previous.name)).days == 1
+    ]
+
+
+def fit_gas_model(
+    pairs: list[tuple[float, float]],
+    min_points: int = 30,
+    *,
+    aaa: list[Observation] | None = None,
+) -> GasModel:
     if len(pairs) < min_points:
-        return DEFAULT_GAS
+        changes = _aaa_daily_changes(aaa or [])
+        if len(changes) < min_points:
+            return DEFAULT_GAS
+        return GasModel(
+            alpha=statistics.fmean(changes),
+            beta=0.0,
+            sigma=max(MIN_GAS_SIGMA, statistics.stdev(changes)),
+        )
     xs = [x for x, _ in pairs]
     ys = [y for _, y in pairs]
     mx, my = statistics.fmean(xs), statistics.fmean(ys)

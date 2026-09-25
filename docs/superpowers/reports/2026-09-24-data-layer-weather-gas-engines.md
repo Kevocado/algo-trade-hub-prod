@@ -1113,3 +1113,29 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   49 passed in 0.62s
   ```
 
+## Finding 5 — NYMEX RBOB rolls and AAA-only sigma — 2026-09-25
+
+- **Files changed:** `tradehub/data/rbob.py`, `tradehub/engines/gas.py`, `tradehub/scripts/backtest_engines.py`, `tradehub/scripts/scan.py`, `tests/test_gas_engine.py`, `tests/test_backtest_engines.py`, `tests/test_scan.py`, and this report.
+- **RED commands:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_gas_engine.py -q
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py::test_scan_gas_passes_nymex_roll_dates_to_training_and_live_change -q
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_gas_engine.py::test_rbob_change_allows_same_contract_window_ending_on_roll_date -q
+  ```
+  RED output tails:
+  ```text
+  ImportError: cannot import name 'front_month_roll_dates'
+  AttributeError: module 'tradehub.scripts.scan' has no attribute 'front_month_roll_dates'
+  assert (None is not None)
+  ```
+- `front_month_roll_dates()` derives each roll as the month's last weekday. Because RB expires on the last business day of the month before delivery, metadata-free `RB=F` rows now receive the next calendar month's contract code. Explicit contract metadata remains authoritative. A change window is rejected only when it actually crosses a roll; a same-contract window ending on the roll date remains valid.
+- Both `scan_gas` and the gas backtest compute and pass `roll_dates` into training and current-change selection. If no valid RBOB window exists, `fit_gas_model(..., aaa=known)` fits `alpha` and `sigma` from consecutive AAA daily changes with `beta=0`; `DEFAULT_GAS.sigma` is retained only when that AAA sample is also insufficient.
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_gas_engine.py tests/test_backtest_engines.py tests/test_scan.py -q
+  ```
+  GREEN output tail:
+  ```text
+  44 passed in 0.33s
+  ```
+
