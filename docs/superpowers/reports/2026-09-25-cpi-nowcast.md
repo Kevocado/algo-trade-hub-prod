@@ -53,5 +53,26 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_cl
 
 - Added the keyless FusionCharts parser, publication-time rules, headline/core selection and one-call fetcher exactly as specified.
 - Added the trimmed recorded payload and six tests covering vlines, December rollover, missing release, core series and the exact URL.
+- Deviation: `.gitignore` line 75 is `Data/`, which matches `tradehub/data/` on the case-insensitive macOS filesystem. The new source file was therefore force-added; `.gitignore` was not changed because broadening an unignore rule could expose unrelated data directories.
+
+## Task 3 — Pure CPI model
+
+### RED
+
+```text
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_cpi_engine.py -q
+ModuleNotFoundError: No module named 'tradehub.engines.cpi'
+1 error in 0.09s
+```
+
+### GREEN
+
+```text
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_cpi_engine.py -q
+7 passed in 0.03s
+```
+
+- Added headline/core targets and versions, publication-time-safe nowcast selection, same-horizon walk-forward training pairs, the 24-month/12-point error fit, sigma floor and interval probability.
+- Added seven focused pure-model tests.
 - Deviation: none.
 
