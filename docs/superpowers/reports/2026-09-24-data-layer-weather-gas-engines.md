@@ -97,7 +97,32 @@
 
 ## Task 4 — Weather data and station-note fix
 
-_Pending implementation._
+- **Files changed:** `tradehub/data/weather.py`, `tests/test_weather_data.py`, `research/weather_notes/Markets/Kalshi_Weather_Market_Mapping.md`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-4-report.md`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_weather_data.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_weather_data.py:5: in <module>
+      from tradehub.data.weather import (
+  E   ModuleNotFoundError: No module named 'tradehub.data.weather'
+  =========================== short test summary info ============================
+  ERROR tests/test_weather_data.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.09s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_weather_data.py -q
+  ```
+  GREEN output tail:
+  ```text
+  ...                                                                      [100%]
+  3 passed in 0.01s
+  ```
+- **Implementation:** Added frozen `City` and the three settlement-station city mappings, the exact `FORECAST_URL` and `WEATHER_MODELS`, live multi-model hourly maximums with `now` as each observation's publication stamp, and historical previous-run observations through `forecast_daily_high`, skipping models that return no values. Updated the mapping note and front matter only as specified. No live network was used; the exact three tests use a local recorder.
+- **Deviation:** None. The exact three tests, RED command, implementation, and GREEN command from the brief were followed. The broad case-insensitive `Data/` ignore rule matched the required `tradehub/data/weather.py`; it is explicitly force-staged without editing `.gitignore`. No dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed.
 
 ## Task 5 — Weather engine
 
