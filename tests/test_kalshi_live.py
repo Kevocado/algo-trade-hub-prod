@@ -60,9 +60,30 @@ def test_settlement_observations_one_per_event_sorted_skipping_blanks():
 
 def test_settled_values_merges_historical_and_live_tiers():
     get = FakeGet({
-        "/historical/markets": {"markets": [{"event_ticker": "KXAAAGASD-26JUL01", "expiration_value": "4.1", "settlement_ts": "2026-07-01T11:50:00Z"}], "cursor": ""},
-        "/markets": {"markets": [{"event_ticker": "KXAAAGASD-26SEP24", "expiration_value": "4.48", "settlement_ts": "2026-09-24T11:50:00Z"}], "cursor": ""},
+        "/historical/markets": {"markets": [{"ticker": "KXAAAGASD-26JUL01-4.1000", "event_ticker": "KXAAAGASD-26JUL01", "expiration_value": "4.1", "settlement_ts": "2026-07-01T11:50:00Z"}], "cursor": ""},
+        "/markets": {"markets": [{"ticker": "KXAAAGASD-26SEP24-4.4800", "event_ticker": "KXAAAGASD-26SEP24", "expiration_value": "4.48", "settlement_ts": "2026-09-24T11:50:00Z"}], "cursor": ""},
     })
     obs = KalshiLive(get_json=get).settled_values("KXAAAGASD")
     assert [o.name for o in obs] == ["KXAAAGASD-26JUL01", "KXAAAGASD-26SEP24"]
     assert ("/markets", {"series_ticker": "KXAAAGASD", "status": "settled", "limit": 1000}) in get.calls
+
+
+def test_settled_values_reuses_merged_settled_markets(monkeypatch):
+    live = KalshiLive(get_json=lambda *args, **kwargs: pytest.fail("network should not be called"))
+    calls = []
+    raws = [{
+        "ticker": "KXAAAGASD-26SEP24-4.4800",
+        "event_ticker": "KXAAAGASD-26SEP24",
+        "expiration_value": "4.48",
+        "settlement_ts": "2026-09-24T11:50:00Z",
+    }]
+
+    def merged(series):
+        calls.append(series)
+        return raws
+
+    monkeypatch.setattr(live, "merged_settled_markets", merged)
+    observations = live.settled_values("KXAAAGASD")
+
+    assert calls == ["KXAAAGASD"]
+    assert [observation.name for observation in observations] == ["KXAAAGASD-26SEP24"]

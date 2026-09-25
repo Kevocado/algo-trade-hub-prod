@@ -681,3 +681,36 @@ The exact public endpoint paths and 429 evidence above are the final rerun resul
   ```
 - **Implementation:** The unapplied migration now adds `gate_status`, `updated_at`, and `expires_at`; scan edge rows carry the market close as expiry, and the writer persists gate/timestamp fields. Scan reads the newest `backtest_runs` row per engine, defaults every non-`PROMOTED` result to `SHADOW`, still writes the edge, and removes only stale `WEATHER`/`ENERGY` rows after a successful scan.
 
+### Fix 4 — retrying backtest HTTP and merged live settlements
+
+- **Files changed:** `tradehub/backtest/http.py`, `tradehub/data/kalshi_live.py`, `tests/test_backtest_http.py`, `tests/test_kalshi_live.py`, and this evidence report.
+- **RED commands:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_http.py -q
+  ```
+  ```text
+  FFF.F
+  4 failed, 1 passed in 0.05s
+  ```
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_live.py::test_settled_values_reuses_merged_settled_markets -q
+  ```
+  ```text
+  E       Failed: network should not be called
+  1 failed in 0.50s
+  ```
+- **GREEN commands:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_http.py tests/test_kalshi_live.py tests/test_backtest_kalshi_history.py -q
+  ```
+  ```text
+  28 passed in 0.35s
+  ```
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  ```
+  ```text
+  290 passed in 3.86s
+  ```
+- **Implementation:** The shared JSON getter retries only 429/5xx responses for five bounded attempts, honors numeric and HTTP-date `Retry-After` values, and falls back to capped exponential backoff. All backtest/live JSON sources already route through this getter. `KalshiLive.settled_values()` now delegates directly to `merged_settled_markets()`.
+
