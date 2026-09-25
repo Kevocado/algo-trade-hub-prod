@@ -58,6 +58,34 @@ def test_default_get_json_exhausts_attempts_and_reraises(monkeypatch):
     assert sleeps == [1.0, 2.0]
 
 
+def test_default_get_json_honors_retry_after_longer_than_backoff_cap(monkeypatch):
+    responses = [FakeResponse(429, headers={"Retry-After": "60"}), FakeResponse()]
+    sleeps = []
+    monkeypatch.setattr(http.requests, "get", lambda url, **kwargs: responses.pop(0))
+    monkeypatch.setattr(http.time, "sleep", sleeps.append)
+
+    assert http.default_get_json("https://example.test") == {"ok": True}
+    assert sleeps == [60.0]
+
+
+def test_default_get_json_retries_transport_errors(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def flaky_get(url, **kwargs):
+        calls.append(url)
+        if len(calls) == 1:
+            raise requests.ConnectionError("temporary network failure")
+        return FakeResponse()
+
+    monkeypatch.setattr(http.requests, "get", flaky_get)
+    monkeypatch.setattr(http.time, "sleep", sleeps.append)
+
+    assert http.default_get_json("https://example.test") == {"ok": True}
+    assert len(calls) == 2
+    assert sleeps == [1.0]
+
+
 def test_default_get_json_does_not_retry_ordinary_4xx(monkeypatch):
     calls = []
     monkeypatch.setattr(http.requests, "get", lambda url, **kwargs: calls.append(url) or FakeResponse(404))

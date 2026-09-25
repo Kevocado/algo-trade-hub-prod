@@ -43,9 +43,15 @@ def _retry_after_seconds(value: Any, *, now: datetime | None = None) -> float | 
 
 
 def default_get_json(url: str, params: dict | None = None) -> Any:
-    """GET JSON with bounded exponential backoff for retryable HTTP statuses."""
+    """GET JSON with bounded exponential backoff for transient failures."""
     for attempt in range(MAX_ATTEMPTS):
-        response = requests.get(url, params=params, timeout=30)
+        try:
+            response = requests.get(url, params=params, timeout=30)
+        except requests.RequestException:
+            if attempt >= MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(min(BASE_BACKOFF_SECONDS * (2**attempt), MAX_BACKOFF_SECONDS))
+            continue
         try:
             response.raise_for_status()
         except requests.HTTPError:
@@ -55,8 +61,6 @@ def default_get_json(url: str, params: dict | None = None) -> Any:
                 raise
             headers = getattr(response, "headers", {}) or {}
             retry_after = _retry_after_seconds(headers.get("Retry-After"))
-            if retry_after is not None and retry_after > MAX_BACKOFF_SECONDS:
-                raise
             exponential = min(BASE_BACKOFF_SECONDS * (2**attempt), MAX_BACKOFF_SECONDS)
             time.sleep(max(exponential, retry_after or 0.0))
             continue

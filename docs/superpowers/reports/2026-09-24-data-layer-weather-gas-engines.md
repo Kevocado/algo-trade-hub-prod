@@ -911,3 +911,25 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   11 passed in 0.37s
   ```
 - The continuous `RB=F` response has no historical contract identity, so unannotated observations are now marked `unknown` and rejected by `rbob_change_window()`. Explicit `Contract` metadata remains supported; no calendar or price heuristic is used to invent a contract.
+
+### Retry-After and transport retry correction
+
+- **Files changed:** `tradehub/backtest/http.py`, `tests/test_backtest_http.py`, and this report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_http.py -q
+  ```
+  RED output tail:
+  ```text
+  ...FF..
+  2 failed, 5 passed in 0.05s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_http.py -q
+  ```
+  GREEN output tail:
+  ```text
+  7 passed in 0.01s
+  ```
+- Valid `Retry-After` delays are now honored even when they exceed the exponential cap, and transient `requests` transport errors use the same bounded retry loop.
