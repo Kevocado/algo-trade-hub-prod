@@ -413,3 +413,27 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
   ```
 - **Implementation:** added the required callable to the public signature, filtered history with the strict label-time comparison, and excluded the current event from its own history.
 - **Deviation:** the first GREEN attempt exposed that the old equal-time fixture declared labels available one second early; the fixture was corrected to make the strict boundary explicit, then the focused command passed. No external service was contacted.
+
+## Post-review fix wave — finding 2
+
+- **Requirement:** `merged_candles` must select exactly one tier for a market: historical when the market settled before `market_settled_ts`, otherwise live. The regression test was corrected accordingly.
+- **Root cause:** the old helper split one market's requested candle window at the global cutoff and called both endpoints, even though Kalshi partitions an entire market by its own settlement time.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py::test_merged_candles_uses_one_tier_selected_by_market_settlement -q
+  ```
+  RED output tail:
+  ```text
+  TypeError: KalshiHistoryClient.merged_candles() got an unexpected keyword argument 'market_settled_at'
+  2 failed in 0.06s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  GREEN output tail:
+  ```text
+  16 passed in 0.01s
+  ```
+- **Implementation:** added the explicit per-market `market_settled_at` input, fetched the cutoff once, and issued exactly one `candles` request using the selected tier. Equality with the cutoff selects live data.
+- **Deviation:** the method cannot infer a market's settlement timestamp from its ticker alone, so the caller supplies that metadata explicitly. The existing `candles` and `merge_candles` paths remain unchanged.

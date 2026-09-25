@@ -141,37 +141,23 @@ class KalshiHistoryClient:
         start: datetime,
         end: datetime,
         *,
+        market_settled_at: datetime,
         period_minutes: int = 60,
         series_ticker: str | None = None,
     ) -> list[Candle]:
-        """Return candles from the correct tier on each side of the market cutoff."""
+        """Return candles from the one tier that owns this market."""
         if end < start:
             raise ValueError(f"end must not precede start, got {end!r} < {start!r}")
         market_cutoff = self.cutoff_timestamps()["market_settled_ts"]
-        parts: list[Candle] = []
-        if start < market_cutoff:
-            parts.extend(self.candles(
-                ticker,
-                start,
-                min(end, market_cutoff),
-                period_minutes=period_minutes,
-                historical=True,
-            ))
-        if end > market_cutoff:
-            if not series_ticker:
-                raise ValueError("live-tier candlesticks require series_ticker")
-            parts.extend(self.candles(
-                ticker,
-                max(start, market_cutoff),
-                end,
-                period_minutes=period_minutes,
-                historical=False,
-                series_ticker=series_ticker,
-            ))
-        by_timestamp: dict[datetime, Candle] = {}
-        for candle in parts:
-            by_timestamp.setdefault(candle.end_ts, candle)
-        return sorted(by_timestamp.values(), key=lambda candle: candle.end_ts)
+        historical = market_settled_at < market_cutoff
+        return self.candles(
+            ticker,
+            start,
+            end,
+            period_minutes=period_minutes,
+            historical=historical,
+            series_ticker=series_ticker,
+        )
 
     def merge_candles(self, ticker: str, start: datetime, end: datetime, **kwargs: Any) -> list[Candle]:
         """Alias for :meth:`merged_candles`."""

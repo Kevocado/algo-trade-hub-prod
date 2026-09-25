@@ -156,40 +156,35 @@ def test_cutoff_timestamps_exposes_market_and_trade_boundaries():
     assert client.cutoff() == datetime(2026, 7, 25, tzinfo=timezone.utc)
 
 
-def test_merged_candles_splits_at_market_cutoff_and_deduplicates_boundary():
+@pytest.mark.parametrize(
+    ("market_settled_at", "expected_path"),
+    [
+        (datetime(2026, 7, 24, 23, tzinfo=timezone.utc), "/historical/markets/T/candlesticks"),
+        (datetime(2026, 7, 25, tzinfo=timezone.utc), "/series/S/markets/T/candlesticks"),
+    ],
+)
+def test_merged_candles_uses_one_tier_selected_by_market_settlement(market_settled_at, expected_path):
     cutoff = datetime(2026, 7, 25, tzinfo=timezone.utc)
     start = datetime(2026, 7, 24, 23, tzinfo=timezone.utc)
     end = datetime(2026, 7, 25, 2, tzinfo=timezone.utc)
-    historical = dict(CANDLE, end_period_ts=int(datetime(2026, 7, 24, 23, 30, tzinfo=timezone.utc).timestamp()))
-    boundary = dict(CANDLE, end_period_ts=int(cutoff.timestamp()))
-    live = {
-        "end_period_ts": int(datetime(2026, 7, 25, 1, tzinfo=timezone.utc).timestamp()),
-        "yes_bid": {"close_dollars": "0.2000"},
-        "yes_ask": {"close_dollars": "0.2100"},
-        "volume_fp": "3.00",
-    }
+    raw = dict(
+        CANDLE,
+        end_period_ts=int(datetime(2026, 7, 24, 23, 30, tzinfo=timezone.utc).timestamp()),
+    )
     get = FakeGet({
         "/historical/cutoff": {
             "market_settled_ts": cutoff.isoformat().replace("+00:00", "Z"),
             "trades_created_ts": "2026-07-24T12:00:00Z",
         },
-        "/historical/markets/T/candlesticks": {"candlesticks": [boundary, historical]},
-        "/series/S/markets/T/candlesticks": {"candlesticks": [live, boundary]},
+        expected_path: {"candlesticks": [raw]},
     })
+
     candles = kh.KalshiHistoryClient(get_json=get).merged_candles(
-        "T", start, end, series_ticker="S",
+        "T", start, end, market_settled_at=market_settled_at, series_ticker="S",
     )
-    assert [c.end_ts for c in candles] == [
-        datetime.fromtimestamp(historical["end_period_ts"], tz=timezone.utc),
-        cutoff,
-        datetime.fromtimestamp(live["end_period_ts"], tz=timezone.utc),
-    ]
-    assert [c.yes_ask for c in candles] == pytest.approx([0.03, 0.03, 0.21])
-    assert [path for path, _ in get.calls] == [
-        "/historical/cutoff",
-        "/historical/markets/T/candlesticks",
-        "/series/S/markets/T/candlesticks",
-    ]
+
+    assert [c.end_ts for c in candles] == [datetime.fromtimestamp(raw["end_period_ts"], tz=timezone.utc)]
+    assert [path for path, _ in get.calls] == ["/historical/cutoff", expected_path]
 
 
 def test_merged_trades_combines_tiers_and_deduplicates_overlap():
