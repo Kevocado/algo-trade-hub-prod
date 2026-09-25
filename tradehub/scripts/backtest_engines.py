@@ -290,7 +290,8 @@ def main(argv: list[str] | None = None) -> int:
                     "gate_status",
                     "gate_reasons",
                 )
-            },
+            }
+            | {"n_unquoted": getattr(result, "n_unquoted", 0)},
             default=str,
             indent=2,
         )

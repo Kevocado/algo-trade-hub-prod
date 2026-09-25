@@ -200,3 +200,18 @@ def test_equal_time_decisions_have_permutation_independent_fill_order_and_drawdo
     assert first.max_drawdown == pytest.approx(second.max_drawdown)
     assert first.pnl_after_fees == pytest.approx(second.pnl_after_fees)
     assert data_snapshot_hash(decisions, histories) == data_snapshot_hash(list(reversed(decisions)), histories)
+
+
+def test_unquoted_decisions_are_excluded_so_both_briers_cover_the_same_contracts():
+    """A decision made before the market has any quote can't be traded or compared to the
+    market; scoring it would leave market_brier missing and fail the gate closed forever."""
+    quoted = hist("A", "yes")
+    unquoted = MarketHistory("B", "no", CLOSE, [Candle(T0 + timedelta(hours=1), 0.40, 0.44, 1.0)], [])
+    res = run_backtest(
+        engine="gas", cadence="daily",
+        decisions=[Decision("A", T0, 0.70), Decision("B", T0, 0.20)],
+        histories={"A": quoted, "B": unquoted},
+    )
+    assert res.n_decisions == 1
+    assert res.n_unquoted == 1
+    assert res.summary["brier_market"] is not None
