@@ -16,6 +16,20 @@
 
 **Spec:** [docs/superpowers/specs/2026-09-23-trade-hub-prediction-scope-design.md](../specs/2026-09-23-trade-hub-prediction-scope-design.md) §6 (promotion gate). The "contract" and minimum-bucket rules were added to §6 on 2026-09-25 together with this plan.
 
+## Additions after PR #4 merged (2026-09-25) — apply throughout
+
+PR #4's final review surfaced two gate problems that belong to this plan. Implement both, test-first, as one extra commit after Task 4 (`fix: gate on the scan's engine version and ignore unquoted live predictions`):
+
+1. **The track-record version must match the scan's version.**
+   - **Problem:** `tradehub/scripts/scan.py` `latest_gate_statuses(client, {engine: current_version})` PROMOTES only if the `track_record` row for `(engine, WEATHER_ENGINE_VERSION / GAS_ENGINE_VERSION)`, e.g. `weather-v1`, is PROMOTED. Before this plan, `settle_predictions` wrote every record as `v0`.
+   - **What Task 2 already does:** it groups settled rows by their real `engine_version`, which fixes the mismatch.
+   - **Add:** a test in `tests/test_track_record_contracts.py` that feeds rows with `engine_version="weather-v1"` through `refresh_track_record`. Assert that the upserted payload's `engine_version` is `"weather-v1"`, the key `latest_gate_statuses` looks up.
+2. **Unquoted live predictions must not null the market Brier.**
+   - **Problem:** the scan records `market_prob=None` when a market has no bid or ask. `compute_engine_summary` fails closed when any settled row lacks `market_brier`, so one unquoted prediction would keep an engine's live gate SHADOW forever. Merged commit 193b7b5 fixed the same gap for backtests by skipping unquoted decisions.
+   - **Fix:** `compute_engine_summary` and `compute_calibration` score only rows with `market_prob` present (contract-weighted as in Task 2). They report `n_unquoted` = the number of settled rows without a market price. Market-Brier coverage is then complete by construction.
+   - **Test:** 3 quoted contracts plus 1 unquoted contract give `n_settled == 3`, `n_unquoted == 1` and a non-null `brier_market`.
+   - **Update** the plan's existing "partial market Brier fails closed" expectation, if any test asserts it, to the new rule. Leave the test in place with the new assertion and note the change in the report.
+
 ## Global Constraints
 
 - **Prerequisites:** PR #3 (backtesting suite) and PR #4 (data layer, weather/gas) are merged to `main`. The patches below were produced against PR #4's head (`31b66b1`). If a later fix changed the same lines and `git apply` fails, make the change by hand. Each task's **Intent** says exactly what must hold.
