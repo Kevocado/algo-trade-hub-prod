@@ -546,3 +546,94 @@ Expected: `tradehub` running; both timers listed with a next run; a scan run tha
 `predictions` rows in Supabase.
 
 ---
+
+## Final verification (after Task 4, whole branch at once)
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest -q
+348 passed in 4.62s                       # baseline 341 → +7 new tests, no regressions
+
+$ /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m ruff check \
+    --select F401,F811,F821 tradehub tests shared
+All checks passed!
+
+$ docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -shellcheck= \
+    .github/workflows/deploy-tradehub.yml
+actionlint ok
+
+$ (cd market_sentiment_tool && npm run build)
+✓ 2451 modules transformed.
+✓ built in 3.65s
+
+$ (cd market_sentiment_tool && npm test)
+ Test Files  3 passed (3)
+      Tests  8 passed (8)
+```
+
+New tests added by this plan, all of which were run RED before their implementation:
+
+| Test | Task |
+|---|---|
+| `tests/test_api_frontend.py` (4 tests) | 1 |
+| `test_dockerfile_and_dockerignore` | 2 |
+| `test_deploy_workflow_builds_then_deploys_to_vps` | 3 |
+| `test_pm2_process_files_are_retired` | 4 |
+
+Review-focus checklist from the plan, all verified above:
+
+- SPA fallback returns `index.html` for `/shadow`, `/api/missing` returns 404 JSON, never the SPA ✔
+- `/api/track-record` returns 503 (not 500) when Supabase is unconfigured ✔
+- Image contains no `.env`, `*.pem` or model files, and no `torch` ✔
+- Deploy job only after `test` → `build` → `vps`, only when `VPS_HOST` is set, sends exactly
+  `deploy tradehub <full sha>` ✔
+- Nothing in the repo still tells a reader to run PM2 processes ✔ (see the residual-strings note in
+  Task 4 for three archived/parked mentions outside this plan's scope)
+- Workflow contains no Azure reference ✔
+
+## What was deliberately NOT done
+
+No push, no PR, no merge, no GitHub workflow run, no secrets or variables set, no SSH to the VPS, no
+Caddy change, no timer enabled, no GitHub configuration touched, no subagents dispatched, no `.env`
+edited, no dependency added, no history rewritten (no amend/reset/rebase/squash), and Task 5 was not
+executed. The base `98432bc` was not changed.
+
+### Clean no-cache image rebuild from the final tree (`tradehub:final`)
+
+```
+$ docker build --no-cache -t tradehub:final .
+#21 naming to docker.io/library/tradehub:final done
+#21 DONE 31.2s
+ 2 warnings found (use docker --debug to expand):
+ - SecretsUsedInArgOrEnv: ... (ARG "VITE_SUPABASE_PUBLISHABLE_KEY") (line 9)
+ - SecretsUsedInArgOrEnv: ... (ENV "VITE_SUPABASE_PUBLISHABLE_KEY") (line 10)
+
+$ docker images tradehub:final --format '{{.Size}}'
+889MB
+
+$ docker run --rm tradehub:final python -c "import tradehub.api.main, tradehub.scripts.scan, tradehub.scripts.settle_predictions; print('imports ok')"
+imports ok
+
+$ docker run --rm tradehub:final sh -c "python -c '...find_spec(\"torch\")...'; ls /app/market_sentiment_tool/dist | head -3; ls /app/.env /app/*.pem /app/models 2>&1 | head -3"
+torch present: False
+assets
+favicon.ico
+index.html
+ls: cannot access '/app/.env': No such file or directory
+ls: cannot access '/app/*.pem': No such file or directory
+ls: cannot access '/app/models': No such file or directory
+
+$ docker run --rm -d -p 8001:8000 --name tradehub-final-smoke tradehub:final && sleep 6 && ...
+$ curl -s localhost:8001/api/health
+{"status":"ok","timestamp":"2026-09-25T19:55:30.582995Z","version":"1.0.0"}
+shadow=200
+api-missing=404
+track-record=503
+lab=200
+tradehub-final-smoke 100.5MiB / 7.748GiB
+container removed
+```
+
+The final tree builds reproducibly from scratch, and the Task 1 behaviours (SPA fallback on
+`/shadow` and `/lab`, 404 JSON for unknown `/api/...`, 503 for an unconfigured Supabase) all hold in
+the real image at 889 MB with ~100 MB idle memory.
