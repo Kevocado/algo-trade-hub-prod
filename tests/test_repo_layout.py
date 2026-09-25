@@ -197,3 +197,27 @@ def test_dockerfile_and_dockerignore():
     for pattern in (".env", ".env.*", "*.pem", "*.key", "_attic", ".venv", "**/node_modules", "models", "*.pkl"):
         assert pattern in ignore, f".dockerignore must exclude {pattern}"
 
+
+def test_deploy_workflow_builds_then_deploys_to_vps():
+    import yaml
+
+    path = REPO / ".github/workflows/deploy-tradehub.yml"
+    assert path.is_file(), "deploy workflow missing"
+    text = path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
+    assert set(workflow["jobs"]) == {"test", "build", "vps"}
+    assert workflow["jobs"]["build"]["needs"] == "test"
+    assert workflow["jobs"]["vps"]["needs"] == "build"
+    assert workflow["jobs"]["vps"]["if"] == "vars.VPS_HOST != ''"
+    assert workflow["env"]["IMAGE"] == "ghcr.io/kevocado/tradehub"
+    for needle in (
+        "deploy tradehub ${{ github.sha }}",
+        "SUPABASE_SERVICE_ROLE_KEY: dummy-baseline-placeholder",
+        "--build-arg VITE_SUPABASE_URL=",
+        "secrets.VPS_KNOWN_HOSTS",
+    ):
+        assert needle in text, f"workflow missing {needle}"
+    for azure in ("az login", "containerapp", "AZURE_"):
+        assert azure not in text, f"workflow must not reference Azure ({azure})"
+
+

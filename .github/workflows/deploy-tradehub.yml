@@ -1,0 +1,78 @@
+name: Build and deploy Trade Hub
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tradehub/**"
+      - "shared/**"
+      - "market_sentiment_tool/**"
+      - "pyproject.toml"
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/deploy-tradehub.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/kevocado/tradehub
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv pip install --system -r pyproject.toml --extra dev --extra scanner
+      - name: Run tests
+        env:
+          SUPABASE_SERVICE_ROLE_KEY: dummy-baseline-placeholder
+        run: python -m pytest -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Build and push image
+        run: |
+          docker build \
+            --build-arg VITE_SUPABASE_URL="${{ secrets.VITE_SUPABASE_URL }}" \
+            --build-arg VITE_SUPABASE_PUBLISHABLE_KEY="${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}" \
+            -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+  # Deploys the image to the VPS stack (/opt/stack; see the vps-stack README).
+  # Switched on by the VPS_HOST repo variable.
+  vps:
+    needs: build
+    if: vars.VPS_HOST != ''
+    runs-on: ubuntu-latest
+    concurrency: vps-deploy-tradehub
+    steps:
+      - name: Deploy to VPS
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh deploy@${{ vars.VPS_HOST }} deploy tradehub ${{ github.sha }}
