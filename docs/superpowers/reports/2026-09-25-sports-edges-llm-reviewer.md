@@ -128,3 +128,16 @@ GREEN: pytest tests/test_sports_reviewer.py tests/test_sports_reviews_migration.
 - Added strict JSON validation, cache-key/budget handling, review application and reserved migration `20260416000008` with owner-read-only RLS.
 - Deviation: none; hand-built OpenRouter fixtures are identified as such in the report/plan.
 
+## Task 8 — Sports scan, ledger and cron wiring
+
+### RED/GREEN
+
+```text
+RED: ModuleNotFoundError tradehub.sports.scan (1 error)
+GREEN: pytest tests/test_sports_scan.py tests/test_settle_predictions.py tests/test_scan.py -q → 36 passed
+```
+
+- Added the sports orchestrator, one-ledger-row-per-market dedupe, 3-hour cron gate, isolated sports failures and both settlement engines.
+- Sports edges are written with their engine and remain SHADOW; sports failure is reported without failing weather/gas.
+- Deviation: PR #4/step-6's per-engine write and failure model was preserved. The plan's old combined-write test was adapted to assert all per-engine writes instead of restoring combined writes.
+

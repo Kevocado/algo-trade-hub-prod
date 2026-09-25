@@ -14,6 +14,8 @@ def test_engines_match_spec_engine_set_and_cadences():
         "cpi_nowcast": "monthly",
         "labor_nowcast": "monthly",
         "crypto": "daily",
+        "sports_nfl": "daily",
+        "sports_cfb": "daily",
     }
 
 

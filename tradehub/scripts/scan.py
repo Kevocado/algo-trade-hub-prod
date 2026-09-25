@@ -46,6 +46,7 @@ from tradehub.engines.weather import (
 )
 from tradehub.markets import KalshiMarket, event_date, event_month, market_url
 from tradehub.predictions import build_prediction_row
+from tradehub.sports.scan import run_sports_for_cron, sports_due
 
 
 log = logging.getLogger(__name__)
@@ -438,6 +439,17 @@ def main(
             failures.append(message)
             log.exception("scan client initialization failed")
 
+    sports_predictions: list[dict] = []
+    sports_edges: list[dict] = []
+    sports_summary: dict[str, Any] = {"status": "skipped: not due (every third UTC hour)"}
+    sports_ran = False
+    if client is not None and sports_due(now):
+        try:
+            sports_predictions, sports_edges, sports_summary = run_sports_for_cron(now, client)
+            sports_ran = True
+        except Exception as exc:  # a predictor/Kalshi outage must not cost weather/gas
+            sports_summary = {"error": repr(exc)}
+
     if client is not None:
         try:
             statuses = latest_gate_statuses(client, {"weather": WEATHER_ENGINE_VERSION, "gas": GAS_ENGINE_VERSION})
@@ -491,6 +503,22 @@ def main(
                 log.exception("scan stale-edge cleanup failed engine=%s", name)
 
         writes = {"predictions": prediction_writes, "edges": edge_writes}
+        if sports_ran:
+            try:
+                record_predictions(client, sports_predictions)
+                writes["predictions"]["sports"] = "ok"
+            except Exception as exc:
+                failures.append(f"sports.predictions: {type(exc).__name__}: {exc}")
+                writes["predictions"]["sports"] = "failed"
+            try:
+                upsert_opportunities(sports_edges)
+                writes["edges"]["sports"] = "ok"
+            except Exception as exc:
+                failures.append(f"sports.edges: {type(exc).__name__}: {exc}")
+                writes["edges"]["sports"] = "failed"
+        else:
+            writes["predictions"]["sports"] = "skipped"
+            writes["edges"]["sports"] = "skipped"
     else:
         writes = {"predictions": {}, "edges": {}}
 
@@ -528,6 +556,7 @@ def main(
             "edges": len(cpi_edges),
             "errors": cpi_errors,
         },
+        "sports": sports_summary,
         "writes": writes,
         "failures": failures,
     }
