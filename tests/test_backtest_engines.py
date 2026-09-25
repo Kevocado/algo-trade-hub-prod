@@ -151,12 +151,33 @@ def test_histories_use_merged_candles_and_trades_with_series_context():
 
     market = _wm(date(2026, 7, 5))
     client = RecordingClient()
-    histories = backtest_engines._histories(client, [market], {market.ticker: "yes"})
+    histories = backtest_engines._histories(client, [market], {market.ticker: "yes"}, mode="maker")
 
     assert histories[market.ticker].result == "yes"
     assert client.calls[0][0:2] == ("candles", market.ticker)
     assert client.calls[0][4]["series_ticker"] == market.series_ticker
     assert client.calls[1][0:2] == ("trades", market.ticker)
+
+
+def test_histories_skip_trade_fetch_for_taker_mode():
+    class RecordingClient:
+        def __init__(self):
+            self.calls = []
+
+        def merged_candles(self, ticker, start, end, **kwargs):
+            self.calls.append(("candles", ticker))
+            return []
+
+        def merged_trades(self, ticker, **kwargs):
+            self.calls.append(("trades", ticker))
+            return []
+
+    market = _wm(date(2026, 7, 5))
+    client = RecordingClient()
+    histories = backtest_engines._histories(client, [market], {market.ticker: "yes"}, mode="taker")
+
+    assert histories[market.ticker].trades == []
+    assert client.calls == [("candles", market.ticker)]
 
 
 def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch):
@@ -186,6 +207,7 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
 
     client = FakeClient()
     captured = {}
+    history_modes = []
 
     def fake_build_row(result, **kwargs):
         captured.update(kwargs)
@@ -205,7 +227,12 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
     monkeypatch.setattr(backtest_engines, "KalshiHistoryClient", lambda: client)
     monkeypatch.setattr(backtest_engines, "settlement_observations", lambda raws: [])
     monkeypatch.setattr(backtest_engines, "historical_forecast_highs", lambda city, day, lead: [])
-    monkeypatch.setattr(backtest_engines, "_histories", lambda client, markets, results: {})
+
+    def fake_histories(client, markets, results, mode):
+        history_modes.append(mode)
+        return {}
+
+    monkeypatch.setattr(backtest_engines, "_histories", fake_histories)
     monkeypatch.setattr(backtest_engines, "run_backtest", lambda **kwargs: object())
     monkeypatch.setattr(backtest_engines, "data_snapshot_hash", lambda decisions, histories: "hash")
     monkeypatch.setattr(backtest_engines, "build_backtest_run_row", fake_build_row)
@@ -218,6 +245,7 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
     ]) == 0
 
     assert client.calls == [("merged_settled_markets", "KXHIGHNY")]
+    assert history_modes == ["taker"]
     assert captured["config"] == {
         "engine": "weather",
         "series": "KXHIGHNY",

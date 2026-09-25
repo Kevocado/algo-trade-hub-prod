@@ -460,7 +460,64 @@
 
 ## Verification
 
-_Pending implementation._
+Final Task 10 gas-history verification (no `--record` and no Supabase access):
+
+```text
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+280 passed in 4.28s
+
+.venv/bin/ruff check --select F401,F811,F821 tradehub tests
+All checks passed!
+
+grep -rn "shared.config" tradehub/markets.py tradehub/edges.py tradehub/data tradehub/engines/weather.py tradehub/engines/gas.py tradehub/engine_config.py tradehub/scripts/scan.py tradehub/scripts/backtest_engines.py
+(no matches; grep exit status 1 is expected for no matches)
+```
+
+Focused RED/GREEN for the mode-aware history and cutoff-cache regressions:
+
+```text
+RED: 2 failed in 0.82s
+GREEN: 2 passed in 0.51s
+Combined backtest-engine/history tests: 28 passed in 0.62s
+```
+
+Final live dry-run output:
+
+```text
+weather 36 preds 13 edges
+gas 0 preds 0 edges
+KXHIGHNY-26SEP25-T67 yes 12.0 pp maker
+KXHIGHNY-26SEP25-B73.5 yes 6.9 pp maker
+KXHIGHNY-26SEP25-B71.5 no 30.6 pp maker
+KXHIGHNY-26SEP25-B69.5 no 10.1 pp maker
+KXHIGHNY-26SEP25-B67.5 yes 5.1 pp maker
+```
+
+Final exact weather backtest command:
+
+```sh
+.venv/bin/python -m tradehub.scripts.backtest_engines --engine weather --series KXHIGHNY --start 2026-06-01 --end 2026-07-24
+```
+
+It was reattempted after the gas fix and returned this public endpoint error before JSON output:
+
+```text
+requests.exceptions.HTTPError: 429 Client Error: Too Many Requests for url: https://previous-runs-api.open-meteo.com/v1/forecast?latitude=40.7789&longitude=-73.9692&hourly=temperature_2m_previous_day1&models=ecmwf_ifs025&temperature_unit=fahrenheit&timezone=Etc%2FGMT%2B5&start_date=2026-03-05&end_date=2026-03-05
+```
+
+Final exact gas backtest command:
+
+```sh
+.venv/bin/python -m tradehub.scripts.backtest_engines --engine gas --start 2026-06-01 --end 2026-07-24
+```
+
+It was reattempted twice after the gas fix. Both attempts progressed past trade retrieval but returned this public Kalshi endpoint error before JSON output; no gas JSON was fabricated:
+
+```text
+requests.exceptions.HTTPError: 429 Client Error: Too Many Requests for url: https://api.elections.kalshi.com/trade-api/v2/historical/markets/KXAAAGASD-26JUL23-4.175/candlesticks?start_ts=1784725800&end_ts=1784779140&period_interval=60
+```
+
+The prior weather run before this follow-up completed with 324 decisions and 152 fills; the final rerun result above is the current endpoint outcome. The gas history fix is implemented and locally verified, but the exact gas JSON remains blocked by the public endpoint rate limit in this run.
 
 ## Deviations and rulings
 

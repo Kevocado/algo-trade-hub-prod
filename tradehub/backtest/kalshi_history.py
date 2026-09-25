@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import Lock
 from typing import Any, Callable
 
 from tradehub.backtest.http import default_get_json
@@ -79,6 +80,8 @@ class KalshiHistoryClient:
     def __init__(self, get_json: Callable[..., Any] = default_get_json, base_url: str = KALSHI_PUBLIC_BASE):
         self._get_json = get_json
         self._base = base_url.rstrip("/")
+        self._cutoff_lock = Lock()
+        self._cutoff_cache: dict[str, datetime] | None = None
 
     def _get(self, path: str, params: dict | None = None) -> Any:
         return self._get_json(f"{self._base}{path}", params)
@@ -98,11 +101,14 @@ class KalshiHistoryClient:
 
     def cutoff_timestamps(self) -> dict[str, datetime]:
         """Return the independent market and trade historical/live boundaries."""
-        raw = self._get("/historical/cutoff")
-        return {
-            "market_settled_ts": parse_ts(raw["market_settled_ts"]),
-            "trades_created_ts": parse_ts(raw["trades_created_ts"]),
-        }
+        with self._cutoff_lock:
+            if self._cutoff_cache is None:
+                raw = self._get("/historical/cutoff")
+                self._cutoff_cache = {
+                    "market_settled_ts": parse_ts(raw["market_settled_ts"]),
+                    "trades_created_ts": parse_ts(raw["trades_created_ts"]),
+                }
+            return dict(self._cutoff_cache)
 
     def cutoffs(self) -> dict[str, datetime]:
         """Alias for :meth:`cutoff_timestamps` for callers that prefer a short name."""

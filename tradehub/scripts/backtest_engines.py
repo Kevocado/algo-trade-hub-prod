@@ -119,20 +119,29 @@ def _histories(
     client: KalshiHistoryClient,
     markets: list[KalshiMarket],
     results: Mapping[str, str | None],
+    mode: str,
 ) -> dict[str, MarketHistory]:
+    if mode not in ("taker", "maker"):
+        raise ValueError(f"mode must be 'taker' or 'maker', got {mode!r}")
     out = {}
     for market in markets:
+        candles = client.merged_candles(
+            market.ticker,
+            market.open_time,
+            market.close_time,
+            series_ticker=market.series_ticker,
+        )
+        trades = (
+            client.merged_trades(market.ticker, start=market.open_time, end=market.close_time)
+            if mode == "maker"
+            else []
+        )
         out[market.ticker] = MarketHistory(
             ticker=market.ticker,
             result=results.get(market.ticker),
             close_time=market.close_time,
-            candles=client.merged_candles(
-                market.ticker,
-                market.open_time,
-                market.close_time,
-                series_ticker=market.series_ticker,
-            ),
-            trades=client.merged_trades(market.ticker, start=market.open_time, end=market.close_time),
+            candles=candles,
+            trades=trades,
         )
     return out
 
@@ -188,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         client,
         [market for market in markets if market.ticker in {decision.market_ticker for decision in decisions}],
         results,
+        mode=args.mode,
     )
     result = run_backtest(
         engine=args.engine,

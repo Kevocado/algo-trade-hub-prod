@@ -219,6 +219,25 @@ def test_merged_candles_splits_at_market_cutoff_and_deduplicates_boundary():
     ]
 
 
+def test_cutoff_timestamps_are_cached_across_repeated_merged_candle_calls():
+    cutoff = datetime(2026, 7, 25, tzinfo=timezone.utc)
+    get = FakeGet({
+        "/historical/cutoff": {
+            "market_settled_ts": cutoff.isoformat().replace("+00:00", "Z"),
+            "trades_created_ts": "2026-07-24T12:00:00Z",
+        },
+        "/historical/markets/T/candlesticks": {"candlesticks": []},
+    })
+    client = kh.KalshiHistoryClient(get_json=get)
+    start = datetime(2026, 7, 24, 23, tzinfo=timezone.utc)
+    end = datetime(2026, 7, 25, tzinfo=timezone.utc)
+
+    client.merged_candles("T", start, end)
+    client.merged_candles("T", start, end)
+
+    assert [path for path, _ in get.calls].count("/historical/cutoff") == 1
+
+
 def test_merged_trades_combines_tiers_and_deduplicates_overlap():
     cutoff = {
         "market_settled_ts": "2026-07-25T00:00:00Z",
