@@ -72,3 +72,23 @@ pytest tests/test_sports_feed.py -q
 - Added the frozen-feed parser, calibration/rejection handling, one-retry client and recorded NFL/CFB fixtures.
 - Deviation: none.
 
+## Task 4 — Kalshi sports markets and mapping
+
+### RED
+
+```text
+pytest tests/test_sports_kalshi.py tests/test_sports_mapping.py -q
+2 collection errors: ModuleNotFoundError for tradehub.sports.kalshi
+2 errors in 0.10s
+```
+
+### GREEN
+
+```text
+pytest tests/test_sports_kalshi.py tests/test_sports_mapping.py -q
+12 passed in 0.55s
+```
+
+- Added public open-market parsing, team-code extraction, versioned NFL/CFB alias tables, ET-date matching with the same-two-team ±1-day rule, and honest unmatched reports.
+- Deviation: none; the plan's complete implementation blocks applied without conflict.
+
