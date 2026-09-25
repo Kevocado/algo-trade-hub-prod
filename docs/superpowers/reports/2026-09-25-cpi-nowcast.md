@@ -210,4 +210,3 @@ Check specifically:
 - The CLI uses current `settled_markets`, bounded `lookback`, quote-only CPI scoring, monthly cadence and per-version `lead_days` config. Verify those interfaces remain after upstream merges.
 - Live results are genuinely SHADOW; do not reinterpret or suppress them.
 - Step 7b may be stacked from this branch's PR head, but do not merge any PR yourself.
-
