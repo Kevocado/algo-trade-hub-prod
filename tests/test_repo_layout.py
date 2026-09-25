@@ -186,3 +186,14 @@ def test_kalshi_edges_migration_never_hands_legacy_rows_to_scan_engines():
     assert "'legacy_' || lower(edge_type)" in sql
     # The unique index on market_id fails if the legacy inserters left duplicates: dedupe first.
     assert sql.index("DELETE FROM kalshi_edges") < sql.index("CREATE UNIQUE INDEX IF NOT EXISTS kalshi_edges_market_id_key")
+
+
+def test_dockerfile_and_dockerignore():
+    docker = (REPO / "Dockerfile").read_text(encoding="utf-8")
+    ignore = (REPO / ".dockerignore").read_text(encoding="utf-8").split()
+    assert "uvicorn tradehub.api.main:app" in docker
+    assert "uv pip install --system" in docker and "-r pyproject.toml" in docker
+    assert "npm run build" in docker and "ENV PYTHONPATH=/app" in docker
+    for pattern in (".env", ".env.*", "*.pem", "*.key", "_attic", ".venv", "**/node_modules", "models", "*.pkl"):
+        assert pattern in ignore, f".dockerignore must exclude {pattern}"
+
