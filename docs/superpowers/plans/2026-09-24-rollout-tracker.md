@@ -14,8 +14,9 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 | 3 | Backtesting suite | 🟡 PR #3 open, review fixes requested 2026-09-25 | [2026-09-24-backtesting-suite.md](2026-09-24-backtesting-suite.md) |
 | 4 | Shared data layer + `weather` + `gas` engines, suggest-only | 🟡 PR #4 open (stacked on PR #3), review fixes requested 2026-09-25 | [2026-09-24-data-layer-weather-gas-engines.md](2026-09-24-data-layer-weather-gas-engines.md) |
 | 5 | VPS deploy: API + War Room container, hourly scan/settle timers (replaces the Azure plan) | 🟢 plan written + verified, ready after steps 3–4 merge; timers only after 2b | [2026-09-25-vps-deploy.md](2026-09-25-vps-deploy.md) (supersedes [2026-09-24-azure-deploy.md](2026-09-24-azure-deploy.md)) |
-| 6 | `cpi_nowcast` | 🗺️ outline only; detail after step 4 lands | — |
-| 7 | Sports adapters + LLM reviewer | 🗺️ outline only; detail after step 4 lands | — |
+| 6 | `cpi_nowcast` (KXCPI + KXCPICORE from the Cleveland Fed nowcast) | 🟢 plan written + verified; implement after PR #3/#4 + 2b merge. Backtest loses to the market (Brier 0.099 vs 0.071), so it ships as shadow | [2026-09-25-cpi-nowcast.md](2026-09-25-cpi-nowcast.md) |
+| 7a | Predictor pre-game feed (NFL + CFB repos: frozen pre-kickoff predictions, `GET /api/kalshi-feed`) | 🟢 plan written + verified; **independent of the hub PRs, can start now** | [2026-09-25-predictor-pregame-feed.md](2026-09-25-predictor-pregame-feed.md) |
+| 7b | Sports edges + LLM reviewer (hub) | 🟢 plan written + verified; implement after PR #3/#4 + 2b merge and 7a deployed ≥48h | [2026-09-25-sports-edges-llm-reviewer.md](2026-09-25-sports-edges-llm-reviewer.md) |
 | 8 | `labor_nowcast` + Jobs Scorecard | 🗺️ outline only; detail after step 4 lands | — |
 
 **Implementation order:** 2 ✅ → fix and merge 3 → fix and merge 4 → 2b → 5, each on its own `plan/<basename>` branch, reviewed and merged before the next one starts. (5 can be implemented in parallel with 2b; its Task 5 timers must wait for 2b.) Each plan's code was validated before publishing:

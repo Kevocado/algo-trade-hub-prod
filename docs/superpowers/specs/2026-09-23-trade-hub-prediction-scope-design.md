@@ -41,7 +41,7 @@ The Fed is an **input feature only** (fed funds futures-implied path), never a p
 - Scope stays separate: the NBA, NFL, PL, F1, and CFB predictor repos own their models. The hub never models sports.
 - One adapter per predictor calls its public API (NFL/CFB `/predictions/{season}/{week}/batch`, PL `/fixtures`, F1 `/races/{season}/{round}/prediction`, NBA `/games`) and its `/track-record`.
 - The adapter maps each game to a Kalshi ticker through a per-sport mapping table and writes a `kalshi_edges` row with `edge_type='SPORTS'`, `source_url` (deep link to the predictor's game page), and `market_url` (deep link to the Kalshi market).
-- Known URLs: `nfl-predictor` and `cfb-predictor` at `*.proudbay-f56b8dfa.eastus2.azurecontainerapps.io`. NBA, PL, and F1 base URLs are config values to fill in when those adapters are built.
+- Predictor hosts: on the VPS after the cutover (around 2026-10-27): `https://nfl.<domain>`, `https://cfb.<domain>`, `https://nba.<domain>`, `https://pl.<domain>`, `https://f1.<domain>`. They are config values (env overrides), never hard-coded. The legacy Azure hosts (`*.proudbay-f56b8dfa.eastus2.azurecontainerapps.io`) serve only until the cutover.
 
 **Selecting explainable edges.** Sports edges are chosen in two stages, and every stage's output is logged to the ledger.
 
@@ -158,7 +158,7 @@ An engine is promoted, meaning its edges are shown as "trade-worthy" in the UI a
 - **A calibration bucket only counts toward the 10pp rule once it holds at least 20 contracts.** Thinner buckets are still shown, but can't block promotion on their own.
 - **Each `engine_version` has its own track record.** A new version starts in shadow; it never inherits its predecessor's promotion.
 
-The gate is re-evaluated on every settlement run, and engines that drift below it are demoted. It applies to every engine, including crypto and the flagships. Engines that haven't been promoted still show edges, labeled "shadow".
+The gate is re-evaluated on every settlement run, and engines that drift below it are demoted. It applies to every engine, including crypto and the flagships. Engines that haven't been promoted still show edges, labeled "shadow". This includes engines whose backtest or track record currently loses to the market (decided 2026-09-25): their edges are written and shown with a Shadow badge, never hidden. Each edge row carries its `engine`, and its `gate_status` comes from that engine's gate.
 
 ## 7. "Pays for itself" trigger for live execution
 
@@ -180,7 +180,7 @@ Goal: the repo contains only what the in-scope system runs, is importable withou
 | Committed `graphify-out/` (198 generated files) | Add to `.gitignore` and regenerate locally. |
 | Root agent/meta clutter (`.bolt`, `.codex`, duplicated `.agent`/`.agents`, `task.md`, `implementation_plan.md`, `Rules.md`, `midterm.html`, `*.pkl` at root, `trades.log`) | Consolidate into `docs/`, or delete if stale. Keep `AGENTS.md`. |
 | 11 `requirements*.txt` files | Replace with one `pyproject.toml` with extras: `core`, `research`, `dev`. |
-| Root untracked `.pem` files | Delete from disk once their keys are rotated and stored as Azure secrets (they are gitignored, not leaked, but should not live in the working tree). |
+| Root untracked `.pem` files | Delete from disk once their keys are rotated and stored where they're used (only a future live-execution worker needs a Kalshi key; the VPS scan/settle jobs don't) (they are gitignored, not leaked, but should not live in the working tree). |
 | Git history containing the `quant_research_lab/*.txt` keys | Purge with `git filter-repo` plus a force-push. **Requires explicit user approval** and prior key rotation. |
 
 Cleanup runs as its own plan **before** the new engines are built, so the new code lands in the new layout.
@@ -213,5 +213,5 @@ Cleanup runs as its own plan **before** the new engines are built, so the new co
 - The Sports tab shows Kalshi edges for NFL and CFB, with links to the predictor site and to Kalshi. Top Picks are LLM-reviewed, and the approved-vs-rejected comparison is visible.
 - Every shipped engine has a stored, reproducible backtest run on point-in-time data, and the CI leakage guard is green.
 - The Jobs Scorecard shows at least 24 historical months (nowcast vs. Kalshi-implied vs. first print vs. revisions) plus each new release as it lands.
-- Everything runs on Azure scale-to-zero. The VPS and HF sync are gone, and monthly infra cost is near zero.
+- Everything runs on the shared VPS (section 5): one always-on API/War Room container plus hourly batch jobs, with no always-on trading worker. Azure, the PM2 processes and the HF sync are gone, and the trade hub adds roughly nothing to the ~$5/month VPS.
 - The repo has no `sys.path` hacks, one dependency manifest, and no sports or equities code.
