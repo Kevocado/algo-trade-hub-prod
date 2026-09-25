@@ -92,3 +92,15 @@ pytest tests/test_sports_kalshi.py tests/test_sports_mapping.py -q
 - Added public open-market parsing, team-code extraction, versioned NFL/CFB alias tables, ET-date matching with the same-two-team ±1-day rule, and honest unmatched reports.
 - Deviation: none; the plan's complete implementation blocks applied without conflict.
 
+## Task 5 — Pricing from the predictor distribution
+
+### RED/GREEN
+
+```text
+RED: ModuleNotFoundError tradehub.sports.pricing (1 error)
+GREEN: pytest tests/test_sports_pricing.py -q → 5 passed in 0.36s
+```
+
+- Added winner/spread/total pricing with home orientation and the predictor's frozen distributions.
+- Deviation: none.
+
