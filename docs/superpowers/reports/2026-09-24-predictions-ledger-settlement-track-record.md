@@ -131,7 +131,30 @@
 
 ## Task 5 — Track record + promotion gate
 
-_Pending implementation._
+- **Files changed:** `tradehub/track_record.py`, `tests/test_track_record.py`, and this Task 5 section of the evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-predictions-ledger-settlement-track-record/task-5-report.md`.
+- **RED command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_track_record.py -v
+  ```
+  RED output tail:
+  ```text
+  E   ImportError: cannot import name 'track_record' from 'tradehub' (/Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/tradehub/__init__.py)
+  =========================== short test summary info ============================
+  ERROR tests/test_track_record.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  ============================== 1 error in 0.11s ===============================
+  ```
+- **GREEN command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_track_record.py -v
+  ```
+  GREEN output tail:
+  ```text
+  tests/test_track_record.py::test_gate_monthly_cadence_needs_only_50_contracts PASSED [100%]
+  ============================== 14 passed in 0.02s ==============================
+  ```
+- **Deviation:** None. The RED run produced the brief-approved collection-error variant (`ImportError` rather than `ModuleNotFoundError`).
+
 
 ## Task 6 — Cron entrypoint
 
