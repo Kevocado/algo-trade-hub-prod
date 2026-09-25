@@ -76,7 +76,8 @@ export type Database = {
           agent_confidence: number | null
           execution_price: number | null
           id: string
-          pnl: number | null
+          realized_pnl: number | null
+          unrealized_pnl: number | null
           qty: number
           side: string | null
           status: string | null
@@ -88,7 +89,8 @@ export type Database = {
           agent_confidence?: number | null
           execution_price?: number | null
           id?: string
-          pnl?: number | null
+          realized_pnl?: number | null
+          unrealized_pnl?: number | null
           qty: number
           side?: string | null
           status?: string | null
@@ -100,7 +102,8 @@ export type Database = {
           agent_confidence?: number | null
           execution_price?: number | null
           id?: string
-          pnl?: number | null
+          realized_pnl?: number | null
+          unrealized_pnl?: number | null
           qty?: number
           side?: string | null
           status?: string | null

@@ -2,7 +2,7 @@
 config.py — Canonical configuration loader for Algo-Trade-Hub
 =============================================================
 Single source of truth for all environment variables. Every sub-system
-(market_sentiment_tool, SP500 Predictor, FPL_Optimizer, shared scanners)
+(market_sentiment_tool, tradehub, shared scanners)
 imports from here. No sub-system keeps its own .env or load_dotenv call.
 
 Usage (with PYTHONPATH=. set in Procfile):
@@ -65,7 +65,7 @@ ALPACA_BASE_URL   = get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 # Defaults to DEMO — switch to https://api.kalshi.co after 30-day paper protocol
 KALSHI_API_BASE      = get("KALSHI_API_BASE", "https://demo-api.kalshi.co")
 KALSHI_API_KEY_ID    = get("KALSHI_API_KEY_ID")
-KALSHI_PRIVATE_KEY_PATH = get("KALSHI_PRIVATE_KEY_PATH", "./SP500 Predictor/kalshi_private_key.pem")
+KALSHI_PRIVATE_KEY_PATH = get("KALSHI_PRIVATE_KEY_PATH", "./kalshi_private_key.pem")
 
 # ── LLM Engine (OpenRouter / DeepSeek cloud pivot) ───────────────────────────
 LOCAL_LLM_ENDPOINT   = get("LOCAL_LLM_ENDPOINT", "https://openrouter.ai/api/v1/chat/completions")

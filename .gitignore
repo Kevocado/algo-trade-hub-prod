@@ -27,6 +27,16 @@ ENV/
 *.key
 !*.pem.example
 
+# Key/credential-shaped filenames that have leaked into git history before
+# (see quant_research_lab/) even when saved as .txt instead of .pem/.key.
+*API*Key*.txt
+*Api*Key*.txt
+*api*key*.txt
+*Trading*Bot*.txt
+*Trading*Key*.txt
+*credentials*
+secrets/
+
 # ── macOS ────────────────────────────────────────
 .DS_Store
 .AppleDouble
@@ -76,3 +86,12 @@ orchestrator.log
 .claude/
 .lovable/
 midterm.html
+
+# ── Cleanup scratch (baseline test reports) ──────
+.cleanup/
+
+# ── Untracked leftovers from the repo cleanup (user deletes manually) ──
+_attic/
+
+# ── Generated knowledge graph (rebuild locally; see AGENTS.md) ──
+graphify-out/

@@ -35,7 +35,7 @@ summary: Graph-backed map of the Kalshi trading system from model signal to mark
 - Concrete graph anchors:
   - `market_sentiment_tool/backend/orchestrator.py::market_resolution()`
   - `market_sentiment_tool/backend/orchestrator.py::resolve_kalshi_market()`
-  - `SP500 Predictor/src/kalshi_portfolio.py::KalshiPortfolio.get_settlements()`
+  - `tradehub/core/kalshi_portfolio.py::KalshiPortfolio.get_settlements()`
   - `market_sentiment_tool/backend/signal_events.py`
 - Meaning:
   - A raw signal does not become executable until it resolves to a concrete Kalshi market ticker.
@@ -53,8 +53,8 @@ summary: Graph-backed map of the Kalshi trading system from model signal to mark
 
 ### `Shadow_Visualization -> reads_from -> Signal_Timeline`
 - Concrete graph anchors:
-  - `SP500 Predictor/api/main.py::get_shadow_performance()`
-  - `SP500 Predictor/scripts/shadow_performance.py::build_shadow_timeline_response()`
+  - `tradehub/api/main.py::get_shadow_performance()`
+  - `tradehub/scripts/shadow_performance.py::build_shadow_timeline_response()`
   - `market_sentiment_tool/src/pages/ShadowBacktester.tsx`
 - Meaning:
   - Visual backtesting is a read-only surface built on canonical `signal_events` plus realized next-hour price moves.
@@ -68,8 +68,8 @@ summary: Graph-backed map of the Kalshi trading system from model signal to mark
 5. `market_resolution()` checks trade controls, cooldown rules, best bid/offer, and minimum edge before allowing execution.
 6. If the edge survives, `market_resolution()` calls the Kalshi execution bridge in `market_sentiment_tool/backend/mcp_server.py::submit_kalshi_order()`.
 7. The runtime persists execution state through `write_trade_to_supabase()` and signal telemetry through the canonical `signal_events` store.
-8. Operators inspect the live state through `SP500 Predictor/src/telegram_notifier.py` using `/scan {domain}` and post-trade accuracy through `SP500 Predictor/scripts/shadow_performance.py` using `/performance {domain}`.
-9. The visual backtester consumes the same computed shadow series through `SP500 Predictor/api/main.py::get_shadow_performance()` and renders it in `market_sentiment_tool/src/pages/ShadowBacktester.tsx` at `/shadow`.
+8. Operators inspect the live state through `tradehub/core/telegram_notifier.py` using `/scan {domain}` and post-trade accuracy through `tradehub/scripts/shadow_performance.py` using `/performance {domain}`.
+9. The visual backtester consumes the same computed shadow series through `tradehub/api/main.py::get_shadow_performance()` and renders it in `market_sentiment_tool/src/pages/ShadowBacktester.tsx` at `/shadow`.
 10. The trade reaches terminal truth when Kalshi closes the market and settlement is observable through `KalshiPortfolio.get_settlements()` plus the relevant domain settlement authority.
 
 ## Discovery Order Going Forward
