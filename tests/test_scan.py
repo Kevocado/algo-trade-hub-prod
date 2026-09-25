@@ -160,7 +160,7 @@ def test_scan_weather_predicts_all_three_cities():
         NOW,
         CFG,
         forecast_fn=forecast_fn,
-        historical_forecast_fn=lambda *args: [],
+        historical_forecast_range_fn=lambda *args: [],
     )
 
     assert {row["market_ticker"] for row in predictions} == {market.ticker for market in markets}
@@ -189,7 +189,12 @@ def test_scan_and_backtest_share_walk_forward_weather_error_model():
         now,
         CFG,
         forecast_fn=lambda city, day, as_of: current,
-        historical_forecast_fn=lambda city, day, lead: historical[day],
+        historical_forecast_range_fn=lambda _city, start, end: [
+            observation
+            for day, observations in historical.items()
+            if start <= day <= end
+            for observation in observations
+        ],
         cities={"KXHIGHNY": city},
     )
     decision = backtest_engines.build_weather_decisions(
@@ -215,7 +220,7 @@ def test_scan_and_backtest_use_all_available_calibration_pairs():
         for index, day in enumerate(training_days)
     ]
     historical = {
-        day: [Observation(f"forecast:{day}:lead1", 75.0, now - timedelta(hours=2))]
+        day: [Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 75.0, now - timedelta(hours=2))]
         for day in training_days
     }
     current = [Observation("current", 75.0, now)]
@@ -227,7 +232,12 @@ def test_scan_and_backtest_use_all_available_calibration_pairs():
         now,
         CFG,
         forecast_fn=lambda city, day, as_of: current,
-        historical_forecast_fn=lambda city, day, lead: historical[day],
+        historical_forecast_range_fn=lambda _city, start, end: [
+            observation
+            for day, observations in historical.items()
+            if start <= day <= end
+            for observation in observations
+        ],
         cities={"KXHIGHNY": city},
     )
     decision = backtest_engines.build_weather_decisions(
@@ -251,12 +261,16 @@ def test_scan_calibration_uses_smallest_forecast_lead_published_by_as_of():
         for day in training_days
     ]
 
-    def historical_forecast_fn(_city, day, lead):
-        if lead == 1:
-            return [Observation(f"forecast:{day}:lead1", 90.0, now + timedelta(hours=1))]
-        if lead == 2:
-            return [Observation(f"forecast:{day}:lead2", 75.0, now - timedelta(hours=1))]
-        return []
+    def historical_forecast_range_fn(_city, start, end):
+        return [
+            observation
+            for day in training_days
+            if start <= day <= end
+            for observation in (
+                Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 90.0, now + timedelta(hours=1)),
+                Observation(f"openmeteo:gfs_seamless:high:{day}:lead2", 75.0, now - timedelta(hours=1)),
+            )
+        ]
 
     market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
     predictions, _ = scan.scan_weather(
@@ -264,12 +278,51 @@ def test_scan_calibration_uses_smallest_forecast_lead_published_by_as_of():
         now,
         CFG,
         forecast_fn=lambda _city, _day, as_of: [Observation("forecast:live", 75.0, as_of)],
-        historical_forecast_fn=historical_forecast_fn,
+        historical_forecast_range_fn=historical_forecast_range_fn,
         cities={"KXHIGHNY": city},
     )
 
     assert predictions[0]["raw_payload"]["bias"] == pytest.approx(2.0)
     assert all(observation.published_at <= now for observation in actuals)
+
+
+def test_scan_weather_calibration_fetches_only_the_last_90_days_once_per_city():
+    city = scan.WEATHER_CITIES["KXHIGHNY"]
+    target = date(2026, 9, 25)
+    now = NOW
+    actuals = [
+        Observation(
+            f"KXHIGHNY-{(now.date() - timedelta(days=offset)).strftime('%y%b%d').upper()}",
+            77.0,
+            now - timedelta(hours=1),
+        )
+        for offset in range(1, 101)
+    ]
+    range_calls = []
+
+    def historical_forecast_range_fn(requested_city, start, end):
+        range_calls.append((requested_city, start, end))
+        return [
+            Observation(
+                f"openmeteo:gfs_seamless:high:{day.isoformat()}:lead1",
+                75.0,
+                now - timedelta(hours=1),
+            )
+            for day in (start + timedelta(days=offset) for offset in range((end - start).days + 1))
+        ]
+
+    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
+    predictions, _ = scan.scan_weather(
+        FakeLive([LiveMarket(market, GOOD_QUOTE)], actuals),
+        now,
+        CFG,
+        forecast_fn=lambda _city, _day, as_of: [Observation("forecast:live", 75.0, as_of)],
+        historical_forecast_range_fn=historical_forecast_range_fn,
+        cities={"KXHIGHNY": city},
+    )
+
+    assert range_calls == [(city, date(2026, 6, 26), date(2026, 9, 24))]
+    assert predictions[0]["raw_payload"]["bias"] == pytest.approx(2.0)
 
 
 def test_scan_and_backtest_share_yaml_fallback_below_minimum_samples():
@@ -290,7 +343,7 @@ def test_scan_and_backtest_share_yaml_fallback_below_minimum_samples():
         now,
         cfg,
         forecast_fn=lambda city, day, as_of: current,
-        historical_forecast_fn=lambda city, day, lead: [],
+        historical_forecast_range_fn=lambda city, start, end: [],
         cities={"KXHIGHNY": city},
     )
     decision = backtest_engines.build_weather_decisions(

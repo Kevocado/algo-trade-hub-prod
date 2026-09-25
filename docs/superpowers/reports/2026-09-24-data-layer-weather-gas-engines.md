@@ -1087,3 +1087,29 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   47 passed in 0.55s
   ```
 
+## Finding 4 — range weather calibration fetch — 2026-09-25
+
+- **Files changed:** `tradehub/backtest/sources/open_meteo.py`, `tradehub/data/weather.py`, `tradehub/scripts/backtest_engines.py`, `tradehub/scripts/scan.py`, `tests/test_backtest_engines.py`, `tests/test_scan.py`, `tests/test_weather_data.py`, and this report.
+- **RED commands:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py::test_scan_weather_calibration_fetches_only_the_last_90_days_once_per_city -q
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_weather_data.py::test_historical_forecast_highs_range_makes_one_request_per_model -q
+  ```
+  RED output tails:
+  ```text
+  TypeError: scan_weather() got an unexpected keyword argument 'historical_forecast_range_fn'
+  1 failed in 0.43s
+  ImportError: cannot import name 'historical_forecast_highs_range'
+  1 error in 0.04s
+  ```
+- `forecast_daily_highs_range()` requests all seven `temperature_2m_previous_dayN` variables in one `start_date`/`end_date` call. `historical_forecast_highs_range()` invokes it once for each of the three configured models, so calibration is about three previous-runs requests per city rather than per day/lead.
+- Weather scans now default to the same `train_days=90` window as the backtest, pass one range request per city, and group the returned observations by target date before the shared lead selector runs. The request-count regression asserts exactly three model calls with the same inclusive range; the scan regression asserts the 90-day boundary and one range call.
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py tests/test_weather_data.py tests/test_weather_engine.py tests/test_backtest_engines.py tests/test_scan.py -q
+  ```
+  GREEN output tail:
+  ```text
+  49 passed in 0.62s
+  ```
+

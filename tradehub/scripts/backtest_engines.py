@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from concurrent.futures import ThreadPoolExecutor
+
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable, Iterable, Mapping
 from zoneinfo import ZoneInfo
@@ -21,7 +21,7 @@ from tradehub.backtest.runner import MarketHistory, run_backtest
 from tradehub.backtest.store import build_backtest_run_row, data_snapshot_hash, record_backtest_run
 from tradehub.data.kalshi_live import settlement_observations
 from tradehub.data.rbob import rbob_closes
-from tradehub.data.weather import WEATHER_CITIES, WEATHER_LEAD_DAYS, City, historical_forecast_highs
+from tradehub.data.weather import WEATHER_CITIES, City, forecast_target_date, historical_forecast_highs_range
 from tradehub.engines.gas import (
     GAS_ENGINE_VERSION,
     GAS_SERIES,
@@ -44,31 +44,26 @@ from tradehub.markets import KalshiMarket, event_date, parse_market
 
 WEATHER_DECISION_TIME = time(23, 30)
 GAS_DECISION_LEAD = timedelta(hours=2)
-WEATHER_FETCH_MAX_WORKERS = 8
+
 
 
 def fetch_weather_forecasts(
     city: City,
     days: Iterable[date],
     *,
-    forecast_fn: Callable[[City, date, int], list[Observation]] = historical_forecast_highs,
-    lead_days: int | Iterable[int] = 1,
-    max_workers: int = WEATHER_FETCH_MAX_WORKERS,
+    forecast_fn: Callable[[City, date, date], list[Observation]] = historical_forecast_highs_range,
 ) -> dict[date, list[Observation]]:
-    """Fetch requested dates/leads with a finite worker pool and stable date keys."""
-    if max_workers < 1:
-        raise ValueError(f"max_workers must be >= 1, got {max_workers!r}")
+    """Fetch one previous-runs range and return stable per-date groups."""
     ordered_days = sorted(set(days))
     if not ordered_days:
         return {}
-    leads = (lead_days,) if isinstance(lead_days, int) else tuple(sorted(set(lead_days)))
-    jobs = [(day, lead) for day in ordered_days for lead in leads]
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as executor:
-        results = executor.map(lambda job: forecast_fn(city, job[0], job[1]), jobs)
-        out = {day: [] for day in ordered_days}
-        for (day, _lead), observations in zip(jobs, results):
-            out[day].extend(observations)
-        return out
+    observations = forecast_fn(city, ordered_days[0], ordered_days[-1])
+    out = {day: [] for day in ordered_days}
+    for observation in observations:
+        target = forecast_target_date(observation)
+        if target in out:
+            out[target].append(observation)
+    return out
 
 
 def weather_decision_time(target: date, lead_days: int, city: City) -> datetime:
@@ -205,8 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         forecasts = fetch_weather_forecasts(
             city,
             days,
-            forecast_fn=historical_forecast_highs,
-            lead_days=WEATHER_LEAD_DAYS,
+            forecast_fn=historical_forecast_highs_range,
         )
         fallback = ErrorModel(
             bias=float(cfg.params.get("error_bias", DEFAULT_ERROR.bias)),

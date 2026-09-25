@@ -10,13 +10,19 @@ import json
 import logging
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.data.rbob import rbob_closes
-from tradehub.data.weather import WEATHER_CITIES, WEATHER_LEAD_DAYS, City, historical_forecast_highs, live_forecast_highs
+from tradehub.data.weather import (
+    WEATHER_CITIES,
+    City,
+    forecast_target_date,
+    historical_forecast_highs_range,
+    live_forecast_highs,
+)
 from tradehub.edges import EdgeSuggestion, evaluate_edge
 from tradehub.engine_config import EngineConfig, load_engine_config
 from tradehub.engines.gas import GAS_ENGINE_VERSION, GAS_SERIES, fit_gas_model, gas_prob, gas_training_pairs, rbob_change
@@ -111,8 +117,9 @@ def _scan_weather_city(
     city: City,
     *,
     forecast_fn: Callable[..., list],
-    historical_forecast_fn: Callable[..., list],
+    historical_forecast_range_fn: Callable[..., list],
     min_error_pairs: int,
+    train_days: int,
 ) -> tuple[list[dict], list[dict]]:
     fallback = ErrorModel(
         bias=float(cfg.params.get("error_bias", 0.0)),
@@ -129,21 +136,18 @@ def _scan_weather_city(
     if not by_date:
         return predictions, edges
 
+    train_from = today - timedelta(days=train_days)
     actuals = [
         observation
         for observation in (live.settled_values(series) or [])
         if observation.published_at <= now
+        and train_from <= event_date(observation.name) <= today
     ]
     actuals.sort(key=lambda observation: event_date(observation.name))
-    calibration_forecasts = {}
+    calibration_forecasts = defaultdict(list)
     if len(actuals) >= min_error_pairs:
-        for actual in actuals:
-            day = event_date(actual.name)
-            calibration_forecasts[day] = [
-                observation
-                for lead in WEATHER_LEAD_DAYS
-                for observation in historical_forecast_fn(city, day, lead)
-            ]
+        for observation in historical_forecast_range_fn(city, train_from, today):
+            calibration_forecasts[forecast_target_date(observation)].append(observation)
     error = walk_forward_error_model(
         actuals,
         calibration_forecasts,
@@ -178,13 +182,16 @@ def _scan_weather_city(
 def scan_weather(
     live, now: datetime, cfg: EngineConfig, *,
     forecast_fn: Callable[..., list] = live_forecast_highs,
-    historical_forecast_fn: Callable[..., list] = historical_forecast_highs,
+    historical_forecast_range_fn: Callable[..., list] = historical_forecast_highs_range,
     cities: dict[str, City] = WEATHER_CITIES,
+    train_days: int = 90,
     min_error_pairs: int = MIN_ERROR_PAIRS,
     failures: list[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     if min_error_pairs < 1:
         raise ValueError(f"min_error_pairs must be >= 1, got {min_error_pairs!r}")
+    if train_days < 1:
+        raise ValueError(f"train_days must be >= 1, got {train_days!r}")
     predictions: list[dict] = []
     edges: list[dict] = []
     for series, city in cities.items():
@@ -196,8 +203,9 @@ def scan_weather(
                 series,
                 city,
                 forecast_fn=forecast_fn,
-                historical_forecast_fn=historical_forecast_fn,
+                historical_forecast_range_fn=historical_forecast_range_fn,
                 min_error_pairs=min_error_pairs,
+                train_days=train_days,
             )
         except Exception as exc:
             if failures is None:

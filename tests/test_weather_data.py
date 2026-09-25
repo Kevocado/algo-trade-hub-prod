@@ -7,6 +7,7 @@ from tradehub.data.weather import (
     WEATHER_CITIES,
     WEATHER_MODELS,
     historical_forecast_highs,
+    historical_forecast_highs_range,
     live_forecast_highs,
 )
 
@@ -48,6 +49,40 @@ def test_live_forecast_highs_one_per_model_max_over_lst_day():
         ("openmeteo:ecmwf_ifs025:high:2026-09-25:live", 70.0),
     ]
     assert all(o.published_at == NOW for o in obs)
+
+
+def test_historical_forecast_highs_range_makes_one_request_per_model():
+    start = date(2026, 7, 1)
+    end = date(2026, 7, 2)
+    variables = tuple(f"temperature_2m_previous_day{lead}" for lead in range(1, 8))
+
+    def payload(params):
+        times = [
+            f"{day}T{hour:02d}:00"
+            for day in (start.isoformat(), end.isoformat())
+            for hour in range(24)
+        ]
+        return {
+            "hourly": {
+                "time": times,
+                **{variable: [70.0] * len(times) for variable in params["hourly"].split(",")},
+            }
+        }
+
+    rec = Recorder(payload)
+    observations = historical_forecast_highs_range(
+        WEATHER_CITIES["KXHIGHNY"],
+        start,
+        end,
+        get_json=rec,
+    )
+
+    assert len(rec.calls) == len(WEATHER_MODELS) == 3
+    assert {params["models"] for _, params in rec.calls} == set(WEATHER_MODELS)
+    assert all(params["start_date"] == "2026-07-01" and params["end_date"] == "2026-07-02" for _, params in rec.calls)
+    assert all(params["hourly"] == ",".join(variables) for _, params in rec.calls)
+    assert len(observations) == len(WEATHER_MODELS) * 2 * 7
+    assert {observation.name.split(":")[3] for observation in observations} == {"2026-07-01", "2026-07-02"}
 
 
 def test_historical_forecast_highs_skips_models_without_data():

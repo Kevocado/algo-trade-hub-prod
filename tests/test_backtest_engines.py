@@ -1,5 +1,4 @@
 from datetime import date, datetime, timedelta, timezone
-from threading import Barrier, Lock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -296,7 +295,7 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
         raising=False,
     )
     monkeypatch.setattr(backtest_engines, "settlement_observations", lambda raws: [])
-    monkeypatch.setattr(backtest_engines, "historical_forecast_highs", lambda city, day, lead: [])
+    monkeypatch.setattr(backtest_engines, "historical_forecast_highs_range", lambda city, start, end: [])
 
     def fake_histories(client, markets, results, mode):
         history_modes.append(mode)
@@ -385,35 +384,30 @@ def test_gas_cli_sizes_rbob_from_backtest_start(monkeypatch):
     assert captured["markets"][0].ticker == raw["ticker"]
 
 
-def test_fetch_weather_forecasts_is_bounded_concurrent_and_date_stable():
+def test_fetch_weather_forecasts_uses_one_range_request_and_is_date_stable():
     days = [
         date(2026, 7, 1),
         date(2026, 7, 2),
         date(2026, 7, 3),
         date(2026, 7, 4),
     ]
-    barrier = Barrier(2)
-    lock = Lock()
-    active = 0
-    peak_active = 0
+    calls = []
 
-    def fake_forecast(city, day, lead_days):
-        nonlocal active, peak_active
-        with lock:
-            active += 1
-            peak_active = max(peak_active, active)
-        barrier.wait(timeout=2)
-        with lock:
-            active -= 1
-        return [Observation(f"forecast:{day}", float(day.day), datetime(2026, 7, 1, tzinfo=timezone.utc))]
+    def fake_forecast(city, start, end):
+        calls.append((city, start, end))
+        return [
+            Observation(
+                f"openmeteo:gfs_seamless:high:{day.isoformat()}:lead2",
+                float(day.day),
+                datetime(2026, 7, 1, tzinfo=timezone.utc),
+            )
+            for day in days
+            if start <= day <= end
+        ]
 
-    first = backtest_engines.fetch_weather_forecasts(
-        NYC, days, forecast_fn=fake_forecast, max_workers=2,
-    )
-    second = backtest_engines.fetch_weather_forecasts(
-        NYC, list(reversed(days)), forecast_fn=fake_forecast, max_workers=2,
-    )
+    first = backtest_engines.fetch_weather_forecasts(NYC, days, forecast_fn=fake_forecast)
+    second = backtest_engines.fetch_weather_forecasts(NYC, list(reversed(days)), forecast_fn=fake_forecast)
 
+    assert calls == [(NYC, days[0], days[-1]), (NYC, days[0], days[-1])]
     assert set(first) == set(days)
     assert first == second
-    assert peak_active == 2
