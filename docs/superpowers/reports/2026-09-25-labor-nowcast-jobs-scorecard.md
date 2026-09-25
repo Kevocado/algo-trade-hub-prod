@@ -55,3 +55,15 @@ GREEN: pytest tests/test_labor_engine.py tests/test_labor_model.py -q → 23 pas
 
 - Added point-in-time feature assembly and the walk-forward ridge nowcast with sigma floor.
 - Deviation: none.
+
+## Task 4 — Kalshi ladder distribution and scores
+
+### RED/GREEN
+
+```text
+RED: ModuleNotFoundError tradehub.engines.ladder (1 error)
+GREEN: pytest tests/test_ladder.py -q → 5 passed
+```
+
+- Added isotonic survival curves, usable mids, implied mean/median, Brier and CRPS.
+- Deviation: `normal_ladder` uses the Normal survival function directly. The plan reused `prob_in_interval`, but merged PR #3 clamps probabilities to 1e-4 for tradable YES markets, which violates an unbounded survival tail. The erfc calculation preserves the intended curve.
