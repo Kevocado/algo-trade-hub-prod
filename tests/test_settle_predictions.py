@@ -36,7 +36,7 @@ def test_main_wires_pass_and_refresh(monkeypatch, capsys):
 
     def fake_refresh(supa, engine, **kwargs):
         refreshed.append(engine)
-        return {"engine": engine}
+        return [{"engine": engine, "engine_version": "v1"}]
 
     monkeypatch.setattr(settle_predictions, "get_client", fake_get_client)
     monkeypatch.setattr(settle_predictions, "fetch_market", fake_fetch_market)
@@ -49,4 +49,4 @@ def test_main_wires_pass_and_refresh(monkeypatch, capsys):
     assert refreshed == ["weather", "macro"]
     out = json.loads(capsys.readouterr().out)
     assert out["checked"] == 3
-    assert out["track_record_refreshed"] == ["weather", "macro"]
+    assert out["track_record_refreshed"] == ["weather@v1", "macro@v1"]

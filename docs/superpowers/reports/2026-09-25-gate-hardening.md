@@ -279,3 +279,116 @@ All checks passed!
 None. Both hunks applied cleanly (`Applied patch to 'tests/test_settlement.py' cleanly.`
 and `Applied patch to 'tradehub/settlement.py' cleanly.`); PR #4 had not touched this
 module.
+
+---
+
+## Task 4 — Cron wiring, error message, tracker
+
+`tradehub/scripts/settle_predictions.py`, `tradehub/core/supabase_client.py`,
+`tests/test_settle_predictions.py`, `docs/superpowers/plans/2026-09-24-rollout-tracker.md`.
+
+### RED
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+    /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python \
+    -m pytest tests/test_settle_predictions.py -q
+>       assert out["track_record_refreshed"] == ["weather@v1", "macro@v1"]
+E       AssertionError: assert ['weather', 'macro'] == ['weather@v1', 'macro@v1']
+E
+E         At index 0 diff: 'weather' != 'weather@v1'
+tests/test_settle_predictions.py:52: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_settle_predictions.py::test_main_wires_pass_and_refresh - A...
+1 failed, 1 passed in 0.06s
+```
+
+### GREEN
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+    /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python \
+    -m pytest tests/test_settle_predictions.py -q
+..                                                                       [100%]
+2 passed in 0.02s
+```
+
+### Final verification — before/after counts
+
+| | Full pytest | Scoped Ruff (`F401,F811,F821` over `tradehub tests`) |
+|---|---|---|
+| Before (baseline `98432bc`) | 341 passed in 4.77s | `All checks passed!` (0 findings) |
+| After (Task 4 head) | **353 passed in 4.91s** | `All checks passed!` (0 findings) |
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+    /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest -q
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 61%]
+........................................................................ [ 81%]
+.................................................................        [100%]
+353 passed in 4.91s
+
+$ /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python \
+    -m ruff check --select F401,F811,F821 tradehub tests
+All checks passed!
+```
+
+Net +12 tests, 0 failures, 0 new lint findings. The breakdown is 1 migration test (Task 1),
+7 contract-weighting tests (Task 2) and 4 settlement tests (Task 3); Task 4 updates an
+existing expectation and adds none, so the count is unchanged across its RED→GREEN.
+
+### Implementation summary
+
+- `settle_predictions.main()` now collects the list `refresh_track_record` returns and emits
+  `engine@version` per upserted record, so `track_record_refreshed` reads
+  `["weather@v1", "macro@v1", ...]` instead of one entry per engine.
+- The module docstring now names the VPS `tradehub-settle.timer` instead of "an hourly cron
+  on Azure scale-to-zero", per the user's ruling that the VPS is the deployment target and
+  Azure is legacy.
+- `get_client()`'s error message names the real variable, `SUPABASE_SERVICE_ROLE_KEY`, and
+  says "environment or .env". The old string named a `SUPABASE_SERVICE_KEY` that does not
+  exist anywhere in the repo; a repo-wide grep confirms no remaining occurrences of that
+  typo.
+- Rollout tracker: added the step 2b row and a validation bullet under the status table.
+
+### Review notes (checked, no change needed)
+
+- **No stale callers.** `refresh_track_record` lost its positional `engine_version`
+  argument; the only two call sites (`tradehub/scripts/settle_predictions.py` and
+  `tests/test_track_record_contracts.py`) already pass `cadence=` by keyword. A repo-wide
+  grep found no other callers.
+- **`scan.py` is compatible with the new `(engine, engine_version)` key.** PR #4's commit
+  `8f54ddd` already made `scan.py` query `track_record` by both `engine` and
+  `engine_version` with `.limit(1)` and read `track_rows[0]` — it does not call
+  `.single()`, so multiple rows per engine cannot raise. The new primary key matches how
+  the scan already reads the table.
+- **Kevin's edge semantics are untouched.** No file under `kalshi_edges` handling was
+  modified. `apply_gate_statuses` still writes every edge with its `engine` intact and
+  defaults a losing engine's rows to `SHADOW`, so losing-engine edges remain written, carry
+  the engine, and are tagged SHADOW. `tradehub/backtest/store.py` stores the now
+  contract-weighted `n_settled`, which is the intended consumer of this change.
+
+### Deviations
+
+1. **The step 2b tracker row did not exist and had to be created.** The plan says to "set
+   the step 2b row's status to `✅ implemented on branch, review pending`", but the tracker
+   on this base has rows for steps 1–8 and none for 2b. The row was added rather than
+   updated, with the plan's exact status string. Note for the reviewer: in this table `✅`
+   otherwise means "merged to `main`" (step 1) and `🟡` means "implemented on branch, review
+   pending" (steps 2–4), so the plan's literal `✅` marker is inconsistent with the local
+   convention. It was kept verbatim rather than silently changed; a reviewer may prefer `🟡`.
+2. **The row's plan link is currently dangling.** It points at
+   `docs/superpowers/plans/2026-09-25-gate-hardening.md`, which does not exist in this
+   worktree or in any of the four registered worktrees — the plan text for this run lives at
+   `.superpowers/sdd/2026-09-25-gate-hardening/plan.md`. The link is written in the same
+   form as every other row and should resolve once the plan file is committed alongside the
+   branch. The plan file was deliberately not created here, as that is outside this plan's
+   scope.
+3. **Step 5's tracker row was left alone.** It still reads "Azure deploy: scheduled jobs +
+   API + web (VPS keeps only the crypto worker)", which contradicts the user's ruling that
+   the VPS is the target and Azure is legacy. Correcting it belongs to the VPS deploy plan
+   (Wave A, `plan/2026-09-25-vps-deploy`), which edits this same file; the preflight ruling
+   was to keep each branch's row and leave reconciliation to the reviewer/merger.
+4. **No code deviations.** All three code hunks applied cleanly.
