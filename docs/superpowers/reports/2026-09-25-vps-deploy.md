@@ -285,3 +285,88 @@ the full suite still passes, which additionally exercises the mounted SPA path. 
   `*.pkl`, plus caches, `docs`, `archive`, `research` and the local `dist`/chroma/sqlite artifacts.
 
 **Commit:** `build: add multi-stage image for API, War Room and scheduled jobs; sync frontend lockfile`
+
+## Task 3 — Build + deploy workflow (`.github/workflows/deploy-tradehub.yml`)
+
+**Files:** created `.github/workflows/deploy-tradehub.yml`; modified `tests/test_repo_layout.py`
+(appended `test_deploy_workflow_builds_then_deploys_to_vps`). No deviation from the brief: the
+supplied workflow applied verbatim.
+
+### RED
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest \
+  tests/test_repo_layout.py::test_deploy_workflow_builds_then_deploys_to_vps -q
+        path = REPO / ".github/workflows/deploy-tradehub.yml"
+>       assert path.is_file(), "deploy workflow missing"
+E       AssertionError: deploy workflow missing
+tests/test_repo_layout.py:205: AssertionError
+FAILED tests/test_repo_layout.py::test_deploy_workflow_builds_then_deploys_to_vps
+1 failed in 0.08s
+```
+
+### GREEN
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest tests/test_repo_layout.py -q
+....................                                                     [100%]
+20 passed in 0.41s
+```
+
+### actionlint — actually run (via the plan's Docker command)
+
+`actionlint` is not installed as a host binary, but Docker is available, so the plan's own
+container-based command was executed for real — this is not a substitute or an assumed result:
+
+```
+$ docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -shellcheck= .github/workflows/deploy-tradehub.yml
+actionlint ok
+```
+
+No findings, exit 0.
+
+### Azure check (Kevin's ruling: the workflow must contain no Azure references)
+
+The test asserts the absence of `az login`, `containerapp` and `AZURE_`. A broader case-insensitive
+sweep was run as well:
+
+```
+$ grep -in "azure\|az login\|containerapp\|ACR_\|ARM_" .github/workflows/deploy-tradehub.yml
+(no output; grep exit 1)
+```
+
+The workflow contains no Azure reference of any kind.
+
+### Regression check
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest -q
+346 → 347 passed in 4.89s
+
+$ .../.venv/bin/python -m ruff check --select F401,F811,F821 tradehub tests shared
+All checks passed!
+```
+
+### Implementation summary
+
+- `.github/workflows/deploy-tradehub.yml` — the first root-level workflow in this repo, three jobs in
+  a strict chain enforced by `needs`:
+  1. `test` — checkout, Python 3.12, `uv pip install --system -r pyproject.toml --extra dev --extra scanner`
+     (the scanner extra is needed for the test suite only; it is deliberately **not** in the image),
+     then `python -m pytest -q` with `SUPABASE_SERVICE_ROLE_KEY: dummy-baseline-placeholder`;
+  2. `build` — `needs: test`, GHCR login with `GHCR_PAT`, `docker build` with the two public Vite build
+     args, pushing both `$IMAGE:${{ github.sha }}` (full 40-char sha, which `bin/deploy` requires) and
+     `$IMAGE:latest`;
+  3. `vps` — `needs: build`, `if: vars.VPS_HOST != ''`, `concurrency: vps-deploy-tradehub`, writes
+     `VPS_SSH_KEY` / `VPS_KNOWN_HOSTS` to `~/.ssh` and runs exactly
+     `ssh deploy@${{ vars.VPS_HOST }} deploy tradehub ${{ github.sha }}` (the VPS key's forced command
+     only permits `/opt/stack/bin/deploy`).
+- `permissions`: `contents: read`, `packages: write` — the minimum needed.
+- `env.IMAGE: ghcr.io/kevocado/tradehub` at workflow level, reused by the build job.
+- Triggers: `push` to `main` filtered to the app paths plus `Dockerfile`/`.dockerignore`/the workflow
+  itself, and `workflow_dispatch` for Kevin's manual first deploy (Task 5).
+
+**Commit:** `ci: build the trade hub image and deploy it to the VPS`
