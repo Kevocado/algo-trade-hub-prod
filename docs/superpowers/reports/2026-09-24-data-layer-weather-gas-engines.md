@@ -714,3 +714,32 @@ The exact public endpoint paths and 429 evidence above are the final rerun resul
   ```
 - **Implementation:** The shared JSON getter retries only 429/5xx responses for five bounded attempts, honors numeric and HTTP-date `Retry-After` values, and falls back to capped exponential backoff. All backtest/live JSON sources already route through this getter. `KalshiLive.settled_values()` now delegates directly to `merged_settled_markets()`.
 
+### Fix 5 — isolated scan failures, counts, and strict write errors
+
+- **Files changed:** `tradehub/scripts/scan.py`, `tradehub/core/supabase_client.py`, `tests/test_scan.py`, and this evidence report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py::test_scan_weather_isolates_city_failures_when_requested tests/test_scan.py::test_scan_main_isolates_engine_failure_and_returns_nonzero tests/test_scan.py::test_upsert_opportunities_propagates_execute_failure -q
+  ```
+  RED output tail:
+  ```text
+  FF.
+  E       TypeError: scan_weather() got an unexpected keyword argument 'failures'
+  E       TypeError: main() got an unexpected keyword argument 'now'
+  2 failed, 1 passed in 0.41s
+  ```
+- **GREEN commands:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py -q
+  ```
+  ```text
+  10 passed in 0.46s
+  ```
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  ```
+  ```text
+  293 passed in 3.86s
+  ```
+- **Implementation:** `scan_weather()` records and continues past a city failure when invoked by the orchestrator; `main()` runs weather and gas independently, logs per-engine/per-city counts, writes successful engine batches separately, preserves a parseable JSON summary, and returns `1` for any scan or write failure. `upsert_opportunities()` no longer catches or prints persistence errors.
+

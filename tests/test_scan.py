@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+import logging
 
 import pytest
 
@@ -177,6 +178,121 @@ def test_scan_and_backtest_share_walk_forward_weather_error_model():
     assert predictions[0]["our_prob"] == pytest.approx(decision.our_prob, abs=1e-4)
 
 
+def test_scan_weather_isolates_city_failures_when_requested():
+    nyc = scan.WEATHER_CITIES["KXHIGHNY"]
+    chicago = scan.WEATHER_CITIES["KXHIGHCHI"]
+    ny_market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
+    chi_market = _m("KXHIGHCHI-26SEP25-T74", "KXHIGHCHI-26SEP25")
+    live = FakeLive([LiveMarket(ny_market, GOOD_QUOTE), LiveMarket(chi_market, GOOD_QUOTE)])
+    failures = []
+
+    def forecast_fn(city, target, now):
+        if city == chicago:
+            raise RuntimeError("Chicago forecast unavailable")
+        return [Observation("nyc", 77.0, now)]
+
+    predictions, edges = scan.scan_weather(
+        live,
+        NOW,
+        CFG,
+        forecast_fn=forecast_fn,
+        cities={"KXHIGHNY": nyc, "KXHIGHCHI": chicago},
+        failures=failures,
+    )
+
+    assert {row["market_ticker"] for row in predictions} == {ny_market.ticker}
+    assert {row["market_ticker"] for row in edges} == {ny_market.ticker}
+    assert len(failures) == 1 and "KXHIGHCHI" in failures[0]
+
+
+def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, capsys, caplog):
+    caplog.set_level(logging.INFO)
+    gas_prediction = {"market_ticker": "KXAAAGASD-26SEP25-4.5200", "our_prob": 0.9}
+    gas_edge = {
+        "market_ticker": "KXAAAGASD-26SEP25-4.5200",
+        "edge_type": "ENERGY",
+        "gate_status": "SHADOW",
+    }
+    recorded = []
+    upserted = []
+    pruned = []
+
+    monkeypatch.setattr(scan, "load_engine_config", lambda engine: EngineConfig(min_edge_pct=3.0))
+
+    def weather(*args, **kwargs):
+        raise RuntimeError("weather source unavailable")
+
+    def gas(*args, **kwargs):
+        return [gas_prediction], [gas_edge]
+
+    monkeypatch.setattr(scan, "scan_weather", weather)
+    monkeypatch.setattr(scan, "scan_gas", gas)
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, engines: {"weather": "SHADOW", "gas": "SHADOW"})
+    monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: pruned.append(produced))
+
+    from tradehub.core import supabase_client
+    import tradehub.predictions as predictions_module
+
+    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
+    monkeypatch.setattr(predictions_module, "record_predictions", lambda client, rows: recorded.extend(rows))
+
+    assert scan.main(now=NOW, live=object(), client=object()) == 1
+    output = capsys.readouterr().out
+    assert recorded == [gas_prediction]
+    assert upserted == [gas_edge]
+    assert pruned == [{"ENERGY": {gas_edge["market_ticker"]}}]
+    assert "scan engine=gas predictions=1 edges=1" in caplog.text
+    assert "partial_failure" in output and "weather source unavailable" in output
+
+
+def test_scan_main_persists_successful_rows_from_a_partial_weather_scan(monkeypatch):
+    prediction = {"market_ticker": "KXHIGHNY-26SEP25-T74", "our_prob": 0.9}
+    edge = {"market_ticker": "KXHIGHNY-26SEP25-T74", "edge_type": "WEATHER"}
+    recorded = []
+    upserted = []
+    pruned = []
+
+    monkeypatch.setattr(scan, "load_engine_config", lambda engine: EngineConfig(min_edge_pct=3.0))
+    monkeypatch.setattr(scan, "scan_weather", lambda *args, **kwargs: (
+        kwargs["failures"].append("weather/KXHIGHCHI: forecast unavailable") or ([prediction], [edge])
+    ))
+    monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([], []))
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, engines: {"weather": "SHADOW", "gas": "SHADOW"})
+    monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: pruned.append(produced))
+
+    from tradehub.core import supabase_client
+    import tradehub.predictions as predictions_module
+
+    monkeypatch.setattr(predictions_module, "record_predictions", lambda client, rows: recorded.extend(rows))
+    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
+
+    assert scan.main(now=NOW, live=object(), client=object()) == 1
+    assert recorded == [prediction]
+    assert upserted == [edge]
+    assert pruned == [{"ENERGY": set()}]
+
+
+def test_upsert_opportunities_propagates_execute_failure(monkeypatch):
+    from tradehub.core import supabase_client
+
+    class FailingTable:
+        def upsert(self, rows, on_conflict):
+            return self
+
+        def execute(self):
+            raise RuntimeError("edge write failed")
+
+    monkeypatch.setattr(supabase_client, "get_client", lambda: type("Client", (), {"table": lambda self, name: FailingTable()})())
+    with pytest.raises(RuntimeError, match="edge write failed"):
+        supabase_client.upsert_opportunities([{
+            "market_ticker": "KXAAAGASD-26SEP25-4.5200",
+            "model_probability": 0.5,
+            "market_price": 0.4,
+            "edge": 0.1,
+            "edge_type": "ENERGY",
+        }])
+
+
 def test_scan_gas_uses_only_published_aaa_and_positive_horizons():
     m = _m("KXAAAGASD-26SEP25-4.5200", "KXAAAGASD-26SEP25", floor=4.52, close="2026-09-25T03:59:00Z")
     stale = _m("KXAAAGASD-26SEP24-4.5200", "KXAAAGASD-26SEP24", floor=4.52, close="2026-09-24T03:59:00Z")
@@ -184,7 +300,7 @@ def test_scan_gas_uses_only_published_aaa_and_positive_horizons():
                Observation("KXAAAGASD-26SEP24", 4.61, NOW - timedelta(hours=6)),
                Observation("KXAAAGASD-26SEP25", 9.99, NOW + timedelta(hours=18))]  # not yet public
     live = FakeLive([LiveMarket(m, GOOD_QUOTE), LiveMarket(stale, GOOD_QUOTE)], settled)
-    rbob = [Observation(f"RBOB:{i}", 3.0, NOW - timedelta(days=10 - i)) for i in range(8)]
+    rbob = [Observation(f"RBOB:RBU26.NYM:{i}", 3.0, NOW - timedelta(days=10 - i)) for i in range(8)]
     preds, edges = scan.scan_gas(live, NOW, EngineConfig(min_edge_pct=3.0), rbob_fn=lambda: rbob)
     assert [p["market_ticker"] for p in preds] == [m.ticker]  # stale market: horizon 0 -> skipped
     assert preds[0]["engine"] == "gas"
