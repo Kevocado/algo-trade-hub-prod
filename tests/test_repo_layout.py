@@ -149,3 +149,13 @@ def test_predictions_ledger_migration_defines_both_tables():
     assert '"track_record_owner"' in sql
     for column in ("market_ticker", "our_prob", "as_of", "status", "brier"):
         assert column in sql, f"predictions table missing column {column}"
+
+
+def test_backtest_runs_migration_defines_table():
+    path = REPO / "market_sentiment_tool/supabase/migrations/20260416000004_backtest_runs.sql"
+    assert path.is_file(), "backtest_runs migration is missing"
+    sql = path.read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS backtest_runs" in sql
+    assert '"backtest_runs_owner"' in sql
+    for column in ("config_hash", "data_hash", "pnl_after_fees", "max_drawdown", "gate_status", "cal_buckets"):
+        assert column in sql, f"backtest_runs missing column {column}"
