@@ -71,3 +71,20 @@ def test_forecast_daily_high_validates_lead_and_empty_payload():
     empty = Recorder({"hourly": {"time": [], "temperature_2m_previous_day2": [None, None]}})
     with pytest.raises(ValueError):
         forecast_daily_high(lead_days=2, get_json=empty, **kwargs)
+
+
+def test_forecast_daily_high_subtracts_lead_days_in_utc_across_fall_back():
+    rec = Recorder({"hourly": {
+        "time": [f"2026-11-01T{h:02d}:00" for h in range(24)],
+        "temperature_2m_previous_day1": [70.0] * 24,
+    }})
+    obs = forecast_daily_high(
+        latitude=40.7,
+        longitude=-73.9,
+        target_date=date(2026, 11, 1),
+        lead_days=1,
+        model="ncep_gfs_seamless",
+        timezone_name="America/New_York",
+        get_json=rec,
+    )
+    assert obs.published_at == datetime(2026, 11, 1, 4, 0, tzinfo=timezone.utc)

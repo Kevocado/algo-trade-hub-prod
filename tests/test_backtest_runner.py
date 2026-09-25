@@ -1,12 +1,15 @@
 from datetime import datetime, timedelta, timezone
+import math
 
 import pytest
 
+from tradehub.backtest import metrics as backtest_metrics
 from tradehub.backtest.fills import Fill
 from tradehub.backtest.kalshi_history import Candle, Trade
 from tradehub.backtest.metrics import fill_pnl, market_mid, max_drawdown, prediction_row
 from tradehub.backtest.pit import Decision, LeakageError, Observation
 from tradehub.backtest.runner import MarketHistory, run_backtest, walk_forward
+from tradehub.backtest.store import data_snapshot_hash
 
 T0 = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
 CLOSE = datetime(2026, 7, 25, 4, 59, tzinfo=timezone.utc)
@@ -101,3 +104,30 @@ def test_walk_forward_only_fits_on_strictly_earlier_events():
     # The two events at hour 1 must not see each other.
     assert [p for _, p in out] == [1, 1, 3]
     assert seen == [1, 1, 3]
+
+
+def test_log_loss_is_numerically_clipped_and_propagates_to_result():
+    assert backtest_metrics.log_loss(0.0, "yes") == pytest.approx(-math.log(1e-15))
+    assert backtest_metrics.log_loss(1.0, "no") == pytest.approx(-math.log(1e-15))
+    row = prediction_row(0.7, 0.5, "yes")
+    assert row["log_loss"] == pytest.approx(backtest_metrics.log_loss(0.7, 1))
+
+    decisions = [Decision("A", T0, 0.70), Decision("B", T0 + timedelta(minutes=1), 0.20)]
+    histories = {"A": hist("A", "yes"), "B": hist("B", "no")}
+    result = run_backtest(engine="weather", cadence="daily", decisions=decisions, histories=histories)
+    expected = (backtest_metrics.log_loss(0.70, 1) + backtest_metrics.log_loss(0.20, 0)) / 2
+    assert result.log_loss == pytest.approx(expected)
+
+
+def test_equal_time_decisions_have_permutation_independent_fill_order_and_drawdown():
+    decisions = [
+        Decision("A", T0, 0.70, (Observation("a", 1.0, T0 - timedelta(hours=1)),)),
+        Decision("B", T0, 0.20, (Observation("b", 2.0, T0 - timedelta(hours=1)),)),
+    ]
+    histories = {"A": hist("A", "yes"), "B": hist("B", "no")}
+    first = run_backtest(engine="weather", cadence="daily", decisions=decisions, histories=histories)
+    second = run_backtest(engine="weather", cadence="daily", decisions=list(reversed(decisions)), histories=histories)
+    assert [fill.market_ticker for fill in first.fills] == [fill.market_ticker for fill in second.fills]
+    assert first.max_drawdown == pytest.approx(second.max_drawdown)
+    assert first.pnl_after_fees == pytest.approx(second.pnl_after_fees)
+    assert data_snapshot_hash(decisions, histories) == data_snapshot_hash(list(reversed(decisions)), histories)

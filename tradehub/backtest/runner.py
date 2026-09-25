@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence, TypeVar
 
 from tradehub.backtest.fills import Fill, maker_fill, quote_at, taker_fill
@@ -15,6 +15,25 @@ from tradehub.track_record import check_promotion_gate, compute_calibration, com
 E = TypeVar("E")
 M = TypeVar("M")
 R = TypeVar("R")
+
+
+def _timestamp_key(value: datetime) -> tuple[int, str]:
+    if value.tzinfo is None:
+        return (0, value.isoformat())
+    return (1, value.astimezone(timezone.utc).isoformat())
+
+
+def _decision_sort_key(decision: Decision) -> tuple[Any, ...]:
+    features = tuple(sorted(
+        (feature.name, float(feature.value), _timestamp_key(feature.published_at))
+        for feature in decision.features
+    ))
+    return (
+        _timestamp_key(decision.decided_at),
+        decision.market_ticker,
+        float(decision.our_prob),
+        features,
+    )
 
 
 @dataclass
@@ -40,6 +59,7 @@ class BacktestResult:
     cal_buckets: list[dict[str, Any]]
     gate: dict[str, Any]
     fills: list[Fill] = field(default_factory=list)
+    log_loss: float | None = None
 
 
 def run_backtest(
@@ -57,7 +77,7 @@ def run_backtest(
     rows: list[dict[str, Any]] = []
     fills: list[Fill] = []
     pnls: list[float] = []
-    for decision in sorted(decisions, key=lambda d: d.decided_at):
+    for decision in sorted(decisions, key=_decision_sort_key):
         check_no_lookahead(decision)
         history = histories[decision.market_ticker]
         if decision.decided_at >= history.close_time:
@@ -75,6 +95,11 @@ def run_backtest(
             pnls.append(fill_pnl(fill, history.result))
     summary = compute_engine_summary(rows)
     cal_buckets = compute_calibration(rows)
+    mean_log_loss = (
+        round(sum(float(row["log_loss"]) for row in rows) / len(rows), 8)
+        if rows
+        else None
+    )
     total = sum(pnls)
     gate = check_promotion_gate(engine=engine, cadence=cadence, summary=summary, cal_buckets=cal_buckets,
                                 simulated_pnl_after_fees=total if fills else None)
@@ -83,6 +108,7 @@ def run_backtest(
         pnl_after_fees=total, max_drawdown=max_drawdown(pnls),
         turnover=sum(f.price * f.contracts for f in fills),
         summary=summary, cal_buckets=cal_buckets, gate=gate, fills=fills,
+        log_loss=mean_log_loss,
     )
 
 

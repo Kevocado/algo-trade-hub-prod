@@ -15,7 +15,7 @@ CLOSE = datetime(2026, 7, 25, 4, 59, tzinfo=timezone.utc)
 MIGRATION_COLUMNS = {
     "engine", "engine_version", "mode", "config", "config_hash", "data_hash", "date_from", "date_to",
     "n_decisions", "n_fills", "n_settled", "pnl_after_fees", "max_drawdown", "turnover", "brier_ours",
-    "brier_market", "cal_buckets", "max_cal_dev", "gate_status", "gate_reasons",
+    "brier_market", "log_loss", "cal_buckets", "max_cal_dev", "gate_status", "gate_reasons",
 }
 
 
@@ -49,6 +49,7 @@ def test_build_row_matches_migration_columns():
     assert row["gate_status"] == "SHADOW"
     assert row["n_fills"] == 1 and row["mode"] == "taker"
     assert row["date_from"] == T0.isoformat()
+    assert row["log_loss"] == round(result.log_loss, 8)
 
 
 def test_record_backtest_run_inserts():

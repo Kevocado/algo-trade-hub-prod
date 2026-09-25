@@ -246,3 +246,146 @@
 
 - The required evidence report is included in each task's single task commit because the handoff contract requires a committed report while also requiring one commit per task.
 - The step-2 PR remains open remotely; this prerequisite branch uses the local fast-forward merge requested by the user and does not push.
+
+## Final review fix wave
+
+- **Base/branch:** `fc9a4902a0bd66806b70379cc1e49b2652e95447` on `plan/2026-09-24-backtesting-suite`.
+- **Scope:** Addressed the eight binding findings in `.superpowers/sdd/2026-09-24-backtesting-suite/final-fix-brief.md` without editing the spec or another plan.
+- **TDD order:** Every regression test below was added and run RED before its production fix; focused GREEN commands were run after the implementation. No migrations were applied and no live services were contacted.
+
+### Pre-fix findings and root causes
+
+1. `shared/kalshi_fees.net_edge_pct` added fees to negative gross edges, so a small negative edge could become positive. Fill edge selection also called the helper with its default one-contract size instead of the requested size.
+2. `parse_candle` only read historical `close`/`volume`, and `parse_trade` only read legacy `taker_side`; block status was discarded. Live and historical response shapes therefore normalized incorrectly.
+3. The cutoff response contained two independent boundaries, but the client exposed only `market_settled_ts`; callers had to choose a tier themselves and had no safe overlap merge.
+4. Maker matching returned on the first qualifying print, did not skip block trades, and did not accumulate contract volume.
+5. Open-Meteo subtracted the lead in local wall-clock time, which crossed the fall-back DST transition at the wrong UTC instant.
+6. Equal-time decisions were stable-sorted only by input order, so identical input permutations could produce different fill/P&L/drawdown ordering despite an order-independent snapshot hash.
+7. The spec-required log-loss metric was absent from the backtest row/result/storage contract; the original migration was intentionally left unchanged.
+8. Maker/taker threshold calculations did not consistently use requested contracts, risking a different fee-rounding decision from the fill that would actually be recorded.
+
+### Regression RED evidence
+
+- **Fees and fills:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_fills.py -q
+  ```
+  RED tail:
+  ```text
+  FAILED tests/test_backtest_fills.py::test_net_edge_pct_subtracts_fees_from_negative_gross_edges
+  FAILED tests/test_backtest_fills.py::test_negative_gross_edge_never_fills_even_when_fee_would_flip_the_sign
+  FAILED tests/test_backtest_fills.py::test_taker_edge_threshold_uses_requested_contract_count
+  FAILED tests/test_backtest_fills.py::test_maker_edge_threshold_uses_requested_contract_count
+  FAILED tests/test_backtest_fills.py::test_maker_ignores_block_trades - TypeError: Trade.__init__() takes 6 positional arguments but 7 were given
+  FAILED tests/test_backtest_fills.py::test_maker_requires_enough_qualifying_post_decision_volume
+  FAILED tests/test_backtest_fills.py::test_maker_fills_when_accumulated_qualifying_volume_reaches_contracts
+  7 failed, 12 passed in 0.55s
+  ```
+- **Live schemas, cutoffs, and tier merges:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  RED tail:
+  ```text
+  FAILED tests/test_backtest_kalshi_history.py::test_parse_live_candle_uses_dollar_close_and_fixed_point_volume
+  FAILED tests/test_backtest_kalshi_history.py::test_parse_trade_prefers_canonical_outcome_side_and_exposes_block_flag
+  FAILED tests/test_backtest_kalshi_history.py::test_cutoff_timestamps_exposes_market_and_trade_boundaries
+  FAILED tests/test_backtest_kalshi_history.py::test_merged_candles_splits_at_market_cutoff_and_deduplicates_boundary
+  FAILED tests/test_backtest_kalshi_history.py::test_merged_trades_combines_tiers_and_deduplicates_overlap
+  5 failed, 10 passed in 0.07s
+  ```
+- **DST boundary:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  RED tail:
+  ```text
+  E       AssertionError: assert datetime.datetime(2026, 11, 1, 3, 0, tzinfo=datetime.timezone.utc) == datetime.datetime(2026, 11, 1, 4, 0, tzinfo=datetime.timezone.utc)
+  FAILED tests/test_backtest_sources.py::test_forecast_daily_high_subtracts_lead_days_in_utc_across_fall_back
+  1 failed, 4 passed in 0.06s
+  ```
+- **Runner ordering and log loss:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  RED tail:
+  ```text
+  E       AttributeError: module 'tradehub.backtest.metrics' has no attribute 'log_loss'
+  FAILED tests/test_backtest_runner.py::test_log_loss_is_numerically_clipped_and_propagates_to_result
+  FAILED tests/test_backtest_runner.py::test_equal_time_decisions_have_permutation_independent_fill_order_and_drawdown
+  2 failed, 11 passed in 0.44s
+  ```
+- **Storage column:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_store.py -q
+  ```
+  RED tail:
+  ```text
+  E       AssertionError: assert {'brier_marke...ta_hash', ...} == {'brier_marke...ta_hash', ...}
+  E         Extra items in the right set:
+  E         'log_loss'
+  FAILED tests/test_backtest_store.py::test_build_row_matches_migration_columns
+  1 failed, 3 passed in 0.27s
+  ```
+- **Structural migration assertion:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_repo_layout.py::test_backtest_log_loss_migration_adds_nullable_column -q
+  ```
+  RED tail:
+  ```text
+  E       AssertionError: backtest log-loss migration is missing
+  E       assert False
+  E        +  where False = is_file()
+  FAILED tests/test_repo_layout.py::test_backtest_log_loss_migration_adds_nullable_column
+  1 failed in 0.05s
+  ```
+
+### Focused GREEN evidence
+
+- `tests/test_backtest_fills.py -q` → `19 passed in 0.38s`.
+- `tests/test_backtest_kalshi_history.py -q` → `15 passed in 0.02s`.
+- `tests/test_backtest_sources.py -q` → `5 passed in 0.01s`.
+- `tests/test_backtest_runner.py -q` → `13 passed in 0.32s`.
+- `tests/test_backtest_store.py -q` → `4 passed in 0.24s`.
+- `tests/test_repo_layout.py -q` → `16 passed in 0.32s`.
+
+The first post-fix runner GREEN run exposed a floating-point complement at the clipped upper endpoint (`log(1.0 - (1.0 - 1e-15))`); the implementation was corrected to clip the outcome-side probability independently, then the focused command was rerun GREEN as shown above. No other focused command required a second fix.
+
+### Full exact verification
+
+- **Full pytest:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  ```
+  Output tail:
+  ```text
+  ........................................................................ [ 31%]
+  ........................................................................ [ 63%]
+  ........................................................................ [ 95%]
+  ...........                                                              [100%]
+  227 passed in 4.10s
+  ```
+- **Ruff:**
+  ```sh
+  .venv/bin/ruff check --select F401,F811,F821 tradehub/backtest tests
+  ```
+  Output tail:
+  ```text
+  All checks passed!
+  ```
+- **Import-boundary grep:**
+  ```sh
+  grep -rn "shared.config" tradehub/backtest
+  ```
+  Output tail:
+  ```text
+  (no output; exit status 1, as expected)
+  ```
+
+### Fix-wave files and deviations
+
+- Production changes: `shared/kalshi_fees.py`, `tradehub/backtest/fills.py`, `tradehub/backtest/kalshi_history.py`, `tradehub/backtest/metrics.py`, `tradehub/backtest/runner.py`, `tradehub/backtest/sources/open_meteo.py`, `tradehub/backtest/store.py`, and new migration `market_sentiment_tool/supabase/migrations/20260416000006_backtest_log_loss.sql`.
+- Regression tests were added to the six focused backtest/layout test files listed by the RED commands above.
+- The new migration is intentionally not applied. Existing migration `20260416000004_backtest_runs.sql` was not edited.
+- The new log-loss column is nullable; gate and Brier code paths were left unchanged.
+- No dependency, spec, other-plan, live-service, push, reset, amend, or clean operation was performed. The ignored detailed handoff is `.superpowers/sdd/2026-09-24-backtesting-suite/final-fix-report.md`.

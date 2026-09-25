@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from shared.kalshi_fees import kalshi_fee_cents
+from shared.kalshi_fees import kalshi_fee_cents, net_edge_pct
 from tradehub.backtest.fills import MIN_TAKER_PRICE, maker_fill, quote_at, taker_fill
 from tradehub.backtest.kalshi_history import Candle, Trade
 from tradehub.backtest.pit import Decision
@@ -91,3 +91,47 @@ def test_maker_no_side_fills_on_yes_taker_at_or_through_no_limit():
 
 def test_maker_needs_positive_limit():
     assert maker_fill(Decision("T", T0, 0.90), [candle(1, 0.0, 0.02)], [], CLOSE) is None
+
+
+def test_net_edge_pct_subtracts_fees_from_negative_gross_edges():
+    expected = -5.0 - kalshi_fee_cents(44.0, contracts=1)
+    assert net_edge_pct(39.0, 44.0, contracts=1) == pytest.approx(expected)
+
+
+def test_negative_gross_edge_never_fills_even_when_fee_would_flip_the_sign():
+    assert taker_fill(Decision("T", T0, 0.435), [candle(1, 0.40, 0.44)]) is None
+
+
+def test_taker_edge_threshold_uses_requested_contract_count():
+    decision = Decision("T", T0, 0.1065)
+    quotes = [candle(1, 0.08, 0.10)]
+    assert taker_fill(decision, quotes, contracts=1, min_edge_pct=0.015) is None
+    assert taker_fill(decision, quotes, contracts=10, min_edge_pct=0.015) is not None
+
+
+def test_maker_edge_threshold_uses_requested_contract_count():
+    decision = Decision("T", T0, 0.1017)
+    quotes = [candle(1, 0.10, 0.101)]
+    trades = [Trade(T0 + timedelta(minutes=5), 0.10, 0.90, 10.0, "no")]
+    assert maker_fill(decision, quotes, trades, CLOSE, contracts=1, min_edge_pct=0.011) is None
+    assert maker_fill(decision, quotes, trades, CLOSE, contracts=10, min_edge_pct=0.011) is not None
+
+
+def test_maker_ignores_block_trades():
+    trades = [Trade(T0 + timedelta(minutes=5), 0.40, 0.60, 10.0, "no", True)]
+    assert maker_fill(Decision("T", T0, 0.60), [candle(1, 0.40, 0.44)], trades, CLOSE) is None
+
+
+def test_maker_requires_enough_qualifying_post_decision_volume():
+    trades = [Trade(T0 + timedelta(minutes=10), 0.40, 0.60, 0.75, "no")]
+    assert maker_fill(Decision("T", T0, 0.60), [candle(1, 0.40, 0.44)], trades, CLOSE) is None
+
+
+def test_maker_fills_when_accumulated_qualifying_volume_reaches_contracts():
+    trades = [
+        Trade(T0 + timedelta(minutes=10), 0.40, 0.60, 0.75, "no"),
+        Trade(T0 + timedelta(minutes=20), 0.40, 0.60, 0.25, "no"),
+    ]
+    fill = maker_fill(Decision("T", T0, 0.60), [candle(1, 0.40, 0.44)], trades, CLOSE)
+    assert fill is not None
+    assert fill.filled_at == T0 + timedelta(minutes=20)

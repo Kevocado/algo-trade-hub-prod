@@ -43,6 +43,4 @@ def net_edge_pct(model_prob_pct: float, kalshi_price_cents: float, *, contracts:
     gross_edge_pct = model_prob_pct - kalshi_price_cents
     fee_cents_total = kalshi_fee_cents(kalshi_price_cents, contracts=contracts, maker=maker)
     fee_pct_per_contract = fee_cents_total / contracts
-    if gross_edge_pct >= 0:
-        return gross_edge_pct - fee_pct_per_contract
-    return gross_edge_pct + fee_pct_per_contract
+    return gross_edge_pct - fee_pct_per_contract

@@ -50,6 +50,7 @@ def build_backtest_run_row(
         "turnover": round(result.turnover, 4),
         "brier_ours": result.summary["brier_ours"],
         "brier_market": result.summary["brier_market"],
+        "log_loss": None if result.log_loss is None else round(result.log_loss, 8),
         "cal_buckets": result.cal_buckets,
         "max_cal_dev": result.gate["max_cal_dev"],
         "gate_status": result.gate["status"],

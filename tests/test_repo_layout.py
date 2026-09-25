@@ -159,3 +159,12 @@ def test_backtest_runs_migration_defines_table():
     assert '"backtest_runs_owner"' in sql
     for column in ("config_hash", "data_hash", "pnl_after_fees", "max_drawdown", "gate_status", "cal_buckets"):
         assert column in sql, f"backtest_runs missing column {column}"
+
+
+def test_backtest_log_loss_migration_adds_nullable_column():
+    path = REPO / "market_sentiment_tool/supabase/migrations/20260416000006_backtest_log_loss.sql"
+    assert path.is_file(), "backtest log-loss migration is missing"
+    sql = path.read_text(encoding="utf-8")
+    assert "ALTER TABLE backtest_runs" in sql
+    assert "log_loss numeric(12,8)" in sql
+    assert "log_loss numeric(12,8) NOT NULL" not in sql

@@ -41,5 +41,5 @@ def forecast_daily_high(
     if not values:
         raise ValueError(f"no {variable} values for {day} ({model})")
     last_hour_local = datetime.combine(target_date, time(23, 0), ZoneInfo(timezone_name))
-    issued = (last_hour_local - timedelta(days=lead_days)).astimezone(timezone.utc)
+    issued = last_hour_local.astimezone(timezone.utc) - timedelta(days=lead_days)
     return Observation(name=f"openmeteo:{model}:high:{day}:lead{lead_days}", value=max(values), published_at=issued)

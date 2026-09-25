@@ -115,3 +115,101 @@ def test_live_trades_path():
     get = FakeGet({"/markets/trades": {"trades": [TRADE], "cursor": ""}})
     kh.KalshiHistoryClient(get_json=get).trades("T", historical=False)
     assert get.calls[0][0] == "/markets/trades"
+
+
+def test_parse_live_candle_uses_dollar_close_and_fixed_point_volume():
+    raw = {
+        "end_period_ts": 1784898000,
+        "yes_bid": {"close_dollars": "0.4100"},
+        "yes_ask": {"close_dollars": "0.4200"},
+        "volume_fp": "12.50",
+    }
+    candle = kh.parse_candle(raw)
+    assert candle.yes_bid == pytest.approx(0.41)
+    assert candle.yes_ask == pytest.approx(0.42)
+    assert candle.volume == pytest.approx(12.5)
+
+
+def test_parse_trade_prefers_canonical_outcome_side_and_exposes_block_flag():
+    raw = dict(TRADE, taker_outcome_side="yes", taker_side="no", is_block_trade=True)
+    trade = kh.parse_trade(raw)
+    assert trade.taker_side == "yes"
+    assert trade.is_block_trade is True
+
+    legacy = dict(TRADE)
+    legacy.pop("taker_outcome_side")
+    legacy["taker_side"] = "no"
+    assert kh.parse_trade(legacy).taker_side == "no"
+    assert kh.parse_trade(legacy).is_block_trade is False
+
+
+def test_cutoff_timestamps_exposes_market_and_trade_boundaries():
+    get = FakeGet({"/historical/cutoff": {
+        "market_settled_ts": "2026-07-25T00:00:00Z",
+        "trades_created_ts": "2026-07-24T12:00:00Z",
+    }})
+    client = kh.KalshiHistoryClient(get_json=get)
+    assert client.cutoff_timestamps() == {
+        "market_settled_ts": datetime(2026, 7, 25, tzinfo=timezone.utc),
+        "trades_created_ts": datetime(2026, 7, 24, 12, tzinfo=timezone.utc),
+    }
+    assert client.cutoff() == datetime(2026, 7, 25, tzinfo=timezone.utc)
+
+
+def test_merged_candles_splits_at_market_cutoff_and_deduplicates_boundary():
+    cutoff = datetime(2026, 7, 25, tzinfo=timezone.utc)
+    start = datetime(2026, 7, 24, 23, tzinfo=timezone.utc)
+    end = datetime(2026, 7, 25, 2, tzinfo=timezone.utc)
+    historical = dict(CANDLE, end_period_ts=int(datetime(2026, 7, 24, 23, 30, tzinfo=timezone.utc).timestamp()))
+    boundary = dict(CANDLE, end_period_ts=int(cutoff.timestamp()))
+    live = {
+        "end_period_ts": int(datetime(2026, 7, 25, 1, tzinfo=timezone.utc).timestamp()),
+        "yes_bid": {"close_dollars": "0.2000"},
+        "yes_ask": {"close_dollars": "0.2100"},
+        "volume_fp": "3.00",
+    }
+    get = FakeGet({
+        "/historical/cutoff": {
+            "market_settled_ts": cutoff.isoformat().replace("+00:00", "Z"),
+            "trades_created_ts": "2026-07-24T12:00:00Z",
+        },
+        "/historical/markets/T/candlesticks": {"candlesticks": [boundary, historical]},
+        "/series/S/markets/T/candlesticks": {"candlesticks": [live, boundary]},
+    })
+    candles = kh.KalshiHistoryClient(get_json=get).merged_candles(
+        "T", start, end, series_ticker="S",
+    )
+    assert [c.end_ts for c in candles] == [
+        datetime.fromtimestamp(historical["end_period_ts"], tz=timezone.utc),
+        cutoff,
+        datetime.fromtimestamp(live["end_period_ts"], tz=timezone.utc),
+    ]
+    assert [c.yes_ask for c in candles] == pytest.approx([0.03, 0.03, 0.21])
+    assert [path for path, _ in get.calls] == [
+        "/historical/cutoff",
+        "/historical/markets/T/candlesticks",
+        "/series/S/markets/T/candlesticks",
+    ]
+
+
+def test_merged_trades_combines_tiers_and_deduplicates_overlap():
+    cutoff = {
+        "market_settled_ts": "2026-07-25T00:00:00Z",
+        "trades_created_ts": "2026-07-24T22:30:00Z",
+    }
+    older = dict(TRADE, created_time="2026-07-24T22:19:22.675922Z")
+    duplicate = dict(older)
+    newer = dict(TRADE, created_time="2026-07-24T23:00:00Z")
+    get = FakeGet({
+        "/historical/cutoff": cutoff,
+        "/historical/trades": {"trades": [older]},
+        "/markets/trades": {"trades": [duplicate, newer]},
+    })
+    trades = kh.KalshiHistoryClient(get_json=get).merged_trades("T")
+    assert [trade.created_at.hour for trade in trades] == [22, 23]
+    assert len(trades) == 2
+    assert [path for path, _ in get.calls] == [
+        "/historical/cutoff",
+        "/historical/trades",
+        "/markets/trades",
+    ]
