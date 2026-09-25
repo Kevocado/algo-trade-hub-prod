@@ -1000,3 +1000,20 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   }
   ```
 - The pre-existing owner-only RLS policy was not changed; no auth policy or `raw_payload` exposure was added as part of this review remediation.
+
+## PR #3 prerequisite merge — 2026-09-25
+
+- The five-minute prerequisite watcher observed PR3 advance from `fe1d6bd` to `c1c6a72` before work resumed.
+- The requested merge was performed without rebasing:
+  ```sh
+  git fetch && git merge origin/plan/2026-09-24-backtesting-suite
+  ```
+- The sole merge conflict was `tests/test_backtest_kalshi_history.py`; PR3's test side was taken as requested. The data-layer-only `merged_settled_markets` wrapper was removed, and `KalshiLive.settled_values()` now calls PR3's tier-merging `settled_markets()` directly.
+- Focused integration verification:
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_live.py tests/test_backtest_kalshi_history.py -q
+  ```
+  ```text
+  28 passed in 0.32s
+  ```
+

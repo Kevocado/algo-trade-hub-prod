@@ -389,3 +389,266 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
 - The new migration is intentionally not applied. Existing migration `20260416000004_backtest_runs.sql` was not edited.
 - The new log-loss column is nullable; gate and Brier code paths were left unchanged.
 - No dependency, spec, other-plan, live-service, push, reset, amend, or clean operation was performed. The ignored detailed handoff is `.superpowers/sdd/2026-09-24-backtesting-suite/final-fix-report.md`.
+
+## Post-review fix wave — finding 1
+
+- **Requirement:** `runner.walk_forward` must require `label_available_at`; training history contains only events whose labels are available strictly before the current decision. A regression covers markets settling 36 hours after their decision.
+- **Root cause:** the old implementation filtered by `time_of(e) < time_of(event)` and had no way to account for delayed labels.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  RED output tail:
+  ```text
+  TypeError: walk_forward() got an unexpected keyword argument 'label_available_at'
+  2 failed, 12 passed in 0.48s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  GREEN output tail:
+  ```text
+  14 passed in 0.30s
+  ```
+- **Implementation:** added the required callable to the public signature, filtered history with the strict label-time comparison, and excluded the current event from its own history.
+- **Deviation:** the first GREEN attempt exposed that the old equal-time fixture declared labels available one second early; the fixture was corrected to make the strict boundary explicit, then the focused command passed. No external service was contacted.
+
+## Post-review fix wave — finding 2
+
+- **Requirement:** `merged_candles` must select exactly one tier for a market: historical when the market settled before `market_settled_ts`, otherwise live. The regression test was corrected accordingly.
+- **Root cause:** the old helper split one market's requested candle window at the global cutoff and called both endpoints, even though Kalshi partitions an entire market by its own settlement time.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py::test_merged_candles_uses_one_tier_selected_by_market_settlement -q
+  ```
+  RED output tail:
+  ```text
+  TypeError: KalshiHistoryClient.merged_candles() got an unexpected keyword argument 'market_settled_at'
+  2 failed in 0.06s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  GREEN output tail:
+  ```text
+  16 passed in 0.01s
+  ```
+- **Implementation:** added the explicit per-market `market_settled_at` input, fetched the cutoff once, and issued exactly one `candles` request using the selected tier. Equality with the cutoff selects live data.
+- **Deviation:** the method cannot infer a market's settlement timestamp from its ticker alone, so the caller supplies that metadata explicitly. The existing `candles` and `merge_candles` paths remain unchanged.
+
+## Post-review fix wave — finding 3
+
+- **Requirement:** preserve Kalshi's `trade_id` on `Trade`, deduplicate merged trades by that identity, and remove the unused cutoff request.
+- **Root cause:** `parse_trade` discarded `trade_id`, so the merge key collapsed distinct trades with identical timestamp/price/count/side; `merged_trades` also fetched and ignored `trades_created_ts`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py::test_parse_trade tests/test_backtest_kalshi_history.py::test_merged_trades_deduplicates_by_trade_id_without_a_cutoff_call -q
+  ```
+  RED output tail:
+  ```text
+  AttributeError: 'Trade' object has no attribute 'trade_id'
+  2 failed in 0.06s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  GREEN output tail:
+  ```text
+  16 passed in 0.02s
+  ```
+- **Implementation:** added a trailing backward-compatible `trade_id` field, populated it from the raw payload, used IDs as the primary dedupe key, retained a composite fallback for ID-less fixtures, and deleted the discarded cutoff call. Stable tier order is retained for equal trade fields.
+
+## Post-review fix wave — finding 4
+
+- **Requirement:** `settled_markets` must also read live-tier settled markets from `/markets?status=settled&series_ticker=...` and deduplicate the combined result by ticker.
+- **Root cause:** the client queried only `/historical/markets`, omitting markets that settled after the historical partition boundary.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py::test_settled_markets_merges_historical_and_live_tiers_by_ticker -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert ['A'] == ['A', 'B']
+  1 failed in 0.06s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  GREEN output tail:
+  ```text
+  17 passed in 0.03s
+  ```
+- **Implementation:** paginated both tiers with the required live filters, retained the first (historical) record for duplicate tickers, and preserved records without a ticker rather than collapsing them.
+- **Deviation:** the existing historical-pagination fixture was extended with an empty live response because the client now always checks both partitions.
+
+## Post-review fix wave — finding 5
+
+- **Requirement:** verify Kalshi's published fee rounding and correct `kalshi_fee_cents` if the schedule rounds whole cents per order.
+- **Schedule verification:** the official general fee schedule (`https://kalshi.com/fee-schedule`, latest archived publication checked 2026-05-08; the linked PDF is effective 2026-02-05) states `round_up(0.07 × C × P × (1-P))` and says the result rounds to the next cent. The current API fee-rounding page also documents separate six-decimal model-fee and account-balance rounding; this helper models the published order-level total, so it rounds once after applying `C`.
+- **Root cause:** the helper multiplied the cent result by 100 before `ceil`, returning fractional cents (1.73¢) instead of the order total rounded to a whole cent (2¢).
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_fees.py -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert 1.73 == 2.0
+  1 failed in 0.48s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_fees.py tests/test_backtest_fills.py -q
+  ```
+  GREEN output tail:
+  ```text
+  20 passed in 0.27s
+  ```
+- **Implementation:** calculate the total taker or maker fee in cents, apply `ceil` once to that order total, and update the two edge-threshold fixtures whose expected values depended on fractional-cent fees.
+
+## Post-review fix wave — finding 6
+
+- **Requirement:** add a per-model availability lag to Open-Meteo `published_at`, defaulting to 6 hours, and add a spring-forward DST regression.
+- **Root cause:** the old stamp represented only the end of the requested lead window and did not reserve time for the model run to become available; it also left the existing fall-back expectation at the pre-lag instant.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert datetime.datetime(2026, 7, 24, 3, 0, tzinfo=datetime.timezone.utc) == datetime.datetime(2026, 7, 23, 21, 0, tzinfo=datetime.timezone.utc)
+  3 failed, 3 passed in 0.06s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  GREEN output tail:
+  ```text
+  6 passed in 0.02s
+  ```
+- **Implementation:** added `DEFAULT_AVAILABILITY_LAG = timedelta(hours=6)`, a per-model override mapping, and an optional `availability_lag` argument. The local target-day boundary is converted to UTC first, then the lead duration and lag are subtracted as absolute durations; the spring-forward test expects `2026-03-07T21:00Z`.
+- **Deviation:** the existing July and fall-back expected timestamps were shifted by the new default 6-hour lag.
+
+## Post-review fix wave — finding 7
+
+- **Requirement:** compute maximum drawdown in market settlement order rather than decision/fill-discovery order.
+- **Root cause:** `run_backtest` accumulated P&Ls as it iterated decisions, even though a position's realized P&L enters the equity curve at market settlement.
+- **RED command (final regression run against the pre-fix runner):**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py::test_max_drawdown_follows_market_settlement_order -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert 1.6400000000000001 == 1.06 ± 1.1e-06
+  1 failed in 0.44s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  GREEN output tail:
+  ```text
+  15 passed in 0.41s
+  ```
+- **Implementation:** retained each fill's `MarketHistory.close_time` as the settlement-order key, sorted by settlement time with deterministic fill tie-breakers, and fed only that ordered P&L sequence to `max_drawdown`; total P&L and fill output order remain unchanged.
+- **Deviation:** the regression was first drafted with two markets, which could not distinguish the two orderings; it was strengthened to three markets before the final RED/GREEN cycle.
+
+## Review follow-up — explicit settlement timestamp
+
+- **Finding from final code review:** `MarketHistory.close_time` is the trading-close boundary, not necessarily Kalshi's payout settlement timestamp; using it alone could still order drawdown incorrectly.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py::test_max_drawdown_uses_explicit_settlement_time_not_market_close -q
+  ```
+  RED output tail:
+  ```text
+  TypeError: MarketHistory.__init__() takes 6 positional arguments but 7 were given
+  1 failed in 0.52s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  GREEN output tail:
+  ```text
+  16 passed in 0.26s
+  ```
+- **Implementation:** added a trailing optional `MarketHistory.settled_at`, used it for settlement ordering when present, retained `close_time` for decision/fill validation and as a legacy fallback, and kept total P&L summation in deterministic decision order.
+- **Cross-branch note:** the stacked data-layer branch has consumers that predate the new explicit `market_settled_at` candle argument. No files from that separate branch were edited here; its integration must pass market `settlement_ts` when rebased, rather than guessing a tier in this branch.
+
+## User-requested re-review fix — Open-Meteo availability lag
+
+- **Requirement:** a `previous_dayN` value becomes available after the run finishes, so the availability lag is added after subtracting the lead duration.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert datetime.datetime(2026, 7, 23, 21, 0, tzinfo=datetime.timezone.utc) == datetime.datetime(2026, 7, 24, 9, 0, tzinfo=datetime.timezone.utc)
+  4 failed, 3 passed in 0.07s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  GREEN output tail:
+  ```text
+  7 passed in 0.02s
+  ```
+- **Implementation:** changed the absolute-time calculation to `- lead_days + lag`; updated the July, spring-forward, 12-hour, and fall-back expected timestamps; restored `test_forecast_daily_high_validates_lead_and_empty_payload()` as a separate test.
+- **Deviation:** None. The report intentionally records the corrected availability direction and the restored test.
+
+## User-requested re-review fix — integer Kalshi fee math
+
+- **Requirement:** calculate fees with integer cent arithmetic so float dust cannot round an order up by one cent.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_fees.py -q
+  ```
+  RED output tail:
+  ```text
+  assert 8.0 == 7.0
+  assert 64.0 == 63.0
+  2 failed, 1 passed in 0.55s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_fees.py tests/test_backtest_fills.py -q
+  ```
+  GREEN output tail:
+  ```text
+  22 passed in 0.47s
+  ```
+- **Implementation:** added `ceil_div` and whole-cent price normalization; taker fees use `ceil_div(7*C*p*(100-p), 10000)` and maker fees use denominator `40000`. Added dust regressions (4×50¢ taker and 16×50¢ maker) plus the requested 10¢×100 and 20¢×25 examples.
+- **Fee schedule note:** the official published schedule was not independently re-read in this run; the implementation conservatively continues charging maker fees wherever the caller requests them.
+- **Deviation:** None beyond retaining the existing maker-fee behavior for callers.
+
+## User-requested re-review fix — Kalshi candle tier selection
+
+- **Requirement:** `merged_candles` must accept `market_settled_at=None` and route unsettled markets to the live tier, reject naive datetimes, and expose no unused `cutoffs`, `merge_candles`, or `merge_trades` aliases.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  RED output tail:
+  ```text
+  TypeError: KalshiHistoryClient.merged_candles() missing 1 required keyword-only argument: 'market_settled_at'
+  TypeError: can't compare offset-naive and offset-aware datetimes
+  AssertionError: assert not True
+  5 failed, 17 passed in 0.08s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  GREEN output tail:
+  ```text
+  22 passed in 0.02s
+  ```
+- **Implementation:** made `market_settled_at` optional; a missing value selects the live tier without a cutoff request, while a known settlement time still compares against the market cutoff. Added timezone-awareness validation for `start`, `end`, and `market_settled_at`, and removed the three unused aliases.
+- **Deviation:** None; the existing `cutoff()` and `cutoff_timestamps()` methods remain because they are used by the tier-selection tests and client API.

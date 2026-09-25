@@ -60,6 +60,7 @@ def test_parse_trade():
     assert t.no_price == pytest.approx(0.99)
     assert t.count == pytest.approx(83.0)
     assert t.taker_side == "yes"
+    assert t.trade_id == TRADE["trade_id"]
 
 
 def test_cutoff_reads_market_settled_ts():
@@ -68,41 +69,41 @@ def test_cutoff_reads_market_settled_ts():
 
 
 def test_settled_markets_follows_cursor_pagination():
-    get = FakeGet({"/historical/markets": [
-        {"markets": [{"ticker": "A"}], "cursor": "c1"},
-        {"markets": [{"ticker": "B"}], "cursor": ""},
-    ]})
+    get = FakeGet({
+        "/historical/markets": [
+            {"markets": [{"ticker": "A"}], "cursor": "c1"},
+            {"markets": [{"ticker": "B"}], "cursor": ""},
+        ],
+        "/markets": {"markets": [], "cursor": ""},
+    })
     markets = kh.KalshiHistoryClient(get_json=get).settled_markets("KXHIGHNY")
     assert [m["ticker"] for m in markets] == ["A", "B"]
     assert get.calls[0][1]["series_ticker"] == "KXHIGHNY"
     assert get.calls[1][1]["cursor"] == "c1"
 
 
-def test_merged_settled_markets_combines_tiers_and_deduplicates_ticker():
+def test_settled_markets_merges_historical_and_live_tiers_by_ticker():
     get = FakeGet({
         "/historical/markets": {
-            "markets": [{"ticker": "A", "result": "yes"}],
+            "markets": [{"ticker": "A", "source": "historical"}],
             "cursor": "",
         },
         "/markets": {
             "markets": [
-                {"ticker": "A", "result": "yes"},
-                {"ticker": "B", "result": "no"},
+                {"ticker": "A", "source": "live-duplicate"},
+                {"ticker": "B", "source": "live"},
             ],
             "cursor": "",
         },
     })
 
-    markets = kh.KalshiHistoryClient(get_json=get).merged_settled_markets("KXHIGHNY")
+    markets = kh.KalshiHistoryClient(get_json=get).settled_markets("S")
 
     assert [market["ticker"] for market in markets] == ["A", "B"]
+    assert markets[0]["source"] == "historical"
     assert [path for path, _ in get.calls] == ["/historical/markets", "/markets"]
-    assert get.calls[0][1] == {"series_ticker": "KXHIGHNY", "limit": kh.PAGE_LIMIT}
-    assert get.calls[1][1] == {
-        "series_ticker": "KXHIGHNY",
-        "status": "settled",
-        "limit": kh.PAGE_LIMIT,
-    }
+    assert get.calls[1][1]["status"] == "settled"
+    assert get.calls[1][1]["series_ticker"] == "S"
 
 
 def test_candles_historical_path_params_and_sorting():
@@ -183,79 +184,91 @@ def test_cutoff_timestamps_exposes_market_and_trade_boundaries():
     assert client.cutoff() == datetime(2026, 7, 25, tzinfo=timezone.utc)
 
 
-def test_merged_candles_splits_at_market_cutoff_and_deduplicates_boundary():
+@pytest.mark.parametrize(
+    ("market_settled_at", "expected_path"),
+    [
+        (datetime(2026, 7, 24, 23, tzinfo=timezone.utc), "/historical/markets/T/candlesticks"),
+        (datetime(2026, 7, 25, tzinfo=timezone.utc), "/series/S/markets/T/candlesticks"),
+    ],
+)
+def test_merged_candles_uses_one_tier_selected_by_market_settlement(market_settled_at, expected_path):
     cutoff = datetime(2026, 7, 25, tzinfo=timezone.utc)
     start = datetime(2026, 7, 24, 23, tzinfo=timezone.utc)
     end = datetime(2026, 7, 25, 2, tzinfo=timezone.utc)
-    historical = dict(CANDLE, end_period_ts=int(datetime(2026, 7, 24, 23, 30, tzinfo=timezone.utc).timestamp()))
-    boundary = dict(CANDLE, end_period_ts=int(cutoff.timestamp()))
-    live = {
-        "end_period_ts": int(datetime(2026, 7, 25, 1, tzinfo=timezone.utc).timestamp()),
-        "yes_bid": {"close_dollars": "0.2000"},
-        "yes_ask": {"close_dollars": "0.2100"},
-        "volume_fp": "3.00",
-    }
-    get = FakeGet({
-        "/historical/cutoff": {
-            "market_settled_ts": cutoff.isoformat().replace("+00:00", "Z"),
-            "trades_created_ts": "2026-07-24T12:00:00Z",
-        },
-        "/historical/markets/T/candlesticks": {"candlesticks": [boundary, historical]},
-        "/series/S/markets/T/candlesticks": {"candlesticks": [live, boundary]},
-    })
-    candles = kh.KalshiHistoryClient(get_json=get).merged_candles(
-        "T", start, end, series_ticker="S",
+    raw = dict(
+        CANDLE,
+        end_period_ts=int(datetime(2026, 7, 24, 23, 30, tzinfo=timezone.utc).timestamp()),
     )
-    assert [c.end_ts for c in candles] == [
-        datetime.fromtimestamp(historical["end_period_ts"], tz=timezone.utc),
-        cutoff,
-        datetime.fromtimestamp(live["end_period_ts"], tz=timezone.utc),
-    ]
-    assert [c.yes_ask for c in candles] == pytest.approx([0.03, 0.03, 0.21])
-    assert [path for path, _ in get.calls] == [
-        "/historical/cutoff",
-        "/historical/markets/T/candlesticks",
-        "/series/S/markets/T/candlesticks",
-    ]
-
-
-def test_cutoff_timestamps_are_cached_across_repeated_merged_candle_calls():
-    cutoff = datetime(2026, 7, 25, tzinfo=timezone.utc)
     get = FakeGet({
         "/historical/cutoff": {
             "market_settled_ts": cutoff.isoformat().replace("+00:00", "Z"),
             "trades_created_ts": "2026-07-24T12:00:00Z",
         },
-        "/historical/markets/T/candlesticks": {"candlesticks": []},
+        expected_path: {"candlesticks": [raw]},
     })
-    client = kh.KalshiHistoryClient(get_json=get)
-    start = datetime(2026, 7, 24, 23, tzinfo=timezone.utc)
-    end = datetime(2026, 7, 25, tzinfo=timezone.utc)
 
-    client.merged_candles("T", start, end)
-    client.merged_candles("T", start, end)
+    candles = kh.KalshiHistoryClient(get_json=get).merged_candles(
+        "T", start, end, market_settled_at=market_settled_at, series_ticker="S",
+    )
 
-    assert [path for path, _ in get.calls].count("/historical/cutoff") == 1
+    assert [c.end_ts for c in candles] == [datetime.fromtimestamp(raw["end_period_ts"], tz=timezone.utc)]
+    assert [path for path, _ in get.calls] == ["/historical/cutoff", expected_path]
 
 
-def test_merged_trades_combines_tiers_and_deduplicates_overlap():
+def test_merged_trades_deduplicates_by_trade_id_without_a_cutoff_call():
     cutoff = {
         "market_settled_ts": "2026-07-25T00:00:00Z",
         "trades_created_ts": "2026-07-24T22:30:00Z",
     }
-    older = dict(TRADE, created_time="2026-07-24T22:19:22.675922Z")
+    older = dict(TRADE, created_time="2026-07-24T22:19:22.675922Z", trade_id="older-id")
     duplicate = dict(older)
-    newer = dict(TRADE, created_time="2026-07-24T23:00:00Z")
+    distinct_same_fields = dict(older, trade_id="distinct-id")
     get = FakeGet({
         "/historical/cutoff": cutoff,
         "/historical/trades": {"trades": [older]},
-        "/markets/trades": {"trades": [duplicate, newer]},
+        "/markets/trades": {"trades": [duplicate, distinct_same_fields]},
     })
+
     trades = kh.KalshiHistoryClient(get_json=get).merged_trades("T")
-    assert [trade.created_at.hour for trade in trades] == [22, 23]
-    assert len(trades) == 2
-    assert [path for path, _ in get.calls] == [
-        "/historical/cutoff",
-        "/historical/trades",
-        "/markets/trades",
-    ]
+
+    assert [trade.trade_id for trade in trades] == ["older-id", "distinct-id"]
+    assert [path for path, _ in get.calls] == ["/historical/trades", "/markets/trades"]
+
+
+def test_merged_candles_accepts_unsettled_market_and_uses_live_tier():
+    start = datetime(2026, 7, 24, 23, tzinfo=timezone.utc)
+    end = datetime(2026, 7, 25, 2, tzinfo=timezone.utc)
+    raw = dict(
+        CANDLE,
+        end_period_ts=int(datetime(2026, 7, 24, 23, 30, tzinfo=timezone.utc).timestamp()),
+    )
+    get = FakeGet({"/series/S/markets/T/candlesticks": {"candlesticks": [raw]}})
+
+    candles = kh.KalshiHistoryClient(get_json=get).merged_candles(
+        "T", start, end, series_ticker="S",
+    )
+
+    assert [c.end_ts for c in candles] == [datetime.fromtimestamp(raw["end_period_ts"], tz=timezone.utc)]
+    assert [path for path, _ in get.calls] == ["/series/S/markets/T/candlesticks"]
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "market_settled_at"),
+    [
+        (datetime(2026, 7, 24, 23), datetime(2026, 7, 25, 2, tzinfo=timezone.utc), None),
+        (datetime(2026, 7, 24, 23, tzinfo=timezone.utc), datetime(2026, 7, 25, 2), None),
+        (datetime(2026, 7, 24, 23, tzinfo=timezone.utc), datetime(2026, 7, 25, 2, tzinfo=timezone.utc), datetime(2026, 7, 25)),
+    ],
+)
+def test_merged_candles_rejects_naive_datetimes(start, end, market_settled_at):
+    with pytest.raises(ValueError, match="timezone-aware"):
+        kh.KalshiHistoryClient(get_json=FakeGet({})).merged_candles(
+            "T", start, end, market_settled_at=market_settled_at, series_ticker="S",
+        )
+
+
+def test_removed_legacy_aliases_are_not_exposed():
+    client = kh.KalshiHistoryClient(get_json=FakeGet({}))
+    assert not hasattr(client, "cutoffs")
+    assert not hasattr(client, "merge_candles")
+    assert not hasattr(client, "merge_trades")

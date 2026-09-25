@@ -68,7 +68,7 @@ def test_settled_values_merges_historical_and_live_tiers():
     assert ("/markets", {"series_ticker": "KXAAAGASD", "status": "settled", "limit": 1000}) in get.calls
 
 
-def test_settled_values_reuses_merged_settled_markets(monkeypatch):
+def test_settled_values_reuses_tier_merged_settled_markets(monkeypatch):
     live = KalshiLive(get_json=lambda *args, **kwargs: pytest.fail("network should not be called"))
     calls = []
     raws = [{
@@ -78,11 +78,11 @@ def test_settled_values_reuses_merged_settled_markets(monkeypatch):
         "settlement_ts": "2026-09-24T11:50:00Z",
     }]
 
-    def merged(series):
+    def settled(series):
         calls.append(series)
         return raws
 
-    monkeypatch.setattr(live, "merged_settled_markets", merged)
+    monkeypatch.setattr(live, "settled_markets", settled)
     observations = live.settled_values("KXAAAGASD")
 
     assert calls == ["KXAAAGASD"]

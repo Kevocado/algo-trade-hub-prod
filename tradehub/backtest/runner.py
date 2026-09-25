@@ -43,6 +43,7 @@ class MarketHistory:
     close_time: datetime
     candles: list[Candle]
     trades: list[Trade]
+    settled_at: datetime | None = None
 
 
 @dataclass
@@ -77,6 +78,7 @@ def run_backtest(
     rows: list[dict[str, Any]] = []
     fills: list[Fill] = []
     pnls: list[float] = []
+    settled_pnls: list[tuple[datetime, Fill, float]] = []
     for decision in sorted(decisions, key=_decision_sort_key):
         check_no_lookahead(decision)
         history = histories[decision.market_ticker]
@@ -91,8 +93,11 @@ def run_backtest(
             fill = maker_fill(decision, history.candles, history.trades, history.close_time,
                               contracts=contracts, min_edge_pct=min_edge_pct)
         if fill is not None:
+            pnl = fill_pnl(fill, history.result)
             fills.append(fill)
-            pnls.append(fill_pnl(fill, history.result))
+            pnls.append(pnl)
+            settlement_time = history.settled_at or history.close_time
+            settled_pnls.append((settlement_time, fill, pnl))
     summary = compute_engine_summary(rows)
     cal_buckets = compute_calibration(rows)
     mean_log_loss = (
@@ -100,12 +105,23 @@ def run_backtest(
         if rows
         else None
     )
+    settlement_order = sorted(
+        settled_pnls,
+        key=lambda item: (
+            _timestamp_key(item[0]),
+            _timestamp_key(item[1].filled_at),
+            item[1].market_ticker,
+            item[1].side,
+            item[1].price,
+            item[1].contracts,
+        ),
+    )
     total = sum(pnls)
     gate = check_promotion_gate(engine=engine, cadence=cadence, summary=summary, cal_buckets=cal_buckets,
                                 simulated_pnl_after_fees=total if fills else None)
     return BacktestResult(
         engine=engine, cadence=cadence, mode=mode, n_decisions=len(rows), n_fills=len(fills),
-        pnl_after_fees=total, max_drawdown=max_drawdown(pnls),
+        pnl_after_fees=total, max_drawdown=max_drawdown([pnl for _, _, pnl in settlement_order]),
         turnover=sum(f.price * f.contracts for f in fills),
         summary=summary, cal_buckets=cal_buckets, gate=gate, fills=fills,
         log_loss=mean_log_loss,
@@ -115,16 +131,18 @@ def run_backtest(
 def walk_forward(
     events: Sequence[E],
     time_of: Callable[[E], datetime],
+    label_available_at: Callable[[E], datetime],
     fit: Callable[[list[E]], M],
     predict: Callable[[M, E], R],
     *,
     min_history: int = 1,
 ) -> list[tuple[E, R]]:
-    """Predict each event from a model fit only on events strictly earlier in time."""
+    """Predict each event using only labels available before its decision time."""
     ordered = sorted(events, key=time_of)
     out: list[tuple[E, R]] = []
     for event in ordered:
-        history = [e for e in ordered if time_of(e) < time_of(event)]
+        event_time = time_of(event)
+        history = [e for e in ordered if e is not event and label_available_at(e) < event_time]
         if len(history) < min_history:
             continue
         out.append((event, predict(fit(history), event)))

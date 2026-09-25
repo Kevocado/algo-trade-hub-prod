@@ -50,7 +50,7 @@ def test_taker_never_buys_below_10_cents():
 
 
 def test_taker_respects_min_edge_after_fees():
-    # 0.47 vs ask 0.44: gross 3pp, fee ~1.73pp -> net ~1.27pp.
+    # 0.47 vs ask 0.44: gross 3pp, whole-cent fee 2pp -> net 1pp.
     d = Decision("T", T0, 0.47)
     assert taker_fill(d, [candle(1, 0.40, 0.44)], min_edge_pct=1.0) is not None
     assert taker_fill(d, [candle(1, 0.40, 0.44)], min_edge_pct=2.0) is None
@@ -103,14 +103,14 @@ def test_negative_gross_edge_never_fills_even_when_fee_would_flip_the_sign():
 
 
 def test_taker_edge_threshold_uses_requested_contract_count():
-    decision = Decision("T", T0, 0.1065)
+    decision = Decision("T", T0, 0.1072)
     quotes = [candle(1, 0.08, 0.10)]
     assert taker_fill(decision, quotes, contracts=1, min_edge_pct=0.015) is None
     assert taker_fill(decision, quotes, contracts=10, min_edge_pct=0.015) is not None
 
 
 def test_maker_edge_threshold_uses_requested_contract_count():
-    decision = Decision("T", T0, 0.1017)
+    decision = Decision("T", T0, 0.1022)
     quotes = [candle(1, 0.10, 0.101)]
     trades = [Trade(T0 + timedelta(minutes=5), 0.10, 0.90, 10.0, "no")]
     assert maker_fill(decision, quotes, trades, CLOSE, contracts=1, min_edge_pct=0.011) is None

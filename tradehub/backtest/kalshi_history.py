@@ -34,10 +34,16 @@ class Trade:
     count: float
     taker_side: str
     is_block_trade: bool = False
+    trade_id: str | None = None
 
 
 def parse_ts(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _require_aware(value: datetime, name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware")
 
 
 def _dollars(value: Any) -> float | None:
@@ -73,6 +79,7 @@ def parse_trade(raw: dict[str, Any]) -> Trade:
         count=float(raw["count_fp"]),
         taker_side=taker_side,
         is_block_trade=bool(raw.get("is_block_trade", False)),
+        trade_id=raw.get("trade_id"),
     )
 
 
@@ -110,31 +117,30 @@ class KalshiHistoryClient:
                 }
             return dict(self._cutoff_cache)
 
-    def cutoffs(self) -> dict[str, datetime]:
-        """Alias for :meth:`cutoff_timestamps` for callers that prefer a short name."""
-        return self.cutoff_timestamps()
-
     def cutoff(self) -> datetime:
         """Return the market-settlement cutoff used by candle history queries."""
         return self.cutoff_timestamps()["market_settled_ts"]
 
     def settled_markets(self, series_ticker: str) -> list[dict]:
-        return self._paginate("/historical/markets", "markets", {"series_ticker": series_ticker, "limit": PAGE_LIMIT})
-
-    def merged_settled_markets(self, series_ticker: str) -> list[dict]:
-        """Combine historical and live settled markets, deduplicated by ticker."""
-        historical = self.settled_markets(series_ticker)
+        historical = self._paginate(
+            "/historical/markets",
+            "markets",
+            {"series_ticker": series_ticker, "limit": PAGE_LIMIT},
+        )
         live = self._paginate(
             "/markets",
             "markets",
-            {"series_ticker": series_ticker, "status": "settled", "limit": PAGE_LIMIT},
+            {"status": "settled", "series_ticker": series_ticker, "limit": PAGE_LIMIT},
         )
         by_ticker: dict[str, dict] = {}
-        for market in historical + live:
+        without_ticker: list[dict] = []
+        for market in [*historical, *live]:
             ticker = market.get("ticker")
-            if ticker is not None:
-                by_ticker.setdefault(ticker, market)
-        return list(by_ticker.values())
+            if ticker is None:
+                without_ticker.append(market)
+            elif ticker not in by_ticker:
+                by_ticker[ticker] = market
+        return [*by_ticker.values(), *without_ticker]
 
     def candles(
         self,
@@ -162,41 +168,35 @@ class KalshiHistoryClient:
         start: datetime,
         end: datetime,
         *,
+        market_settled_at: datetime | None = None,
         period_minutes: int = 60,
         series_ticker: str | None = None,
     ) -> list[Candle]:
-        """Return candles from the correct tier on each side of the market cutoff."""
+        """Return candles from the one tier that owns this market.
+
+        A missing settlement timestamp means the market is still live, so use
+        the live tier directly. All supplied timestamps must be timezone-aware
+        to avoid silently interpreting local time as UTC.
+        """
+        _require_aware(start, "start")
+        _require_aware(end, "end")
+        if market_settled_at is not None:
+            _require_aware(market_settled_at, "market_settled_at")
         if end < start:
             raise ValueError(f"end must not precede start, got {end!r} < {start!r}")
-        market_cutoff = self.cutoff_timestamps()["market_settled_ts"]
-        parts: list[Candle] = []
-        if start < market_cutoff:
-            parts.extend(self.candles(
-                ticker,
-                start,
-                min(end, market_cutoff),
-                period_minutes=period_minutes,
-                historical=True,
-            ))
-        if end > market_cutoff:
-            if not series_ticker:
-                raise ValueError("live-tier candlesticks require series_ticker")
-            parts.extend(self.candles(
-                ticker,
-                max(start, market_cutoff),
-                end,
-                period_minutes=period_minutes,
-                historical=False,
-                series_ticker=series_ticker,
-            ))
-        by_timestamp: dict[datetime, Candle] = {}
-        for candle in parts:
-            by_timestamp.setdefault(candle.end_ts, candle)
-        return sorted(by_timestamp.values(), key=lambda candle: candle.end_ts)
-
-    def merge_candles(self, ticker: str, start: datetime, end: datetime, **kwargs: Any) -> list[Candle]:
-        """Alias for :meth:`merged_candles`."""
-        return self.merged_candles(ticker, start, end, **kwargs)
+        if market_settled_at is None:
+            historical = False
+        else:
+            market_cutoff = self.cutoff_timestamps()["market_settled_ts"]
+            historical = market_settled_at < market_cutoff
+        return self.candles(
+            ticker,
+            start,
+            end,
+            period_minutes=period_minutes,
+            historical=historical,
+            series_ticker=series_ticker,
+        )
 
     def trades(self, ticker: str, *, historical: bool = True) -> list[Trade]:
         path = "/historical/trades" if historical else "/markets/trades"
@@ -210,24 +210,40 @@ class KalshiHistoryClient:
         start: datetime | None = None,
         end: datetime | None = None,
     ) -> list[Trade]:
-        """Combine both trade tiers, remove overlap duplicates, and sort oldest first."""
-        self.cutoff_timestamps()["trades_created_ts"]
+        """Combine both trade tiers, deduplicate identities, and sort oldest first."""
         combined = self.trades(ticker, historical=True)
         combined.extend(self.trades(ticker, historical=False))
         seen: set[tuple[Any, ...]] = set()
         merged: list[Trade] = []
-        for trade in sorted(combined, key=lambda item: (item.created_at, item.taker_side, item.yes_price, item.no_price, item.count, item.is_block_trade)):
+        for trade in sorted(
+            combined,
+            key=lambda item: (
+                item.created_at,
+                item.taker_side,
+                item.yes_price,
+                item.no_price,
+                item.count,
+                item.is_block_trade,
+            ),
+        ):
             if start is not None and trade.created_at < start:
                 continue
             if end is not None and trade.created_at > end:
                 continue
-            key = (trade.created_at, trade.yes_price, trade.no_price, trade.count, trade.taker_side, trade.is_block_trade)
+            if trade.trade_id is not None:
+                key = ("trade_id", trade.trade_id)
+            else:
+                key = (
+                    "fields",
+                    trade.created_at,
+                    trade.yes_price,
+                    trade.no_price,
+                    trade.count,
+                    trade.taker_side,
+                    trade.is_block_trade,
+                )
             if key in seen:
                 continue
             seen.add(key)
             merged.append(trade)
         return merged
-
-    def merge_trades(self, ticker: str, **kwargs: Any) -> list[Trade]:
-        """Alias for :meth:`merged_trades`."""
-        return self.merged_trades(ticker, **kwargs)

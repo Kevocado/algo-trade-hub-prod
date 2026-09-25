@@ -49,4 +49,4 @@ class KalshiLive(KalshiHistoryClient):
         return [LiveMarket(parse_market(r), quote_from_market_raw(r)) for r in raws]
 
     def settled_values(self, series_ticker: str) -> list[Observation]:
-        return settlement_observations(self.merged_settled_markets(series_ticker))
+        return settlement_observations(self.settled_markets(series_ticker))
