@@ -889,3 +889,25 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   21 passed in 0.68s
   ```
 - Scan now fits all available settled/lead-1 pairs, filters current observations by publication time, and shares the YAML fallback with `build_weather_decisions()`. The backtest loads the engine config, passes `min_edge_pct` to the runner, and records it in run metadata. Failed city/engine paths now log zero counts, and the weather docstring matches the no-double-spread implementation.
+
+### RBOB contract identity fail-closed correction
+
+- **Files changed:** `tradehub/data/rbob.py`, `tradehub/engines/gas.py`, `tests/test_gas_engine.py`, and this report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_gas_engine.py -q
+  ```
+  RED output tail:
+  ```text
+  FF.......
+  2 failed, 7 passed in 0.73s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_gas_engine.py tests/test_backtest_engines.py::test_gas_decision_omits_rbob_features_for_roll_crossing_window tests/test_backtest_engines.py::test_gas_cli_sizes_rbob_from_backtest_start -q
+  ```
+  GREEN output tail:
+  ```text
+  11 passed in 0.37s
+  ```
+- The continuous `RB=F` response has no historical contract identity, so unannotated observations are now marked `unknown` and rejected by `rbob_change_window()`. Explicit `Contract` metadata remains supported; no calendar or price heuristic is used to invent a contract.

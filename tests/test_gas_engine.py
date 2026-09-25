@@ -28,14 +28,26 @@ def test_rbob_closes_publishes_at_1800_new_york():
     frame = pd.DataFrame({"Close": [3.30, 3.40]},
                          index=pd.DatetimeIndex(["2026-09-22", "2026-09-23"]).tz_localize("America/New_York"))
     obs = rbob_closes(history_fn=lambda: frame)
-    assert [o.name for o in obs] == ["RBOB:RBV26.NYM:2026-09-22", "RBOB:RBV26.NYM:2026-09-23"]
+    assert [o.name for o in obs] == ["RBOB:unknown:2026-09-22", "RBOB:unknown:2026-09-23"]
     assert obs[0].published_at == datetime(2026, 9, 22, 22, 0, tzinfo=timezone.utc)  # 18:00 EDT
     assert obs[1].value == pytest.approx(3.40)
 
 
-def test_rbob_closes_changes_contract_at_the_front_month_boundary():
+def test_rbob_closes_marks_contract_unknown_without_metadata():
     frame = pd.DataFrame(
         {"Close": [3.30, 3.40]},
+        index=pd.DatetimeIndex(["2026-08-31", "2026-09-01"]).tz_localize("America/New_York"),
+    )
+
+    obs = rbob_closes(history_fn=lambda: frame)
+
+    assert [o.name for o in obs] == ["RBOB:unknown:2026-08-31", "RBOB:unknown:2026-09-01"]
+    assert rbob_change(obs, datetime(2026, 9, 2, tzinfo=timezone.utc), window=1) is None
+
+
+def test_rbob_closes_preserves_explicit_contract_metadata():
+    frame = pd.DataFrame(
+        {"Close": [3.30, 3.40], "Contract": ["RBU26.NYM", "RBV26.NYM"]},
         index=pd.DatetimeIndex(["2026-08-31", "2026-09-01"]).tz_localize("America/New_York"),
     )
 

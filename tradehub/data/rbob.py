@@ -11,20 +11,6 @@ from tradehub.backtest.pit import Observation
 
 RBOB_SYMBOL = "RB=F"
 _SETTLE_TZ = ZoneInfo("America/New_York")
-_MONTH_CODES = "FGHJKMNQUVXZ"
-
-
-def _front_contract(day: date) -> str:
-    """Return the expected front delivery contract for a calendar date.
-
-    RBOB's front contract rolls at the calendar-month boundary (the prior
-    delivery month stops trading at the end of its last business day). The
-    contract code is carried in the observation name so mixed-contract windows
-    can be rejected without guessing from price jumps.
-    """
-    year = day.year + (1 if day.month == 12 else 0)
-    month = 1 if day.month == 12 else day.month + 1
-    return f"RB{_MONTH_CODES[month - 1]}{year % 100:02d}.NYM"
 
 
 def _default_history(start: date | None = None, end: date | None = None) -> Any:
@@ -83,7 +69,7 @@ def rbob_closes(
             except (AttributeError, KeyError, TypeError):
                 contract = None
         if contract is None or str(contract).lower() in {"", "nan", "none"}:
-            contract = _front_contract(day)
+            contract = "unknown"
         published = datetime.combine(day, time(18, 0), _SETTLE_TZ).astimezone(timezone.utc)
         out.append(Observation(f"RBOB:{contract}:{day.isoformat()}", float(close), published))
     return sorted(out, key=lambda observation: observation.published_at)

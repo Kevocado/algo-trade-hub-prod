@@ -33,7 +33,7 @@ DEFAULT_GAS = GasModel(alpha=0.0, beta=0.0, sigma=0.01)
 
 def _contract_id(observation: Observation) -> str | None:
     parts = observation.name.split(":")
-    if len(parts) != 3 or not parts[1]:
+    if len(parts) != 3 or not parts[1] or parts[1].lower() == "unknown":
         return None
     return parts[1]
 
