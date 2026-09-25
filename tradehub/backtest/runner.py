@@ -76,7 +76,7 @@ def run_backtest(
         raise ValueError(f"mode must be 'taker' or 'maker', got {mode!r}")
     rows: list[dict[str, Any]] = []
     fills: list[Fill] = []
-    pnls: list[float] = []
+    settled_pnls: list[tuple[datetime, Fill, float]] = []
     for decision in sorted(decisions, key=_decision_sort_key):
         check_no_lookahead(decision)
         history = histories[decision.market_ticker]
@@ -92,7 +92,7 @@ def run_backtest(
                               contracts=contracts, min_edge_pct=min_edge_pct)
         if fill is not None:
             fills.append(fill)
-            pnls.append(fill_pnl(fill, history.result))
+            settled_pnls.append((history.close_time, fill, fill_pnl(fill, history.result)))
     summary = compute_engine_summary(rows)
     cal_buckets = compute_calibration(rows)
     mean_log_loss = (
@@ -100,12 +100,23 @@ def run_backtest(
         if rows
         else None
     )
-    total = sum(pnls)
+    settlement_order = sorted(
+        settled_pnls,
+        key=lambda item: (
+            _timestamp_key(item[0]),
+            _timestamp_key(item[1].filled_at),
+            item[1].market_ticker,
+            item[1].side,
+            item[1].price,
+            item[1].contracts,
+        ),
+    )
+    total = sum(pnl for _, _, pnl in settlement_order)
     gate = check_promotion_gate(engine=engine, cadence=cadence, summary=summary, cal_buckets=cal_buckets,
                                 simulated_pnl_after_fees=total if fills else None)
     return BacktestResult(
         engine=engine, cadence=cadence, mode=mode, n_decisions=len(rows), n_fills=len(fills),
-        pnl_after_fees=total, max_drawdown=max_drawdown(pnls),
+        pnl_after_fees=total, max_drawdown=max_drawdown([pnl for _, _, pnl in settlement_order]),
         turnover=sum(f.price * f.contracts for f in fills),
         summary=summary, cal_buckets=cal_buckets, gate=gate, fills=fills,
         log_loss=mean_log_loss,

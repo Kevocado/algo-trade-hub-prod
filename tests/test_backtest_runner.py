@@ -138,6 +138,26 @@ def test_walk_forward_excludes_labels_that_settle_36h_after_their_decision():
     assert seen == [1, 2]
 
 
+def test_max_drawdown_follows_market_settlement_order():
+    histories = {
+        "A": MarketHistory("A", "no", T0 + timedelta(hours=2), [Candle(T0 - timedelta(hours=1), 0.20, 0.80, 1.0)], []),
+        "B": MarketHistory("B", "no", T0 + timedelta(hours=4), [Candle(T0 - timedelta(hours=1), 0.20, 0.80, 1.0)], []),
+        "C": MarketHistory("C", "yes", T0 + timedelta(hours=3), [Candle(T0 - timedelta(hours=1), 0.30, 0.40, 1.0)], []),
+    }
+    decisions = [
+        Decision("A", T0, 0.90),
+        Decision("B", T0 + timedelta(minutes=1), 0.90),
+        Decision("C", T0 + timedelta(minutes=2), 0.60),
+    ]
+
+    result = run_backtest(engine="weather", cadence="daily", decisions=decisions, histories=histories)
+
+    assert [fill.market_ticker for fill in result.fills] == ["A", "B", "C"]
+    # Decision order is [-0.82, -0.82, +0.58] with 1.64 drawdown;
+    # settlement order is [-0.82, +0.58, -0.82] with 1.06 drawdown.
+    assert result.max_drawdown == pytest.approx(1.06)
+
+
 def test_log_loss_is_numerically_clipped_and_propagates_to_result():
     assert backtest_metrics.log_loss(0.0, "yes") == pytest.approx(-math.log(1e-15))
     assert backtest_metrics.log_loss(1.0, "no") == pytest.approx(-math.log(1e-15))

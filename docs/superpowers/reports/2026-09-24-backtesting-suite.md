@@ -532,3 +532,27 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
   ```
 - **Implementation:** added `DEFAULT_AVAILABILITY_LAG = timedelta(hours=6)`, a per-model override mapping, and an optional `availability_lag` argument. The local target-day boundary is converted to UTC first, then the lead duration and lag are subtracted as absolute durations; the spring-forward test expects `2026-03-07T21:00Z`.
 - **Deviation:** the existing July and fall-back expected timestamps were shifted by the new default 6-hour lag.
+
+## Post-review fix wave — finding 7
+
+- **Requirement:** compute maximum drawdown in market settlement order rather than decision/fill-discovery order.
+- **Root cause:** `run_backtest` accumulated P&Ls as it iterated decisions, even though a position's realized P&L enters the equity curve at market settlement.
+- **RED command (final regression run against the pre-fix runner):**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py::test_max_drawdown_follows_market_settlement_order -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert 1.6400000000000001 == 1.06 ± 1.1e-06
+  1 failed in 0.44s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  GREEN output tail:
+  ```text
+  15 passed in 0.41s
+  ```
+- **Implementation:** retained each fill's `MarketHistory.close_time` as the settlement-order key, sorted by settlement time with deterministic fill tie-breakers, and fed only that ordered P&L sequence to `max_drawdown`; total P&L and fill output order remain unchanged.
+- **Deviation:** the regression was first drafted with two markets, which could not distinguish the two orderings; it was strengthened to three markets before the final RED/GREEN cycle.
