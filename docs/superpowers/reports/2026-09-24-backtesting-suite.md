@@ -68,7 +68,32 @@
 
 ## Task 3 — Kalshi public-history client
 
-_Pending implementation._
+- **Files changed:** `tradehub/backtest/http.py`, `tradehub/backtest/kalshi_history.py`, `tests/test_backtest_kalshi_history.py`, this evidence report, and `.superpowers/sdd/2026-09-24-backtesting-suite/task-3-report.md` (handoff report; repository-ignored and not staged).
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_backtest_kalshi_history.py:5: in <module>
+      from tradehub.backtest import kalshi_history as kh
+  E   ImportError: cannot import name 'kalshi_history' from 'tradehub.backtest' (/Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/tradehub/backtest/__init__.py)
+  =========================== short test summary info ============================
+  ERROR tests/test_backtest_kalshi_history.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.18s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_kalshi_history.py -q
+  ```
+  GREEN output tail:
+  ```text
+  ..........                                                               [100%]
+  10 passed in 0.02s
+  ```
+- **Behavior:** Added the injected-`get_json` Kalshi public-history client, the 30-second `requests` wrapper, public production base URL, candle/trade parsers, cursor pagination, historical/live paths, and oldest-first output ordering specified by the brief.
+- **Deviation:** No functional implementation or test deviation. The RED failure was an `ImportError` rather than the brief's literal `ModuleNotFoundError` wording because the Task 2 package marker already existed; it was still the expected collection failure caused by the missing client module. Tests use only injected canned responses, so no live network calls were made.
 
 ## Task 4 — Conservative fill model
 
