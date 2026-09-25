@@ -97,7 +97,32 @@
 
 ## Task 4 — Conservative fill model
 
-_Pending implementation._
+- **Files changed:** `tradehub/backtest/fills.py`, `tests/test_backtest_fills.py`, this evidence report, and `.superpowers/sdd/2026-09-24-backtesting-suite/task-4-report.md` (handoff report; repository-ignored and not staged).
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_fills.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_backtest_fills.py:6: in <module>
+      from tradehub.backtest.fills import MIN_TAKER_PRICE, maker_fill, quote_at, taker_fill
+  E   ModuleNotFoundError: No module named 'tradehub.backtest.fills'
+  =========================== short test summary info ============================
+  ERROR tests/test_backtest_fills.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 2.42s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_fills.py -q
+  ```
+  GREEN output tail:
+  ```text
+  ............                                                             [100%]
+  12 passed in 0.42s
+  ```
+- **Behavior:** Added the frozen `Fill` record, decision-time `quote_at` lookup, conservative taker pricing at the visible ask/one-minus-bid, 10-cent taker floor, after-fee edge gating, and maker fills only from later opposite-side taker trades at or through the decision-time bid/one-minus-ask limit. Fee dollars are derived from the shared Kalshi fee helper.
+- **Deviation:** None. The tests and implementation follow the brief verbatim; only the requested Task 4 report and handoff report were updated. The handoff report is intentionally not staged because the requested staging list is explicit.
 
 ## Task 5 — Metrics and runner
 
