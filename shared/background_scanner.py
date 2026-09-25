@@ -4,8 +4,6 @@ background_scanner.py — Slow Market & Macro Scanner
 10-minute loop that:
 1. Fetches FRED series (UNRATE, DGS10, CPIAUCSL, etc.) -> macro_signals
 2. Scans Kalshi open markets for macro-category events -> kalshi_edges
-
-Procfile: scanner_slow: PYTHONPATH=. python shared/background_scanner.py
 """
 
 import time

@@ -370,3 +370,179 @@ All checks passed!
   itself, and `workflow_dispatch` for Kevin's manual first deploy (Task 5).
 
 **Commit:** `ci: build the trade hub image and deploy it to the VPS`
+
+## Task 4 — Retire the PM2 processes + document the VPS deployment
+
+**Files:** deleted `Procfile` and `ecosystem.config.js` (`git rm`; git history keeps them, and
+`_attic/` is gitignored so a move there would not survive a fresh checkout); modified
+`README.md`, `SYSTEM_ARCH.md`, `shared/config.py`, `shared/fast_scanner.py`,
+`shared/background_scanner.py` (docstrings only) and
+`docs/superpowers/plans/2026-09-24-rollout-tracker.md`; appended
+`test_pm2_process_files_are_retired` to `tests/test_repo_layout.py`.
+No deviation from the brief: every specified edit applied as written.
+
+### RED
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest \
+  tests/test_repo_layout.py::test_pm2_process_files_are_retired -q
+>       assert not (REPO / "Procfile").exists()
+E       AssertionError: assert not True
+E        +  where True = exists()
+tests/test_repo_layout.py:225: AssertionError
+FAILED tests/test_repo_layout.py::test_pm2_process_files_are_retired
+1 failed in 0.05s
+```
+
+### GREEN
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest tests/test_repo_layout.py -q
+.....................                                                    [100%]
+21 passed in 0.46s
+```
+
+### The plan's required grep — one honest deviation
+
+The plan's verification command is:
+
+```
+$ grep -rn 'ecosystem.config.js\|Procfile' --include='*.md' --include='*.py' . \
+    | grep -v -e _attic -e docs/superpowers -e node_modules -e tests/test_repo_layout.py
+```
+
+It does print lines — but **only** from `.superpowers/sdd/2026-09-25-vps-deploy/plan.md` and the
+`task-*-brief.md` files, i.e. the plan and briefs themselves, which quote the old filenames in
+their own instructions. Those files are not part of the repository: `git check-ignore -v` reports
+they are ignored by `.superpowers/sdd/.gitignore` (`*`), and `git ls-files .superpowers` is empty, so
+they can never enter a commit. The plan's filter list predates the existence of the SDD ledger
+directory and does not exclude it.
+
+The equivalent check over **tracked** files — the real intent, "no live reference remains in the repo" —
+is clean:
+
+```
+$ git ls-files '*.md' '*.py' | grep -v -e '^docs/superpowers/' -e '^tests/test_repo_layout.py$' \
+    | while read -r f; do grep -l -e 'ecosystem\.config\.js' -e 'Procfile' "$f" >/dev/null 2>&1 && echo "HIT: $f"; done
+(no output — no tracked live reference)
+
+$ grep -rln 'ecosystem.config\.js\|Procfile' --include='*.md' --include='*.py' . \
+    | grep -v -e '^\./\.superpowers/' -e node_modules -e '^\./docs/superpowers' -e '^\./tests/test_repo_layout.py'
+(no output — clean)
+```
+
+No source file was changed to satisfy this; the exclusion of the SDD ledger is a property of the
+working copy, not an edit.
+
+### Residual "PM2" strings outside this task's scope (recorded, not touched)
+
+A case-insensitive sweep for `pm2` over tracked `*.md`/`*.py` leaves only:
+
+- `README.md:84` — the new sentence written by this task ("their old PM2 files are in git history").
+- `archive/legacy/root/STATE.md` (3 lines) — deliberately archived historical state notes, not
+  instructions. Outside the plan's Task 4 file list.
+- `market_sentiment_tool/backend/orchestrator.py:698` — an error-message string in the **parked**
+  crypto orchestrator ("...into the PM2 interpreter environment"). Outside the plan's Task 4 file
+  list, and not matched by the plan's grep (it names neither `Procfile` nor `ecosystem.config.js`).
+- `tests/test_repo_layout.py` — the test that asserts the retirement.
+
+Neither `archive/` nor `orchestrator.py` is in the plan's Task 4 file list, and both were left
+untouched to keep this commit to the specified scope. Flagging them here so the reviewer can decide
+whether a follow-up cleanup is wanted; neither affects the running system (the crypto orchestrator
+is parked per spec §7, and no process config remains on disk).
+
+### Regression check
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+  /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest -q
+347 → 348 passed in 4.47s
+
+$ .../.venv/bin/python -m ruff check --select F401,F811,F821 tradehub tests shared
+All checks passed!
+```
+
+### Implementation summary
+
+- Deleted `Procfile` and `ecosystem.config.js` via `git rm` (their 5 PM2 apps — `api_server`,
+  `mcp_server`, `orchestrator`, `scanner_slow`, `scanner_fast` — are all superseded: the API and SPA
+  are now the image from Task 2, the scan/settle work is the hourly timers, and the crypto worker is
+  parked).
+- `README.md`: dropped `├── ecosystem.config.js # PM2 Orchestrator config` from the repo tree;
+  deleted the whole `### Crypto Orchestrator VPS Runbook` section (the last section in the file),
+  which held the `pm2 start` / `pm2 restart` instructions; appended the new `## VPS deployment`
+  section with the container + `tradehub-scan.timer` (:05) + `tradehub-settle.timer` (:35) table, the
+  push-to-`main` deploy path, the on-VPS operator commands, and the rollback command.
+- `SYSTEM_ARCH.md`: line 13 now says the backend is "Scheduled as hourly systemd timers on the VPS
+  (see README, VPS deployment)"; the `ecosystem.config.js` tree line is gone; the key-flow step 1 is
+  now "The hourly `tradehub-scan` timer runs `python -m tradehub.scripts.scan` (weather + gas,
+  suggest-only)."
+- `shared/config.py`: "(with PYTHONPATH=. set in Procfile)" → "(with PYTHONPATH=. set)".
+- `shared/fast_scanner.py`, `shared/background_scanner.py`: deleted the `Procfile: ...` docstring
+  line each.
+- `docs/superpowers/plans/2026-09-24-rollout-tracker.md`: the step 5 row now reads "VPS deploy: API +
+  War Room container, hourly scan/settle timers (replaces the Azure plan) | ✅ implemented, pending
+  Kevin's first deploy (Task 5)" pointing at this plan; the Step 7 scope line now uses the VPS
+  predictor URLs instead of the Azure Container Apps hostname.
+
+**Commit:** `docs: document the VPS deployment; retire the PM2 process files`
+
+---
+
+## Task 5 — First deploy: **Kevin's checklist, NOT executed**
+
+The agent deliberately stopped after Task 4. Nothing below was run: no push, no PR, no merge, no
+workflow run, no GitHub secrets/variables set, no SSH to the VPS, no Caddy edit, no timer enabled.
+Every step below is **pending, for Kevin.**
+
+### Step 1 — GitHub secrets (Kevin). ☐ PENDING
+In `Kevocado/algo-trade-hub-prod`: secrets `GHCR_PAT` (same as the predictor repos),
+`VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`. For `VPS_HOST`, `VPS_SSH_KEY`,
+`VPS_KNOWN_HOSTS`, add `Kevocado/algo-trade-hub-prod` to the `REPOS` list in
+`vps-stack/bin/set-github-secrets.sh` and re-run it.
+
+### Step 2 — Apply migrations (Kevin). ☐ PENDING
+Apply steps 2–4's migrations (`20260416000003`–`20260416000005`, plus the `signal_events` migration
+noted in `task.md`) to Supabase before the first scan/settle run, otherwise the inserts fail.
+
+### Step 3 — VPS env (Kevin). ☐ PENDING
+Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `/opt/stack/.env`.
+
+### Step 4 — First deploy (Kevin). ☐ PENDING
+Merge to `main` and push, or run the workflow via "Run workflow". After the first push, make the
+GHCR package public (github.com/users/Kevocado/packages/container/tradehub/settings → Change
+visibility → Public), the same as the predictor images, so the VPS can pull it without a registry
+login. Then re-run the `vps` job.
+
+### Step 5 — Turn on HTTPS and the timers (Kevin, on the VPS). ☐ PENDING
+**Only enable the timers after step 2b (promotion-gate fixes) is merged and deployed.** Until then,
+run `/opt/stack/bin/tradehub-job scan` by hand if you want data.
+
+First, as `deploy`, open `/opt/stack/Caddyfile` (`nano /opt/stack/Caddyfile`) and uncomment the four
+lines of the `trade.{$DOMAIN}` block at the bottom (remove the leading `# `). Then:
+
+```bash
+# as deploy
+docker compose -f /opt/stack/compose.yml restart caddy   # restart, not reload: editors can swap the file's inode under the bind mount
+/opt/stack/bin/tradehub-job scan                                       # one manual run first
+# as root
+systemctl enable --now tradehub-scan.timer tradehub-settle.timer
+```
+
+Add a DNS A record for `trade.<domain>` if you don't use a wildcard record.
+
+### Step 6 — Verify (the agent, read-only, after Kevin deploys). ☐ PENDING
+
+```bash
+ssh deploy@$VPS_HOST 'cd /opt/stack && docker compose --profile tradehub ps tradehub && systemctl list-timers "tradehub-*" && journalctl -u tradehub-scan.service -n 20 --no-pager && docker stats --no-stream'
+curl -s https://trade.$DOMAIN/api/health
+curl -s -o /dev/null -w '%{http_code}\n' https://trade.$DOMAIN/lab
+```
+
+Expected: `tradehub` running; both timers listed with a next run; a scan run that ends in success;
+`/api/health` returns JSON; `/lab` returns 200 (the SPA); total memory under ~3 GB; new
+`predictions` rows in Supabase.
+
+---
