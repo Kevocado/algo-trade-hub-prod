@@ -24,6 +24,7 @@ from tradehub.api.schemas import (
     Opportunity, NWSReading, ShadowPerformanceResponse,
 )
 from tradehub.api.dependencies import get_supabase, get_scanner_cache
+from tradehub.api.frontend import mount_frontend
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
 
 # ── App ─────────────────────────────────────────────────────────────────────
@@ -188,6 +189,23 @@ async def get_shadow_performance(
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ENDPOINT: /api/track-record (served via the service-role client, so the
+# owner-only RLS on track_record never has to be opened to the anon key)
+# ════════════════════════════════════════════════════════════════════════════
+@app.get("/api/track-record", tags=["Track Record"])
+async def get_track_record(supabase=Depends(get_supabase)):
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase is not configured")
+    result = supabase.table("track_record").select("*").order("engine").execute()
+    return result.data or []
+
+
+# ── War Room SPA (mounted last so every /api route above wins) ─────────────
+FRONTEND_DIST = Path(os.getenv("FRONTEND_DIST", str(Path(__file__).resolve().parents[2] / "market_sentiment_tool" / "dist")))
+mount_frontend(app, FRONTEND_DIST)
 
 
 # ── Dev entrypoint ───────────────────────────────────────────────────────────
