@@ -1221,7 +1221,7 @@ The implementing agent stopped after item 8 (its session went idle mid-item 9). 
 - **8f54ddd: gate on the current engine version.** `latest_gate_statuses(client, {engine: current_version})` filters `backtest_runs` by (engine, engine_version). RED: 2 failed; GREEN: test_scan 22 passed. A promoted older version never promotes a new one. The latest backtest may cover one series or mode (accepted and documented in the docstring).
 - **34e302a: migration backfill and duplicates.** Pre-existing rows are tagged `'legacy_' || lower(edge_type)`, so the scan's engine-scoped cleanup can't delete the legacy scanners' rows. Duplicate `market_id`s are deduped (newest `discovered_at` kept, NULL treated as epoch) before the unique index. RED: layout test failed; GREEN: 18 passed. Verified on a throwaway postgres:16: three duplicate legacy rows collapse to the newest, tagged `legacy_weather`, and a second apply is a no-op.
 - **039f056: calibration lead matches the decision lead.** `walk_forward_error_model(..., decision_time_for=...)` pairs each past day with the forecast its own decision would have seen (lead 2 at D-1 23:30 LST), not the later lead-1 value. `weather_decision_time` moved to `tradehub.data.weather` and is shared by scan and backtest. Four scan tests had synthetic publish stamps relative to "now", so they were updated to stamp relative to each day's own decision. RED: ImportError; GREEN: 340 passed.
-- **2b1f655: item 9, War Room Shadow badge.** `src/lib/edgeGate.ts` (pure; only an explicit PROMOTED is promoted, and missing or unknown fails closed to Shadow), `src/components/GateBadge.tsx`, shown on Prediction Lab edge cards and War Room HQ top edges. RED: vitest could not resolve the module; GREEN: 8 passed; `tsc --noEmit` clean; `vite build` ok.
+- **2b1f655: item 9, War Room Shadow badge.** `src/lib/edgeGate.ts` (pure; only an explicit PROMOTED is promoted, and missing or unknown fails closed to Shadow), `src/components/GateBadge.tsx`, shown on every Prediction Lab edge card (the ALL tab lists every row, so nothing is hidden). It is also on War Room HQ's "AI High-Conviction Edges", but that section only lists rows with `ui_reasoning`/`ai_summary`, which the scan never writes, so weather/gas edges don't appear on "/" yet (follow-up below). RED: vitest could not resolve the module; GREEN: 8 passed; `tsc --noEmit` clean; `vite build` ok.
 - **193b7b5: gas `brier_market: null` explained and fixed.** A few decisions were made before the market had any quote, so their rows had no market Brier and the gate failed closed forever. The runner now skips unquoted decisions (untradeable, not comparable) and reports `n_unquoted`. RED: 1 failed; GREEN: 341 passed.
 
 ### Item 10: live scan (2026-09-25 19:05 UTC, 15:05 ET, Supabase stubbed, nothing written)
@@ -1243,10 +1243,21 @@ All three cities scan (the Chicago/Miami crashes are fixed). The gas model is fi
 | weather KXHIGHMIA | 672 | 186 | −5.59 | 10.45 | 0.1112 | 0.0993 | SHADOW (Brier, P&L) |
 | gas KXAAAGASD (after 193b7b5) | 1982 (+4 unquoted) | 274 | −3.84 | 7.06 | 0.1148 | **0.0268** | SHADOW (Brier, P&L) |
 
-Weather was run before 193b7b5, whose only effect is to drop unquoted decisions (none expected at a D-1 23:30 decision). Each run takes about 3 minutes for weather and 8.5 for gas.
+The weather rows were run at 039f056 (after the calibration-lead fix, before 193b7b5). 193b7b5 only drops decisions with no quote at decision time; that count wasn't measured for weather. The gas row was run at 193b7b5. Each run takes about 3 minutes for weather and 8.5 for gas.
 
 **Reading:** neither engine beats the market, so both stay shadow, as spec §6 intends. Gas is far behind: two hours before close the market already prices that morning's AAA print almost exactly, while the model predicts from the previous settlement plus RBOB. A later gas version should decide earlier (for example the previous evening) or use intraday AAA. The weather calibration miss in the 60–70% bucket points to sigma still being too tight at the lead-2 decision.
 
 ### Verification at the final commit
 - `pytest`: 341 passed. `ruff check --select F401,F811,F821 tradehub tests shared`: clean.
 - market_sentiment_tool: vitest 8 passed, `tsc --noEmit` clean, `vite build` ok.
+
+### Follow-ups (from the final independent review; none block merge)
+- **Gate version mismatch.** `settle_predictions` refreshes track records as `engine_version="v0"`, so the scan's gate lookup (current version, e.g. `weather-v1`) never finds a match. Promotion is unreachable until then, which fails closed. Step 2b fixes this: its `refresh_track_record` writes one record per actual `engine_version`.
+- **Live track record and unquoted predictions.** It has the same gap 193b7b5 fixed for backtests: a live prediction with `market_prob=None` nulls `brier_market`. Handle it in step 2b by skipping or flagging unquoted predictions in the summary.
+- **War Room HQ ("/")** should list all current edges with the Shadow badge, not only AI-summarised ones.
+- **Smaller items:**
+  - persist `n_unquoted` in `backtest_runs`;
+  - add an ENERGY tab in Prediction Lab;
+  - make `edgeGate` strict about case and whitespace;
+  - match the calibration lead to targets two or more days out;
+  - the legacy scanners' plain `.insert` now conflicts with the unique `market_id` index (they're retired in step 5).
