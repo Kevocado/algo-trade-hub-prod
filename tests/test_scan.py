@@ -178,7 +178,74 @@ def test_scan_and_backtest_share_walk_forward_weather_error_model():
     assert predictions[0]["our_prob"] == pytest.approx(decision.our_prob, abs=1e-4)
 
 
-def test_scan_weather_isolates_city_failures_when_requested():
+def test_scan_and_backtest_use_all_available_calibration_pairs():
+    city = scan.WEATHER_CITIES["KXHIGHNY"]
+    target = date(2026, 9, 25)
+    now = backtest_engines.weather_decision_time(target, 1, city)
+    training_days = [target - timedelta(days=i) for i in range(30, 5, -1)]
+    actuals = [
+        Observation(
+            f"KXHIGHNY-{day.strftime('%y%b%d').upper()}",
+            85.0 if index < 5 else 75.0,
+            now - timedelta(hours=1),
+        )
+        for index, day in enumerate(training_days)
+    ]
+    historical = {
+        day: [Observation(f"forecast:{day}:lead1", 75.0, now - timedelta(hours=2))]
+        for day in training_days
+    }
+    current = [Observation("current", 75.0, now)]
+    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
+    live = FakeLive([LiveMarket(market, GOOD_QUOTE)], actuals)
+
+    predictions, _ = scan.scan_weather(
+        live,
+        now,
+        CFG,
+        forecast_fn=lambda city, day, as_of: current,
+        historical_forecast_fn=lambda city, day, lead: historical[day],
+        cities={"KXHIGHNY": city},
+    )
+    decision = backtest_engines.build_weather_decisions(
+        [market], {**historical, target: current}, actuals, city
+    )[0]
+
+    assert predictions[0]["our_prob"] == pytest.approx(decision.our_prob, abs=1e-4)
+
+
+def test_scan_and_backtest_share_yaml_fallback_below_minimum_samples():
+    city = scan.WEATHER_CITIES["KXHIGHNY"]
+    target = date(2026, 9, 25)
+    now = backtest_engines.weather_decision_time(target, 1, city)
+    actuals = [
+        Observation(f"KXHIGHNY-{(target - timedelta(days=i)).strftime('%y%b%d').upper()}", 77.0, now - timedelta(hours=1))
+        for i in range(1, 4)
+    ]
+    current = [Observation("current", 75.0, now)]
+    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
+    live = FakeLive([LiveMarket(market, GOOD_QUOTE)], actuals)
+    cfg = EngineConfig(min_edge_pct=5.0, params={"error_bias": 2.0, "error_sigma": 1.0})
+
+    predictions, _ = scan.scan_weather(
+        live,
+        now,
+        cfg,
+        forecast_fn=lambda city, day, as_of: current,
+        historical_forecast_fn=lambda city, day, lead: [],
+        cities={"KXHIGHNY": city},
+    )
+    decision = backtest_engines.build_weather_decisions(
+        [market], {target: current}, actuals, city,
+        fallback=scan.ErrorModel(2.0, 1.0),
+        min_pairs=20,
+    )[0]
+
+    assert predictions[0]["our_prob"] == pytest.approx(decision.our_prob, abs=1e-4)
+
+
+def test_scan_weather_isolates_city_failures_when_requested(caplog):
+    caplog.set_level(logging.INFO)
     nyc = scan.WEATHER_CITIES["KXHIGHNY"]
     chicago = scan.WEATHER_CITIES["KXHIGHCHI"]
     ny_market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
@@ -203,6 +270,7 @@ def test_scan_weather_isolates_city_failures_when_requested():
     assert {row["market_ticker"] for row in predictions} == {ny_market.ticker}
     assert {row["market_ticker"] for row in edges} == {ny_market.ticker}
     assert len(failures) == 1 and "KXHIGHCHI" in failures[0]
+    assert "scan engine=weather city=KXHIGHCHI predictions=0 edges=0" in caplog.text
 
 
 def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, capsys, caplog):
@@ -242,6 +310,7 @@ def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, caps
     assert upserted == [gas_edge]
     assert pruned == [{"ENERGY": {gas_edge["market_ticker"]}}]
     assert "scan engine=gas predictions=1 edges=1" in caplog.text
+    assert "scan engine=weather predictions=0 edges=0" in caplog.text
     assert "partial_failure" in output and "weather source unavailable" in output
 
 

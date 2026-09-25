@@ -31,11 +31,14 @@ from tradehub.engines.gas import (
     rbob_change_window,
 )
 from tradehub.engines.weather import (
+    DEFAULT_ERROR,
     MIN_ERROR_PAIRS,
     WEATHER_ENGINE_VERSION,
+    ErrorModel,
     walk_forward_error_model,
     weather_prob,
 )
+from tradehub.engine_config import load_engine_config
 from tradehub.markets import KalshiMarket, event_date, parse_market
 
 WEATHER_DECISION_TIME = time(23, 30)
@@ -72,6 +75,9 @@ def build_weather_decisions(
     actuals: list[Observation],
     city: City,
     lead_days: int = 1,
+    *,
+    fallback: ErrorModel = DEFAULT_ERROR,
+    min_pairs: int = MIN_ERROR_PAIRS,
 ) -> list[Decision]:
     decisions = []
     for market in markets:
@@ -85,7 +91,8 @@ def build_weather_decisions(
             actuals,
             forecasts,
             decided_at,
-            min_pairs=MIN_ERROR_PAIRS,
+            min_pairs=min_pairs,
+            fallback=fallback,
         )
         prob = weather_prob(market, [o.value for o in highs], error)
         decisions.append(Decision(market.ticker, decided_at, prob, tuple(highs)))
@@ -170,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
 
     client = KalshiHistoryClient()
     series = args.series or ("KXHIGHNY" if args.engine == "weather" else GAS_SERIES)
+    cfg = load_engine_config(args.engine)
     settled_raws = client.merged_settled_markets(series)
     raws = [
         raw
@@ -193,7 +201,18 @@ def main(argv: list[str] | None = None) -> int:
             forecast_fn=historical_forecast_highs,
             lead_days=1,
         )
-        decisions = build_weather_decisions(markets, forecasts, actuals, city)
+        fallback = ErrorModel(
+            bias=float(cfg.params.get("error_bias", DEFAULT_ERROR.bias)),
+            sigma=float(cfg.params.get("error_sigma", DEFAULT_ERROR.sigma)),
+        )
+        decisions = build_weather_decisions(
+            markets,
+            forecasts,
+            actuals,
+            city,
+            fallback=fallback,
+            min_pairs=MIN_ERROR_PAIRS,
+        )
         version = WEATHER_ENGINE_VERSION
     else:
         aaa = settlement_observations(settled_raws)
@@ -212,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         decisions=decisions,
         histories=histories,
         mode=args.mode,
+        min_edge_pct=cfg.min_edge_pct,
     )
     config = {
         "engine": args.engine,
@@ -220,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         "start": str(args.start),
         "end": str(args.end),
         "train_days": args.train_days,
+        "min_edge_pct": cfg.min_edge_pct,
     }
     row = build_backtest_run_row(
         result,

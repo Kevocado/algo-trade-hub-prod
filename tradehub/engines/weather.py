@@ -1,7 +1,8 @@
 """Weather engine (pure): P(Kalshi daily-high market resolves YES) from a model-blend forecast.
 
-The settled high ~ Normal(mean(model highs) + bias, sqrt(sigma^2 + model disagreement)),
-with bias/sigma fit walk-forward on past (forecast, actual) pairs.
+The settled high ~ Normal(mean(model highs) + bias, sigma), with bias/sigma fit
+walk-forward on past (forecast, actual) pairs. Model disagreement is already
+represented by the fitted error term and is not added again here.
 """
 
 from __future__ import annotations

@@ -8,6 +8,7 @@ from tradehub.backtest.kalshi_history import Candle
 from tradehub.backtest.pit import Observation, check_no_lookahead
 from tradehub.backtest.runner import MarketHistory, run_backtest
 from tradehub.data.weather import WEATHER_CITIES
+from tradehub.engine_config import EngineConfig
 from tradehub.markets import parse_market
 from tradehub.scripts import backtest_engines
 from tradehub.scripts.backtest_engines import (
@@ -225,6 +226,7 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
 
     client = FakeClient()
     captured = {}
+    backtest_kwargs = {}
     history_modes = []
 
     def fake_build_row(result, **kwargs):
@@ -243,6 +245,12 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
         }
 
     monkeypatch.setattr(backtest_engines, "KalshiHistoryClient", lambda: client)
+    monkeypatch.setattr(
+        backtest_engines,
+        "load_engine_config",
+        lambda engine: EngineConfig(min_edge_pct=7.5, params={"error_bias": 1.0, "error_sigma": 1.0}),
+        raising=False,
+    )
     monkeypatch.setattr(backtest_engines, "settlement_observations", lambda raws: [])
     monkeypatch.setattr(backtest_engines, "historical_forecast_highs", lambda city, day, lead: [])
 
@@ -251,7 +259,12 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
         return {}
 
     monkeypatch.setattr(backtest_engines, "_histories", fake_histories)
-    monkeypatch.setattr(backtest_engines, "run_backtest", lambda **kwargs: object())
+
+    def fake_run_backtest(**kwargs):
+        backtest_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(backtest_engines, "run_backtest", fake_run_backtest)
     monkeypatch.setattr(backtest_engines, "data_snapshot_hash", lambda decisions, histories: "hash")
     monkeypatch.setattr(backtest_engines, "build_backtest_run_row", fake_build_row)
 
@@ -271,7 +284,9 @@ def test_backtest_cli_uses_merged_markets_and_reproducible_metadata(monkeypatch)
         "start": "2026-07-01",
         "end": "2026-07-01",
         "train_days": 17,
+        "min_edge_pct": 7.5,
     }
+    assert backtest_kwargs["min_edge_pct"] == 7.5
     assert captured["date_from"] == datetime(2026, 7, 1, tzinfo=timezone.utc)
     assert captured["date_to"] == datetime(2026, 7, 1, 23, 59, tzinfo=timezone.utc)
 

@@ -137,7 +137,7 @@ def _scan_weather_city(
     actuals.sort(key=lambda observation: event_date(observation.name))
     calibration_forecasts = {}
     if len(actuals) >= min_error_pairs:
-        for actual in actuals[-min_error_pairs:]:
+        for actual in actuals:
             day = event_date(actual.name)
             calibration_forecasts[day] = historical_forecast_fn(city, day, 1)
     error = walk_forward_error_model(
@@ -149,7 +149,11 @@ def _scan_weather_city(
     )
 
     for target, markets in sorted(by_date.items()):
-        highs = forecast_fn(city, target, now)
+        highs = [
+            observation
+            for observation in forecast_fn(city, target, now)
+            if observation.published_at <= now
+        ]
         if not highs:
             continue
         values = [o.value for o in highs]
@@ -197,6 +201,7 @@ def scan_weather(
             message = f"weather/{series}: {type(exc).__name__}: {exc}"
             failures.append(message)
             log.exception("scan engine=weather city=%s failed", series)
+            log.info("scan engine=weather city=%s predictions=0 edges=0 status=failed", series)
             continue
         predictions.extend(city_predictions)
         edges.extend(city_edges)
@@ -272,6 +277,7 @@ def main(
             state["errors"].append(message)
             failures.append(message)
             log.exception("scan engine=%s failed", name)
+            log.info("scan engine=%s predictions=0 edges=0 status=failed", name)
             return [], []
         state["predictions"] = predictions
         state["edges"] = edges

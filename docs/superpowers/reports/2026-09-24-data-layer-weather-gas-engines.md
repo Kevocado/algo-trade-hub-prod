@@ -865,3 +865,27 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   ]
 }
 ```
+
+## Review remediation — 2026-09-25
+
+### Weather parity and backtest configuration
+
+- **Files changed:** `tradehub/scripts/scan.py`, `tradehub/scripts/backtest_engines.py`, `tradehub/engines/weather.py`, `tests/test_scan.py`, `tests/test_backtest_engines.py`, and this report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py::test_scan_and_backtest_use_all_available_calibration_pairs tests/test_scan.py::test_scan_and_backtest_share_yaml_fallback_below_minimum_samples tests/test_backtest_engines.py::test_backtest_cli_uses_merged_markets_and_reproducible_metadata -q
+  ```
+  RED output tail:
+  ```text
+  FFF
+  3 failed in 0.69s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py tests/test_backtest_engines.py::test_backtest_cli_uses_merged_markets_and_reproducible_metadata tests/test_weather_engine.py -q
+  ```
+  GREEN output tail:
+  ```text
+  21 passed in 0.68s
+  ```
+- Scan now fits all available settled/lead-1 pairs, filters current observations by publication time, and shares the YAML fallback with `build_weather_decisions()`. The backtest loads the engine config, passes `min_edge_pct` to the runner, and records it in run metadata. Failed city/engine paths now log zero counts, and the weather docstring matches the no-double-spread implementation.
