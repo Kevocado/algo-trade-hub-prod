@@ -1,4 +1,4 @@
-"""One-shot scan (suggest-only): predict every open weather/gas market, flag trade-worthy edges.
+"""One-shot scan (suggest-only): predict every open weather/gas/CPI market, flag trade-worthy edges.
 
 Writes every prediction to the predictions ledger and upserts edges (with Kalshi deep links)
 into kalshi_edges. Never places orders. Cron-ready: runs once and exits.
@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from tradehub.data.cleveland_fed import fetch_nowcast_history
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.data.rbob import front_month_roll_dates, rbob_closes
 from tradehub.data.weather import (
@@ -27,6 +28,14 @@ from tradehub.data.weather import (
 )
 from tradehub.edges import EdgeSuggestion, evaluate_edge
 from tradehub.engine_config import EngineConfig, load_engine_config
+from tradehub.engines.cpi import (
+    CPI_TARGETS,
+    CPI_TRAIN_MONTHS,
+    cpi_prob,
+    fit_cpi_error,
+    latest_nowcast,
+    training_pairs,
+)
 from tradehub.engines.gas import GAS_ENGINE_VERSION, GAS_SERIES, fit_gas_model, gas_prob, gas_training_pairs, rbob_change
 from tradehub.engines.weather import (
     MIN_ERROR_PAIRS,
@@ -35,12 +44,14 @@ from tradehub.engines.weather import (
     walk_forward_error_model,
     weather_prob,
 )
-from tradehub.markets import KalshiMarket, event_date, market_url
+from tradehub.markets import KalshiMarket, event_date, event_month, market_url
 from tradehub.predictions import build_prediction_row
 
 
 log = logging.getLogger(__name__)
 SCAN_DEADLINE_SECONDS = 15 * 60
+CPI_SCAN_HOURS_ET = (8, 12, 16)  # 08:05 ET is the last run before the 08:25 ET release-day close
+_ET = ZoneInfo("America/New_York")
 
 
 def _ensure_scan_deadline(deadline: float) -> None:
@@ -299,6 +310,47 @@ def scan_gas(
     return predictions, edges
 
 
+def cpi_scan_due(now: datetime) -> bool:
+    """The nowcast moves at most once a day, so CPI runs on three of the hourly scans, not all 24."""
+    return now.astimezone(_ET).hour in CPI_SCAN_HOURS_ET
+
+
+def scan_cpi(
+    live, now: datetime, cfg: EngineConfig, *,
+    nowcast_fn: Callable[[str], dict] = fetch_nowcast_history,
+    targets: dict[str, tuple[str, str]] = CPI_TARGETS,
+) -> tuple[list[dict], list[dict]]:
+    window = int(cfg.params.get("train_months", CPI_TRAIN_MONTHS))
+    use_bias = bool(cfg.params.get("use_bias", 0.0))
+    predictions: list[dict] = []
+    edges: list[dict] = []
+    for series, (kind, version) in targets.items():
+        markets = live.open_markets(series)
+        if not markets:
+            continue
+        history = nowcast_fn(kind)
+        for lm in markets:
+            nowcast = latest_nowcast(history.get(event_month(lm.market.event_ticker)), now)
+            horizon = lm.market.close_time - now
+            if nowcast is None or horizon <= timedelta(0):
+                continue
+            pairs = training_pairs(history, now, horizon)[-window:]
+            model = fit_cpi_error(pairs, window=window, use_bias=use_bias)
+            prob = cpi_prob(lm.market, nowcast.value, model)
+            predictions.append(build_prediction_row(
+                market_ticker=lm.market.ticker, our_prob=prob, market_prob=_mid(lm.quote), engine="cpi_nowcast",
+                as_of=now, engine_version=version,
+                raw_payload={"nowcast": nowcast.value, "nowcast_obs": nowcast.name, "bias": model.bias,
+                             "sigma": model.sigma, "n_train": len(pairs),
+                             "hours_to_close": round(horizon.total_seconds() / 3600.0, 2)},
+            ))
+            suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
+                                       prefer_maker=cfg.prefer_maker)
+            if suggestion:
+                edges.append(edge_row(lm.market, suggestion, "MACRO", engine="cpi_nowcast", updated_at=now))
+    return predictions, edges
+
+
 def main(
     *,
     now: datetime | None = None,
@@ -341,8 +393,10 @@ def main(
                     historical_forecast_range_fn=historical_forecast_with_deadline,
                     failures=city_failures,
                 )
-            else:
+            elif name == "gas":
                 predictions, edges = scan_gas(live, now, cfg, rbob_fn=rbob_with_deadline)
+            else:
+                predictions, edges = scan_cpi(live, now, cfg)
             _ensure_scan_deadline(deadline)
         except Exception as exc:
             message = f"{name}: {type(exc).__name__}: {exc}"
@@ -367,6 +421,14 @@ def main(
 
     weather_predictions, weather_edges = run_engine("weather")
     gas_predictions, gas_edges = run_engine("gas")
+    cpi_predictions: list[dict] = []
+    cpi_edges: list[dict] = []
+    if cpi_scan_due(now):
+        cpi_predictions, cpi_edges = run_engine("cpi_nowcast")
+    else:
+        engine_states["cpi_nowcast"] = {
+            "predictions": [], "edges": [], "errors": [], "complete": True, "ran": False,
+        }
 
     if client is None:
         try:
@@ -392,6 +454,7 @@ def main(
         for name, predictions, edges in (
             ("weather", weather_predictions, weather_edges),
             ("gas", gas_predictions, gas_edges),
+            ("cpi_nowcast", cpi_predictions, cpi_edges),
         ):
             if not engine_states[name]["ran"]:
                 prediction_writes[name] = "skipped"
@@ -431,6 +494,13 @@ def main(
     else:
         writes = {"predictions": {}, "edges": {}}
 
+    cpi_state = engine_states["cpi_nowcast"]
+    cpi_errors = cpi_state["errors"]
+    cpi_status = (
+        "error: " + "; ".join(error.split(": ", 1)[-1] for error in cpi_errors) if cpi_errors
+        else "skipped" if not cpi_state["ran"]
+        else "ok"
+    )
     summary = {
         "as_of": now.isoformat(),
         "status": "partial_failure" if failures else "ok",
@@ -451,6 +521,12 @@ def main(
             "predictions": len(gas_predictions),
             "edges": len(gas_edges),
             "errors": engine_states["gas"]["errors"],
+        },
+        "cpi_nowcast": {
+            "status": cpi_status,
+            "predictions": len(cpi_predictions),
+            "edges": len(cpi_edges),
+            "errors": cpi_errors,
         },
         "writes": writes,
         "failures": failures,

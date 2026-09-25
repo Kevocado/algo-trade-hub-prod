@@ -76,3 +76,25 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_cp
 - Added seven focused pure-model tests.
 - Deviation: none.
 
+## Task 4 — Scan wiring, config and failure isolation
+
+### RED
+
+```text
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_scan_cpi.py -q
+6 failed in 0.61s
+AttributeError: module 'tradehub.scripts.scan' has no attribute 'scan_cpi'
+KeyError: 'cpi_nowcast'
+```
+
+### GREEN
+
+```text
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_scan_cpi.py tests/test_scan.py tests/test_engine_config.py -q
+31 passed in 0.60s
+```
+
+- Added `cpi_scan_due`, `scan_cpi`, the `cpi_nowcast` config block and CPI as a third isolated engine in the existing PR #4 `run_engine`/per-engine-write structure.
+- CPI edges are `MACRO`, carry `engine="cpi_nowcast"` and retain `gate_status="SHADOW"`; they are written but never hidden or force-promoted.
+- Deviation: the plan's original test expected `main()==0` and one combined write. PR #4 deliberately returns 1 on any engine failure and writes each engine independently so one failed write is attributable. The hand-merged test preserves the task Intent (CPI failure is reported as `error: ...`, weather/gas writes still complete) while keeping the merged non-zero failure signal; the expected combined count is 31 rather than the plan's pre-PR-4 13.
+

@@ -7,3 +7,8 @@ weather:
 gas:
   min_edge_pct: 3.0
   prefer_maker: true
+cpi_nowcast:
+  min_edge_pct: 5.0
+  prefer_maker: true
+  train_months: 24       # most recent released months used to fit the nowcast error (see step-6 backtest)
+  use_bias: 0            # 1 = also shift by the mean error; off: it worsened Brier in every step-6 backtest variant
