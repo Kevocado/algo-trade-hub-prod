@@ -555,3 +555,15 @@ def get_kalshi_event_url(event_ticker):
     event_lower = event_ticker.lower()
     return f"https://kalshi.com/markets/{series}/{event_lower}"
 
+
+def fetch_market(ticker: str) -> dict:
+    """Fetch the public market snapshot for a ticker (`GET /markets/{ticker}`).
+
+    Reuses this module's KALSHI_API_URL so the fetch base always agrees with
+    the base the market tickers were listed from. The endpoint is public;
+    no auth header needed.
+    """
+    resp = requests.get(f"{KALSHI_API_URL}/{ticker}", timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+

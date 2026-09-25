@@ -81,3 +81,108 @@ def test_settle_prediction_row_canceled_marks_canceled_without_fabricating_resul
     update = settlement.settle_prediction_row(row, market)
     assert update == {"id": "abc", "status": "CANCELED"}
     assert "result" not in update and "brier" not in update
+
+
+# --- I/O (Task 4) ---
+
+
+class _FakeResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeQuery:
+    def __init__(self, parent):
+        self._parent = parent
+        self._payload = None
+        self._eq_id = None
+
+    def select(self, *_a):
+        return self
+
+    def eq(self, col, val):
+        # apply_prediction_settlement calls .update() before .eq("id", ...),
+        # so the id is captured here and committed at execute() time.
+        if col == "id":
+            self._eq_id = val
+        else:
+            self._parent.filters.append((col, val))
+        return self
+
+    def update(self, payload):
+        self._payload = payload
+        return self
+
+    def execute(self):
+        if self._payload is not None:
+            self._parent.updates.append({"id": self._eq_id, **self._payload})
+            return _FakeResult(list(self._parent.updates))
+        return _FakeResult([r for r in self._parent.rows if r["status"] == "OPEN"])
+
+
+class _FakeSupaIO:
+    def __init__(self, rows):
+        self.rows = rows
+        self.tables: list = []
+        self.filters: list = []
+        self.updates: list = []
+
+    def table(self, name):
+        self.tables.append(name)
+        return _FakeQuery(self)
+
+
+def _open_row(id_, ticker, our, market):
+    return {"id": id_, "market_ticker": ticker, "our_prob": our, "market_prob": market, "status": "OPEN"}
+
+
+def test_fetch_open_predictions_returns_only_open():
+    supa = _FakeSupaIO([_open_row("a", "T1", 0.6, 0.5), {"id": "b", "status": "SETTLED"}])
+    rows = settlement.fetch_open_predictions(supa)
+    assert [r["id"] for r in rows] == ["a"]
+    assert supa.filters == [("status", "OPEN")]
+
+
+def test_run_settlement_pass_settles_finalized_and_skips_others():
+    rows = [
+        _open_row("a", "KXFINAL-YES", 0.7, 0.5),
+        _open_row("b", "KXACTIVE", 0.6, 0.4),
+        _open_row("c", "KXFINAL-CANCEL", 0.6, 0.4),
+        _open_row("d", "KXUNKNOWN", 0.6, 0.4),
+    ]
+    markets = {
+        "KXFINAL-YES": {"market": {"status": "finalized", "result": "yes"}},
+        "KXACTIVE": {"market": {"status": "active", "result": None}},
+        "KXFINAL-CANCEL": {"market": {"status": "finalized", "result": None}},
+    }
+
+    def fake_fetch(ticker):
+        if ticker == "KXUNKNOWN":
+            raise ValueError("404 Not Found")  # unknown ticker (or environment mismatch)
+        return markets[ticker]
+
+    supa = _FakeSupaIO(rows)
+    summary = settlement.run_settlement_pass(supa, fake_fetch)
+    assert summary == {"checked": 4, "settled": 1, "canceled": 1, "skipped": 2}
+    statuses = {u["id"]: u["status"] for u in supa.updates}
+    assert statuses == {"a": "SETTLED", "c": "CANCELED"}
+
+
+def test_run_settlement_pass_is_idempotent():
+    row = _open_row("a", "KXFINAL-YES", 0.7, 0.5)
+    market = {"market": {"status": "finalized", "result": "yes"}}
+    supa = _FakeSupaIO([row])
+    first = settlement.run_settlement_pass(supa, lambda _t: market)
+    assert first["settled"] == 1
+    # Simulate the row flipping to SETTLED in the DB, as the real pass would.
+    supa.rows = [{**row, "status": "SETTLED"}]
+    supa.updates.clear()
+    second = settlement.run_settlement_pass(supa, lambda _t: market)
+    assert second == {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0}
+    assert supa.updates == []
+
+
+def test_run_settlement_pass_no_open_predictions():
+    supa = _FakeSupaIO([])
+    summary = settlement.run_settlement_pass(supa, lambda _t: (_ for _ in ()).throw(AssertionError("must not fetch")))
+    assert summary == {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0}

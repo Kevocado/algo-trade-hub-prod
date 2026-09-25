@@ -101,7 +101,33 @@
 
 ## Task 4 — Settlement I/O
 
-_Pending implementation._
+- **Files changed:** `tradehub/settlement.py`, `tradehub/core/kalshi_feed.py`, `tests/test_settlement.py`.
+- **RED command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_settlement.py -v
+  ```
+  RED output tail:
+  ```text
+  tests/test_settlement.py::test_run_settlement_pass_no_open_predictions FAILED [100%]
+  =========================== short test summary info ============================
+  FAILED tests/test_settlement.py::test_fetch_open_predictions_returns_only_open
+  FAILED tests/test_settlement.py::test_run_settlement_pass_settles_finalized_and_skips_others
+  FAILED tests/test_settlement.py::test_run_settlement_pass_is_idempotent
+  FAILED tests/test_settlement.py::test_run_settlement_pass_no_open_predictions
+  ========================= 4 failed, 13 passed in 0.10s =========================
+  ```
+- **GREEN command:**
+  ```sh
+  cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_settlement.py -v
+  ```
+  Expected: 17 passed (13 pure + 4 I/O).
+  GREEN output tail:
+  ```text
+  tests/test_settlement.py::test_run_settlement_pass_no_open_predictions PASSED [100%]
+
+  ============================== 17 passed in 0.02s ==============================
+  ```
+- **Deviation:** None. The RED run produced the expected missing-I/O-function failures (4 failed, 13 passed); GREEN produced the expected 17 passed.
 
 ## Task 5 — Track record + promotion gate
 

@@ -84,3 +84,43 @@ def settle_prediction_row(row: dict[str, Any], market: Any) -> dict[str, Any] | 
         round(brier_score(float(market_prob), outcome), 5) if market_prob is not None else None
     )
     return update
+
+
+def fetch_open_predictions(supa) -> list[dict[str, Any]]:
+    """Return all `predictions` rows still awaiting settlement."""
+    res = supa.table(PREDICTIONS_TABLE).select("*").eq("status", OPEN).execute()
+    return res.data or []
+
+
+def apply_prediction_settlement(supa, update: dict[str, Any]) -> None:
+    """Write one settle payload (from `settle_prediction_row`) to its row by id."""
+    payload = {k: v for k, v in update.items() if k != "id"}
+    supa.table(PREDICTIONS_TABLE).update(payload).eq("id", update["id"]).execute()
+
+
+def run_settlement_pass(supa, fetch_market) -> dict[str, int]:
+    """One idempotent settlement pass over all OPEN predictions.
+
+    `fetch_market(ticker)` is injected so tests can fake it; the cron
+    entrypoint passes the real Kalshi client. Fetch failures (404 unknown
+    ticker, wrong demo/prod base URL, connection errors) skip the row —
+    they never fabricate a result and never block the rest of the pass.
+    """
+    summary = {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0}
+    for row in fetch_open_predictions(supa):
+        summary["checked"] += 1
+        try:
+            market = fetch_market(row["market_ticker"])
+        except Exception:
+            summary["skipped"] += 1
+            continue
+        update = settle_prediction_row(row, market)
+        if update is None:
+            summary["skipped"] += 1
+            continue
+        apply_prediction_settlement(supa, update)
+        if update["status"] == SETTLED:
+            summary["settled"] += 1
+        else:
+            summary["canceled"] += 1
+    return summary
