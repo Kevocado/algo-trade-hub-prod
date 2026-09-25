@@ -19,3 +19,15 @@ pytest tests/test_event_month.py tests/test_markets.py -q
 
 - Added the current/legacy payroll and unemployment event-month regression.
 - Deviation: RED was already GREEN because step 6 supplied `event_month`; this is the plan's explicit reuse branch.
+
+## Task 1 — Keyless ALFRED multi-vintage fetcher
+
+### RED/GREEN
+
+```text
+RED: ModuleNotFoundError tradehub.data.alfred_vintages (1 error)
+GREEN: pytest tests/test_alfred_vintages.py -q → 4 passed
+```
+
+- Added CSV parsing, 12-vintage batching, disk cache and the injected-text fetcher.
+- Deviation: `tradehub/data` is matched by the case-insensitive `Data/` ignore rule, so the new module is force-added; `.gitignore` was not broadened.
