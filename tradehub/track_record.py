@@ -13,6 +13,10 @@ from typing import Any
 BUCKETS = ["50-60", "60-70", "70-80", "80-90", "90-100"]
 MIN_CONTRACTS = {"daily": 200, "monthly": 50}
 MAX_CALIBRATION_MISS = 0.10
+# A calibration bucket needs this many contracts (effective, see
+# _contract_weights) before its miss can block promotion; thinner buckets
+# are still reported. Spec section 6.
+MIN_BUCKET_CONTRACTS = 20
 TRACK_RECORD_TABLE = "track_record"
 
 
@@ -35,6 +39,25 @@ def _settled_only(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [r for r in rows if r.get("result") in ("yes", "no")]
 
 
+def _contract_key(row: dict[str, Any]) -> str:
+    """Rows about the same Kalshi contract share a key; rows without a ticker stand alone."""
+    ticker = row.get("market_ticker")
+    return f"ticker:{ticker}" if ticker else f"row:{row.get('id', id(row))}"
+
+
+def _contract_weights(rows: list[dict[str, Any]]) -> list[float]:
+    """Weight each row 1/k, k = rows for its contract, so every contract counts once.
+
+    The hourly scan predicts each open market many times; without this a
+    single daily market would count ~24 times toward the gate.
+    """
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = _contract_key(row)
+        counts[key] = counts.get(key, 0) + 1
+    return [1.0 / counts[_contract_key(row)] for row in rows]
+
+
 def _confidence_and_hit(row: dict[str, Any]) -> tuple[float, bool]:
     """Confidence in the favored side, and whether that side won."""
     prob = float(row["our_prob"])
@@ -45,37 +68,51 @@ def _confidence_and_hit(row: dict[str, Any]) -> tuple[float, bool]:
 
 
 def compute_calibration(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Per-bucket n, mean confidence, and favored-side hit rate over settled rows."""
-    groups: dict[str, list[tuple[float, bool]]] = {b: [] for b in BUCKETS}
-    for row in _settled_only(rows):
+    """Per-bucket contract-weighted n, mean confidence, and favored-side hit rate.
+
+    `n` is the effective number of contracts in the bucket (sum of row
+    weights); `n_rows` is the raw row count.
+    """
+    settled = _settled_only(rows)
+    groups: dict[str, list[tuple[float, bool, float]]] = {b: [] for b in BUCKETS}
+    for row, weight in zip(settled, _contract_weights(settled)):
         confidence, hit = _confidence_and_hit(row)
-        groups[bucketize(confidence)].append((confidence, hit))
+        groups[bucketize(confidence)].append((confidence, hit, weight))
     out = []
     for bucket in BUCKETS:
         members = groups[bucket]
         if not members:
             continue
-        predicted = sum(c for c, _ in members) / len(members)
-        observed = sum(1 for _, hit in members if hit) / len(members)
-        out.append({"bucket": bucket, "n": len(members),
+        total = sum(w for _, _, w in members)
+        predicted = sum(c * w for c, _, w in members) / total
+        observed = sum(w for _, hit, w in members if hit) / total
+        out.append({"bucket": bucket, "n": round(total, 2), "n_rows": len(members),
                     "predicted": round(predicted, 4), "observed": round(observed, 4)})
     return out
 
 
+def _weighted_mean(pairs: list[tuple[float, float]]) -> float | None:
+    total = sum(w for _, w in pairs)
+    return sum(v * w for v, w in pairs) / total if total else None
+
+
 def compute_engine_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """n_settled and mean Briers; market Brier requires full settled coverage."""
+    """Distinct settled contracts and contract-weighted mean Briers.
+
+    `n_settled` counts contracts, not rows (spec section 6 says "settled
+    contracts"). Market Brier still fails closed: every settled row must
+    carry one.
+    """
     settled = _settled_only(rows)
-    briers = [float(r["brier"]) for r in settled if r.get("brier") is not None]
-    complete_market_briers = [
-        float(r["market_brier"]) for r in settled if r.get("market_brier") is not None
-    ]
-    market_brier = None
-    if settled and len(complete_market_briers) == len(settled):
-        market_brier = round(sum(complete_market_briers) / len(complete_market_briers), 5)
+    weights = _contract_weights(settled)
+    ours = _weighted_mean([(float(r["brier"]), w) for r, w in zip(settled, weights) if r.get("brier") is not None])
+    market_pairs = [(float(r["market_brier"]), w) for r, w in zip(settled, weights) if r.get("market_brier") is not None]
+    market = _weighted_mean(market_pairs) if settled and len(market_pairs) == len(settled) else None
     return {
-        "n_settled": len(settled),
-        "brier_ours": round(sum(briers) / len(briers), 5) if briers else None,
-        "brier_market": market_brier,
+        "n_settled": len({_contract_key(r) for r in settled}),
+        "n_rows": len(settled),
+        "brier_ours": round(ours, 5) if ours is not None else None,
+        "brier_market": round(market, 5) if market is not None else None,
     }
 
 
@@ -108,6 +145,8 @@ def check_promotion_gate(
         reasons.append("simulated P&L after fees/spread is not positive")
     worst_miss = 0.0
     for bucket in cal_buckets:
+        if bucket["n"] < MIN_BUCKET_CONTRACTS:
+            continue  # too thin to judge; still shown in cal_buckets
         miss = abs(bucket["observed"] - bucket["predicted"])
         worst_miss = max(worst_miss, miss)
         if miss > MAX_CALIBRATION_MISS:
@@ -136,11 +175,24 @@ def fetch_settled_rows(supa, engine: str) -> list[dict[str, Any]]:
         start += PAGE_SIZE
 
 
-def refresh_track_record(supa, engine: str, engine_version: str = "v0",
-                         cadence: str = "daily",
-                         simulated_pnl_after_fees: float | None = None) -> dict[str, Any]:
-    """Recompute one engine's rollup from its settled rows and upsert it."""
-    rows = fetch_settled_rows(supa, engine)
+def refresh_track_record(supa, engine: str, cadence: str = "daily",
+                         simulated_pnl_after_fees: float | None = None) -> list[dict[str, Any]]:
+    """Recompute one rollup per engine_version from the engine's settled rows and upsert them.
+
+    Each version earns its own record: a new model version never inherits
+    its predecessor's promotion.
+    """
+    by_version: dict[str, list[dict[str, Any]]] = {}
+    for row in fetch_settled_rows(supa, engine):
+        by_version.setdefault(row.get("engine_version") or "v0", []).append(row)
+    return [
+        _upsert_version(supa, engine, version, rows, cadence, simulated_pnl_after_fees)
+        for version, rows in sorted(by_version.items())
+    ]
+
+
+def _upsert_version(supa, engine: str, engine_version: str, rows: list[dict[str, Any]], cadence: str,
+                    simulated_pnl_after_fees: float | None) -> dict[str, Any]:
     summary = compute_engine_summary(rows)
     cal_buckets = compute_calibration(rows)
     gate = check_promotion_gate(engine=engine, cadence=cadence, summary=summary,
@@ -157,5 +209,5 @@ def refresh_track_record(supa, engine: str, engine_version: str = "v0",
         "gate_status": gate["status"],
         "updated_at": datetime.now(UTC).isoformat(),
     }
-    supa.table(TRACK_RECORD_TABLE).upsert(payload, on_conflict="engine").execute()
+    supa.table(TRACK_RECORD_TABLE).upsert(payload, on_conflict="engine,engine_version").execute()
     return payload

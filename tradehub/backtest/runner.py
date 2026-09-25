@@ -94,7 +94,8 @@ def run_backtest(
         if market_prob is None:
             n_unquoted += 1
             continue
-        rows.append(prediction_row(decision.our_prob, market_prob, history.result))
+        rows.append(prediction_row(decision.our_prob, market_prob, history.result,
+                                   market_ticker=decision.market_ticker))
         if mode == "taker":
             fill = taker_fill(decision, history.candles, contracts=contracts, min_edge_pct=min_edge_pct)
         else:

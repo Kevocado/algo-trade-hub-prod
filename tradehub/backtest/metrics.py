@@ -49,9 +49,11 @@ def market_mid(candle: Candle | None) -> float | None:
     return (candle.yes_bid + candle.yes_ask) / 2.0
 
 
-def prediction_row(our_prob: float, market_prob: float | None, result: str) -> dict[str, Any]:
+def prediction_row(our_prob: float, market_prob: float | None, result: str,
+                   market_ticker: str | None = None) -> dict[str, Any]:
     outcome = _binary_outcome(result)
     return {
+        "market_ticker": market_ticker,
         "our_prob": our_prob,
         "market_prob": market_prob,
         "result": result,
