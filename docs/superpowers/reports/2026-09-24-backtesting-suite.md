@@ -389,3 +389,27 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
 - The new migration is intentionally not applied. Existing migration `20260416000004_backtest_runs.sql` was not edited.
 - The new log-loss column is nullable; gate and Brier code paths were left unchanged.
 - No dependency, spec, other-plan, live-service, push, reset, amend, or clean operation was performed. The ignored detailed handoff is `.superpowers/sdd/2026-09-24-backtesting-suite/final-fix-report.md`.
+
+## Post-review fix wave — finding 1
+
+- **Requirement:** `runner.walk_forward` must require `label_available_at`; training history contains only events whose labels are available strictly before the current decision. A regression covers markets settling 36 hours after their decision.
+- **Root cause:** the old implementation filtered by `time_of(e) < time_of(event)` and had no way to account for delayed labels.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  RED output tail:
+  ```text
+  TypeError: walk_forward() got an unexpected keyword argument 'label_available_at'
+  2 failed, 12 passed in 0.48s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  GREEN output tail:
+  ```text
+  14 passed in 0.30s
+  ```
+- **Implementation:** added the required callable to the public signature, filtered history with the strict label-time comparison, and excluded the current event from its own history.
+- **Deviation:** the first GREEN attempt exposed that the old equal-time fixture declared labels available one second early; the fixture was corrected to make the strict boundary explicit, then the focused command passed. No external service was contacted.

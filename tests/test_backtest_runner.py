@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import math
 
@@ -100,10 +101,41 @@ def test_walk_forward_only_fits_on_strictly_earlier_events():
         seen.append(len(history))
         return len(history)
 
-    out = walk_forward(times, time_of=lambda t: t, fit=fit, predict=lambda model, t: model)
+    out = walk_forward(
+        times,
+        time_of=lambda t: t,
+        label_available_at=lambda t: t,
+        fit=fit,
+        predict=lambda model, t: model,
+    )
     # The two events at hour 1 must not see each other.
     assert [p for _, p in out] == [1, 1, 3]
     assert seen == [1, 1, 3]
+
+
+@dataclass(frozen=True)
+class DelayedLabelEvent:
+    decided_at: datetime
+    label_available_at: datetime
+
+
+def test_walk_forward_excludes_labels_that_settle_36h_after_their_decision():
+    events = [
+        DelayedLabelEvent(T0 + timedelta(hours=hours), T0 + timedelta(hours=hours + 36))
+        for hours in (0, 24, 48, 72)
+    ]
+    seen = []
+
+    out = walk_forward(
+        events,
+        time_of=lambda event: event.decided_at,
+        label_available_at=lambda event: event.label_available_at,
+        fit=lambda history: seen.append(len(history)) or len(history),
+        predict=lambda model, event: model,
+    )
+
+    assert [prediction for _, prediction in out] == [1, 2]
+    assert seen == [1, 2]
 
 
 def test_log_loss_is_numerically_clipped_and_propagates_to_result():

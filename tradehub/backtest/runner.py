@@ -115,16 +115,18 @@ def run_backtest(
 def walk_forward(
     events: Sequence[E],
     time_of: Callable[[E], datetime],
+    label_available_at: Callable[[E], datetime],
     fit: Callable[[list[E]], M],
     predict: Callable[[M, E], R],
     *,
     min_history: int = 1,
 ) -> list[tuple[E, R]]:
-    """Predict each event from a model fit only on events strictly earlier in time."""
+    """Predict each event using only labels available before its decision time."""
     ordered = sorted(events, key=time_of)
     out: list[tuple[E, R]] = []
     for event in ordered:
-        history = [e for e in ordered if time_of(e) < time_of(event)]
+        event_time = time_of(event)
+        history = [e for e in ordered if e is not event and label_available_at(e) < event_time]
         if len(history) < min_history:
             continue
         out.append((event, predict(fit(history), event)))
