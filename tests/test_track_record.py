@@ -69,11 +69,34 @@ def test_compute_engine_summary_missing_market_brier_is_none():
     assert summary["brier_market"] is None
 
 
+def test_partial_market_brier_coverage_fails_closed_and_blocks_gate():
+    rows = [_settled(f"r{i}", 0.95, 0.6, "yes") for i in range(200)]
+    rows[0]["market_brier"] = None
+    summary = track_record.compute_engine_summary(rows)
+    gate = track_record.check_promotion_gate(
+        engine="weather",
+        cadence="daily",
+        summary=summary,
+        cal_buckets=track_record.compute_calibration(rows),
+        simulated_pnl_after_fees=50.0,
+    )
+    assert summary["brier_ours"] == pytest.approx(0.0025)
+    assert summary["brier_market"] is None
+    assert gate["status"] == "SHADOW"
+    assert any("market" in reason.lower() for reason in gate["reasons"])
+
+
 def _gate_kwargs(**overrides):
     rows = [_settled(f"r{i}", 0.95, 0.6, "yes") for i in range(200)]
     summary = track_record.compute_engine_summary(rows)
     cal = track_record.compute_calibration(rows)
-    base = dict(engine="weather", cadence="daily", summary=summary, cal_buckets=cal, simulated_pnl_after_fees=50.0)
+    base = {
+        "engine": "weather",
+        "cadence": "daily",
+        "summary": summary,
+        "cal_buckets": cal,
+        "simulated_pnl_after_fees": 50.0,
+    }
     base.update(overrides)
     return base
 

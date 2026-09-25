@@ -37,7 +37,7 @@ def build_prediction_row(
         if not 0.0 <= market_prob <= 1.0:
             raise ValueError(f"market_prob must be in [0, 1] or None, got {market_prob}")
     if not isinstance(as_of, datetime):
-        raise ValueError("as_of must be a datetime")
+        raise ValueError("as_of must be a datetime")  # noqa: TRY004 - preserve public contract
     return {
         "market_ticker": market_ticker.strip(),
         "our_prob": round(our_prob, 4),

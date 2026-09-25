@@ -7,7 +7,7 @@ same rows the settlement job writes. Pure math except for
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 BUCKETS = ["50-60", "60-70", "70-80", "80-90", "90-100"]
@@ -63,14 +63,19 @@ def compute_calibration(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def compute_engine_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """n_settled, mean model Brier, mean market Brier (None if never recorded)."""
+    """n_settled and mean Briers; market Brier requires full settled coverage."""
     settled = _settled_only(rows)
     briers = [float(r["brier"]) for r in settled if r.get("brier") is not None]
-    market_briers = [float(r["market_brier"]) for r in settled if r.get("market_brier") is not None]
+    complete_market_briers = [
+        float(r["market_brier"]) for r in settled if r.get("market_brier") is not None
+    ]
+    market_brier = None
+    if settled and len(complete_market_briers) == len(settled):
+        market_brier = round(sum(complete_market_briers) / len(complete_market_briers), 5)
     return {
         "n_settled": len(settled),
         "brier_ours": round(sum(briers) / len(briers), 5) if briers else None,
-        "brier_market": round(sum(market_briers) / len(market_briers), 5) if market_briers else None,
+        "brier_market": market_brier,
     }
 
 
@@ -150,7 +155,7 @@ def refresh_track_record(supa, engine: str, engine_version: str = "v0",
         "cal_buckets": cal_buckets,
         "max_cal_dev": gate["max_cal_dev"],
         "gate_status": gate["status"],
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
     }
     supa.table(TRACK_RECORD_TABLE).upsert(payload, on_conflict="engine").execute()
     return payload

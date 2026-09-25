@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -35,13 +35,13 @@ class _FakeSupa:
 
 
 def _row(**overrides):
-    base = dict(
-        market_ticker="KXHIGHNY-25SEP26-T70",
-        our_prob=0.62,
-        market_prob=0.55,
-        engine="weather",
-        as_of=datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc),
-    )
+    base = {
+        "market_ticker": "KXHIGHNY-25SEP26-T70",
+        "our_prob": 0.62,
+        "market_prob": 0.55,
+        "engine": "weather",
+        "as_of": datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+    }
     base.update(overrides)
     return predictions.build_prediction_row(**base)
 

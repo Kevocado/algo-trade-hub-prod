@@ -4,12 +4,13 @@ Strategy: Fetch events (have categories) → then fetch markets per event_ticker
 This bypasses the 15k sports parlay flood in the raw /markets endpoint.
 """
 
-import requests
 import os
 import time
-from dotenv import load_dotenv
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+import requests
+from dotenv import load_dotenv
 
 # Load .env from root directory
 root_dir = Path(__file__).parent.parent
@@ -81,7 +82,7 @@ def _fetch_all_events(max_pages=15):
             if not cursor:
                 break
             time.sleep(0.1)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"   ❌ Events fetch error: {e}")
             break
 
@@ -99,7 +100,7 @@ def _fetch_markets_for_event(event_ticker, headers):
         )
         if r.status_code == 200:
             return r.json().get('markets', [])
-    except:
+    except Exception:  # noqa: BLE001, S110 - preserve best-effort event fetch
         pass
     return []
 
@@ -164,7 +165,7 @@ def get_all_active_markets(limit_pages=10):
                 fetched_count += 1
                 if fetched_count % 50 == 0:
                     print(f"   📡 Fetched markets for {fetched_count}/{len(target_events)} events...")
-            except:
+            except Exception:  # noqa: BLE001, S110 - preserve best-effort event fetch
                 pass
 
     print(f"   ✅ Got {len(all_raw_markets)} markets from {fetched_count} events")
@@ -249,7 +250,7 @@ def get_active_sports_markets(leagues=None, limit_pages=10):
                 for m in markets:
                     m['_category'] = 'Sports'
                 all_raw_markets.extend(markets)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - preserve best-effort sports fetch
                 pass
 
     print(f"   ✅ Got {len(all_raw_markets)} sports markets from {len(target_events)} events")
@@ -266,7 +267,7 @@ def get_fast_active_markets(limit=1000):
         r = requests.get(KALSHI_API_URL, params={"limit": limit, "status": "open"}, headers=headers, timeout=10)
         if r.status_code == 200:
             return r.json().get('markets', [])
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"  ❌ Fast fetch failed: {e}")
     return []
 
@@ -345,7 +346,7 @@ def get_real_kalshi_markets(ticker):
                 debug_info["step"] = "Targeted Success"
                 return process_markets(markets, ticker), "Targeted", debug_info
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         debug_info["error"] = str(e)
 
     # Step B: Fallback Broad Fetch
@@ -359,7 +360,7 @@ def get_real_kalshi_markets(ticker):
                 debug_info["step"] = "Fallback Success"
                 return process_markets(filtered, ticker), "Fallback", debug_info
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         debug_info["error"] = str(e)
 
     debug_info["step"] = "Empty"
@@ -410,7 +411,7 @@ def check_kalshi_connection():
     try:
         response = requests.get(KALSHI_API_URL, params={"limit": 1, "status": "open"}, timeout=5)
         return response.status_code == 200
-    except:
+    except:  # noqa: E722 - preserve connection-probe behavior
         return False
 
 
@@ -479,7 +480,7 @@ def get_markets_by_series(series_ticker, limit=200):
         if r.status_code == 200:
             markets = r.json().get('markets', [])
             return markets
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"  ❌ Failed to fetch series {series_ticker}: {e}")
     return []
 
@@ -502,7 +503,7 @@ def get_weather_markets():
 def get_all_weather_markets():
     """Fetch ALL weather markets: temperature, snowfall, wind, precipitation."""
     all_markets = []
-    for key, info in WEATHER_SERIES_ALL.items():
+    for info in WEATHER_SERIES_ALL.values():
         markets = get_markets_by_series(info['series'])
         for m in markets:
             m['_city'] = info['city']

@@ -200,7 +200,7 @@
   ```sh
   cd /Users/sigey/Documents/Projects/algo-trade-hub-prod && .venv/bin/ruff check tradehub/predictions.py tradehub/settlement.py tradehub/track_record.py tradehub/scripts/settle_predictions.py tradehub/core/kalshi_feed.py tests/test_predictions.py tests/test_settlement.py tests/test_track_record.py tests/test_settle_predictions.py tests/test_repo_layout.py
   ```
-  Output tail:
+  Pre-fix output tail:
   ```text
   UP017 [*] Use `datetime.UTC` alias
      --> tradehub/track_record.py:153:36
@@ -208,8 +208,101 @@
   Found 21 errors.
   [*] 4 fixable with the `--fix` option (3 hidden fixes can be enabled with the `--unsafe-fixes` option).
   ```
-  The exact command exits non-zero on 21 pre-existing findings in the prior task files (`tradehub/predictions.py`, `tradehub/settlement.py`, `tradehub/track_record.py`, `tradehub/core/kalshi_feed.py`, and their existing tests). The new `settle_predictions.py` and `settle_predictions` test are clean when checked independently; unrelated files were not changed.
+  The earlier claim that all 21 findings were pre-existing was incorrect: 15 were baseline findings (14 in `tradehub/core/kalshi_feed.py` and one in `tests/test_repo_layout.py`), and six were introduced by this branch (`tradehub/predictions.py`, `tradehub/settlement.py`, `tradehub/track_record.py`, `tests/test_predictions.py`, and `tests/test_track_record.py`). The final-review-fix section below records the now-clean aggregate gate.
 - **Tracker update:** Step 2 in `docs/superpowers/plans/2026-09-24-rollout-tracker.md` now reads `🟡 implemented on branch, review pending`, as authorized by the handoff contract.
+
+## Final review fix wave
+
+- **Fix commit identity:** the single additional commit containing this section has exact subject `fix: address settlement review findings` and exact trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Its full object ID is recorded post-commit in the ignored final-fix report and returned in the handoff, because a Git commit cannot accurately embed its own object ID.
+- **Files changed:** `tradehub/predictions.py`, `tradehub/settlement.py`, `tradehub/track_record.py`, `tradehub/core/kalshi_feed.py`, `tests/test_predictions.py`, `tests/test_settlement.py`, `tests/test_track_record.py`, `tests/test_repo_layout.py`, this evidence report, and only the authorized Step 2 count in `docs/superpowers/plans/2026-09-24-rollout-tracker.md`.
+- **Correctness fixes:** market Brier aggregation now fails closed if any settled yes/no row lacks a score; open predictions are fetched in id-ordered inclusive pages until a short page; settlement updates remain id-based but additionally require `status=OPEN`, return a bool, and count a zero-row conditional update as skipped.
+- **Ruff disposition:** all 21 pre-fix findings are clean: 15 baseline findings (14 legacy `kalshi_feed` findings plus one `test_repo_layout` finding) and six branch-introduced findings. Required broad fetch-error handling remains behavior-preserving and uses narrow targeted Ruff suppressions; `ValueError` for invalid `as_of` and the public `fetch_market` signature are unchanged.
+
+### Regression TDD evidence
+
+1. Partial market-Brier coverage:
+   - RED command:
+     ```sh
+     SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_track_record.py::test_partial_market_brier_coverage_fails_closed_and_blocks_gate -v
+     ```
+   - RED tail:
+     ```text
+     >       assert summary["brier_market"] is None
+     E       assert 0.16 is None
+     =========================== short test summary info ============================
+     FAILED tests/test_track_record.py::test_partial_market_brier_coverage_fails_closed_and_blocks_gate
+     ============================== 1 failed in 0.07s ==============================
+     ```
+   - GREEN command: the same focused command.
+   - GREEN tail:
+     ```text
+     tests/test_track_record.py::test_partial_market_brier_coverage_fails_closed_and_blocks_gate PASSED [100%]
+     =============================== 1 passed in 0.01s ===============================
+     ```
+
+2. Open-prediction pagination and ordering:
+   - RED command:
+     ```sh
+     SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_settlement.py::test_fetch_open_predictions_pages_past_page_size_and_orders_by_id -v
+     ```
+   - RED tail:
+     ```text
+     >       monkeypatch.setattr(settlement, "PAGE_SIZE", 3)
+     E       AttributeError: <module 'tradehub.settlement' ...> has no attribute 'PAGE_SIZE'
+     =========================== short test summary info ============================
+     FAILED tests/test_settlement.py::test_fetch_open_predictions_pages_past_page_size_and_orders_by_id
+     ============================== 1 failed in 0.06s ==============================
+     ```
+   - GREEN command: the same focused command.
+   - GREEN tail:
+     ```text
+     tests/test_settlement.py::test_fetch_open_predictions_pages_past_page_size_and_orders_by_id PASSED [100%]
+     ============================== 1 passed in 0.01s ==============================
+     ```
+
+3. Conditional-update overlap:
+   - RED command:
+     ```sh
+     SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_settlement.py::test_run_settlement_pass_counts_conditional_update_miss_as_skipped -v
+     ```
+   - RED tail:
+     ```text
+     >       assert summary == {"checked": 2, "settled": 1, "canceled": 0, "skipped": 1}
+     E       AssertionError: assert {'checked': 2... 'skipped': 0} == {'checked': 2... 'skipped': 1}
+     E         Differing items:
+     E         {'skipped': 0} != {'skipped': 1}
+     E         {'settled': 2} != {'settled': 1}
+     =========================== short test summary info ============================
+     FAILED tests/test_settlement.py::test_run_settlement_pass_counts_conditional_update_miss_as_skipped
+     ============================== 1 failed in 0.06s ==============================
+     ```
+   - GREEN command: the same focused command.
+   - GREEN tail:
+     ```text
+     tests/test_settlement.py::test_run_settlement_pass_counts_conditional_update_miss_as_skipped PASSED [100%]
+     ============================== 1 passed in 0.01s ===============================
+     ```
+
+### Final verification
+
+- Full-suite command:
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/ -v
+  ```
+- Full-suite output tail:
+  ```text
+  tests/test_track_record.py::test_gate_monthly_cadence_needs_only_50_contracts PASSED [100%]
+  ============================= 165 passed in 4.49s ==============================
+  ```
+- Exact Ruff command:
+  ```sh
+  .venv/bin/ruff check tradehub/predictions.py tradehub/settlement.py tradehub/track_record.py tradehub/scripts/settle_predictions.py tradehub/core/kalshi_feed.py tests/test_predictions.py tests/test_settlement.py tests/test_track_record.py tests/test_settle_predictions.py tests/test_repo_layout.py
+  ```
+- Exact Ruff output:
+  ```text
+  All checks passed!
+  ```
+- Tracker count: Step 2 was updated from the stale `39/39` to the evidence-confirmed `42/42`; no other rollout-tracker content was changed.
 
 ## Deviations and rulings
 

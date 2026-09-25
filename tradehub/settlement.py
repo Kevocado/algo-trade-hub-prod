@@ -16,6 +16,7 @@ TRACK_RECORD_TABLE = "track_record"
 OPEN = "OPEN"
 SETTLED = "SETTLED"
 CANCELED = "CANCELED"
+PAGE_SIZE = 1000
 
 
 def compute_realized_pnl(qty: int, buy_price: float, settle_price: float, fees_cents: int = 0) -> float:
@@ -87,15 +88,36 @@ def settle_prediction_row(row: dict[str, Any], market: Any) -> dict[str, Any] | 
 
 
 def fetch_open_predictions(supa) -> list[dict[str, Any]]:
-    """Return all `predictions` rows still awaiting settlement."""
-    res = supa.table(PREDICTIONS_TABLE).select("*").eq("status", OPEN).execute()
-    return res.data or []
+    """Return all `predictions` rows still awaiting settlement, paged by id."""
+    rows: list[dict[str, Any]] = []
+    start = 0
+    while True:
+        res = (
+            supa.table(PREDICTIONS_TABLE)
+            .select("*")
+            .eq("status", OPEN)
+            .order("id")
+            .range(start, start + PAGE_SIZE - 1)
+            .execute()
+        )
+        page = res.data or []
+        rows.extend(page)
+        if len(page) < PAGE_SIZE:
+            return rows
+        start += PAGE_SIZE
 
 
-def apply_prediction_settlement(supa, update: dict[str, Any]) -> None:
-    """Write one settle payload (from `settle_prediction_row`) to its row by id."""
+def apply_prediction_settlement(supa, update: dict[str, Any]) -> bool:
+    """Conditionally write one settlement payload to an OPEN row by id."""
     payload = {k: v for k, v in update.items() if k != "id"}
-    supa.table(PREDICTIONS_TABLE).update(payload).eq("id", update["id"]).execute()
+    result = (
+        supa.table(PREDICTIONS_TABLE)
+        .update(payload)
+        .eq("id", update["id"])
+        .eq("status", OPEN)
+        .execute()
+    )
+    return bool(result.data)
 
 
 def run_settlement_pass(supa, fetch_market) -> dict[str, int]:
@@ -111,14 +133,16 @@ def run_settlement_pass(supa, fetch_market) -> dict[str, int]:
         summary["checked"] += 1
         try:
             market = fetch_market(row["market_ticker"])
-        except Exception:
+        except Exception:  # noqa: BLE001 - injected fetcher failures must skip the row
             summary["skipped"] += 1
             continue
         update = settle_prediction_row(row, market)
         if update is None:
             summary["skipped"] += 1
             continue
-        apply_prediction_settlement(supa, update)
+        if not apply_prediction_settlement(supa, update):
+            summary["skipped"] += 1
+            continue
         if update["status"] == SETTLED:
             summary["settled"] += 1
         else:

@@ -95,29 +95,51 @@ class _FakeQuery:
     def __init__(self, parent):
         self._parent = parent
         self._payload = None
-        self._eq_id = None
+        self._filters = {}
+        self._is_select = False
+        self._order_by_id = False
+        self._range = None
 
     def select(self, *_a):
+        self._is_select = True
         return self
 
     def eq(self, col, val):
-        # apply_prediction_settlement calls .update() before .eq("id", ...),
-        # so the id is captured here and committed at execute() time.
-        if col == "id":
-            self._eq_id = val
-        else:
+        self._filters[col] = val
+        if self._is_select:
             self._parent.filters.append((col, val))
+        return self
+
+    def order(self, column):
+        self._order_by_id = column == "id"
+        return self
+
+    def range(self, start, end):
+        self._range = (start, end)
         return self
 
     def update(self, payload):
         self._payload = payload
+        self._is_select = False
         return self
 
     def execute(self):
+        matched = [
+            row
+            for row in self._parent.rows
+            if all(row.get(column) == value for column, value in self._filters.items())
+        ]
+        if self._order_by_id:
+            matched.sort(key=lambda row: row["id"])
         if self._payload is not None:
-            self._parent.updates.append({"id": self._eq_id, **self._payload})
-            return _FakeResult(list(self._parent.updates))
-        return _FakeResult([r for r in self._parent.rows if r["status"] == "OPEN"])
+            updated = []
+            for row in matched:
+                row.update(self._payload)
+                self._parent.updates.append({"id": row["id"], **self._payload})
+                updated.append(row)
+            return _FakeResult(updated)
+        start, end = self._range or (0, min(len(matched), settlement.PAGE_SIZE) - 1)
+        return _FakeResult(matched[start:end + 1])
 
 
 class _FakeSupaIO:
@@ -141,6 +163,25 @@ def test_fetch_open_predictions_returns_only_open():
     rows = settlement.fetch_open_predictions(supa)
     assert [r["id"] for r in rows] == ["a"]
     assert supa.filters == [("status", "OPEN")]
+
+
+def test_fetch_open_predictions_pages_past_page_size_and_orders_by_id(monkeypatch):
+    monkeypatch.setattr(settlement, "PAGE_SIZE", 3)
+    rows = [
+        _open_row("g", "T7", 0.6, 0.5),
+        _open_row("b", "T2", 0.6, 0.5),
+        _open_row("f", "T6", 0.6, 0.5),
+        _open_row("c", "T3", 0.6, 0.5),
+        _open_row("e", "T5", 0.6, 0.5),
+        _open_row("d", "T4", 0.6, 0.5),
+        _open_row("a", "T1", 0.6, 0.5),
+        {"id": "settled", "status": "SETTLED"},
+        {"id": "canceled", "status": "CANCELED"},
+    ]
+
+    rows = settlement.fetch_open_predictions(_FakeSupaIO(rows))
+
+    assert [row["id"] for row in rows] == ["a", "b", "c", "d", "e", "f", "g"]
 
 
 def test_run_settlement_pass_settles_finalized_and_skips_others():
@@ -180,6 +221,20 @@ def test_run_settlement_pass_is_idempotent():
     second = settlement.run_settlement_pass(supa, lambda _t: market)
     assert second == {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0}
     assert supa.updates == []
+
+
+def test_run_settlement_pass_counts_conditional_update_miss_as_skipped(monkeypatch):
+    row = _open_row("a", "KXFINAL-YES", 0.7, 0.5)
+    stale_rows = [row, {**row}]
+    market = {"market": {"status": "finalized", "result": "yes"}}
+    supa = _FakeSupaIO([row])
+    monkeypatch.setattr(settlement, "fetch_open_predictions", lambda _supa: stale_rows)
+
+    summary = settlement.run_settlement_pass(supa, lambda _t: market)
+
+    assert summary == {"checked": 2, "settled": 1, "canceled": 0, "skipped": 1}
+    assert [update["id"] for update in supa.updates] == ["a"]
+    assert row["status"] == "SETTLED"
 
 
 def test_run_settlement_pass_no_open_predictions():

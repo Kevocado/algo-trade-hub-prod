@@ -83,7 +83,7 @@ def test_research_is_parked_and_not_imported():
     assert tracked("research/engines/tsa_engine.py", "research/engines/eia_engine.py") != []
     offenders = [
         f for f, text in tracked_python_text().items()
-        if re.search(r"^\s*(from|import)\s+research\b|quant_research_lab|tsa_engine|eia_engine|TSAEngine|EIAEngine", text, re.M)
+        if re.search(r"^\s*(from|import)\s+research\b|quant_research_lab|tsa_engine|eia_engine|TSAEngine|EIAEngine", text, re.MULTILINE)
         and f != "tests/test_repo_layout.py"
     ]
     assert offenders == []

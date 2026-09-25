@@ -18,7 +18,7 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 | 8 | `labor_nowcast` + Jobs Scorecard | 🗺️ outline only; detail after step 4 lands | — |
 
 **Implementation order:** 2 → 3 → 4 → 5, each on its own `plan/<basename>` branch, reviewed and merged before the next one starts. Each plan's code was validated before publishing:
-- **Step 2:** 39/39 of the plan's own tests pass.
+- **Step 2:** 42/42 of the plan's own tests pass.
 - **Steps 3 + 4:** 88/88 pass together on top of step 2's code. A live check against real Kalshi and Open-Meteo data found the v1 weather model not yet beating the market on a small sample, and the gate holds it in SHADOW as designed.
 - **Step 5:** 127/127 pass. A real Docker build and container smoke test were run, which found and fixed an out-of-sync frontend lockfile.
 
