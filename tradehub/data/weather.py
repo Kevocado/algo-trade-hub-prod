@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, Callable
 
 from tradehub.backtest.http import default_get_json
@@ -111,3 +112,11 @@ def historical_forecast_highs(
         except ValueError:
             continue
     return out
+
+
+# Backtest decisions for a climate day are made at 23:30 LST, `lead_days` days before it.
+WEATHER_DECISION_TIME = time(23, 30)
+
+
+def weather_decision_time(target: date, lead_days: int, city: City) -> datetime:
+    return datetime.combine(target - timedelta(days=lead_days), WEATHER_DECISION_TIME, ZoneInfo(city.lst_timezone))

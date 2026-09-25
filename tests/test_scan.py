@@ -282,7 +282,8 @@ def test_scan_and_backtest_share_walk_forward_weather_error_model():
         for day in training_days
     ]
     historical = {
-        day: [Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 75.0, now - timedelta(hours=2))]
+        day: [Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 75.0,
+                          backtest_engines.weather_decision_time(day, 1, city) - timedelta(hours=2))]
         for day in training_days
     }
     current = [Observation("openmeteo:gfs_seamless:high:2026-09-25:live", 75.0, now)]
@@ -325,7 +326,8 @@ def test_scan_and_backtest_use_all_available_calibration_pairs():
         for index, day in enumerate(training_days)
     ]
     historical = {
-        day: [Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 75.0, now - timedelta(hours=2))]
+        day: [Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 75.0,
+                          backtest_engines.weather_decision_time(day, 1, city) - timedelta(hours=2))]
         for day in training_days
     }
     current = [Observation("current", 75.0, now)]
@@ -372,8 +374,11 @@ def test_scan_calibration_uses_smallest_forecast_lead_published_by_as_of():
             for day in training_days
             if start <= day <= end
             for observation in (
-                Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 90.0, now + timedelta(hours=1)),
-                Observation(f"openmeteo:gfs_seamless:high:{day}:lead2", 75.0, now - timedelta(hours=1)),
+                # lead 1 publishes after that day's own decision (D-1 23:30 LST): never used
+                Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 90.0,
+                            backtest_engines.weather_decision_time(day, 1, city) + timedelta(hours=1)),
+                Observation(f"openmeteo:gfs_seamless:high:{day}:lead2", 75.0,
+                            backtest_engines.weather_decision_time(day, 1, city) - timedelta(hours=1)),
             )
         ]
 
@@ -411,7 +416,7 @@ def test_scan_weather_calibration_fetches_only_the_last_90_days_once_per_city():
             Observation(
                 f"openmeteo:gfs_seamless:high:{day.isoformat()}:lead1",
                 75.0,
-                now - timedelta(hours=1),
+                backtest_engines.weather_decision_time(day, 1, requested_city) - timedelta(hours=1),
             )
             for day in (start + timedelta(days=offset) for offset in range((end - start).days + 1))
         ]

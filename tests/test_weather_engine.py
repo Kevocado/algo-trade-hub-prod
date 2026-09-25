@@ -49,3 +49,32 @@ def test_weather_probability_is_clamped_away_from_zero_and_one():
 def test_weather_prob_requires_highs():
     with pytest.raises(ValueError):
         weather_prob(parse_market(BASE), [], DEFAULT_ERROR)
+
+
+def test_calibration_uses_each_past_days_own_decision_lead():
+    """Past-day pairs must use the forecast its own decision would have seen (lead 2 at D-1 23:30
+    LST, since lead 1 publishes ~D 05:00), not the lead-1 value that is only known later."""
+    from datetime import date, datetime, timedelta, timezone
+
+    from tradehub.backtest.pit import Observation
+    from tradehub.data.weather import WEATHER_CITIES, weather_decision_time
+    from tradehub.engines.weather import walk_forward_error_model
+
+    city = WEATHER_CITIES["KXHIGHNY"]
+    as_of = datetime(2026, 9, 1, 12, tzinfo=timezone.utc)
+    actuals, forecasts = [], {}
+    for i in range(25):
+        day = date(2026, 7, 1) + timedelta(days=i)
+        decided = weather_decision_time(day, 1, city)
+        actuals.append(Observation(f"KXHIGHNY-{day.strftime('%y%b%d').upper()}", 80.0,
+                                   decided + timedelta(days=1)))
+        forecasts[day] = [
+            # lead 2: published before the day's decision; its error is exactly +2 or -2
+            Observation(f"om:gfs:high:{day}:lead2", 78.0 if i % 2 else 82.0, decided - timedelta(hours=10)),
+            # lead 1: published after the day's decision (but well before as_of); error 0
+            Observation(f"om:gfs:high:{day}:lead1", 80.0, decided + timedelta(hours=6)),
+        ]
+    model = walk_forward_error_model(
+        actuals, forecasts, as_of, decision_time_for=lambda d: weather_decision_time(d, 1, city),
+    )
+    assert model.sigma > 1.9  # lead-2 errors (+-2); lead-1 pairs would give sigma MIN_SIGMA

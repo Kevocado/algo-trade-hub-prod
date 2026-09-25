@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import statistics
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -68,18 +68,23 @@ def walk_forward_error_model(
     forecasts: Mapping[date, Sequence[Observation]],
     as_of: datetime,
     *,
+    decision_time_for: Callable[[date], datetime] | None = None,
     fallback: ErrorModel = DEFAULT_ERROR,
     min_pairs: int = MIN_ERROR_PAIRS,
 ) -> ErrorModel:
-    """Fit forecast errors using only actuals and lead-matched forecasts known at ``as_of``."""
+    """Fit forecast errors from actuals and forecasts known at ``as_of``.
+
+    With ``decision_time_for``, each past day's forecast is the one its own
+    decision would have used (published by that day's decision time, and by
+    ``as_of``), so the fitted errors match the lead the model actually trades at.
+    """
     pairs: list[tuple[float, float]] = []
     for actual in actuals:
         if actual.published_at > as_of:
             continue
-        known = select_forecast_observations(
-            forecasts.get(event_date(actual.name), ()),
-            as_of,
-        )
+        day = event_date(actual.name)
+        cutoff = as_of if decision_time_for is None else min(as_of, decision_time_for(day))
+        known = select_forecast_observations(forecasts.get(day, ()), cutoff)
         if known:
             pairs.append((statistics.fmean(observation.value for observation in known), actual.value))
     return fit_error_model(pairs, min_pairs=min_pairs, fallback=fallback)

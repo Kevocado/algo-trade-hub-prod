@@ -19,6 +19,7 @@ from tradehub.data.kalshi_live import KalshiLive
 from tradehub.data.rbob import front_month_roll_dates, rbob_closes
 from tradehub.data.weather import (
     WEATHER_CITIES,
+    weather_decision_time,
     City,
     forecast_target_date,
     historical_forecast_highs_range,
@@ -182,6 +183,9 @@ def _scan_weather_city(
         actuals,
         calibration_forecasts,
         now,
+        # Same rule as the backtest (lead 1 = decide at D-1 23:30 LST), so live and
+        # backtested probabilities come from the same error model.
+        decision_time_for=lambda day: weather_decision_time(day, 1, city),
         fallback=fallback,
         min_pairs=min_error_pairs,
     )

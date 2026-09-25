@@ -13,7 +13,6 @@ import sys
 
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable, Iterable, Mapping
-from zoneinfo import ZoneInfo
 
 from tradehub.backtest.kalshi_history import KalshiHistoryClient
 from tradehub.backtest.pit import Decision, Observation
@@ -21,7 +20,14 @@ from tradehub.backtest.runner import MarketHistory, run_backtest
 from tradehub.backtest.store import build_backtest_run_row, data_snapshot_hash, record_backtest_run
 from tradehub.data.kalshi_live import safe_event_date, settlement_observations
 from tradehub.data.rbob import front_month_roll_dates, rbob_closes
-from tradehub.data.weather import WEATHER_CITIES, City, forecast_target_date, historical_forecast_highs_range
+from tradehub.data.weather import (
+    WEATHER_CITIES,
+    WEATHER_DECISION_TIME,  # noqa: F401 - re-exported for callers/tests
+    City,
+    forecast_target_date,
+    historical_forecast_highs_range,
+    weather_decision_time,
+)
 from tradehub.engines.gas import (
     GAS_ENGINE_VERSION,
     GAS_SERIES,
@@ -42,7 +48,6 @@ from tradehub.engines.weather import (
 from tradehub.engine_config import load_engine_config
 from tradehub.markets import KalshiMarket, event_date, parse_market
 
-WEATHER_DECISION_TIME = time(23, 30)
 GAS_DECISION_LEAD = timedelta(hours=2)
 
 
@@ -66,10 +71,6 @@ def fetch_weather_forecasts(
     return out
 
 
-def weather_decision_time(target: date, lead_days: int, city: City) -> datetime:
-    return datetime.combine(target - timedelta(days=lead_days), WEATHER_DECISION_TIME, ZoneInfo(city.lst_timezone))
-
-
 def build_weather_decisions(
     markets: list[KalshiMarket],
     forecasts: Mapping[date, list[Observation]],
@@ -91,6 +92,7 @@ def build_weather_decisions(
             actuals,
             forecasts,
             decided_at,
+            decision_time_for=lambda day: weather_decision_time(day, lead_days, city),
             min_pairs=min_pairs,
             fallback=fallback,
         )
