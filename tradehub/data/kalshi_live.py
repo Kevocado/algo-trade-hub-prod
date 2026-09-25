@@ -36,7 +36,12 @@ def settlement_observations(raws: list[dict[str, Any]]) -> list[Observation]:
         stamp = raw.get("settlement_ts")
         if value in (None, "") or not stamp:
             continue
-        obs = Observation(name=raw["event_ticker"], value=float(value), published_at=parse_ts(stamp))
+        try:
+            name = raw["event_ticker"]
+            event_date(name)
+            obs = Observation(name=name, value=float(value), published_at=parse_ts(stamp))
+        except (KeyError, TypeError, ValueError):
+            continue
         current = best.get(obs.name)
         if current is None or obs.published_at < current.published_at:
             best[obs.name] = obs

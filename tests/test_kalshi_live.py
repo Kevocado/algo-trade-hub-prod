@@ -58,6 +58,30 @@ def test_settlement_observations_one_per_event_sorted_skipping_blanks():
     assert event_date(obs[0].name) == date(2026, 9, 23)
 
 
+def test_settlement_observations_skips_unparseable_event_and_expiration_values():
+    raws = [
+        {
+            "event_ticker": "HIGHCHI-2-24FEB28",
+            "expiration_value": "4.48",
+            "settlement_ts": "2026-02-24T12:00:00Z",
+        },
+        {
+            "event_ticker": "KXAAAGASD-26SEP21",
+            "expiration_value": "No",
+            "settlement_ts": "2026-09-21T12:00:00Z",
+        },
+        {
+            "event_ticker": "KXAAAGASD-26SEP20",
+            "expiration_value": "4.47",
+            "settlement_ts": "2026-09-20T12:00:00Z",
+        },
+    ]
+
+    observations = settlement_observations(raws)
+
+    assert [observation.name for observation in observations] == ["KXAAAGASD-26SEP20"]
+
+
 def test_settled_values_merges_historical_and_live_tiers():
     get = FakeGet({
         "/historical/markets": {"markets": [{"ticker": "KXAAAGASD-26JUL01-4.1000", "event_ticker": "KXAAAGASD-26JUL01", "expiration_value": "4.1", "settlement_ts": "2026-07-01T11:50:00Z"}], "cursor": ""},

@@ -144,6 +144,29 @@ def test_scan_weather_predicts_only_strictly_future_lst_climate_days():
     assert all(e["edge_type"] == "WEATHER" for e in edges)
 
 
+def test_scan_weather_predicts_all_three_cities():
+    markets = [
+        _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25"),
+        _m("KXHIGHCHI-26SEP25-T74", "KXHIGHCHI-26SEP25"),
+        _m("KXHIGHMIA-26SEP25-T84", "KXHIGHMIA-26SEP25", floor=84),
+    ]
+    live = FakeLive([LiveMarket(market, GOOD_QUOTE) for market in markets])
+
+    def forecast_fn(city, target, now):
+        return [Observation(f"forecast:{city.name}:{target}", 77.0, now)]
+
+    predictions, edges = scan.scan_weather(
+        live,
+        NOW,
+        CFG,
+        forecast_fn=forecast_fn,
+        historical_forecast_fn=lambda *args: [],
+    )
+
+    assert {row["market_ticker"] for row in predictions} == {market.ticker for market in markets}
+    assert {row["market_ticker"] for row in edges} == {market.ticker for market in markets}
+
+
 def test_scan_and_backtest_share_walk_forward_weather_error_model():
     city = scan.WEATHER_CITIES["KXHIGHNY"]
     target = date(2026, 9, 25)

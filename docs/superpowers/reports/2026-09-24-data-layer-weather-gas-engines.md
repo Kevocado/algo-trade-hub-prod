@@ -1017,3 +1017,25 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   28 passed in 0.32s
   ```
 
+## Finding 1 — robust live settlement parsing — 2026-09-25
+
+- **Files changed:** `tradehub/data/kalshi_live.py`, `tests/test_kalshi_live.py`, `tests/test_scan.py`, and this report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_live.py::test_settlement_observations_skips_unparseable_event_and_expiration_values tests/test_scan.py::test_scan_weather_predicts_all_three_cities -q
+  ```
+  RED output tail:
+  ```text
+  ValueError: could not convert string to float: 'No'
+  1 failed, 1 passed in 0.34s
+  ```
+- `settlement_observations()` now validates the event ticker and numeric expiration value per row and skips malformed records rather than aborting the scan. Fixtures cover the real `HIGHCHI-2-24FEB28` ticker and literal `No` value, plus a regression proving one scan emits NYC, Chicago, and Miami predictions/edges.
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_live.py tests/test_scan.py -q
+  ```
+  GREEN output tail:
+  ```text
+  21 passed in 1.20s
+  ```
+
