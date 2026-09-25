@@ -136,6 +136,47 @@ def test_weather_decisions_filter_current_forecasts_published_after_decision():
     check_no_lookahead(decisions[0])
 
 
+def test_weather_decision_uses_lead_2_when_lead_1_is_published_late():
+    target = date(2026, 9, 25)
+    decided_at = weather_decision_time(target, 1, NYC)
+    lead_1 = Observation(
+        "openmeteo:gfs_seamless:high:2026-09-25:lead1",
+        90.0,
+        decided_at + timedelta(minutes=30),
+    )
+    lead_2 = Observation(
+        "openmeteo:gfs_seamless:high:2026-09-25:lead2",
+        75.0,
+        decided_at - timedelta(minutes=30),
+    )
+
+    decisions = build_weather_decisions([_wm(target)], {target: [lead_1, lead_2]}, [], NYC)
+
+    assert len(decisions) == 1
+    assert tuple(observation.name for observation in decisions[0].features) == (lead_2.name,)
+    assert all(observation.published_at <= decisions[0].decided_at for observation in decisions[0].features)
+    check_no_lookahead(decisions[0])
+
+
+def test_weather_decision_uses_only_smallest_published_lead():
+    target = date(2026, 9, 25)
+    decided_at = weather_decision_time(target, 1, NYC)
+    lead_1 = Observation(
+        "openmeteo:gfs_seamless:high:2026-09-25:lead1",
+        75.0,
+        decided_at - timedelta(hours=2),
+    )
+    lead_2 = Observation(
+        "openmeteo:gfs_seamless:high:2026-09-25:lead2",
+        85.0,
+        decided_at - timedelta(hours=1),
+    )
+
+    decisions = build_weather_decisions([_wm(target)], {target: [lead_1, lead_2]}, [], NYC)
+
+    assert tuple(observation.name for observation in decisions[0].features) == (lead_1.name,)
+
+
 def test_weather_training_ignores_forecasts_published_after_decision():
     target = date(2026, 7, 30)
     decided_at = weather_decision_time(target, 1, NYC)

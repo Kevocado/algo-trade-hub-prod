@@ -237,6 +237,41 @@ def test_scan_and_backtest_use_all_available_calibration_pairs():
     assert predictions[0]["our_prob"] == pytest.approx(decision.our_prob, abs=1e-4)
 
 
+def test_scan_calibration_uses_smallest_forecast_lead_published_by_as_of():
+    city = scan.WEATHER_CITIES["KXHIGHNY"]
+    target = date(2026, 9, 25)
+    now = backtest_engines.weather_decision_time(target, 1, city)
+    training_days = [target - timedelta(days=i) for i in range(25, 0, -1)]
+    actuals = [
+        Observation(
+            f"KXHIGHNY-{day.strftime('%y%b%d').upper()}",
+            77.0,
+            now - timedelta(hours=1),
+        )
+        for day in training_days
+    ]
+
+    def historical_forecast_fn(_city, day, lead):
+        if lead == 1:
+            return [Observation(f"forecast:{day}:lead1", 90.0, now + timedelta(hours=1))]
+        if lead == 2:
+            return [Observation(f"forecast:{day}:lead2", 75.0, now - timedelta(hours=1))]
+        return []
+
+    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
+    predictions, _ = scan.scan_weather(
+        FakeLive([LiveMarket(market, GOOD_QUOTE)], actuals),
+        now,
+        CFG,
+        forecast_fn=lambda _city, _day, as_of: [Observation("forecast:live", 75.0, as_of)],
+        historical_forecast_fn=historical_forecast_fn,
+        cities={"KXHIGHNY": city},
+    )
+
+    assert predictions[0]["raw_payload"]["bias"] == pytest.approx(2.0)
+    assert all(observation.published_at <= now for observation in actuals)
+
+
 def test_scan_and_backtest_share_yaml_fallback_below_minimum_samples():
     city = scan.WEATHER_CITIES["KXHIGHNY"]
     target = date(2026, 9, 25)

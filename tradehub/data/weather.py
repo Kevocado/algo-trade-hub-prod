@@ -12,6 +12,7 @@ from tradehub.backtest.sources.open_meteo import forecast_daily_high
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 WEATHER_MODELS = ("gfs_seamless", "ecmwf_ifs025", "icon_seamless")
+WEATHER_LEAD_DAYS = tuple(range(1, 8))
 
 
 @dataclass(frozen=True)

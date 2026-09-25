@@ -1063,3 +1063,27 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   42 passed in 0.58s
   ```
 
+## Finding 3 — select forecast lead by publication time — 2026-09-25
+
+- **Files changed:** `tradehub/data/weather.py`, `tradehub/engines/weather.py`, `tradehub/scripts/backtest_engines.py`, `tradehub/scripts/scan.py`, `tests/test_backtest_engines.py`, `tests/test_scan.py`, and this report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_engines.py::test_weather_decision_uses_lead_2_when_lead_1_is_published_late tests/test_backtest_engines.py::test_weather_decision_uses_only_smallest_published_lead tests/test_scan.py::test_scan_calibration_uses_smallest_forecast_lead_published_by_as_of -q
+  ```
+  RED output tail:
+  ```text
+  Left contains one more item: 'openmeteo:gfs_seamless:high:2026-09-25:lead2'
+  assert 0.0 == 2.0 ± 2.0e-06
+  2 failed, 1 passed in 0.79s
+  ```
+- A shared selector now filters strictly to `published_at <= as_of` and keeps all model values only at the smallest eligible lead. Backtest decisions and walk-forward calibration use the same selector. With the corrected six-hour availability lag, the new boundary test proves the D-1 23:30 LST decision selects lead 2 and retains no post-decision feature; a second test proves lead 1 is not blended with lead 2 when both are available.
+- The CLI and scan now request all seven previous-run lead candidates; finding 4 will reduce those calls to one range request per model without changing this selection contract.
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py tests/test_weather_data.py tests/test_weather_engine.py tests/test_backtest_engines.py tests/test_scan.py -q
+  ```
+  GREEN output tail:
+  ```text
+  47 passed in 0.55s
+  ```
+

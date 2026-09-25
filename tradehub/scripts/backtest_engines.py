@@ -21,7 +21,7 @@ from tradehub.backtest.runner import MarketHistory, run_backtest
 from tradehub.backtest.store import build_backtest_run_row, data_snapshot_hash, record_backtest_run
 from tradehub.data.kalshi_live import settlement_observations
 from tradehub.data.rbob import rbob_closes
-from tradehub.data.weather import WEATHER_CITIES, City, historical_forecast_highs
+from tradehub.data.weather import WEATHER_CITIES, WEATHER_LEAD_DAYS, City, historical_forecast_highs
 from tradehub.engines.gas import (
     GAS_ENGINE_VERSION,
     GAS_SERIES,
@@ -35,6 +35,7 @@ from tradehub.engines.weather import (
     MIN_ERROR_PAIRS,
     WEATHER_ENGINE_VERSION,
     ErrorModel,
+    select_forecast_observations,
     walk_forward_error_model,
     weather_prob,
 )
@@ -51,18 +52,23 @@ def fetch_weather_forecasts(
     days: Iterable[date],
     *,
     forecast_fn: Callable[[City, date, int], list[Observation]] = historical_forecast_highs,
-    lead_days: int = 1,
+    lead_days: int | Iterable[int] = 1,
     max_workers: int = WEATHER_FETCH_MAX_WORKERS,
 ) -> dict[date, list[Observation]]:
-    """Fetch each requested date with a finite worker pool and stable date keys."""
+    """Fetch requested dates/leads with a finite worker pool and stable date keys."""
     if max_workers < 1:
         raise ValueError(f"max_workers must be >= 1, got {max_workers!r}")
     ordered_days = sorted(set(days))
     if not ordered_days:
         return {}
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(ordered_days))) as executor:
-        results = executor.map(lambda day: forecast_fn(city, day, lead_days), ordered_days)
-        return {day: result for day, result in zip(ordered_days, results)}
+    leads = (lead_days,) if isinstance(lead_days, int) else tuple(sorted(set(lead_days)))
+    jobs = [(day, lead) for day in ordered_days for lead in leads]
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(jobs))) as executor:
+        results = executor.map(lambda job: forecast_fn(city, job[0], job[1]), jobs)
+        out = {day: [] for day in ordered_days}
+        for (day, _lead), observations in zip(jobs, results):
+            out[day].extend(observations)
+        return out
 
 
 def weather_decision_time(target: date, lead_days: int, city: City) -> datetime:
@@ -83,8 +89,7 @@ def build_weather_decisions(
     for market in markets:
         target = event_date(market.event_ticker)
         decided_at = weather_decision_time(target, lead_days, city)
-        highs = [observation for observation in (forecasts.get(target) or [])
-                 if observation.published_at <= decided_at]
+        highs = select_forecast_observations(forecasts.get(target, ()), decided_at)
         if not highs:
             continue
         error = walk_forward_error_model(
@@ -201,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
             city,
             days,
             forecast_fn=historical_forecast_highs,
-            lead_days=1,
+            lead_days=WEATHER_LEAD_DAYS,
         )
         fallback = ErrorModel(
             bias=float(cfg.params.get("error_bias", DEFAULT_ERROR.bias)),

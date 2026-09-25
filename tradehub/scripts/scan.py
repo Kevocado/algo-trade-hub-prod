@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.data.rbob import rbob_closes
-from tradehub.data.weather import WEATHER_CITIES, City, historical_forecast_highs, live_forecast_highs
+from tradehub.data.weather import WEATHER_CITIES, WEATHER_LEAD_DAYS, City, historical_forecast_highs, live_forecast_highs
 from tradehub.edges import EdgeSuggestion, evaluate_edge
 from tradehub.engine_config import EngineConfig, load_engine_config
 from tradehub.engines.gas import GAS_ENGINE_VERSION, GAS_SERIES, fit_gas_model, gas_prob, gas_training_pairs, rbob_change
@@ -139,7 +139,11 @@ def _scan_weather_city(
     if len(actuals) >= min_error_pairs:
         for actual in actuals:
             day = event_date(actual.name)
-            calibration_forecasts[day] = historical_forecast_fn(city, day, 1)
+            calibration_forecasts[day] = [
+                observation
+                for lead in WEATHER_LEAD_DAYS
+                for observation in historical_forecast_fn(city, day, lead)
+            ]
     error = walk_forward_error_model(
         actuals,
         calibration_forecasts,

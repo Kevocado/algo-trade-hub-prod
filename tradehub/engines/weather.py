@@ -7,6 +7,7 @@ represented by the fitted error term and is not added again here.
 
 from __future__ import annotations
 
+import re
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -28,6 +29,25 @@ class ErrorModel:
 
 
 DEFAULT_ERROR = ErrorModel(bias=0.0, sigma=2.5)
+_LEAD_PATTERN = re.compile(r":lead(\d+)$")
+
+
+def forecast_lead_days(observation: Observation) -> int:
+    """Return a comparable lead rank; live and unlabelled values rank first."""
+    match = _LEAD_PATTERN.search(observation.name)
+    return int(match.group(1)) if match else 0
+
+
+def select_forecast_observations(
+    observations: Iterable[Observation],
+    as_of: datetime,
+) -> list[Observation]:
+    """Select every model value from the smallest lead published by ``as_of``."""
+    known = [observation for observation in observations if observation.published_at <= as_of]
+    if not known:
+        return []
+    lead = min(forecast_lead_days(observation) for observation in known)
+    return [observation for observation in known if forecast_lead_days(observation) == lead]
 
 
 def fit_error_model(
@@ -56,11 +76,10 @@ def walk_forward_error_model(
     for actual in actuals:
         if actual.published_at > as_of:
             continue
-        known = [
-            observation
-            for observation in forecasts.get(event_date(actual.name), ())
-            if observation.published_at <= as_of
-        ]
+        known = select_forecast_observations(
+            forecasts.get(event_date(actual.name), ()),
+            as_of,
+        )
         if known:
             pairs.append((statistics.fmean(observation.value for observation in known), actual.value))
     return fit_error_model(pairs, min_pairs=min_pairs, fallback=fallback)
