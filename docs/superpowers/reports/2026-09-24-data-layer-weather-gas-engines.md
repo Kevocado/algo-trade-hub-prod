@@ -933,3 +933,70 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   7 passed in 0.01s
   ```
 - Valid `Retry-After` delays are now honored even when they exceed the exponential cap, and transient `requests` transport errors use the same bounded retry loop.
+
+## Post-review final verification — 2026-09-25
+
+- The corrected code passes the full suite and lint:
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  ```
+  ```text
+  304 passed in 4.90s
+  ```
+  ```sh
+  .venv/bin/ruff check --select F401,F811,F821 tradehub tests
+  ```
+  ```text
+  All checks passed!
+  ```
+- The no-write 12:00 ET point-in-time public-market replay still produces one gas prediction after the RBOB fail-closed change:
+  ```json
+  {
+    "mode": "point_in_time_public_market_replay",
+    "scan_at": "2026-09-24T16:00:00+00:00",
+    "scan_at_et": "2026-09-24T12:00:00-04:00",
+    "gas": {"predictions": 1, "edges": 0},
+    "tickers": ["KXAAAGASD-26SEP25-4.5150"]
+  }
+  ```
+- Weather backtest rerun completed with exit code 0 after a transient Kalshi 429 cooldown:
+  ```json
+  {
+    "engine": "weather",
+    "mode": "taker",
+    "n_decisions": 324,
+    "n_fills": 116,
+    "pnl_after_fees": -1.6286,
+    "max_drawdown": 3.8091,
+    "brier_ours": 0.12725,
+    "brier_market": 0.10255,
+    "gate_status": "SHADOW",
+    "gate_reasons": [
+      "model Brier 0.12725 is not below market Brier 0.10255",
+      "simulated P&L after fees/spread is not positive",
+      "calibration miss 19.0% in bucket 50-60 (limit 10pp)"
+    ]
+  }
+  ```
+- Gas backtest completed with exit code 0:
+  ```json
+  {
+    "engine": "gas",
+    "mode": "taker",
+    "n_decisions": 937,
+    "n_fills": 169,
+    "pnl_after_fees": -1.1123,
+    "max_drawdown": 8.0393,
+    "brier_ours": 0.14976,
+    "brier_market": null,
+    "gate_status": "SHADOW",
+    "gate_reasons": [
+      "no market Brier recorded; gate cannot be evaluated",
+      "simulated P&L after fees/spread is not positive",
+      "calibration miss 10.5% in bucket 60-70 (limit 10pp)",
+      "calibration miss 16.0% in bucket 70-80 (limit 10pp)",
+      "calibration miss 20.3% in bucket 80-90 (limit 10pp)"
+    ]
+  }
+  ```
+- The pre-existing owner-only RLS policy was not changed; no auth policy or `raw_payload` exposure was added as part of this review remediation.
