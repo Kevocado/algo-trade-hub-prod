@@ -245,7 +245,30 @@
 
 ## Task 8 — Per-engine config
 
-_Pending implementation._
+- **Files changed:** `tradehub/config/engines.yaml`, `tradehub/engine_config.py`, `tests/test_engine_config.py`, and this evidence report. A detailed handoff was written to `.superpowers/sdd/2026-09-24-data-layer-weather-gas-engines/task-8-report.md`.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_engine_config.py -q
+  ```
+  RED output tail:
+  ```text
+  E   ModuleNotFoundError: No module named 'tradehub.engine_config'
+  =========================== short test summary info ============================
+  ERROR tests/test_engine_config.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.10s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_engine_config.py -q
+  ```
+  GREEN output tail:
+  ```text
+  ...                                                                      [100%]
+  3 passed in 0.06s
+  ```
+- **Implementation:** Added the exact frozen `EngineConfig` dataclass and `CONFIG_PATH`, plus YAML-backed `load_engine_config`. Unknown engines raise `KeyError`; `min_edge_pct` and `prefer_maker` retain the specified defaults/conversions; all remaining keys are converted to floats in `params`. The exact three specified tests were written before production code and cover repository defaults, unknown engines, and extra parameters.
+- **Deviation:** None. The exact three tests, RED command, implementation, and GREEN command from the brief were followed. No dependencies, migrations, specs, other plans, environment files, or unrelated files were changed. No push/reset/clean/subagent operation was performed. The handoff report is not included in the requested staging list and remains repository-ignored.
 
 ## Task 9 — One-shot scan and deep links
 
