@@ -460,28 +460,24 @@
 
 ## Verification
 
-Final Task 10 gas-history verification (no `--record` and no Supabase access):
+Final Task 10 gas-history verification (no `--record` and no Supabase access).
 
-```text
-SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
-280 passed in 4.28s
+### Exact live dry-run command
 
-.venv/bin/ruff check --select F401,F811,F821 tradehub tests
-All checks passed!
-
-grep -rn "shared.config" tradehub/markets.py tradehub/edges.py tradehub/data tradehub/engines/weather.py tradehub/engines/gas.py tradehub/engine_config.py tradehub/scripts/scan.py tradehub/scripts/backtest_engines.py
-(no matches; grep exit status 1 is expected for no matches)
+```sh
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -c "
+from datetime import datetime, timezone
+from tradehub.data.kalshi_live import KalshiLive
+from tradehub.engine_config import load_engine_config
+from tradehub.scripts.scan import scan_weather, scan_gas
+now = datetime.now(timezone.utc); live = KalshiLive()
+wp, we = scan_weather(live, now, load_engine_config('weather'))
+gp, ge = scan_gas(live, now, load_engine_config('gas'))
+print('weather', len(wp), 'preds', len(we), 'edges'); print('gas', len(gp), 'preds', len(ge), 'edges')
+for e in (we + ge)[:5]: print(e['market_ticker'], e['side'], round(e['edge']*100,1), 'pp', 'maker' if e['maker'] else 'taker')"
 ```
 
-Focused RED/GREEN for the mode-aware history and cutoff-cache regressions:
-
-```text
-RED: 2 failed in 0.82s
-GREEN: 2 passed in 0.51s
-Combined backtest-engine/history tests: 28 passed in 0.62s
-```
-
-Final live dry-run output:
+Output:
 
 ```text
 weather 36 preds 13 edges
@@ -493,31 +489,87 @@ KXHIGHNY-26SEP25-B69.5 no 10.1 pp maker
 KXHIGHNY-26SEP25-B67.5 yes 5.1 pp maker
 ```
 
-Final exact weather backtest command:
+### Exact focused RED command and output tail
+
+```sh
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_engines.py::test_histories_skip_trade_fetch_for_taker_mode tests/test_backtest_kalshi_history.py::test_cutoff_timestamps_are_cached_across_repeated_merged_candle_calls -q
+```
+
+```text
+FF                                                                       [100%]
+FAILED tests/test_backtest_engines.py::test_histories_skip_trade_fetch_for_taker_mode
+TypeError: _histories() got an unexpected keyword argument 'mode'
+FAILED tests/test_backtest_kalshi_history.py::test_cutoff_timestamps_are_cached_across_repeated_merged_candle_calls
+AssertionError: assert 2 == 1
+2 failed in 0.82s
+```
+
+### Exact focused GREEN command and output tail
+
+```sh
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_engines.py::test_histories_skip_trade_fetch_for_taker_mode tests/test_backtest_kalshi_history.py::test_cutoff_timestamps_are_cached_across_repeated_merged_candle_calls -q
+```
+
+```text
+..                                                                       [100%]
+2 passed in 0.51s
+```
+
+The combined backtest-engine/history tests passed: `28 passed in 0.62s`.
+
+### Exact full verification commands and output tails
+
+```sh
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+```
+
+```text
+280 passed in 4.72s
+```
+
+```sh
+.venv/bin/ruff check --select F401,F811,F821 tradehub tests
+```
+
+```text
+All checks passed!
+```
+
+```sh
+grep -rn "shared.config" tradehub/markets.py tradehub/edges.py tradehub/data tradehub/engines/weather.py tradehub/engines/gas.py tradehub/engine_config.py tradehub/scripts/scan.py tradehub/scripts/backtest_engines.py
+```
+
+```text
+(no matches; grep exit status 1 is expected for no matches)
+```
+
+### Exact public backtest commands and outcomes
+
+Weather command:
 
 ```sh
 .venv/bin/python -m tradehub.scripts.backtest_engines --engine weather --series KXHIGHNY --start 2026-06-01 --end 2026-07-24
 ```
 
-It was reattempted after the gas fix and returned this public endpoint error before JSON output:
+Final rerun output before JSON:
 
 ```text
 requests.exceptions.HTTPError: 429 Client Error: Too Many Requests for url: https://previous-runs-api.open-meteo.com/v1/forecast?latitude=40.7789&longitude=-73.9692&hourly=temperature_2m_previous_day1&models=ecmwf_ifs025&temperature_unit=fahrenheit&timezone=Etc%2FGMT%2B5&start_date=2026-03-05&end_date=2026-03-05
 ```
 
-Final exact gas backtest command:
+Gas command:
 
 ```sh
 .venv/bin/python -m tradehub.scripts.backtest_engines --engine gas --start 2026-06-01 --end 2026-07-24
 ```
 
-It was reattempted twice after the gas fix. Both attempts progressed past trade retrieval but returned this public Kalshi endpoint error before JSON output; no gas JSON was fabricated:
+Taker mode does not fetch trades. The command reached the public Kalshi candle endpoint and received HTTP 429 before JSON output; no gas JSON was fabricated:
 
 ```text
 requests.exceptions.HTTPError: 429 Client Error: Too Many Requests for url: https://api.elections.kalshi.com/trade-api/v2/historical/markets/KXAAAGASD-26JUL23-4.175/candlesticks?start_ts=1784725800&end_ts=1784779140&period_interval=60
 ```
 
-The prior weather run before this follow-up completed with 324 decisions and 152 fills; the final rerun result above is the current endpoint outcome. The gas history fix is implemented and locally verified, but the exact gas JSON remains blocked by the public endpoint rate limit in this run.
+The exact public endpoint paths and 429 evidence above are the final rerun results. The prior weather run before this follow-up completed with 324 decisions and 152 fills; the gas history fix is locally verified, while the final gas JSON is blocked by the public endpoint rate limit in this run.
 
 ## Deviations and rulings
 
