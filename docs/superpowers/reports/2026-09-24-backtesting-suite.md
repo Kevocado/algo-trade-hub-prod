@@ -484,3 +484,27 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
   ```
 - **Implementation:** paginated both tiers with the required live filters, retained the first (historical) record for duplicate tickers, and preserved records without a ticker rather than collapsing them.
 - **Deviation:** the existing historical-pagination fixture was extended with an empty live response because the client now always checks both partitions.
+
+## Post-review fix wave — finding 5
+
+- **Requirement:** verify Kalshi's published fee rounding and correct `kalshi_fee_cents` if the schedule rounds whole cents per order.
+- **Schedule verification:** the official general fee schedule (`https://kalshi.com/fee-schedule`, latest archived publication checked 2026-05-08; the linked PDF is effective 2026-02-05) states `round_up(0.07 × C × P × (1-P))` and says the result rounds to the next cent. The current API fee-rounding page also documents separate six-decimal model-fee and account-balance rounding; this helper models the published order-level total, so it rounds once after applying `C`.
+- **Root cause:** the helper multiplied the cent result by 100 before `ceil`, returning fractional cents (1.73¢) instead of the order total rounded to a whole cent (2¢).
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_fees.py -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert 1.73 == 2.0
+  1 failed in 0.48s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_kalshi_fees.py tests/test_backtest_fills.py -q
+  ```
+  GREEN output tail:
+  ```text
+  20 passed in 0.27s
+  ```
+- **Implementation:** calculate the total taker or maker fee in cents, apply `ceil` once to that order total, and update the two edge-threshold fixtures whose expected values depended on fractional-cent fees.
