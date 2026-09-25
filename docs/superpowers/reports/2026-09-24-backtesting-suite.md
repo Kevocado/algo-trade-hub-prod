@@ -508,3 +508,27 @@ The first post-fix runner GREEN run exposed a floating-point complement at the c
   20 passed in 0.27s
   ```
 - **Implementation:** calculate the total taker or maker fee in cents, apply `ceil` once to that order total, and update the two edge-threshold fixtures whose expected values depended on fractional-cent fees.
+
+## Post-review fix wave — finding 6
+
+- **Requirement:** add a per-model availability lag to Open-Meteo `published_at`, defaulting to 6 hours, and add a spring-forward DST regression.
+- **Root cause:** the old stamp represented only the end of the requested lead window and did not reserve time for the model run to become available; it also left the existing fall-back expectation at the pre-lag instant.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  RED output tail:
+  ```text
+  AssertionError: assert datetime.datetime(2026, 7, 24, 3, 0, tzinfo=datetime.timezone.utc) == datetime.datetime(2026, 7, 23, 21, 0, tzinfo=datetime.timezone.utc)
+  3 failed, 3 passed in 0.06s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_sources.py -q
+  ```
+  GREEN output tail:
+  ```text
+  6 passed in 0.02s
+  ```
+- **Implementation:** added `DEFAULT_AVAILABILITY_LAG = timedelta(hours=6)`, a per-model override mapping, and an optional `availability_lag` argument. The local target-day boundary is converted to UTC first, then the lead duration and lag are subtracted as absolute durations; the spring-forward test expects `2026-03-07T21:00Z`.
+- **Deviation:** the existing July and fall-back expected timestamps were shifted by the new default 6-hour lag.
