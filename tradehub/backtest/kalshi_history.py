@@ -40,6 +40,11 @@ def parse_ts(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _require_aware(value: datetime, name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware")
+
+
 def _dollars(value: Any) -> float | None:
     return None if value is None else float(value)
 
@@ -106,10 +111,6 @@ class KalshiHistoryClient:
             "trades_created_ts": parse_ts(raw["trades_created_ts"]),
         }
 
-    def cutoffs(self) -> dict[str, datetime]:
-        """Alias for :meth:`cutoff_timestamps` for callers that prefer a short name."""
-        return self.cutoff_timestamps()
-
     def cutoff(self) -> datetime:
         """Return the market-settlement cutoff used by candle history queries."""
         return self.cutoff_timestamps()["market_settled_ts"]
@@ -161,15 +162,27 @@ class KalshiHistoryClient:
         start: datetime,
         end: datetime,
         *,
-        market_settled_at: datetime,
+        market_settled_at: datetime | None = None,
         period_minutes: int = 60,
         series_ticker: str | None = None,
     ) -> list[Candle]:
-        """Return candles from the one tier that owns this market."""
+        """Return candles from the one tier that owns this market.
+
+        A missing settlement timestamp means the market is still live, so use
+        the live tier directly. All supplied timestamps must be timezone-aware
+        to avoid silently interpreting local time as UTC.
+        """
+        _require_aware(start, "start")
+        _require_aware(end, "end")
+        if market_settled_at is not None:
+            _require_aware(market_settled_at, "market_settled_at")
         if end < start:
             raise ValueError(f"end must not precede start, got {end!r} < {start!r}")
-        market_cutoff = self.cutoff_timestamps()["market_settled_ts"]
-        historical = market_settled_at < market_cutoff
+        if market_settled_at is None:
+            historical = False
+        else:
+            market_cutoff = self.cutoff_timestamps()["market_settled_ts"]
+            historical = market_settled_at < market_cutoff
         return self.candles(
             ticker,
             start,
@@ -178,10 +191,6 @@ class KalshiHistoryClient:
             historical=historical,
             series_ticker=series_ticker,
         )
-
-    def merge_candles(self, ticker: str, start: datetime, end: datetime, **kwargs: Any) -> list[Candle]:
-        """Alias for :meth:`merged_candles`."""
-        return self.merged_candles(ticker, start, end, **kwargs)
 
     def trades(self, ticker: str, *, historical: bool = True) -> list[Trade]:
         path = "/historical/trades" if historical else "/markets/trades"
@@ -232,7 +241,3 @@ class KalshiHistoryClient:
             seen.add(key)
             merged.append(trade)
         return merged
-
-    def merge_trades(self, ticker: str, **kwargs: Any) -> list[Trade]:
-        """Alias for :meth:`merged_trades`."""
-        return self.merged_trades(ticker, **kwargs)
