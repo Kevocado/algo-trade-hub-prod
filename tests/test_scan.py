@@ -41,6 +41,86 @@ def test_edge_row_shape():
     assert row["edge"] == pytest.approx(0.125)
     assert row["model_probability"] == pytest.approx(0.45) and row["market_price"] == pytest.approx(0.32)
     assert row["edge_type"] == "WEATHER" and row["maker"] is True
+    assert row["gate_status"] == "SHADOW"
+    assert row["expires_at"] == m.close_time.isoformat()
+    assert row["updated_at"]
+
+
+def test_latest_gate_statuses_default_non_promoted_to_shadow():
+    class Result:
+        data = [
+            {"engine": "weather", "gate_status": "SHADOW"},
+            {"engine": "gas", "gate_status": "PROMOTED"},
+        ]
+
+    class Table:
+        def select(self, *args):
+            return self
+
+        def in_(self, *args):
+            return self
+
+        def order(self, *args, **kwargs):
+            return self
+
+        def execute(self):
+            return Result()
+
+    class Client:
+        def table(self, name):
+            assert name == "backtest_runs"
+            return Table()
+
+    assert scan.latest_gate_statuses(Client(), ["weather", "gas"]) == {
+        "weather": "SHADOW",
+        "gas": "PROMOTED",
+    }
+
+
+def test_remove_stale_edges_only_targets_requested_edge_types():
+    rows = [
+        {"market_id": "weather-new", "edge_type": "WEATHER"},
+        {"market_id": "weather-old", "edge_type": "WEATHER"},
+        {"market_id": "energy-old", "edge_type": "ENERGY"},
+        {"market_id": "macro-old", "edge_type": "MACRO"},
+    ]
+    deleted = []
+
+    class Table:
+        def __init__(self, name):
+            self.name = name
+            self.filters = {}
+            self.deleting = False
+
+        def select(self, *args):
+            return self
+
+        def eq(self, key, value):
+            self.filters[key] = value
+            return self
+
+        def delete(self):
+            self.deleting = True
+            return self
+
+        def execute(self):
+            if self.deleting:
+                deleted.append(self.filters["market_id"])
+                rows[:] = [row for row in rows if row["market_id"] != self.filters["market_id"]]
+            selected = [
+                row for row in rows
+                if all(row.get(key) == value for key, value in self.filters.items())
+            ]
+            return type("Result", (), {"data": selected})()
+
+    class Client:
+        def table(self, name):
+            return Table(name)
+
+    scan.remove_stale_edges(Client(), {"WEATHER": {"weather-new"}, "ENERGY": set()})
+
+    assert set(deleted) == {"weather-old", "energy-old"}
+    assert {row["market_id"] for row in rows} == {"weather-new", "macro-old"}
 
 
 def test_scan_weather_predicts_only_strictly_future_lst_climate_days():
@@ -134,4 +214,6 @@ def test_upsert_opportunities_writes_urls_and_energy(monkeypatch):
     assert row["edge_type"] == "ENERGY"
     assert row["market_url"] == "https://kalshi.com/markets/kxaaagasd"
     assert row["source_url"] is None
+    assert row["gate_status"] == "SHADOW"
+    assert row["expires_at"] is None
     assert captured["on_conflict"] == "market_id"

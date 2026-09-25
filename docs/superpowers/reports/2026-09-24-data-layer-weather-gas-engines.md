@@ -652,3 +652,32 @@ The exact public endpoint paths and 429 evidence above are the final rerun resul
   ```
 - **Implementation:** `walk_forward_error_model()` is now shared by scan and backtest. It accepts only settled actuals and lead-1 forecast observations published by the decision time, and uses YAML `error_bias`/`error_sigma` only when fewer than 20 usable pairs exist. `weather_prob()` no longer adds model spread on top of fitted sigma, and `prob_in_interval()` clamps all engine probabilities to `[1e-4, 1-1e-4]`. The parity test verifies the scan row (four-decimal ledger serialization) matches the backtest decision probability.
 
+### Fix 3 — shadow edge gate metadata and stale-row cleanup
+
+- **Files changed:** `market_sentiment_tool/supabase/migrations/20260416000005_kalshi_edges_urls_energy.sql`, `tradehub/core/supabase_client.py`, `tradehub/scripts/scan.py`, `tests/test_scan.py`, `tests/test_repo_layout.py`, and this evidence report.
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py::test_edge_row_shape tests/test_scan.py::test_latest_gate_statuses_default_non_promoted_to_shadow tests/test_scan.py::test_remove_stale_edges_only_targets_requested_edge_types -q
+  ```
+  RED output tail:
+  ```text
+  E           KeyError: 'gate_status'
+  E           AttributeError: module 'tradehub.scripts.scan' has no attribute 'latest_gate_statuses'
+  E           AttributeError: module 'tradehub.scripts.scan' has no attribute 'remove_stale_edges'
+  3 failed, 1 passed in 0.46s
+  ```
+- **GREEN commands:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_scan.py tests/test_repo_layout.py -q
+  ```
+  ```text
+  24 passed in 0.98s
+  ```
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  ```
+  ```text
+  284 passed in 4.07s
+  ```
+- **Implementation:** The unapplied migration now adds `gate_status`, `updated_at`, and `expires_at`; scan edge rows carry the market close as expiry, and the writer persists gate/timestamp fields. Scan reads the newest `backtest_runs` row per engine, defaults every non-`PROMOTED` result to `SHADOW`, still writes the edge, and removes only stale `WEATHER`/`ENERGY` rows after a successful scan.
+

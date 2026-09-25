@@ -85,7 +85,11 @@ def upsert_opportunities(opportunities: list):
         edge_type = op.get("edge_type", "MACRO").upper()
         if edge_type not in ["WEATHER", "MACRO", "SPORTS", "CRYPTO", "ENERGY"]:
             edge_type = "MACRO"
-            
+        gate_status = str(op.get("gate_status", "SHADOW")).upper()
+        if gate_status not in {"SHADOW", "PROMOTED"}:
+            gate_status = "SHADOW"
+        updated_at = op.get("updated_at") or datetime.now(timezone.utc).isoformat()
+
         unique_rows[market_id] = {
             "market_id": market_id,
             "title": title,
@@ -95,14 +99,14 @@ def upsert_opportunities(opportunities: list):
             "edge_pct": round(float(abs(edge_pct)), 4),
             "market_url": op.get("market_url"),
             "source_url": op.get("source_url"),
+            "gate_status": gate_status,
+            "updated_at": updated_at,
+            "expires_at": op.get("expires_at"),
             "raw_payload": op
         }
         
-    try:
-        rows = list(unique_rows.values())
-        client.table("kalshi_edges").upsert(rows, on_conflict="market_id").execute()
-    except Exception as e:
-        print(f"Failed to upsert kalshi_edges: {e}")
+    rows = list(unique_rows.values())
+    client.table("kalshi_edges").upsert(rows, on_conflict="market_id").execute()
 
 
 # ── Signal Ledger (cross-domain shadow-validation log) ────────────────

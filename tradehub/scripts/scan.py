@@ -30,7 +30,15 @@ from tradehub.markets import KalshiMarket, event_date, market_url
 from tradehub.predictions import build_prediction_row
 
 
-def edge_row(market: KalshiMarket, s: EdgeSuggestion, edge_type: str) -> dict[str, Any]:
+def edge_row(
+    market: KalshiMarket,
+    s: EdgeSuggestion,
+    edge_type: str,
+    *,
+    gate_status: str = "SHADOW",
+    updated_at: datetime | None = None,
+) -> dict[str, Any]:
+    timestamp = updated_at or datetime.now(timezone.utc)
     return {
         "market_ticker": market.ticker,
         "market_title": market.title,
@@ -42,6 +50,9 @@ def edge_row(market: KalshiMarket, s: EdgeSuggestion, edge_type: str) -> dict[st
         "side": s.side,
         "entry_price": s.entry_price,
         "maker": s.maker,
+        "gate_status": gate_status,
+        "updated_at": timestamp.isoformat(),
+        "expires_at": market.close_time.isoformat(),
     }
 
 
@@ -49,6 +60,43 @@ def _mid(quote) -> float | None:
     if quote.yes_bid is None or quote.yes_ask is None:
         return None
     return (quote.yes_bid + quote.yes_ask) / 2.0
+
+
+def latest_gate_statuses(client, engines: list[str]) -> dict[str, str]:
+    """Return the newest backtest gate for each engine, defaulting to SHADOW."""
+    requested = list(dict.fromkeys(engines))
+    if not requested:
+        return {}
+    result = (
+        client.table("backtest_runs")
+        .select("engine,gate_status,created_at")
+        .in_("engine", requested)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    rows = list(result.data or [])
+    statuses: dict[str, str] = {}
+    for row in rows:
+        engine = row.get("engine")
+        if engine in requested and engine not in statuses:
+            statuses[engine] = "PROMOTED" if row.get("gate_status") == "PROMOTED" else "SHADOW"
+    return {engine: statuses.get(engine, "SHADOW") for engine in requested}
+
+
+def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[str, str]) -> None:
+    for row in edges:
+        engine = "weather" if row.get("edge_type") == "WEATHER" else "gas"
+        row["gate_status"] = statuses.get(engine, "SHADOW")
+
+
+def remove_stale_edges(client, produced_by_type: dict[str, set[str]]) -> None:
+    """Delete only WEATHER/ENERGY rows absent from this scan's edge output."""
+    for edge_type, produced in produced_by_type.items():
+        result = client.table("kalshi_edges").select("market_id").eq("edge_type", edge_type).execute()
+        for row in result.data or []:
+            market_id = row.get("market_id")
+            if market_id and market_id not in produced:
+                client.table("kalshi_edges").delete().eq("market_id", market_id).execute()
 
 
 def scan_weather(
@@ -110,7 +158,7 @@ def scan_weather(
                 suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
                                            prefer_maker=cfg.prefer_maker)
                 if suggestion:
-                    edges.append(edge_row(lm.market, suggestion, "WEATHER"))
+                    edges.append(edge_row(lm.market, suggestion, "WEATHER", updated_at=now))
     return predictions, edges
 
 
@@ -138,7 +186,7 @@ def scan_gas(live, now: datetime, cfg: EngineConfig, *, rbob_fn: Callable[[], li
         suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
                                    prefer_maker=cfg.prefer_maker)
         if suggestion:
-            edges.append(edge_row(lm.market, suggestion, "ENERGY"))
+            edges.append(edge_row(lm.market, suggestion, "ENERGY", updated_at=now))
     return predictions, edges
 
 
@@ -150,8 +198,19 @@ def main() -> int:
     live = KalshiLive()
     weather_preds, weather_edges = scan_weather(live, now, load_engine_config("weather"))
     gas_preds, gas_edges = scan_gas(live, now, load_engine_config("gas"))
-    record_predictions(get_client(), weather_preds + gas_preds)
+    client = get_client()
+    statuses = latest_gate_statuses(client, ["weather", "gas"])
+    apply_gate_statuses(weather_edges, statuses)
+    apply_gate_statuses(gas_edges, statuses)
+    record_predictions(client, weather_preds + gas_preds)
     upsert_opportunities(weather_edges + gas_edges)
+    remove_stale_edges(
+        client,
+        {
+            "WEATHER": {row["market_ticker"] for row in weather_edges},
+            "ENERGY": {row["market_ticker"] for row in gas_edges},
+        },
+    )
     print(json.dumps({
         "as_of": now.isoformat(),
         "weather": {"predictions": len(weather_preds), "edges": len(weather_edges)},
