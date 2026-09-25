@@ -26,6 +26,7 @@ from tradehub.api.schemas import (
 from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
+from tradehub.sports.scorecard import reviewer_scorecard
 
 # ── App ─────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -201,6 +202,41 @@ async def get_track_record(supabase=Depends(get_supabase)):
         raise HTTPException(status_code=503, detail="Supabase is not configured")
     result = supabase.table("track_record").select("*").order("engine").execute()
     return result.data or []
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Sports edges (rollout step 7): candidate edges with review verdicts and links
+# ════════════════════════════════════════════════════════════════════════════
+_TIER_ORDER = {"top_pick": 0, "flagged": 1, "unreviewed": 2, "filtered": 3}
+_EDGE_FIELDS = ("sport", "kind", "side", "entry_price", "maker", "home", "away", "start_utc", "game_id",
+                "tier", "candidate", "reject_reasons", "review")
+
+
+@app.get("/api/sports-edges", tags=["Sports"])
+def get_sports_edges(supabase=Depends(get_supabase)):
+    """Upcoming SPORTS edges (Top Picks first) plus the reviewer keep-or-drop scorecard."""
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase is not configured")
+    now = datetime.now(timezone.utc)
+    rows = supabase.table("kalshi_edges").select("*").eq("edge_type", "SPORTS").execute().data or []
+    edges = []
+    for row in rows:
+        raw = row.get("raw_payload") or {}
+        start = raw.get("start_utc")
+        if not start or datetime.fromisoformat(start) <= now:
+            continue
+        edges.append({
+            "market_id": row["market_id"], "title": row.get("title"), "our_prob": row.get("our_prob"),
+            "market_prob": row.get("market_prob"), "edge_pct": row.get("edge_pct"),
+            "market_url": row.get("market_url"), "source_url": row.get("source_url"),
+            **{k: raw.get(k) for k in _EDGE_FIELDS},
+        })
+    edges.sort(key=lambda e: (_TIER_ORDER.get(e["tier"], 9), -float(e["edge_pct"] or 0)))
+    reviews = supabase.table("sports_reviews").select("*").eq("status", "ok").execute().data or []
+    settled = (supabase.table("predictions").select("market_ticker,result")
+               .in_("engine", ["sports_nfl", "sports_cfb"]).eq("status", "SETTLED").execute().data or [])
+    results = {r["market_ticker"]: r["result"] for r in settled}
+    return {"as_of": now.isoformat(), "edges": edges, "reviewer_scorecard": reviewer_scorecard(reviews, results)}
 
 
 # ── War Room SPA (mounted last so every /api route above wins) ─────────────

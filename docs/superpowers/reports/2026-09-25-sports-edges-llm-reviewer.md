@@ -141,3 +141,15 @@ GREEN: pytest tests/test_sports_scan.py tests/test_settle_predictions.py tests/t
 - Sports edges are written with their engine and remain SHADOW; sports failure is reported without failing weather/gas.
 - Deviation: PR #4/step-6's per-engine write and failure model was preserved. The plan's old combined-write test was adapted to assert all per-engine writes instead of restoring combined writes.
 
+## Task 9 — Reviewer scorecard and API
+
+### RED/GREEN
+
+```text
+RED: ModuleNotFoundError tradehub.sports.scorecard (1 error)
+GREEN: pytest tests/test_sports_scorecard_api.py -q → 6 passed
+```
+
+- Added the keep-or-drop reviewer scorecard and `/api/sports-edges`, registered before the SPA mount.
+- Deviation: none.
+
