@@ -39,7 +39,32 @@
 
 ## Task 2 — Point-in-time types and leakage guard
 
-_Pending implementation._
+- **Files changed:** `tradehub/backtest/__init__.py`, `tradehub/backtest/pit.py`, `tests/test_backtest_pit.py`, this evidence report, and `.superpowers/sdd/2026-09-24-backtesting-suite/task-2-report.md` (handoff report; repository-ignored and not staged).
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_pit.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_backtest_pit.py:5: in <module>
+      from tradehub.backtest.pit import Decision, LeakageError, Observation, check_no_lookahead
+  E   ModuleNotFoundError: No module named 'tradehub.backtest'
+  =========================== short test summary info ============================
+  ERROR tests/test_backtest_pit.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.20s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_pit.py -q
+  ```
+  GREEN output tail:
+  ```text
+  ....                                                                     [100%]
+  4 passed in 0.01s
+  ```
+- **Behavior:** Added frozen `Observation` and `Decision` dataclasses with the exact specified fields, `LeakageError`, timezone-awareness validation, and a point-in-time guard that names every feature published after the decision while allowing equality.
+- **Deviation:** None. The handoff report is intentionally not staged because the requested commit staging list is explicit.
 
 ## Task 3 — Kalshi public-history client
 
