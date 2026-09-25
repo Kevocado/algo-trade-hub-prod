@@ -158,7 +158,9 @@ Full suite at this commit, to confirm no wider regression:
 ```
 $ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
     /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest -q
-341 -> 349 passed in 4.71s        (8 new tests, no failures)
+341 -> 349 passed in 4.71s        (no failures; +8 cumulative = 7 added by Task 2
+                                   in tests/test_track_record_contracts.py, plus the
+                                   1 migration test added by Task 1)
 
 $ ... -m ruff check --select F401,F811,F821 tradehub tests
 All checks passed!
@@ -392,3 +394,120 @@ existing expectation and adds none, so the count is unchanged across its RED→G
    (Wave A, `plan/2026-09-25-vps-deploy`), which edits this same file; the preflight ruling
    was to keep each branch's row and leave reconciliation to the reviewer/merger.
 4. **No code deviations.** All three code hunks applied cleanly.
+
+---
+
+## Review fix round 1
+
+Addressed the three approved review findings only. No code behaviour changed, no existing
+commit was rewritten, and the Task 1–4 evidence above is left intact as a record of the
+state at each task commit.
+
+### I4a — step 2b row glyph
+
+`docs/superpowers/plans/2026-09-24-rollout-tracker.md`: the new step 2b row used `✅`, but
+this table reserves `✅` for merged-to-`main` (step 1) and `🟡` for
+implemented-on-branch/review-pending (steps 2–4). Changed that one row's glyph to `🟡` and
+touched nothing else in the file. The row now reads:
+
+```
+| 2b | Promotion-gate and settlement hardening (contract-weighted gate, per-version track records) | 🟡 implemented on branch, review pending | [2026-09-25-gate-hardening.md](2026-09-25-gate-hardening.md) |
+```
+
+This resolves deviation 1 above; the deviation text is retained as the historical record of
+what the Task 4 commit actually did.
+
+### I4b — plan file added so the link resolves
+
+Added `docs/superpowers/plans/2026-09-25-gate-hardening.md` as an exact copy of
+`.superpowers/sdd/2026-09-25-gate-hardening/plan.md`, without altering its content. Copied
+rather than rewritten, and verified byte-identical by both `shasum -a 256` and `cmp`:
+
+```
+$ shasum -a 256 .superpowers/sdd/2026-09-25-gate-hardening/plan.md \
+    docs/superpowers/plans/2026-09-25-gate-hardening.md
+79b3bd18083dbf5269a201623fb9e35f657fc0f50871fa4283531581282864af  .superpowers/sdd/2026-09-25-gate-hardening/plan.md
+79b3bd18083dbf5269a201623fb9e35f657fc0f50871fa4283531581282864af  docs/superpowers/plans/2026-09-25-gate-hardening.md
+
+$ cmp .superpowers/sdd/2026-09-25-gate-hardening/plan.md \
+    docs/superpowers/plans/2026-09-25-gate-hardening.md
+IDENTICAL   # cmp exits 0 and prints nothing
+
+$ wc -l -c docs/superpowers/plans/2026-09-25-gate-hardening.md
+     864   42052 docs/superpowers/plans/2026-09-25-gate-hardening.md
+```
+
+The tracker's step 2b link target now exists, as does the report's own
+`docs/superpowers/reports/2026-09-25-gate-hardening.md` sibling reference. This resolves
+deviation 2 above.
+
+### M7 — Task 2 test-count sentence corrected
+
+The Task 2 "Full suite at this commit" block said `341 -> 349 passed in 4.71s (8 new tests,
+no failures)`. The 8 is the *cumulative* increase from the 341 baseline; Task 2 itself added
+7 tests, and the 8th is Task 1's migration test. Corrected to say so, with the recorded
+command output (`341 -> 349 passed in 4.71s`, no failures) left unchanged:
+
+```
+341 -> 349 passed in 4.71s        (no failures; +8 cumulative = 7 added by Task 2
+                                   in tests/test_track_record_contracts.py, plus the
+                                   1 migration test added by Task 1)
+```
+
+Counts confirmed against the tree rather than assumed:
+
+```
+$ grep -c "^def test_" tests/test_track_record_contracts.py
+7
+$ grep -c "^def test_" tests/test_predictions_hardening_migration.py
+1
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_track_record_contracts.py -q
+7 passed in 0.85s
+```
+
+The Task 4 "before/after" table's own breakdown already said 7 for Task 2, so it is
+consistent with the correction and was left as is. The other cumulative step
+(`349 -> 353`, "+4 new tests" for Task 3) was already accurate and is untouched.
+
+### Verification
+
+Docs-only changes, so no test asserts on them; no test in `tests/` references the rollout
+tracker or the plans/reports directories. The focused run below covers the one test that
+walks repo layout (`tests/test_repo_layout.py`, the only plausible indirect reader of a new
+file under `docs/`) plus all four of this plan's own test files.
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+    /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest \
+    tests/test_repo_layout.py tests/test_predictions_hardening_migration.py \
+    tests/test_track_record_contracts.py tests/test_settlement.py \
+    tests/test_settle_predictions.py -q
+...................................................                      [100%]
+51 passed in 0.90s
+```
+
+```
+$ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder \
+    /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python -m pytest -q
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 61%]
+........................................................................ [ 81%]
+.................................................................        [100%]
+353 passed in 4.45s
+```
+
+```
+$ /Users/sigey/Documents/Projects.nosync/algo-trade-hub-prod/.venv/bin/python \
+    -m ruff check --select F401,F811,F821 tradehub tests
+All checks passed!
+```
+
+Full suite unchanged at 353 passed, 0 failures; scoped Ruff still 0 findings. Test count
+does not move, as expected for a docs-only round.
+
+### Not addressed in this round
+
+Findings I1, I2 and I3 are recorded as plan-mandated follow-ups and were deliberately left
+unimplemented, per the review's instruction. The Task 5 / VPS-vs-Azure tracker row
+(deviation 3 above) is also still open and still owned by the VPS deploy plan.
