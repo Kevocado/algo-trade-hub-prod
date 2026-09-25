@@ -126,7 +126,32 @@
 
 ## Task 5 — Metrics and runner
 
-_Pending implementation._
+- **Files changed:** `tradehub/backtest/metrics.py`, `tradehub/backtest/runner.py`, `tests/test_backtest_runner.py`, this evidence report, and `.superpowers/sdd/2026-09-24-backtesting-suite/task-5-report.md` (handoff report; repository-ignored and not staged).
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_backtest_runner.py:7: in <module>
+      from tradehub.backtest.metrics import fill_pnl, market_mid, max_drawdown, prediction_row
+  E   ModuleNotFoundError: No module named 'tradehub.backtest.metrics'
+  =========================== short test summary info ============================
+  ERROR tests/test_backtest_runner.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 0.62s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_runner.py -q
+  ```
+  GREEN output tail:
+  ```text
+  ...........                                                              [100%]
+  11 passed in 0.43s
+  ```
+- **Behavior:** Added shared fill P&L, peak-to-trough drawdown, market midpoint, and settled prediction-row metrics. The runner sorts decisions, runs the point-in-time leakage check before market lookup or fills, rejects decisions at/after close, skips non-binary markets, uses the specified taker/maker fill modes, computes turnover and fee-aware P&L/drawdown, and delegates summary, calibration, and promotion-gate evaluation to the live track-record code. Walk-forward fits use only strictly earlier events.
+- **Deviation:** None. The RED failure was the expected missing-`metrics` collection error, and the exact eleven-test GREEN command passed. The handoff report is intentionally not staged because the requested staging list names only the two production files, focused test, and evidence report.
 
 ## Task 6 — ALFRED and Open-Meteo sources
 
