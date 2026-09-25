@@ -98,3 +98,29 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_sc
 - CPI edges are `MACRO`, carry `engine="cpi_nowcast"` and retain `gate_status="SHADOW"`; they are written but never hidden or force-promoted.
 - Deviation: the plan's original test expected `main()==0` and one combined write. PR #4 deliberately returns 1 on any engine failure and writes each engine independently so one failed write is attributable. The hand-merged test preserves the task Intent (CPI failure is reported as `error: ...`, weather/gas writes still complete) while keeping the merged non-zero failure signal; the expected combined count is 31 rather than the plan's pre-PR-4 13.
 
+## Task 5 — Point-in-time CPI backtest
+
+### RED
+
+```text
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_backtest_cpi.py -q
+ImportError: cannot import name 'CPI_DECISION_LEAD' from 'tradehub.scripts.backtest_engines'
+1 error in 0.60s
+```
+
+### GREEN
+
+```text
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest tests/test_backtest_cpi.py tests/test_backtest_engines.py -q
+22 passed in 0.54s
+```
+
+```text
+Full suite: 384 passed in 4.27s
+Scoped Ruff F401,F811,F821: All checks passed!
+git diff --check: clean
+```
+
+- Added release-morning/extra-lead point-in-time decisions, complete feature capture, quote-only CPI scoring, bounded history lookback, monthly cadence, headline/core versions and stored `lead_days` config.
+- Deviation: the current merged client exposes `settled_markets` (the review-fixed merger of historical and live settled markets), not the plan's older `merged_settled_markets` name; the CLI test uses the current interface. PR #4's `n_unquoted` behavior is preserved, and CPI decisions are additionally filtered before the runner so market/model Briers share one scoring set.
+
