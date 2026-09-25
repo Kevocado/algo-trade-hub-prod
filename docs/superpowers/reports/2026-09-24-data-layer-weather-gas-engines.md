@@ -1212,3 +1212,41 @@ SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m tradehu
   99 passed in 0.57s
   ```
 
+
+## Items 9–10 and pre-merge review fixes — 2026-09-25 (completed by Claude after the implementing agent stopped)
+
+The implementing agent stopped after item 8 (its session went idle mid-item 9). A read-only pre-review of its commits 65e20f3..83e4f4e found items 0 and 2–8 done, item 1 partial, and four Important issues. Each fix below is its own commit, test-first.
+
+- **8270892: malformed legacy tickers in the backtest.** `settled_in_range` + `safe_event_date` skip unparseable tickers (real case `HIGHCHI-2-24FEB28`). RED: `test_settled_in_range_skips_malformed_event_tickers` failed (1 failed); GREEN: 23 passed. The Chicago backtest now runs.
+- **8f54ddd: gate on the current engine version.** `latest_gate_statuses(client, {engine: current_version})` filters `backtest_runs` by (engine, engine_version). RED: 2 failed; GREEN: test_scan 22 passed. A promoted older version never promotes a new one. The latest backtest may cover one series or mode (accepted and documented in the docstring).
+- **34e302a: migration backfill and duplicates.** Pre-existing rows are tagged `'legacy_' || lower(edge_type)`, so the scan's engine-scoped cleanup can't delete the legacy scanners' rows. Duplicate `market_id`s are deduped (newest `discovered_at` kept, NULL treated as epoch) before the unique index. RED: layout test failed; GREEN: 18 passed. Verified on a throwaway postgres:16: three duplicate legacy rows collapse to the newest, tagged `legacy_weather`, and a second apply is a no-op.
+- **039f056: calibration lead matches the decision lead.** `walk_forward_error_model(..., decision_time_for=...)` pairs each past day with the forecast its own decision would have seen (lead 2 at D-1 23:30 LST), not the later lead-1 value. `weather_decision_time` moved to `tradehub.data.weather` and is shared by scan and backtest. Four scan tests had synthetic publish stamps relative to "now", so they were updated to stamp relative to each day's own decision. RED: ImportError; GREEN: 340 passed.
+- **2b1f655: item 9, War Room Shadow badge.** `src/lib/edgeGate.ts` (pure; only an explicit PROMOTED is promoted, and missing or unknown fails closed to Shadow), `src/components/GateBadge.tsx`, shown on Prediction Lab edge cards and War Room HQ top edges. RED: vitest could not resolve the module; GREEN: 8 passed; `tsc --noEmit` clean; `vite build` ok.
+- **193b7b5: gas `brier_market: null` explained and fixed.** A few decisions were made before the market had any quote, so their rows had no market Brier and the gate failed closed forever. The runner now skips unquoted decisions (untradeable, not comparable) and reports `n_unquoted`. RED: 1 failed; GREEN: 341 passed.
+
+### Item 10: live scan (2026-09-25 19:05 UTC, 15:05 ET, Supabase stubbed, nothing written)
+```json
+{"rc": 0, "seconds": 14.3,
+ "predictions_by_engine": {"weather": 18, "gas": 17}, "edges": 16,
+ "edge_engines": ["gas", "weather"], "edge_gate_statuses": ["SHADOW"],
+ "weather_error_model_by_city (bias, sigma)": {"KXHIGHNY": [-2.05, 2.29], "KXHIGHCHI": [-0.56, 2.40], "KXHIGHMIA": [1.33, 1.65]},
+ "gas_sample_payload": {"last_aaa": 4.4918, "last_aaa_event": "KXAAAGASD-26SEP25", "horizon_days": 1,
+   "rbob_change": 0.0573, "alpha": -0.0014, "beta": 0.0756, "sigma": 0.0162}}
+```
+All three cities scan (the Chicago/Miami crashes are fixed). The gas model is fitted, with sigma 0.0162 instead of the 0.01 constant and a real RBOB change. Every edge carries its engine and is SHADOW.
+
+### Item 10: backtests after the PR #3 merge (taker, 2026-06-01 → 2026-09-20, not recorded)
+| Engine / series | Decisions | Fills | P&L after fees | Max DD | Brier ours | Brier market | Gate |
+|---|---|---|---|---|---|---|---|
+| weather KXHIGHNY | 672 | 232 | −7.62 | 8.87 | 0.1242 | 0.0971 | SHADOW (Brier, P&L, 60–70 bucket 12.2pp) |
+| weather KXHIGHCHI | 672 | 229 | −8.27 | 13.60 | 0.1347 | 0.1124 | SHADOW (Brier, P&L, 60–70 bucket 20.6pp) |
+| weather KXHIGHMIA | 672 | 186 | −5.59 | 10.45 | 0.1112 | 0.0993 | SHADOW (Brier, P&L) |
+| gas KXAAAGASD (after 193b7b5) | 1982 (+4 unquoted) | 274 | −3.84 | 7.06 | 0.1148 | **0.0268** | SHADOW (Brier, P&L) |
+
+Weather was run before 193b7b5, whose only effect is to drop unquoted decisions (none expected at a D-1 23:30 decision). Each run takes about 3 minutes for weather and 8.5 for gas.
+
+**Reading:** neither engine beats the market, so both stay shadow, as spec §6 intends. Gas is far behind: two hours before close the market already prices that morning's AAA print almost exactly, while the model predicts from the previous settlement plus RBOB. A later gas version should decide earlier (for example the previous evening) or use intraday AAA. The weather calibration miss in the 60–70% bucket points to sigma still being too tight at the lead-2 decision.
+
+### Verification at the final commit
+- `pytest`: 341 passed. `ruff check --select F401,F811,F821 tradehub tests shared`: clean.
+- market_sentiment_tool: vitest 8 passed, `tsc --noEmit` clean, `vite build` ok.
