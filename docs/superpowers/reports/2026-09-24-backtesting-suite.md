@@ -185,11 +185,62 @@
 
 ## Task 7 — Reproducible run storage
 
-_Pending implementation._
+- **Files changed:** `tradehub/backtest/store.py`, `tests/test_backtest_store.py`, this evidence report, and `.superpowers/sdd/2026-09-24-backtesting-suite/task-7-report.md` (handoff report; repository-ignored and not staged).
+- **RED command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_store.py -q
+  ```
+  RED output tail:
+  ```text
+  tests/test_backtest_store.py:6: in <module>
+      from tradehub.backtest.store import (
+  E   ModuleNotFoundError: No module named 'tradehub.backtest.store'
+  =========================== short test summary info ============================
+  ERROR tests/test_backtest_store.py
+  !!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+  1 error in 1.12s
+  ```
+- **GREEN command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest tests/test_backtest_store.py -q
+  ```
+  GREEN output tail:
+  ```text
+  ....                                                                     [100%]
+  4 passed in 0.49s
+  ```
+- **Behavior:** Added stable SHA-256 JSON hashing, order-independent decision and market-history snapshot hashing covering nested features, candles, trades, results, and close times, exact migration-column row construction with ISO date strings, and the Supabase insert/execute wrapper returning the inserted row.
+- **Deviation:** None in production code or tests. The handoff report is intentionally not staged because the requested staging list is explicit.
 
 ## Verification
 
-_Pending implementation._
+- **Full suite command:**
+  ```sh
+  SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder .venv/bin/python -m pytest -q
+  ```
+  Output tail:
+  ```text
+  ........................................................................ [ 34%]
+  ........................................................................ [ 68%]
+  ...................................................................      [100%]
+  211 passed in 5.32s
+  ```
+- **Lint command:**
+  ```sh
+  .venv/bin/ruff check --select F401,F811,F821 tradehub/backtest tests
+  ```
+  Output tail:
+  ```text
+  All checks passed!
+  ```
+- **Import-boundary command:**
+  ```sh
+  grep -rn "shared.config" tradehub/backtest
+  ```
+  Output tail:
+  ```text
+  (no output; exit status 1, as expected)
+  ```
 
 ## Deviations and rulings
 
