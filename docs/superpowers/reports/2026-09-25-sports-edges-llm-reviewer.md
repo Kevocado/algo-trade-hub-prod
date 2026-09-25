@@ -116,3 +116,15 @@ GREEN: pytest tests/test_sports_candidates.py -q → 5 passed in 0.35s
 - Added after-fee edge, liquidity, timing and calibration gates with explicit rejection reasons.
 - Deviation: none.
 
+## Task 7 — LLM reviewer and cache migration
+
+### RED/GREEN
+
+```text
+RED: ModuleNotFoundError tradehub.sports.reviewer (1 error)
+GREEN: pytest tests/test_sports_reviewer.py tests/test_sports_reviews_migration.py -q → 16 passed
+```
+
+- Added strict JSON validation, cache-key/budget handling, review application and reserved migration `20260416000008` with owner-read-only RLS.
+- Deviation: none; hand-built OpenRouter fixtures are identified as such in the report/plan.
+
