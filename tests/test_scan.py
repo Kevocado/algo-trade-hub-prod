@@ -110,7 +110,9 @@ def test_latest_gate_statuses_requires_latest_backtest_and_matching_track_record
         def table(self, name):
             return Table(name)
 
-    assert scan.latest_gate_statuses(Client(), ["weather", "gas", "crypto"]) == {
+    assert scan.latest_gate_statuses(
+        Client(), {"weather": "weather-v2", "gas": "gas-v9", "crypto": "crypto-v4"}
+    ) == {
         "weather": "PROMOTED",
         "gas": "SHADOW",
         "crypto": "SHADOW",
@@ -118,9 +120,44 @@ def test_latest_gate_statuses_requires_latest_backtest_and_matching_track_record
     backtest_calls = [call for call in calls if call[0] == "backtest_runs"]
     assert len(backtest_calls) == 3
     assert all(ordered and limit == 1 for _, _, ordered, limit in backtest_calls)
+    assert all(filters["engine_version"] for _, filters, _, _ in backtest_calls)
     assert ("track_record", {"engine": "weather", "engine_version": "weather-v2"}, False, 1) in calls
     assert ("track_record", {"engine": "gas", "engine_version": "gas-v9"}, False, 1) in calls
     assert not any(name == "track_record" and filters["engine"] == "crypto" for name, filters, _, _ in calls)
+
+
+def test_latest_gate_statuses_never_promotes_a_different_engine_version():
+    class Table:
+        def __init__(self, name):
+            self.name, self.filters = name, {}
+
+        def select(self, *args):
+            return self
+
+        def eq(self, key, value):
+            self.filters[key] = value
+            return self
+
+        def order(self, *args, **kwargs):
+            return self
+
+        def limit(self, value):
+            return self
+
+        def execute(self):
+            # Only gas-v0 was ever backtested and promoted.
+            promoted = self.filters.get("engine") == "gas" and self.filters.get("engine_version") == "gas-v0"
+            data = [{"engine": "gas", "engine_version": "gas-v0", "gate_status": "PROMOTED"}] if promoted else []
+            if self.name == "track_record" and promoted:
+                data = [{"gate_status": "PROMOTED"}]
+            return type("Result", (), {"data": data})()
+
+    class Client:
+        def table(self, name):
+            return Table(name)
+
+    assert scan.latest_gate_statuses(Client(), {"gas": "gas-v1"}) == {"gas": "SHADOW"}
+    assert scan.latest_gate_statuses(Client(), {"gas": "gas-v0"}) == {"gas": "PROMOTED"}
 
 
 def test_apply_gate_statuses_keys_on_engine_not_edge_type():

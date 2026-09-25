@@ -81,14 +81,20 @@ def _mid(quote) -> float | None:
     return (quote.yes_bid + quote.yes_ask) / 2.0
 
 
-def latest_gate_statuses(client, engines: list[str]) -> dict[str, str]:
-    """Promote only when the latest backtest and matching track record agree."""
-    requested = list(dict.fromkeys(engines))
+def latest_gate_statuses(client, engine_versions: dict[str, str]) -> dict[str, str]:
+    """Promote only when the latest backtest and the track record of the CURRENT version agree.
+
+    `engine_versions` maps engine -> the version this scan runs. A promoted
+    older version never promotes a new one. The latest backtest may cover a
+    single series or mode; that is accepted for now (all edges of the engine
+    share one status).
+    """
     statuses: dict[str, str] = {}
-    for engine in requested:
+    for engine, current_version in engine_versions.items():
         backtest = client.table("backtest_runs") \
             .select("engine,engine_version,gate_status,created_at") \
             .eq("engine", engine) \
+            .eq("engine_version", current_version) \
             .order("created_at", desc=True) \
             .limit(1) \
             .execute()
@@ -368,7 +374,7 @@ def main(
 
     if client is not None:
         try:
-            statuses = latest_gate_statuses(client, ["weather", "gas"])
+            statuses = latest_gate_statuses(client, {"weather": WEATHER_ENGINE_VERSION, "gas": GAS_ENGINE_VERSION})
         except Exception as exc:
             message = f"gate_status: {type(exc).__name__}: {exc}"
             failures.append(message)
