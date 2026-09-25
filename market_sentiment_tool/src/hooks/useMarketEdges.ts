@@ -4,7 +4,10 @@ import { supabase } from "@/lib/supabase";
 export interface KalshiEdge {
   id: string;
   market_id: string;
-  edge_type: 'WEATHER' | 'MACRO' | 'SPORTS' | 'CRYPTO';
+  edge_type: 'WEATHER' | 'MACRO' | 'SPORTS' | 'CRYPTO' | 'ENERGY';
+  engine?: string | null;
+  gate_status?: 'SHADOW' | 'PROMOTED' | null;
+  market_url?: string | null;
   title?: string;
   market_title?: string;
   market_prob: number;
