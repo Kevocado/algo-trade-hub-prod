@@ -108,7 +108,7 @@ def test_a_deadline_in_the_past_raises_without_a_request():
     called = []
     with pytest.raises(RuntimeError, match="deadline"):
         default_get_text("u", {}, get=lambda *a, **k: called.append(1) or _resp(200),
-                         sleep=lambda s: None, deadline=1000.0 - 1)
+                         sleep=lambda s: None, clock=lambda: 1000.0, deadline=1000.0 - 1)
     assert called == [], "a request was issued with the budget already spent"
 
 
