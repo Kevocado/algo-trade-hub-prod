@@ -192,7 +192,7 @@ class SportsRun:
     per_sport: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
-def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[[str], Feed] = fetch_feed, store=None,
+def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch_feed, store=None,
                     reviewer: OpenRouterReviewer | None = None, budget: int = 0,
                     sports: tuple[str, ...] = SPORTS,
                     deadline: float | None = None) -> SportsRun:

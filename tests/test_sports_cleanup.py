@@ -57,6 +57,7 @@ def _run_main(monkeypatch, *, sports_due=True, sports_result=SPORT_RESULT,
     monkeypatch.setattr(scan_mod, "cpi_scan_due", lambda now: False)
     monkeypatch.setattr(scan_mod, "sports_due", lambda now: sports_due)
     monkeypatch.setattr(scan_mod, "remove_closed_cpi_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan_mod, "remove_closed_labor_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan_mod, "remove_stale_edges", lambda client, produced: calls.append(produced))
     monkeypatch.setattr(scan_mod, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan_mod, "latest_gate_statuses", lambda client, pairs: {})

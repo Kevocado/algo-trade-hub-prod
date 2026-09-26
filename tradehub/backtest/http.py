@@ -6,7 +6,7 @@ import math
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -96,3 +96,41 @@ def default_get_json(
             continue
         return response.json()
     raise RuntimeError("HTTP retry loop exited without a response")
+
+
+class ThrottledGetJson:
+    """GET JSON with a minimum spacing between calls and backoff on HTTP 429.
+
+    Kalshi's public API rate-limits rapid scans (sometimes as empty pages), so
+    multi-hundred-market jobs such as the Jobs Scorecard builder go through this.
+    """
+
+    def __init__(
+        self,
+        min_interval: float = 0.25,
+        retries: int = 5,
+        get: Callable[..., Any] = requests.get,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self._min_interval = min_interval
+        self._retries = retries
+        self._get = get
+        self._sleep = sleep
+        self._clock = clock
+        self._last: float | None = None
+
+    def __call__(self, url: str, params: dict | None = None) -> Any:
+        for attempt in range(self._retries):
+            if self._last is not None:
+                wait = self._min_interval - (self._clock() - self._last)
+                if wait > 0:
+                    self._sleep(wait)
+            self._last = self._clock()
+            resp = self._get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+            if resp.status_code == 429:
+                self._sleep(2.0 * (attempt + 1))
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        raise RuntimeError(f"rate-limited {self._retries} times: {url}")
