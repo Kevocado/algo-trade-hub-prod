@@ -125,6 +125,22 @@ def remove_closed_cpi_edges(client, now: datetime) -> None:
         .execute()
 
 
+def remove_closed_labor_edges(client, now: datetime) -> None:
+    """Delete labor_nowcast rows whose market has closed.
+
+    A payroll market's `expires_at` is its Kalshi close, which for a monthly ladder is the release
+    day itself, so this needs no separate predicate -- but it does need to run: a row that
+    outlived its market would otherwise sit on the board until some later scan happened to omit
+    it, and `remove_stale_edges` only drops rows absent from the produced set. One atomic delete,
+    engine-scoped, like `remove_closed_cpi_edges`, and on EVERY scan: markets close on their own
+    schedule, not on the engine's 07/12/17 ET cadence.
+    """
+    client.table("kalshi_edges").delete() \
+        .eq("engine", "labor_nowcast") \
+        .lte("expires_at", now.isoformat()) \
+        .execute()
+
+
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
     """Delete stale rows only for the scan-owned weather/gas/payrolls engines."""
     for engine, produced in produced_by_engine.items():
@@ -347,15 +363,20 @@ def scan_cpi(
 def scan_labor(
     live, now: datetime, cfg: EngineConfig, *, inputs_fn: Callable[..., Any] = load_labor_inputs,
     deadline: float | None = None,
-) -> tuple[list[dict], list[dict]]:
-    """Nowcast the next jobs report once its reference month has ended; predict every open KXPAYROLLS strike."""
+) -> tuple[list[dict], list[dict], str, list[str]]:
+    """Nowcast the next jobs report once its reference month has ended; predict every open KXPAYROLLS strike.
+
+    Returns (predictions, edges, status, months_without_nowcast). The last item matters: a month
+    whose markets exist but produced no nowcast is a FEATURE GAP, and the caller must not read it
+    as "this engine produced nothing" -- that reading prunes live edges.
+    """
     by_month: dict = defaultdict(list)
     for lm in live.open_markets(PAYROLL_SERIES):
         month = event_month(lm.market.event_ticker)
         if month_end(month) < now.astimezone(_ET).date() and lm.market.close_time > now:
             by_month[month].append(lm)
     if not by_month:
-        return [], []
+        return [], [], "ok", []
     releases = {m: min(lm.market.close_time for lm in lms).astimezone(_ET).date()
                 for m, lms in by_month.items()}
     inputs = inputs_fn(first_month=TRAIN_START, last_month=max(by_month), releases=releases, as_of=now.date(),
@@ -363,9 +384,13 @@ def scan_labor(
     nowcasts = payroll_nowcasts(inputs, sorted(by_month), releases, train_from=TRAIN_START)
     predictions: list[dict] = []
     edges: list[dict] = []
+    months_without_nowcast: list[str] = []
     for month, markets in sorted(by_month.items()):
         nc = nowcasts.get(month)
         if nc is None:
+            months_without_nowcast.append(month.isoformat())
+            log.warning("scan labor_nowcast: no nowcast for %s (%d open markets); this is a "
+                        "feature gap, not an empty result", month.isoformat(), len(markets))
             continue
         payload = {"month": month.isoformat(), "mu_k": round(nc.mu, 2), "sigma_k": round(nc.sigma, 2),
                    "features": nc.features.values, "n_train": nc.model.n_train,
@@ -385,7 +410,7 @@ def scan_labor(
             if suggestion:
                 edges.append(edge_row(lm.market, suggestion, "MACRO", engine="labor_nowcast",
                                       engine_version=LABOR_ENGINE_VERSION, updated_at=now))
-    return predictions, edges
+    return predictions, edges, "ok", months_without_nowcast
 
 
 LABOR_SCAN_HOURS_ET = (7, 12, 17)  # the :05 timer's 07:05 ET run is the last one before the 08:30 release
@@ -397,22 +422,24 @@ def labor_scan_due(now: datetime) -> bool:
 
 def run_labor_step(
     live, now: datetime, cfg: EngineConfig, *,
-    scan_fn: Callable[..., tuple[list[dict], list[dict]]] | None = None,
+    scan_fn: Callable[..., tuple[list[dict], list[dict], str, list[str]]] | None = None,
     deadline: float | None = None,
-) -> tuple[list[dict], list[dict], str]:
+) -> tuple[list[dict], list[dict], str, list[str]]:
     """scan_labor three times a day, isolated: an ALFRED or Kalshi outage returns a status, never raises.
 
     The traceback is logged HERE, at the point the exception is caught, so the status string that
     travels to main() does not cost the run its cause.
     """
     if not labor_scan_due(now):
-        return [], [], "skipped"
+        return [], [], "skipped", []
     try:
-        predictions, edges = (scan_fn or scan_labor)(live, now, cfg, deadline=deadline)
+        predictions, edges, status, gap = (scan_fn or scan_labor)(live, now, cfg, deadline=deadline)
     except Exception as exc:  # noqa: BLE001 - isolate the engine, report the error
         log.exception("scan engine=labor_nowcast failed")
-        return [], [], f"error: {type(exc).__name__}: {exc}"
-    return predictions, edges, "ok"
+        # A crash is not a feature gap, and a feature gap is not a crash. Either way the run is
+        # incomplete, which is what stops it pruning.
+        return [], [], f"error: {type(exc).__name__}: {exc}", []
+    return predictions, edges, status, gap
 
 
 def main(
@@ -503,6 +530,7 @@ def main(
     labor_status = "skipped: not due (07, 12, 17 ET)"
     engine_states["labor_nowcast"] = {
         "predictions": [], "edges": [], "errors": [], "complete": True, "ran": False,
+        "months_without_nowcast": [],
     }
 
     if client is None:
@@ -580,6 +608,13 @@ def main(
         # push those back; before sports, which still runs last. Gated and written separately
         # for the same reason sports is: its edges are keyed on their own (engine,
         # engine_version) pair, and its inputs are a third-party HTTP service.
+        # Closed markets are cleaned up on EVERY scan, due hour or not: a payroll ladder closes on
+        # its own schedule, so a not-due hour still has dead rows to remove.
+        try:
+            remove_closed_labor_edges(client, now)
+        except Exception as exc:
+            failures.append(f"labor_nowcast.closed_cleanup: {type(exc).__name__}: {exc}")
+            log.exception("scan closed labor edge cleanup failed")
         if not labor_scan_due(now):
             writes["predictions"]["labor_nowcast"] = "skipped"
             writes["edges"]["labor_nowcast"] = "skipped"
@@ -593,15 +628,18 @@ def main(
             else:
                 try:
                     labor_cfg = load_engine_config("labor_nowcast")
-                    labor_predictions, labor_edges, labor_status = run_labor_step(
+                    labor_predictions, labor_edges, labor_status, labor_gap = run_labor_step(
                         live, now, labor_cfg, deadline=deadline)
                     labor_failed = labor_status.startswith("error:")
                     labor_errors = [f"labor_nowcast: {labor_status}"] if labor_failed else []
                     engine_states["labor_nowcast"] = {
                         "predictions": labor_predictions, "edges": labor_edges, "errors": labor_errors,
-                        # A failed step must never prune: "we could not look" is not "the engine
-                        # produced nothing", and the second reading deletes live edges.
-                        "complete": not labor_failed, "ran": True,
+                        # A failed step must never prune, and neither must one with a FEATURE GAP:
+                        # a month whose markets exist but produced no nowcast means "we could not
+                        # look", not "the engine produced nothing", and the second reading deletes
+                        # live edges.
+                        "complete": not labor_failed and not labor_gap, "ran": True,
+                        "months_without_nowcast": labor_gap,
                     }
                     failures.extend(labor_errors)
                     if not labor_failed:
@@ -747,6 +785,9 @@ def main(
             "predictions": len(labor_predictions),
             "edges": len(labor_edges),
             "errors": engine_states["labor_nowcast"]["errors"],
+            # Months whose markets existed but produced no nowcast: a feature gap, and the reason
+            # this run did not prune.
+            "months_without_nowcast": engine_states["labor_nowcast"].get("months_without_nowcast", []),
         },
         "sports": sports_summary,
         "writes": writes,

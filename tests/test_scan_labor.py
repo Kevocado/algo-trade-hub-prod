@@ -48,7 +48,7 @@ def test_scan_labor_predicts_only_months_that_have_ended():
         calls.append(kwargs)
         return synthetic_inputs()
 
-    preds, edges = scan.scan_labor(FakeLive(may + june), now, EngineConfig(min_edge_pct=5.0), inputs_fn=inputs_fn)
+    preds, edges, _status, _gap = scan.scan_labor(FakeLive(may + june), now, EngineConfig(min_edge_pct=5.0), inputs_fn=inputs_fn)
     assert {p["market_ticker"] for p in preds} == {"KXPAYROLLS-14MAY-T0", "KXPAYROLLS-14MAY-T150000"}
     assert all(p["engine"] == "labor_nowcast" and p["engine_version"] == "labor-v1" for p in preds)
     assert calls[0]["releases"] == {date(2014, 5, 1): date(2014, 6, 6)} and calls[0]["as_of"] == date(2014, 6, 3)
@@ -66,7 +66,7 @@ def test_scan_labor_skips_fetching_when_nothing_is_due():
 
     june = [_lm("14JUN", 0, "2014-07-03T12:29:00Z")]
     now = datetime(2014, 6, 3, 14, 0, tzinfo=timezone.utc)
-    assert scan.scan_labor(FakeLive(june), now, EngineConfig(min_edge_pct=5.0), inputs_fn=inputs_fn) == ([], [])
+    assert scan.scan_labor(FakeLive(june), now, EngineConfig(min_edge_pct=5.0), inputs_fn=inputs_fn) == ([], [], "ok", [])
 
 
 def test_every_labor_edge_is_shadow_and_carries_the_engine_version():
@@ -74,8 +74,8 @@ def test_every_labor_edge_is_shadow_and_carries_the_engine_version():
     and are tagged SHADOW. `edge_row` defaults SHADOW, so the pair gate can key on this version
     and a new model version starts at SHADOW on its own."""
     may = [_lm("14MAY", 0, "2014-06-06T12:29:00Z")]
-    _, edges = scan.scan_labor(FakeLive(may), NOW, EngineConfig(min_edge_pct=5.0),
-                              inputs_fn=lambda **k: synthetic_inputs())
+    _, edges, _status, _gap = scan.scan_labor(FakeLive(may), NOW, EngineConfig(min_edge_pct=5.0),
+                                            inputs_fn=lambda **k: synthetic_inputs())
     assert edges, "no edge to check"
     for edge in edges:
         assert edge["engine"] == "labor_nowcast"
@@ -97,10 +97,10 @@ def test_run_labor_step_runs_three_times_a_day_and_isolates_errors():
     def boom(*_a, **_k):
         raise RuntimeError("ALFRED down")
 
-    assert scan.run_labor_step(live, at_9, cfg, scan_fn=boom) == ([], [], "skipped")
-    assert scan.run_labor_step(live, at_7, cfg, scan_fn=lambda *a, **k: ([{"p": 1}], [])) == ([{"p": 1}], [], "ok")
-    preds, edges, status = scan.run_labor_step(live, at_7, cfg, scan_fn=boom)
-    assert (preds, edges) == ([], []) and status.startswith("error: RuntimeError")
+    assert scan.run_labor_step(live, at_9, cfg, scan_fn=boom) == ([], [], "skipped", [])
+    assert scan.run_labor_step(live, at_7, cfg, scan_fn=lambda *a, **k: ([{"p": 1}], [], "ok", [])) == ([{"p": 1}], [], "ok", [])
+    preds, edges, status, gap = scan.run_labor_step(live, at_7, cfg, scan_fn=boom)
+    assert (preds, edges, gap) == ([], [], []) and status.startswith("error: RuntimeError")
 
 
 def test_labor_scan_due_hours_are_eastern():
@@ -131,6 +131,8 @@ def _base(monkeypatch, *, labor_due=True, labor_scan=None, upserted=None, cleane
     monkeypatch.setattr(scan, "remove_stale_edges",
                         lambda client, produced: cleaned.append(produced) if cleaned is not None else None)
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "latest_gate_statuses", gate or (lambda client, pairs: {}))
@@ -138,7 +140,7 @@ def _base(monkeypatch, *, labor_due=True, labor_scan=None, upserted=None, cleane
     if labor_scan is not None:
         monkeypatch.setattr(scan, "scan_labor", labor_scan)
     else:
-        monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([], []))
+        monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([], [], "ok", []))
 
 
 def test_main_isolates_a_labor_failure(monkeypatch, capsys):
@@ -180,7 +182,7 @@ def test_main_gates_labor_edges_per_engine_version(monkeypatch):
     _base(monkeypatch, upserted=upserted, gate=gate)
     monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([], [
         {"market_ticker": "A", "engine": "labor_nowcast", "engine_version": "labor-v1"},
-    ]))
+    ], "ok", []))
     assert scan.main(now=NOW, live=object(), client=object()) == 0
     # Labor has its own gate lookup (it runs after the shared one, so a hung ALFRED cannot delay
     # the other engines' writes), so the pair must appear in SOME lookup, not the first.
@@ -198,7 +200,7 @@ def test_an_unmatched_labor_version_fails_closed_to_shadow(monkeypatch):
     })
     monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([], [
         {"market_ticker": "A", "engine": "labor_nowcast", "engine_version": "labor-v2"},
-    ]))
+    ], "ok", []))
     assert scan.main(now=NOW, live=object(), client=object()) == 0
     assert [r["gate_status"] for r in upserted if r["engine"] == "labor_nowcast"] == ["SHADOW"]
 
@@ -209,7 +211,7 @@ def test_labor_cleanup_runs_only_on_a_due_hour_with_a_successful_write(monkeypat
     _base(monkeypatch, labor_due=due, cleaned=cleaned)
     edge = {"market_ticker": "KXPAYROLLS-14MAY-T0", "engine": "labor_nowcast",
             "engine_version": "labor-v1", "edge_type": "MACRO"}
-    monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([], [edge] if due else []))
+    monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([], [edge] if due else [], "ok", []))
 
     assert scan.main(now=NOW, live=object(), client=object()) == 0
     labor_cleaned = [produced for call in cleaned for name, produced in call.items()
@@ -234,7 +236,7 @@ def test_a_failed_labor_edge_write_does_not_prune(monkeypatch):
     monkeypatch.setattr(supabase_client, "upsert_opportunities", failing_upsert)
     monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([], [
         {"market_ticker": "A", "engine": "labor_nowcast", "engine_version": "labor-v1"},
-    ]))
+    ], "ok", []))
     assert scan.main(now=NOW, live=object(), client=object()) == 1
     assert not [name for call in cleaned for name in call if name == "labor_nowcast"], cleaned
 
@@ -245,3 +247,102 @@ def test_labor_is_in_the_stale_edge_allowlist():
     import inspect
     source = inspect.getsource(scan.remove_stale_edges)
     assert "labor_nowcast" in source, source
+
+
+# ── pruning safety ────────────────────────────────────────────────────────────
+
+def test_a_feature_gap_does_not_prune_labor_edges(monkeypatch):
+    """Markets existed, but no nowcast could be produced for them (a missing ALFRED vintage, a
+    claims gap). That is "we could not look", not "the engine produced nothing" -- and the second
+    reading deletes every live labor edge."""
+    edges = [{"market_ticker": "KXPAYROLLS-26SEP-T0", "edge_type": "MACRO",
+              "engine": "labor_nowcast", "engine_version": "labor-v1"}]
+    cleaned: list = []
+    _base(monkeypatch, cleaned=cleaned)
+    monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([], edges, "ok", ["nfl"]))
+    assert scan.main(now=NOW, live=object(), client=object()) == 0
+    assert not [name for call in cleaned for name in call if name == "labor_nowcast"], (
+        f"a feature gap pruned {len(edges)} live labor edges: {cleaned}"
+    )
+
+
+def test_a_healthy_labor_run_still_prunes(monkeypatch):
+    """The counterpart, so the guard cannot be satisfied by never pruning."""
+    cleaned: list = []
+    _base(monkeypatch, cleaned=cleaned)
+    monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([], [
+        {"market_ticker": "KXPAYROLLS-26AUG-T0", "edge_type": "MACRO",
+         "engine": "labor_nowcast", "engine_version": "labor-v1"},
+    ], "ok", []))
+    assert scan.main(now=NOW, live=object(), client=object()) == 0
+    assert [produced for call in cleaned for name, produced in call.items()
+            if name == "labor_nowcast"] == [{"KXPAYROLLS-26AUG-T0"}], cleaned
+
+
+def test_a_feature_gap_is_visible_in_the_summary(monkeypatch, capsys):
+    """Silently keeping rows is recoverable, so the reason has to be in the summary."""
+    _base(monkeypatch)
+    monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([], [], "ok", ["nfl"]))
+    scan.main(now=NOW, live=object(), client=object())
+    summary = json.loads(capsys.readouterr().out)
+    assert "nfl" in summary["labor_nowcast"]["months_without_nowcast"], summary["labor_nowcast"]
+
+
+def test_closed_labor_edges_are_deleted_on_every_scan(monkeypatch):
+    """A payroll market's `expires_at` is its Kalshi close, which for a monthly ladder is the
+    release day. A row that outlived its market would otherwise sit on the board until some later
+    scan happened to omit it. One atomic delete, engine-scoped, like remove_closed_cpi_edges."""
+    deletes: list[dict] = []
+
+    class _Q:
+        def __init__(self, filters):
+            self.filters = filters
+
+        def eq(self, col, val):
+            self.filters[col] = val
+            return self
+
+        def lte(self, col, val):
+            self.filters[col] = val
+            return self
+
+        def delete(self):
+            return self
+
+        def execute(self):
+            deletes.append(dict(self.filters))
+            return type("R", (), {"data": None})()
+
+    class _Supa:
+        def table(self, name):
+            return _Q({})
+
+    # This test is about the real function's DELETE, so it must not go through _base's stub.
+    real = scan.remove_closed_labor_edges
+    real(_Supa(), NOW)
+    assert deletes == [{"engine": "labor_nowcast", "expires_at": NOW.isoformat()}], deletes
+
+
+def test_the_closed_labor_cleanup_runs_on_a_non_due_hour_too(monkeypatch):
+    """`remove_closed_cpi_edges` runs every scan, not only on a due hour: a market closes on its
+    own schedule, not on the engine's."""
+    cleaned: list = []
+    _base(monkeypatch, labor_due=False, cleaned=cleaned)
+    calls: list[str] = []
+    monkeypatch.setattr(scan, "remove_closed_labor_edges",
+                        lambda *a, **k: calls.append("closed_cleanup"))
+    assert scan.main(now=NOW, live=object(), client=object()) == 0
+    assert calls == ["closed_cleanup"], "the closed-market cleanup only ran on a due hour"
+
+
+def test_a_failed_closed_cleanup_is_reported_and_not_fatal(monkeypatch, capsys):
+    _base(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("supabase down")
+
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", boom)
+    rc = scan.main(now=NOW, live=object(), client=object())
+    summary = json.loads(capsys.readouterr().out)
+    assert rc == 1
+    assert any("closed_cleanup" in f for f in summary["failures"]), summary["failures"]

@@ -144,6 +144,7 @@ def _stub_everything(monkeypatch, calls, labor_scan=None, *, labor_due=True):
     monkeypatch.setattr(mod, "remove_stale_edges", lambda *a, **k: None)
     monkeypatch.setattr(mod, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(mod, "remove_closed_cpi_edges", lambda *a, **k: calls.append("cpi_cleanup"))
+    monkeypatch.setattr(mod, "remove_closed_labor_edges", lambda *a, **k: None)
     monkeypatch.setattr(mod, "labor_scan_due", lambda now: labor_due)
     monkeypatch.setattr(mod, "sports_due", lambda now: True)
     monkeypatch.setattr(mod, "run_sports_for_cron",

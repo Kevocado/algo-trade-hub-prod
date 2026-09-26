@@ -171,6 +171,7 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *args, **kwargs: None)
 
     assert scan.main() == 0
     assert [r["engine"] for rows in prediction_writes for r in rows] == ["weather", "sports_nfl"]
@@ -203,6 +204,7 @@ def test_scan_main_survives_a_sports_crash(monkeypatch, capsys):
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *args, **kwargs: None)
 
     # A sports failure is recorded in `failures` (B6), so the run reports partial_failure
     # while every other engine's write still lands.

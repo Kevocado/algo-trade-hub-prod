@@ -207,6 +207,7 @@ def test_main_calls_the_tested_started_cleanup_and_reports_its_failures(monkeypa
     monkeypatch.setattr(scan_mod, "sports_due", lambda now: True)
     monkeypatch.setattr(scan_mod, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan_mod, "remove_closed_cpi_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan_mod, "remove_closed_labor_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan_mod, "remove_stale_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan_mod, "record_predictions", lambda *a, **k: None, raising=False)
     monkeypatch.setattr("tradehub.core.supabase_client.get_client", lambda: "supa")
