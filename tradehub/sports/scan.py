@@ -214,6 +214,11 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[[str], Feed] = fet
             # 60s timeout plus a retry is 122s of predictor call inside a 15-minute scan.
             feed = fetch(cfg.base_url, deadline=effective_deadline)
         except FeedUnavailable as exc:
+            # A 404 here is the EXPECTED state until 7a's feed is deployed, so it is neither a
+            # failure nor silent: it stays out of `failures` (the exit code must stay 0) but it is
+            # a WARNING with the sport and the reason, because the run summary is the only place
+            # it used to appear and `journalctl` on the timer showed nothing at all.
+            log.warning("sports feed unavailable sport=%s url=%s: %s", sport, cfg.base_url, exc)
             reports[sport] = {"feed_error": str(exc)}
             per_sport[sport] = {"feed_ok": False, "edges": []}
             continue

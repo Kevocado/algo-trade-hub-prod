@@ -150,3 +150,57 @@ def test_price_failure_on_one_market_does_not_kill_the_sport(monkeypatch):
     result = sports_scan.scan_sport(load_sport_config("nfl"), markets, feed, NOW)
     assert result.edges, "the rest of the sport must still be scanned"
     assert result.report["markets_skipped"] >= 1
+
+
+# ── (c) a feed 404 is the expected state until 7a is deployed, so it is logged ─
+
+def test_a_feed_404_is_logged_at_warning(caplog):
+    """The live feed 404s until 7a ships, and that is the expected result, not a fault. It was
+    written into the run summary only, so `journalctl` on the scan timer showed nothing at all and
+    the summary had to be found by hand to explain a sport that produced no edges."""
+    import logging
+
+    from tradehub.sports.feed import FeedUnavailable
+
+    def fetch(url, **_kw):
+        raise FeedUnavailable("404")
+
+    with caplog.at_level(logging.WARNING):
+        sports_scan.run_sports_scan(NOW, object(), fetch=fetch, sports=("nfl",))
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warned, "a 404 predictor produced no log record at all"
+    assert any("nfl" in r.getMessage() for r in warned), [r.getMessage() for r in warned]
+    assert any("404" in r.getMessage() for r in warned), [r.getMessage() for r in warned]
+
+
+def test_a_feed_404_still_does_not_fail_the_scan(monkeypatch, capsys):
+    """It stays out of `failures` and the exit code stays 0 — a predictor that has not been
+    deployed yet must not turn the hourly timer red. Only the log line and the summary carry it."""
+    import json
+
+    from tradehub.scripts import scan as scan_mod
+    from tradehub.sports.scan import SportsRun
+
+    monkeypatch.setattr(scan_mod, "KalshiLive", lambda *a, **k: object())
+    monkeypatch.setattr(scan_mod, "scan_weather", lambda *a, **k: ([], []))
+    monkeypatch.setattr(scan_mod, "scan_gas", lambda *a, **k: ([], []))
+    monkeypatch.setattr(scan_mod, "cpi_scan_due", lambda now: False)
+    monkeypatch.setattr(scan_mod, "sports_due", lambda now: True)
+    monkeypatch.setattr(scan_mod, "latest_gate_statuses", lambda client, pairs: {})
+    monkeypatch.setattr(scan_mod, "remove_closed_cpi_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan_mod, "remove_started_sports_edges", lambda *a, **k: [])
+    monkeypatch.setattr(scan_mod, "remove_stale_edges", lambda *a, **k: None)
+    monkeypatch.setattr("tradehub.core.supabase_client.get_client", lambda: "supa")
+    monkeypatch.setattr("tradehub.core.supabase_client.upsert_opportunities", lambda rows: None)
+
+    def not_deployed(now, supa, **kw):
+        return SportsRun([], [], {"nfl": {"feed_error": "404"}, "cfb": {"feed_error": "404"}},
+                         {"nfl": {"feed_ok": False, "edges": []},
+                          "cfb": {"feed_ok": False, "edges": []}})
+
+    monkeypatch.setattr(scan_mod, "run_sports_for_cron", not_deployed)
+    rc = scan_mod.main(now=NOW, live=object(), client=object())
+    summary = json.loads(capsys.readouterr().out)
+    assert rc == 0, f"a not-yet-deployed predictor made the scan fail: {summary['failures']}"
+    assert summary["failures"] == [], summary["failures"]
+    assert "404" in str(summary["sports"]), summary["sports"]

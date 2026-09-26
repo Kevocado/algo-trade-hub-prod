@@ -661,3 +661,23 @@ loop cannot hide.
 **Worth repeating:** the fake, not the assertion, is what makes this class of bug testable. A fake
 that returns rows in insertion order and ignores `.order()` will happily pass a test that claims
 the pages line up.
+
+### 4a. A feed 404 was invisible in the logs
+
+A 404 from a predictor is the **expected** state until 7a's feed is deployed, so it correctly
+stays out of `failures` and the exit code stays 0. But it was also completely silent: the only
+trace was `"feed_error": "404"` inside the JSON run summary, so `journalctl -u tradehub-scan`
+showed nothing and a sport that produced no edges had to be explained by hand.
+
+**RED**
+
+```
+AssertionError: a 404 predictor produced no log record at all
+assert []
+1 failed, 7 passed
+```
+
+**GREEN** — 568 passed. One `log.warning` with the sport, the URL and the reason, placed where the
+feed error is turned into a report entry. It is still not a failure: `test_a_feed_404_still_does_
+not_fail_the_scan` runs the real `scan.main` and asserts exit code 0 and an empty `failures`
+alongside the log line, so this cannot quietly become a red timer either way.
