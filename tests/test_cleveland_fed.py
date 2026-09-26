@@ -67,22 +67,18 @@ def test_fetch_uses_the_keyless_json_url():
 # values, every pair from training_pairs() would silently become a revised target
 # and the fitted sigma would stop describing a first-print payoff.
 #
-# December 2021 is the pin because BLS revised it hard: first print +0.5% on
-# 2021-12-10, current published value +0.69%. The chart still carries 0.4705, and
-# the last pre-release nowcast was 0.3890, so the print was a genuine miss.
+# December 2021 is the pin because BLS revised it hard. The month is December 2021
+# and the chart dates the actual to its release day, 2022-01-12 (08:30 ET), so the
+# first print landed in January 2022, not December 2021. BLS now publishes +0.69%;
+# the chart still carries 0.4705, and the last pre-release nowcast was 0.3890, so
+# the print was a genuine miss.
 DEC_2021_FIRST_PRINT = 0.470453241537583
 DEC_2021_BLS_REVISED = 0.69
-DEC_2021_REVISION_GAP = abs(DEC_2021_FIRST_PRINT - DEC_2021_BLS_REVISED)
 
 
 def test_actual_is_the_unrevised_first_print():
     dec = parse_nowcast_month(PAYLOAD)[date(2021, 12, 1)]
     assert dec.actual.value == pytest.approx(DEC_2021_FIRST_PRINT, abs=1e-9)
-    # Guard the guard: the pin only has teeth while the two values stay far apart.
-    assert DEC_2021_REVISION_GAP > 0.1, (
-        "BLS has caught up with the December 2021 first print; pick a month that was "
-        "revised more than 0.1pp so this pin can still detect a switch to revised values."
-    )
 
 
 def test_first_print_pin_detects_a_switch_to_revised_values():

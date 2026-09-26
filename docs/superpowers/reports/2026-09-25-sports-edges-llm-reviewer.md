@@ -213,6 +213,54 @@ on the follow-up branch and not yet on `main`; the resulting `tradehub/scripts/s
 audited line by line to confirm the `(engine, engine_version)` pair gate, the CPI cleanup entry and
 the new function were all still present alongside the sports wiring.
 
+## Round 3 — fixes from the PR #10 review and the round-2 gaps
+
+Merged `origin/main` first (PR #10 is on main). Merge was clean; the gating audit was re-run on
+the merged tree and `501 passed` before any round-3 edit. One commit per numbered fix.
+
+### A1. `remove_closed_cpi_edges` is now one atomic DELETE
+
+- Was: `SELECT market_id,expires_at WHERE engine='cpi_nowcast'`, then a Python loop comparing
+  timestamps and issuing **one DELETE per closed market**, every hour. The round trip count grew
+  with the number of closed markets, and rows with a null `expires_at` were skipped in Python.
+- Now: `DELETE FROM kalshi_edges WHERE engine='cpi_nowcast' AND expires_at <= <now>` — the whole
+  predicate is expressible in PostgREST, so the database does the comparison in one statement.
+- RED: the two new tests failed with `IndexError: list index out of range` (no delete was issued
+  at all, because the old code needed a `SELECT` result).
+- GREEN: `pytest tests/test_scan_cpi.py -q` → 12 passed.
+- The old fake `Query` overwrote `self.value` on every `.eq`, so it silently kept only the last
+  filter and could not express a two-predicate delete. Replaced with `_RecordingQuery`, which
+  keeps **every** filter, records the op chain, and supports `.lte`.
+- `test_remove_closed_cpi_edges_is_one_atomic_delete` asserts exactly one `delete` call, no
+  `select`, and the exact filter dict. `..._sends_a_comparable_expiry_bound` pins that the bound
+  is the tz-aware `now.isoformat()`, since PostgREST compares the stored text.
+
+### A2. main()-level tests for the closed-CPI cleanup
+
+- New `tests/test_scan_cpi_closed_cleanup.py`, 3 tests.
+- (a) with `cpi_scan_due` False the cleanup still runs — 09:00 ET is not a CPI scan hour, and an
+  edge from the 08:05 run for a market closing 08:25 must be gone before 09:00, not at noon.
+- (b) when the cleanup raises, the message lands in `failures`, `status` is `partial_failure`, the
+  exit code is 1, and the weather/gas/CPI upserts and the other engines' stale-edge cleanups still
+  run. A cleanup failure is not allowed to take the scan down.
+- GREEN: 3 passed.
+- Test-hygiene note: these stub `scan_cpi` as well. Without it the CPI engine ran against the
+  `object()` stub client and the failure under test was masked by an unrelated `open_markets`
+  `AttributeError`.
+
+### A2b. December 2021 date correction, and the vacuous assertion
+
+- The comments (and the step-6 report) said the December 2021 CPI print landed on **2021-12-10**.
+  It did not: the chart dates the actual to the BLS release day **2022-01-12 08:30 ET**, so the
+  first print of December 2021 CPI was published in January 2022. Corrected in
+  `tests/test_cleveland_fed.py` and in the step-6 report.
+- Dropped `assert DEC_2021_REVISION_GAP > 0.1`. It compared `DEC_2021_FIRST_PRINT` and
+  `DEC_2021_BLS_REVISED`, two constants defined three lines apart, so it could only fail if
+  someone edited a constant — it tested the test, not the data, and gave false assurance that the
+  pin could not go stale. The load-bearing check is
+  `test_first_print_pin_detects_a_switch_to_revised_values`, which proves the pin *misses* when
+  the payload carries the revised value. That test is unchanged and still passes.
+
 ## Second review round — fixes 1-7
 
 One commit per numbered fix. RED first in each case, evidence below.

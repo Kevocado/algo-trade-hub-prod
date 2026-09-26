@@ -123,15 +123,16 @@ def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[tuple[str, s
 
 
 def remove_closed_cpi_edges(client, now: datetime) -> None:
-    """Delete cpi_nowcast edges as soon as their market closes, on every hourly scan."""
-    result = client.table("kalshi_edges").select("market_id,expires_at").eq("engine", "cpi_nowcast").execute()
-    for row in result.data or []:
-        expires_at = row.get("expires_at")
-        if not expires_at:
-            continue
-        close_time = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-        if close_time <= now:
-            client.table("kalshi_edges").delete().eq("market_id", row["market_id"]).execute()
+    """Delete cpi_nowcast edges as soon as their market closes, on every hourly scan.
+
+    One filtered DELETE rather than a SELECT followed by a DELETE per row: the predicate is
+    entirely expressible in PostgREST, so the database does the comparison and the round trip
+    count does not grow with the number of closed markets.
+    """
+    client.table("kalshi_edges").delete() \
+        .eq("engine", "cpi_nowcast") \
+        .lte("expires_at", now.isoformat()) \
+        .execute()
 
 
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
