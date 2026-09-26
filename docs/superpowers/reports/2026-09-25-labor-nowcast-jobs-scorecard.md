@@ -338,3 +338,151 @@ worked around: no proxy, no vendored CSV, no change to the fetcher.
 
 Nothing was skipped. Every task's Intent holds in the delivered code, and where the plan's code
 could not apply, the change was made by hand and is listed above.
+
+## Round 1 — the review of 8e3e025
+
+One commit per item, test-first. The RED outputs below are verbatim.
+
+| # | Commit | What |
+|---|---|---|
+| 1 | `166d2f1` | cache ALFRED vintages at full precision |
+| 2 | `12a6924` | the weekly series at each month's own vintage; `--record` refuses a non-PIT PROMOTED run |
+| 3 | `e645dc1` | labor runs after the engine writes; the ALFRED fetcher is deadline-bounded and retries 5xx |
+| 4 | `32ac75a` + `b466346` | the /jobs page badges the engine's gate status; one shared gate lookup |
+| 5 | `1d70a01` | a feature gap does not prune; closed labor markets are deleted every scan |
+| — | `1c52785` | a test that was opening a real socket |
+
+### 1. Cache precision
+
+`{v:g}` is **six** significant digits, so CCSA 1,897,123 was cached as `1.897e+06` and read back
+as 1897000.0. A cached run and a fresh run therefore produced different nowcasts, and the only
+symptom was that two runs disagreed.
+
+```
+RED:
+E   AssertionError: assert {datetime.date(2026, 8, 31): {date(2026, 8, 1): 1897123.0, ...}}
+E                          != {datetime.date(2026, 8, 31): {date(2026, 8, 1): 1897120.0, ...}}
+1 failed, 1 passed
+GREEN: 6 passed
+```
+
+`repr(float)` round-trips exactly. The second test is the property that matters: `fetch_vintages`
+is a pure function of the requested vintage dates, warm cache or not.
+
+**Kevin: any cache already written is wrong permanently** — past vintages never change, so
+`:g`-written files never self-heal. Delete `TRADEHUB_ALFRED_CACHE` (or the volume behind it) once
+after this deploys.
+
+### 2. Point-in-time leak — the one that mattered
+
+`load_labor_inputs` handed ICSA/CCSA/JTSHIL/JTSJOL over from **one latest vintage**, so every
+historical month was described with claims and JOLTS data revised months or years later.
+`check_no_lookahead` could not see it: the `Observation` timestamps are the weeks' nominal
+publication dates either way, so the leakage guard passed on inputs that were not point-in-time.
+Every historical backtest month was fitted on knowledge it did not have (spec §5a).
+
+```
+RED: 2 failed
+  E   AssertionError: January's claims change used a later vintage's revision
+  E   AssertionError: 'icsa' still takes a flat series: Mapping[date, float]
+GREEN: 654 passed
+```
+
+- The four weekly parameters are now `Mapping[date, Vintage]`, the same shape PAYEMS and ADP
+  already had. **The type is the fix**: a flat `{week: value}` map *is* the leak, and a signature
+  that cannot express it stops it being reintroduced. A test asserts the annotations.
+- A month whose own vintage is missing returns `None` — a feature gap the caller must handle —
+  rather than falling back on today's data.
+- `point_in_time_ok(inputs, months)` and `record_guard(row, inputs, months)`: `--record` refuses
+  to store a **PROMOTED** run that fails it, so a leak cannot become a promotion by accident.
+  SHADOW runs are untouched, because SHADOW is this engine's expected outcome and blocking it
+  would make `--record` useless.
+- Two existing tests asserted the leaky contract and were updated rather than worked around:
+  `test_load_labor_inputs_requests_point_in_time_vintages` asserted the weekly series were fetched
+  **once**, and `test_labor_features_are_point_in_time` passed flat maps. Both now assert the
+  correct thing — the first is now a much stronger test than its name suggested.
+
+**Cost, corrected:** the plan's follow-up 3 said "about 20 small CSVs" per scan. With the weekly
+series at every month end it is ~85 (5 series × 17 batches of 12), once, if
+`TRADEHUB_ALFRED_CACHE` is a mounted volume. Without the volume it is that, three times a day.
+
+### 3. Deadline
+
+```
+RED: 8 failed
+  E   AssertionError: a retry was started with less time than one attempt needs
+  E   NameError: name 'text' is not defined        (a bug in my own new test fake)
+GREEN: 663 passed
+```
+
+- The labor step now runs **after** the weather/gas/CPI writes and before sports, with its own
+  gate lookup, write status and cleanup — the shape sports already had. An ALFRED hang can no
+  longer delay another engine's writes. `_ensure_scan_deadline` runs first, and an exhausted
+  budget reports `skipped: scan deadline reached before the labor step` rather than starting work
+  it cannot finish.
+- `default_get_text`: the per-request timeout is clamped to the time remaining, and a retry only
+  starts when `remaining >= timeout + backoff`. The old flat 60s × 4 unconditional attempts was up
+  to ~246s of predictor call inside a 15-minute scan.
+- HTTP 5xx is retried too. FRED's edge returns 503 under load, and retrying only transport errors
+  turned a transient 503 into a dead engine for the whole run.
+- The deadline travels `scan → scan_labor → load_labor_inputs → fetch_vintages → the HTTP
+  request`. `remaining_seconds` grew an optional `clock` so a caller that owns its clock does not
+  have to reach into another module's global — the first version of this took a `clock` argument
+  and silently ignored it, which the fake-clock test caught immediately.
+
+**A pre-existing crash this exposed:** with no Supabase client, `main()` raised
+`UnboundLocalError` on `sports_summary` instead of reporting the failure — the one situation where
+a clear report matters most. `test_main_reports_rather_than_crashes_without_a_supabase_client`
+pins it.
+
+### 4. Gate status on `/jobs`
+
+The scorecard is built out of band, so `gate_status` is not on the row and has to be looked up at
+read time, per `(engine, engine_version)`, defaulting to SHADOW. The unemployment panel maps to no
+engine on purpose: `u3-naive-v0` is a naive baseline, and it must not borrow `labor_nowcast`'s
+promotion (there is a test for exactly that). A lookup error fails closed to SHADOW rather than
+taking the page down when the rows are readable.
+
+The lookup moved to `tradehub/gate_status.py` so the scan and the API share one implementation —
+two copies is how the War Room and the scan would start disagreeing about whether an edge is
+tradable. A test asserts `scan.latest_gate_statuses is latest_gate_statuses`.
+
+```
+RED: 4 failed (KeyError 'gate_status')
+GREEN: 669 passed; vitest 7 files / 32 tests; tsc exit 0
+```
+
+### 5. Pruning safety
+
+`scan_labor` returned only `(predictions, edges)`, so a month whose markets existed but produced
+no nowcast — a missing ALFRED vintage, a claims gap — looked exactly like an engine that produced
+nothing, and the "ran AND wrote ok" cleanup guard then deleted its live edges.
+
+- `scan_labor` / `run_labor_step` now return a 4-tuple carrying `months_without_nowcast`. A gap
+  marks the run **incomplete**, so it does not prune, and the months are listed in the summary:
+  silently keeping rows is recoverable, silently deleting them is not.
+- `remove_closed_labor_edges`: one atomic `DELETE ... WHERE engine='labor_nowcast' AND
+  expires_at <= now`, engine-scoped, like `remove_closed_cpi_edges`, and run on **every** scan —
+  a monthly ladder closes on its own schedule, not on the engine's 07/12/17 ET cadence. Its
+  failure is reported and not fatal.
+- Six new tests: a gap does not prune, a healthy run still prunes, the gap is visible in the
+  summary, the delete is engine-scoped, it runs on a non-due hour, and its failure is reported.
+- The new cleanup needed stubbing in ~20 pre-existing main()-level test doubles across six files,
+  exactly as those tests already stubbed the CPI one. That is the honest cost of adding an
+  unconditional DB call, and every one of them was an incomplete double rather than a behaviour to
+  preserve.
+
+### Minor: a test that opened a real socket
+
+`test_sports_scan_passes_the_deadline_into_the_client` patched `sports_scan.fetch_feed`, which did
+nothing: `run_sports_scan`'s `fetch` default binds `fetch_feed` at definition time, so the real one
+ran and made a real HTTPS request to `nfl-predictor.proudbay-f56b8dfa.eastus2.azurecontainerapps.io`.
+The test still passed, because a 404 is handled as a feed error.
+
+Two things were stacked there. The `_feed_stub` it meant to use was itself broken — `Feed` was
+constructed without `generated_at` or `calibration` — and had **never been called**. Both are
+fixed, `fetch=` is now passed explicitly, the test asserts the stub was used, and the whole suite
+now passes with `socket.getaddrinfo` and `socket.create_connection` disabled (675 passed).
+
+Worth stating plainly: this test was green for three unrelated reasons at once, and no amount of
+reading it would have shown that. Disabling the socket turned it red in one run.
