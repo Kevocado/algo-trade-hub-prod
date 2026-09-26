@@ -115,3 +115,40 @@ def test_the_clis_only_call_methods_the_real_client_has():
             assert hasattr(KalshiHistoryClient, name), (
                 f"{module.__name__} calls client.{name}(), which KalshiHistoryClient does not have"
             )
+
+
+# ── --record must not be able to promote on non-point-in-time inputs ───────────
+
+def test_record_guard_refuses_a_promoted_run_that_is_not_point_in_time():
+    """The gate is the only thing that can promote labor_nowcast, so a PROMOTED run may only be
+    stored when the inputs are demonstrably point-in-time. Before the vintage fix the weekly
+    series came from ONE latest vintage, which `check_no_lookahead` cannot see: the Observation
+    timestamps are the weeks' nominal publication dates either way."""
+    from dataclasses import replace
+
+    from tradehub.scripts.backtest_labor import record_guard
+
+    inputs = synthetic_inputs()
+    months = [date(2013, 5, 1), date(2013, 6, 1)]
+    leaky = replace(inputs, icsa={date(2026, 9, 24): {date(2013, 8, 1): 1.0}}, ccsa={})
+
+    with pytest.raises(SystemExit) as excinfo:
+        record_guard({"gate_status": "PROMOTED"}, leaky, months)
+    assert "refusing to record a PROMOTED run" in str(excinfo.value)
+
+    # The real inputs pass, so a legitimate future promotion is not blocked by the interlock.
+    assert record_guard({"gate_status": "PROMOTED"}, inputs, months) is None
+
+
+def test_the_interlock_only_blocks_promotion():
+    """SHADOW is this engine's expected outcome, and the plan's own validated result. Blocking it
+    would make `--record` useless."""
+    from dataclasses import replace
+
+    from tradehub.scripts.backtest_labor import record_guard
+
+    inputs = synthetic_inputs()
+    months = [date(2013, 5, 1), date(2013, 6, 1)]
+    leaky = replace(inputs, icsa={}, ccsa={})
+    assert record_guard({"gate_status": "SHADOW"}, leaky, months) is None
+    assert record_guard({}, leaky, months) is None

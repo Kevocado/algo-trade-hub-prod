@@ -13,7 +13,7 @@ import statistics
 import sys
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from tradehub.backtest.fills import quote_at
@@ -22,7 +22,7 @@ from tradehub.backtest.kalshi_history import KalshiHistoryClient
 from tradehub.backtest.pit import Decision
 from tradehub.backtest.runner import MarketHistory, run_backtest
 from tradehub.backtest.store import build_backtest_run_row, data_snapshot_hash, record_backtest_run
-from tradehub.data.labor_inputs import Nowcast, load_labor_inputs, payroll_nowcasts
+from tradehub.data.labor_inputs import Nowcast, load_labor_inputs, payroll_nowcasts, point_in_time_ok
 from tradehub.engines.labor import (
     ALL_FEATURES,
     CORE_FEATURES,
@@ -111,6 +111,22 @@ def _month_arg(text: str) -> date:
     return datetime.strptime(text, "%Y-%m").date()
 
 
+def record_guard(row: dict[str, Any], inputs, months: Sequence[date]) -> None:
+    """Refuse to store a PROMOTED run whose inputs are not point-in-time.
+
+    A PROMOTED run is the only thing that can promote the engine, and the gate is driven by this
+    backtest's numbers, so it may only be recorded when the inputs are demonstrably point-in-time
+    (spec §5a). `point_in_time_ok` is False for the pre-fix input shape — the weekly series read
+    from ONE latest vintage — which is how a lookahead would otherwise become a promotion. A SHADOW
+    run is unaffected: that is the expected outcome and the reason `--record` exists at all.
+    """
+    if row.get("gate_status") == "PROMOTED" and not point_in_time_ok(inputs, months):
+        raise SystemExit(
+            "refusing to record a PROMOTED run: the weekly features were not built from each "
+            "month's own ALFRED vintage, so the result is not point-in-time (spec 5a)"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Point-in-time backtest for labor_nowcast (KXPAYROLLS).")
     parser.add_argument("--start", type=_month_arg, default=date(2023, 3, 1), help="first reference month, YYYY-MM")
@@ -162,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.record:
         from tradehub.core.supabase_client import get_client
 
+        record_guard(row, inputs, months)
         record_backtest_run(get_client(), row)
     return 0
 

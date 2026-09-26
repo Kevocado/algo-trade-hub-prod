@@ -240,19 +240,25 @@ def labor_features(
     month: date,
     *,
     payems: Mapping[date, Vintage],
-    icsa: Mapping[date, float],
-    ccsa: Mapping[date, float],
-    hires: Mapping[date, float],
-    openings: Mapping[date, float],
+    icsa: Mapping[date, Vintage],
+    ccsa: Mapping[date, Vintage],
+    hires: Mapping[date, Vintage],
+    openings: Mapping[date, Vintage],
     adp: Mapping[date, Vintage],
     release: date,
 ) -> LaborFeatures | None:
     """Features for reference month `month`, using only what was public by the end of that month.
 
-    Payrolls come from the PAYEMS vintage dated month_end(month). Claims and
-    JOLTS come from one recent vintage, filtered by their publication lag.
-    ADP for `month` itself comes from the vintage the day before the jobs
-    release (ADP publishes two days earlier).
+    EVERY series is keyed by the vintage it is read from, and the vintage used is always
+    `month_end(month)` — the same rule for claims and JOLTS as for payrolls. Reading the weekly
+    series from one latest vintage instead would describe every historical month with data
+    revised months or years later, and the leakage guard cannot see it: the Observation
+    timestamps are the weeks' nominal publication dates, which are honest-looking, while the
+    values behind them came from a later vintage.
+
+    A missing month_end vintage returns None (a feature gap the caller must handle) rather than
+    falling back on today's data. ADP for `month` itself comes from the vintage the day before
+    the jobs release (ADP publishes two days earlier).
     """
     vintage_day = month_end(month)
     as_of = end_of_day_et(vintage_day)
@@ -264,32 +270,36 @@ def labor_features(
     if any(c is None for c in changes):
         return None
     sources = [Observation(f"PAYEMS@{vintage_day.isoformat()}:{latest.isoformat()}", pay[latest], as_of)]
-    icsa_now = _reference_week(icsa, month, 5, as_of)
-    icsa_prev = _reference_week(icsa, add_months(month, -1), 5, as_of)
-    ccsa_now = _reference_week(ccsa, month, 12, as_of)
+    icsa_v, ccsa_v = icsa.get(vintage_day), ccsa.get(vintage_day)
+    hires_v, openings_v = hires.get(vintage_day), openings.get(vintage_day)
+    if not icsa_v or not ccsa_v:
+        return None
+    icsa_now = _reference_week(icsa_v, month, 5, as_of)
+    icsa_prev = _reference_week(icsa_v, add_months(month, -1), 5, as_of)
+    ccsa_now = _reference_week(ccsa_v, month, 12, as_of)
     ccsa_prev = None
     if ccsa_now is not None:
         week_prev = ccsa_now[0] - timedelta(days=28)
-        if week_prev in ccsa:
-            ccsa_prev = (week_prev, ccsa[week_prev])
+        if week_prev in ccsa_v:
+            ccsa_prev = (week_prev, ccsa_v[week_prev])
     if icsa_now is None or icsa_prev is None or ccsa_now is None or ccsa_prev is None:
         return None
     for name, lag, point in (("ICSA", 5, icsa_now), ("ICSA", 5, icsa_prev), ("CCSA", 12, ccsa_now), ("CCSA", 12, ccsa_prev)):
         sources.append(_weekly_obs(name, point[0], point[1], lag))
 
-    jolts_known = [m for m in hires if m in openings
+    jolts_known = [m for m in (hires_v or {}) if m in (openings_v or {})
                    and end_of_day_et(month_end(m) + timedelta(days=JOLTS_LAG_DAYS)) <= as_of]
     hires_3m = ghost_3m = 0.0
     if jolts_known:
         j = max(jolts_known)
         j3 = add_months(j, -3)
-        if j3 in hires and j3 in openings:
+        if j3 in hires_v and j3 in openings_v:
             def gap(m: date) -> float:
                 weight = GHOST_DISCOUNT if m >= POST_2021 else 1.0
-                return weight * openings[m] - hires[m]
-            hires_3m = hires[j] - hires[j3]
+                return weight * openings_v[m] - hires_v[m]
+            hires_3m = hires_v[j] - hires_v[j3]
             ghost_3m = gap(j) - gap(j3)
-            sources.append(Observation(f"JTSHIL:{j.isoformat()}", hires[j],
+            sources.append(Observation(f"JTSHIL:{j.isoformat()}", hires_v[j],
                                        end_of_day_et(month_end(j) + timedelta(days=JOLTS_LAG_DAYS))))
 
     adp_vintage_day = release - timedelta(days=1)

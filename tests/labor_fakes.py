@@ -25,6 +25,19 @@ def _months(first: date, last: date) -> list[date]:
     return out
 
 
+def _weekly_vintages(weeks: dict[date, float], months: list[date], lag: int) -> dict[date, dict[date, float]]:
+    """One vintage per month end, each holding only the weeks PUBLISHED by that date.
+
+    That is what ALFRED gives for ICSA/CCSA, and it is what makes a revision test meaningful: a
+    later vintage can disagree with an earlier one and month M must not see the disagreement.
+    """
+    out: dict[date, dict[date, float]] = {}
+    for m in months:
+        end = month_end(m)
+        out[end] = {w: v for w, v in weeks.items() if w + timedelta(days=lag) <= end}
+    return out
+
+
 def synthetic_inputs() -> LaborInputs:
     """PAYEMS vintages at each month end hold data through the prior month (first prints never revised).
 
@@ -48,4 +61,10 @@ def synthetic_inputs() -> LaborInputs:
         saturday += timedelta(days=7)
     hires = {m: 5000.0 for m in months}
     openings = {m: 6000.0 for m in months}
-    return LaborInputs(payems=payems, unrate={}, adp={}, icsa=icsa, ccsa=ccsa, hires=hires, openings=openings)
+    return LaborInputs(
+        payems=payems, unrate={}, adp={},
+        icsa=_weekly_vintages(icsa, months, 5),
+        ccsa=_weekly_vintages(ccsa, months, 12),
+        hires=_weekly_vintages(hires, months, 40),
+        openings=_weekly_vintages(openings, months, 40),
+    )

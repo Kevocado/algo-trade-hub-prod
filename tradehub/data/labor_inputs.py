@@ -38,10 +38,14 @@ class LaborInputs:
     payems: dict[date, Vintage]
     unrate: dict[date, Vintage]
     adp: dict[date, Vintage]
-    icsa: Vintage
-    ccsa: Vintage
-    hires: Vintage
-    openings: Vintage
+    # The weekly series are VINTAGE maps too, not one flat latest snapshot. Reading them from a
+    # single latest vintage would describe every historical month with data revised months or
+    # years later -- a lookahead the leakage guard cannot see, because the Observation
+    # timestamps are the weeks' nominal publication dates either way.
+    icsa: dict[date, Vintage]
+    ccsa: dict[date, Vintage]
+    hires: dict[date, Vintage]
+    openings: dict[date, Vintage]
 
 
 def cache_dir_from_env() -> Path:
@@ -81,6 +85,11 @@ def load_labor_inputs(
 
     UNRATE (Jobs Scorecard only) is fetched from `unrate_from` on; None skips it.
     with_adp=False skips ADP (the core feature set does not use it; each month is a vintage).
+
+    ICSA, CCSA, JTSHIL and JTSJOL are fetched at the SAME month-end vintages as PAYEMS, not once
+    at the latest. One latest snapshot per series would feed every historical month's features
+    with values revised after that month, which is a lookahead (spec §5a) that the backtest's
+    leakage guard cannot detect.
     """
     cache = cache_dir if cache_dir is not None else cache_dir_from_env()
     latest = as_of - timedelta(days=1)
@@ -92,18 +101,25 @@ def load_labor_inputs(
     def get(series: str, days: list[date]) -> dict[date, Vintage]:
         return fetch(series, sorted({d for d in days if d < as_of}), cache_dir=cache, today=as_of)
 
-    def latest_of(series: str) -> Vintage:
-        return get(series, [latest]).get(latest, {})
-
     return LaborInputs(
         payems=get("PAYEMS", month_ends + [latest]),
         unrate=get("UNRATE", unrate_ends + [latest]) if unrate_from is not None else {},
         adp=get("ADPMNUSNERSA", adp_days) if with_adp else {},
-        icsa=latest_of("ICSA"),
-        ccsa=latest_of("CCSA"),
-        hires=latest_of("JTSHIL"),
-        openings=latest_of("JTSJOL"),
+        icsa=get("ICSA", month_ends + [latest]),
+        ccsa=get("CCSA", month_ends + [latest]),
+        hires=get("JTSHIL", month_ends + [latest]),
+        openings=get("JTSJOL", month_ends + [latest]),
     )
+
+
+def point_in_time_ok(inputs: LaborInputs, months: Sequence[date]) -> bool:
+    """Whether every month has its OWN monthly vintage for the weekly series.
+
+    A run whose features were built from anything else is not point-in-time (spec §5a), and must
+    not be allowed to promote the engine: `backtest_labor --record` refuses to store a PROMOTED
+    run that fails this, so a leak cannot become a promotion by accident.
+    """
+    return all(inputs.icsa.get(month_end(m)) and inputs.ccsa.get(month_end(m)) for m in months)
 
 
 @dataclass(frozen=True)

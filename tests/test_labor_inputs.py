@@ -28,10 +28,37 @@ def test_load_labor_inputs_requests_point_in_time_vintages():
     assert calls["PAYEMS"][0] == [date(2026, 5, 31), date(2026, 6, 30), date(2026, 7, 31), date(2026, 8, 31),
                                   date(2026, 9, 24)]
     assert calls["ADPMNUSNERSA"][0] == [date(2026, 7, 2), date(2026, 8, 6), date(2026, 9, 3)]  # release - 1 day
+    # The weekly series are fetched at the SAME month-end vintages as PAYEMS. They used to be
+    # fetched once, at the latest vintage, which fed every historical month with data revised
+    # after it -- a lookahead the leakage guard cannot see.
     for series in ("ICSA", "CCSA", "JTSHIL", "JTSJOL"):
-        assert calls[series][0] == [date(2026, 9, 24)]
+        assert calls[series][0] == calls["PAYEMS"][0], (
+            f"{series} is not fetched per month-end vintage: {calls[series][0]}"
+        )
     assert "UNRATE" not in calls and inputs.unrate == {}
     assert all(today == date(2026, 9, 25) for _, today in calls.values())
+
+
+def test_point_in_time_ok_requires_every_months_own_vintage():
+    """The interlock behind `backtest_labor --record`: a run whose weekly features came from
+    anywhere but that month's own vintage must not be able to promote the engine."""
+    from dataclasses import replace
+
+    from tradehub.data.labor_inputs import point_in_time_ok
+
+    inputs = load_labor_inputs(first_month=date(2026, 6, 1), last_month=date(2026, 8, 1), releases={},
+                               as_of=date(2026, 9, 25),
+                               fetch=lambda series, days, **kw: {d: {date(2026, 1, 1): 1.0} for d in days},
+                               cache_dir=None)
+    months = [date(2026, 6, 1), date(2026, 7, 1), date(2026, 8, 1)]
+    assert point_in_time_ok(inputs, months) is True, sorted(inputs.icsa)
+
+    # A month with no vintage of its own (an ALFRED gap, say) is not point-in-time.
+    assert point_in_time_ok(inputs, months + [date(2026, 9, 1)]) is False
+
+    # The pre-fix shape: one latest vintage only, no month-end vintages at all.
+    leaky = replace(inputs, icsa={date(2026, 9, 24): {date(2026, 8, 1): 1.0}}, ccsa={})
+    assert point_in_time_ok(leaky, months) is False
 
 
 def test_load_labor_inputs_fetches_unrate_when_asked():
