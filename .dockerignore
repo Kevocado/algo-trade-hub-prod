@@ -1,0 +1,35 @@
+.git
+.github
+.venv
+.venv-*
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+.ruff_cache
+_attic
+archive
+research
+graphify-out
+docs
+.cleanup
+.superpowers
+.env
+.env.*
+*.pem
+*.key
+models
+model
+*.pkl
+# The lines above are root-anchored in Docker's matcher; repeat the secret/model patterns with a
+# `**/` prefix so a nested `subdir/.env`, `subdir/keys/private.pem` or `subdir/models/` cannot
+# enter the build context either.
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/models
+**/model
+**/*.pkl
+market_sentiment_tool/dist
+market_sentiment_tool/backend/chroma_db
+market_sentiment_tool/backend/*.sqlite3*
