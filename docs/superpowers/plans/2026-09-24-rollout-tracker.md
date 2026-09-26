@@ -14,7 +14,7 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 | 3 | Backtesting suite | 🟡 implemented on branch, review pending | [2026-09-24-backtesting-suite.md](2026-09-24-backtesting-suite.md) |
 | 4 | Shared data layer + `weather` + `gas` engines, suggest-only | 🟡 implemented on branch, review pending | [2026-09-24-data-layer-weather-gas-engines.md](2026-09-24-data-layer-weather-gas-engines.md) |
 | 5 | VPS deploy: API + War Room container, hourly scan/settle timers (replaces the Azure plan) | ✅ implemented, pending Kevin's first deploy (Task 5) | [2026-09-25-vps-deploy.md](2026-09-25-vps-deploy.md) |
-| 6 | `cpi_nowcast` | 🗺️ outline only; detail after step 4 lands | — |
+| 6 | `cpi_nowcast` (KXCPI + KXCPICORE, Cleveland Fed nowcast) | 🟡 implemented on branch, shadow; backtest loses to market on Brier (headline 0.099 vs 0.071), review pending | [2026-09-25-cpi-nowcast.md](2026-09-25-cpi-nowcast.md) |
 | 7 | Sports adapters + LLM reviewer | 🗺️ outline only; detail after step 4 lands | — |
 | 8 | `labor_nowcast` + Jobs Scorecard | 🗺️ outline only; detail after step 4 lands | — |
 

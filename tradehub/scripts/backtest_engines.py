@@ -1,4 +1,4 @@
-"""Point-in-time decision builders for the weather and gas engines, plus a backtest CLI.
+"""Point-in-time decision builders for the weather, gas and CPI engines, plus a backtest CLI.
 
 Each decision carries only observations published at or before its decision time
 (checked by tradehub.backtest.pit.check_no_lookahead inside run_backtest); model
@@ -14,10 +14,12 @@ import sys
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Callable, Iterable, Mapping
 
+from tradehub.backtest.fills import quote_at
 from tradehub.backtest.kalshi_history import KalshiHistoryClient
 from tradehub.backtest.pit import Decision, Observation
 from tradehub.backtest.runner import MarketHistory, run_backtest
 from tradehub.backtest.store import build_backtest_run_row, data_snapshot_hash, record_backtest_run
+from tradehub.data.cleveland_fed import MonthNowcast, fetch_nowcast_history
 from tradehub.data.kalshi_live import safe_event_date, settlement_observations
 from tradehub.data.rbob import front_month_roll_dates, rbob_closes
 from tradehub.data.weather import (
@@ -27,6 +29,15 @@ from tradehub.data.weather import (
     forecast_target_date,
     historical_forecast_highs_range,
     weather_decision_time,
+)
+from tradehub.engines.cpi import (
+    CPI_SERIES,
+    CPI_TARGETS,
+    CPI_TRAIN_MONTHS,
+    cpi_prob,
+    fit_cpi_error,
+    latest_nowcast,
+    training_pairs,
 )
 from tradehub.engines.gas import (
     GAS_ENGINE_VERSION,
@@ -46,9 +57,10 @@ from tradehub.engines.weather import (
     weather_prob,
 )
 from tradehub.engine_config import load_engine_config
-from tradehub.markets import KalshiMarket, event_date, parse_market
+from tradehub.markets import KalshiMarket, event_date, event_month, parse_cpi_market, parse_market
 
 GAS_DECISION_LEAD = timedelta(hours=2)
+CPI_DECISION_LEAD = timedelta(minutes=25)  # 08:00 ET on release morning (close is 08:25 ET)
 
 
 
@@ -139,25 +151,48 @@ def build_gas_decisions(
     return decisions
 
 
+def build_cpi_decisions(
+    markets: list[KalshiMarket],
+    history: Mapping[date, MonthNowcast],
+    *,
+    extra_lead: timedelta = timedelta(0),
+    window: int = CPI_TRAIN_MONTHS,
+    use_bias: bool = False,
+) -> list[Decision]:
+    decisions = []
+    for market in markets:
+        decided_at = market.close_time - CPI_DECISION_LEAD - extra_lead
+        nowcast = latest_nowcast(history.get(event_month(market.event_ticker)), decided_at)
+        if nowcast is None:
+            continue
+        pairs = training_pairs(history, decided_at, market.close_time - decided_at)[-window:]
+        prob = cpi_prob(market, nowcast.value, fit_cpi_error(pairs, window=window, use_bias=use_bias))
+        used = tuple(obs for pair in pairs for obs in pair)
+        decisions.append(Decision(market.ticker, decided_at, prob, (nowcast,) + used))
+    return decisions
+
+
 def _histories(
     client: KalshiHistoryClient,
     markets: list[KalshiMarket],
     results: Mapping[str, str | None],
     mode: str,
+    lookback: timedelta | None = None,
 ) -> dict[str, MarketHistory]:
     if mode not in ("taker", "maker"):
         raise ValueError(f"mode must be 'taker' or 'maker', got {mode!r}")
     out = {}
     for market in markets:
+        start = market.open_time if lookback is None else max(market.open_time, market.close_time - lookback)
         candles = client.merged_candles(
             market.ticker,
-            market.open_time,
+            start,
             market.close_time,
             market_settled_at=market.settlement_ts,
             series_ticker=market.series_ticker,
         )
         trades = (
-            client.merged_trades(market.ticker, start=market.open_time, end=market.close_time)
+            client.merged_trades(market.ticker, start=start, end=market.close_time)
             if mode == "maker"
             else []
         )
@@ -183,12 +218,12 @@ def settled_in_range(raws: Iterable[dict], start: date, end: date) -> list[dict]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Point-in-time backtest for the weather or gas engine.")
-    parser.add_argument("--engine", choices=["weather", "gas"], required=True)
+    parser = argparse.ArgumentParser(description="Point-in-time backtest for the weather, gas or CPI engine.")
+    parser.add_argument("--engine", choices=["weather", "gas", "cpi_nowcast"], required=True)
     parser.add_argument("--start", type=date.fromisoformat, required=True)
     parser.add_argument("--end", type=date.fromisoformat, required=True)
     parser.add_argument("--mode", choices=["taker", "maker"], default="taker")
-    parser.add_argument("--series", default=None, help="weather series ticker (default KXHIGHNY)")
+    parser.add_argument("--series", default=None, help="series ticker (default KXHIGHNY / KXAAAGASD / KXCPI)")
     parser.add_argument("--record", action="store_true", help="write a backtest_runs row")
     parser.add_argument(
         "--train-days",
@@ -196,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
         default=90,
         help="days of history before --start used for weather calibration and RBOB loading",
     )
+    parser.add_argument("--lead-days", type=int, default=0,
+                        help="cpi_nowcast: decide this many days before release morning (default 0)")
     args = parser.parse_args(argv)
     if args.train_days < 0:
         parser.error("--train-days must be >= 0")
@@ -203,13 +240,30 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--end must not precede --start")
 
     client = KalshiHistoryClient()
-    series = args.series or ("KXHIGHNY" if args.engine == "weather" else GAS_SERIES)
+    default_series = {"weather": "KXHIGHNY", "gas": GAS_SERIES, "cpi_nowcast": CPI_SERIES}
+    series = args.series or default_series[args.engine]
+    if args.engine == "cpi_nowcast" and series not in CPI_TARGETS:
+        parser.error(f"unknown CPI series {series!r}; choose from {sorted(CPI_TARGETS)}")
     cfg = load_engine_config(args.engine)
     settled_raws = client.settled_markets(series)
-    raws = settled_in_range(settled_raws, args.start, args.end)
-    markets = [parse_market(raw) for raw in raws]
+    if args.engine == "cpi_nowcast":
+        raws = [raw for raw in settled_raws if args.start <= event_month(raw["event_ticker"]) <= args.end]
+    else:
+        raws = settled_in_range(settled_raws, args.start, args.end)
+    markets = [parse_cpi_market(raw) if args.engine == "cpi_nowcast" else parse_market(raw) for raw in raws]
     results = {raw["ticker"]: raw.get("result") for raw in raws}
-    if args.engine == "weather":
+    cadence = "daily"
+    lookback: timedelta | None = None
+    if args.engine == "cpi_nowcast":
+        kind, version = CPI_TARGETS[series]
+        decisions = build_cpi_decisions(
+            markets,
+            fetch_nowcast_history(kind),
+            extra_lead=timedelta(days=args.lead_days),
+        )
+        cadence = "monthly"
+        lookback = timedelta(days=args.lead_days + 3)
+    elif args.engine == "weather":
         city = WEATHER_CITIES[series]
         actuals = settlement_observations(settled_raws)
         train_from = args.start - timedelta(days=args.train_days)
@@ -248,10 +302,15 @@ def main(argv: list[str] | None = None) -> int:
         [market for market in markets if market.ticker in {decision.market_ticker for decision in decisions}],
         results,
         mode=args.mode,
+        **({"lookback": lookback} if lookback is not None else {}),
     )
+    if args.engine == "cpi_nowcast":
+        # Score only contracts with a visible quote at decision time, so our Brier and the
+        # market's Brier cover the same contracts (the gate needs full market coverage).
+        decisions = [d for d in decisions if quote_at(histories[d.market_ticker].candles, d.decided_at) is not None]
     result = run_backtest(
         engine=args.engine,
-        cadence="daily",
+        cadence=cadence,
         decisions=decisions,
         histories=histories,
         mode=args.mode,
@@ -266,6 +325,8 @@ def main(argv: list[str] | None = None) -> int:
         "train_days": args.train_days,
         "min_edge_pct": cfg.min_edge_pct,
     }
+    if args.engine == "cpi_nowcast":
+        config["lead_days"] = args.lead_days
     row = build_backtest_run_row(
         result,
         engine_version=version,
