@@ -83,7 +83,7 @@ class _Reviewer:
 
 # ── no OpenRouter call once the margin is gone ─────────────────────────────────
 
-def test_no_reviewer_call_is_made_with_only_thirty_seconds_left():
+def test_no_reviewer_call_is_made_with_only_thirty_seconds_left(clock):
     reqs = [_request(i) for i in range(5)]
     store, reviewer = _Store(), _Reviewer()
     out = review_candidates(reqs, store, reviewer, budget=40, now=NOW, deadline=1000.0 + 30)
@@ -93,7 +93,7 @@ def test_no_reviewer_call_is_made_with_only_thirty_seconds_left():
     assert store.saved == [], "a deadline-skipped request was written to the review log"
 
 
-def test_a_deadline_skipped_request_is_never_saved_to_the_review_log():
+def test_a_deadline_skipped_request_is_never_saved_to_the_review_log(clock):
     """`sports_reviews.status` has a CHECK constraint (ok|invalid|error) and is the append-only
     budget count, so a skip written there would corrupt both."""
     reqs = [_request(0)]
@@ -103,7 +103,7 @@ def test_a_deadline_skipped_request_is_never_saved_to_the_review_log():
     assert store.used == 0
 
 
-def test_cached_reviews_are_still_applied_when_the_deadline_has_passed():
+def test_cached_reviews_are_still_applied_when_the_deadline_has_passed(clock):
     """A cache hit costs no API call, so a tight budget must not throw away a verdict we already
     paid for."""
     req = _request(0)
