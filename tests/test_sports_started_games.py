@@ -281,3 +281,77 @@ def test_the_edge_writer_persists_start_utc_as_a_column():
     assert captured[0]["start_utc"] == start, (
         f"the edge row was written without a top-level start_utc: {sorted(captured[0])}"
     )
+
+
+def _upsert_rows(rows: list[dict], *, known_columns: set[str] | None = None) -> list[dict]:
+    """Write `rows` through the real upsert_opportunities, with a fake that behaves like
+    PostgREST: an unknown column is an error, not a silently ignored key."""
+    from tradehub.core.supabase_client import upsert_opportunities
+    import tradehub.core.supabase_client as sc
+
+    captured: list[dict] = []
+
+    class _Q:
+        def upsert(self, payload, on_conflict=None):
+            for row in payload:
+                if known_columns is not None:
+                    unknown = set(row) - known_columns
+                    assert not unknown, f"PostgREST would reject these columns: {sorted(unknown)}"
+            captured.extend(payload)
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": None})()
+
+    class _Supa:
+        def table(self, name):
+            return _Q()
+
+    real = sc.get_client
+    sc.get_client = lambda: _Supa()
+    try:
+        upsert_opportunities(rows)
+    finally:
+        sc.get_client = real
+    return captured
+
+
+def test_a_row_without_a_game_start_does_not_send_the_column():
+    """Follow-up from the step-7b review: `start_utc` is a sports column, and every engine's rows
+    go through this one writer. Weather, gas, CPI and labor_nowcast must not depend on a column
+    they never set, or a missing column takes the whole edge write down with it."""
+    captured = _upsert_rows([{
+        "market_ticker": "KXHIGHNY-26SEP25-T", "market_title": "High NY", "edge": 0.05,
+        "engine": "weather", "edge_type": "WEATHER", "model_probability": 0.6, "market_price": 0.55,
+    }])
+    assert captured[0]["engine"] == "weather"
+    assert "start_utc" not in captured[0], (
+        f"a weather row carries the sports-only column: {sorted(captured[0])}"
+    )
+
+
+def test_non_sports_engines_still_write_when_the_column_does_not_exist_yet():
+    """The failure this prevents: kalshi_edges without `start_utc` (migration not applied) made
+    the upsert fail for EVERY engine, so weather and gas went red too."""
+    captured = _upsert_rows(
+        [
+            {"market_ticker": "KXHIGHNY-26SEP25-T", "engine": "weather", "edge_type": "WEATHER",
+             "edge": 0.05, "model_probability": 0.6, "market_price": 0.55},
+            {"market_ticker": "KXPAYROLLS-26AUG-T50", "engine": "labor_nowcast",
+             "edge_type": "MACRO", "edge": 0.08, "model_probability": 0.62, "market_price": 0.54},
+        ],
+        known_columns={"market_id", "title", "engine", "edge_type", "our_prob", "market_prob",
+                       "edge_pct", "market_url", "source_url", "gate_status", "updated_at",
+                       "expires_at", "raw_payload"},
+    )
+    assert {row["engine"] for row in captured} == {"weather", "labor_nowcast"}
+
+
+def test_a_sports_row_still_sends_the_column():
+    """The conditional must not cost sports the column it needs for the started-game delete."""
+    start = NOW.isoformat()
+    captured = _upsert_rows([{
+        "market_ticker": "KXNFLGAME-26SEP27HOUIND-IND", "engine": "sports_nfl", "edge_type": "SPORTS",
+        "edge": 0.12, "model_probability": 0.6, "market_price": 0.48, "start_utc": start,
+    }])
+    assert captured[0]["start_utc"] == start

@@ -30,8 +30,13 @@ def remaining_seconds(deadline: float) -> float:
 
 
 def should_review(deadline: float) -> bool:
-    """Whether there is enough of the scan budget left to spend on reviewer calls."""
-    return remaining_seconds(deadline) > REVIEW_STOP_MARGIN_SECONDS
+    """Whether there is enough of the scan budget left to spend on reviewer calls.
+
+    `>=`, not `>`: the margin is a floor on the time a call may consume, so exactly 60s left is
+    still enough for one call. With `>`, a call landing exactly on the boundary was skipped and
+    the edge silently read `unreviewed`.
+    """
+    return remaining_seconds(deadline) >= REVIEW_STOP_MARGIN_SECONDS
 
 
 def clamp_timeout(timeout: float, deadline: float | None, floor: float = MIN_TIMEOUT_SECONDS) -> float:
