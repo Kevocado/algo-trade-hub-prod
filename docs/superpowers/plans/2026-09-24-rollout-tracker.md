@@ -9,14 +9,15 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 | Step | What | Status | Plan |
 |---|---|---|---|
 | 1 | Repo cleanup | ✅ merged to `main` | [2026-09-24-repo-cleanup.md](2026-09-24-repo-cleanup.md) |
-| 2 | Predictions ledger + settlement by market result + track record | 🟡 implemented on branch, review pending | [2026-09-24-predictions-ledger-settlement-track-record.md](2026-09-24-predictions-ledger-settlement-track-record.md) |
-| 2b | Promotion-gate and settlement hardening (contract-weighted gate, per-version track records, unquoted-prediction exclusion) | 🟡 implemented on branch, review pending | [2026-09-25-gate-hardening.md](2026-09-25-gate-hardening.md) |
-| 3 | Backtesting suite | 🟡 implemented on branch, review pending | [2026-09-24-backtesting-suite.md](2026-09-24-backtesting-suite.md) |
-| 4 | Shared data layer + `weather` + `gas` engines, suggest-only | 🟡 implemented on branch, review pending | [2026-09-24-data-layer-weather-gas-engines.md](2026-09-24-data-layer-weather-gas-engines.md) |
-| 5 | VPS deploy: API + War Room container, hourly scan/settle timers (replaces the Azure plan) | ✅ implemented, pending Kevin's first deploy (Task 5) | [2026-09-25-vps-deploy.md](2026-09-25-vps-deploy.md) |
-| 6 | `cpi_nowcast` (KXCPI + KXCPICORE, Cleveland Fed nowcast) | 🟡 merged to `main` (PR #7) + follow-up fixes in PR #10; shadow; backtest loses to market on Brier (headline 0.099 vs 0.071) | [2026-09-25-cpi-nowcast.md](2026-09-25-cpi-nowcast.md) |
-| 7 | Sports adapters + LLM reviewer (NFL + CFB) | 🟡 implemented on branch, shadow; predictor feed 404 until 7a deploy; 7 review fixes applied, review pending | [2026-09-25-predictor-pregame-feed.md](2026-09-25-predictor-pregame-feed.md) → [2026-09-25-sports-edges-llm-reviewer.md](2026-09-25-sports-edges-llm-reviewer.md) |
-| 8 | `labor_nowcast` + Jobs Scorecard | ✅ implemented on `plan/2026-09-25-labor-nowcast-jobs-scorecard`, SHADOW (backtest Brier 0.179 vs Kalshi 0.166); Kevin: migration 000009, **VPS ALFRED check (blocking)**, scorecard timer | [2026-09-25-labor-nowcast-jobs-scorecard.md](2026-09-25-labor-nowcast-jobs-scorecard.md) |
+| 2 | Predictions ledger + settlement by market result + track record | ✅ merged to `main` (PR #2, `b6c4f8e`) | [2026-09-24-predictions-ledger-settlement-track-record.md](2026-09-24-predictions-ledger-settlement-track-record.md) |
+| 2b | Promotion-gate and settlement hardening (contract-weighted gate, per-version track records, unquoted-prediction exclusion) | ✅ merged to `main` (PR #5, `64c4a28`) | [2026-09-25-gate-hardening.md](2026-09-25-gate-hardening.md) |
+| 3 | Backtesting suite | ✅ merged to `main` (PR #3, `fcacce1`) | [2026-09-24-backtesting-suite.md](2026-09-24-backtesting-suite.md) |
+| 4 | Shared data layer + `weather` + `gas` engines, suggest-only | ✅ merged to `main` (PR #4, `7e4ca68`) | [2026-09-24-data-layer-weather-gas-engines.md](2026-09-24-data-layer-weather-gas-engines.md) |
+| 5 | VPS deploy: API + War Room container, hourly scan/settle timers (replaces the Azure plan) | ✅ merged to `main` (PR #6, `2a0a7df`, Tasks 1–4); Task 5 (Kevin's first deploy) still pending | [2026-09-25-vps-deploy.md](2026-09-25-vps-deploy.md) |
+| 6 | `cpi_nowcast` (KXCPI + KXCPICORE, Cleveland Fed nowcast) | ✅ merged to `main` (PR #7) + follow-up fixes in PR #10; SHADOW; backtest loses to market on Brier (headline 0.099 vs 0.071) | [2026-09-25-cpi-nowcast.md](2026-09-25-cpi-nowcast.md) |
+| 7 | Sports adapters + LLM reviewer (NFL + CFB) | ✅ 7b merged to `main` (PR #8, `8cc3c99`); 7a merged in the predictor repos (NFL_Predictor#3 `437138e`, CFB_Predictor#3 `87a9f43`); SHADOW until the predictors are deployed and `/api/kalshi-feed` answers | [2026-09-25-predictor-pregame-feed.md](2026-09-25-predictor-pregame-feed.md) → [2026-09-25-sports-edges-llm-reviewer.md](2026-09-25-sports-edges-llm-reviewer.md) |
+| 8 | `labor_nowcast` + Jobs Scorecard | ✅ merged to `main` (PR #13 `c7b2c39`, + PR #14 clock fix); SHADOW (backtest Brier 0.179 vs Kalshi 0.166); Kevin: migration 000009, scorecard timer, and the ALFRED reachability check | [2026-09-25-labor-nowcast-jobs-scorecard.md](2026-09-25-labor-nowcast-jobs-scorecard.md) |
+| 8a | Keyed FRED API path for vintages (queue follow-up to step 8) | ✅ merged to `main` (PR #15, `74f4703`); needs `FRED_API_KEY` in `/opt/stack/.env` **and** the `vps-stack/compose.yml` pass-through, then a VPS scan to confirm | [report](../reports/2026-09-26-fred-api-vintages.md) (no plan file) |
 
 **Implementation order:** 2 → 3 → 4 → 5, each on its own `plan/<basename>` branch, reviewed and merged before the next one starts. Each plan's code was validated before publishing:
 - **Step 2:** 42/42 of the plan's own tests pass.
