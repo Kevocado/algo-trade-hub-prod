@@ -24,7 +24,6 @@ Algo-Trade-Hub/
 ├── shared/                 # Universal shared contracts and utilities
 ├── research/               # parked research, not imported by runtime (see research/README.md)
 ├── archive/                # Archived legacy docs and duplicate prompt material
-├── ecosystem.config.js     # PM2 Orchestrator config
 ├── SYSTEM_ARCH.md          # ← Master architecture reference (read this first)
 └── README.md
 ```
@@ -63,77 +62,23 @@ The system relies on a strict split of secrets.
 
 **Never commit `.env` files.**
 
-### Crypto Orchestrator VPS Runbook
+## VPS deployment
 
-- The crypto runtime reads the canonical backend env from repo root: `Algo-Trade-Hub/.env`. `market_sentiment_tool/.env` is only a fallback if the root file is missing.
-- Required backend vars: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `KALSHI_ENV`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`, `BTC_MODEL_PATH`, `ETH_MODEL_PATH`.
-- Telegram operator-plane vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
-- Before restarting the VPS worker after operator-plane changes, apply the Supabase migrations `market_sentiment_tool/supabase/migrations/20260408224000_crypto_operator_plane.sql` and `market_sentiment_tool/supabase/migrations/20260415090000_signal_events_unification.sql` so the canonical `signal_events` table and the `crypto_signal_events` compatibility view exist.
-- Install the crypto backend runtime dependencies into the PM2 interpreter environment before starting the worker:
-- Install from the single `pyproject.toml` (which replaced the old per-service `requirements*.txt` files); add `--extra scanner` if the host runs `tradehub.scripts.background_scanner`.
+The trade hub runs on the same VPS as the predictor sites, managed by the `vps-stack` folder (deployed to `/opt/stack`; see its README).
 
-```bash
-cd /root/kalshibot
-pip install uv && uv pip install --python /root/kalshibot/.venv/bin/python -r pyproject.toml
-/root/kalshibot/.venv/bin/python -c "import yfinance; print(yfinance.__version__)"
-/root/kalshibot/.venv/bin/python -c "import ta; print(ta.__version__ if hasattr(ta, '__version__') else 'ta-ok')"
-```
+| Piece | What | When |
+|---|---|---|
+| `tradehub` container | FastAPI (`tradehub.api.main`) + the built War Room SPA, same origin, at `trade.<domain>` | always on (compose profile `tradehub`) |
+| `tradehub-scan.timer` | `python -m tradehub.scripts.scan`: weather + gas predictions and edges (suggest-only) | hourly at :05 |
+| `tradehub-settle.timer` | `python -m tradehub.scripts.settle_predictions`: settles predictions, refreshes the track record | hourly at :35 |
 
-**Deploy note (post-restructure):**
-- After `git pull` on the VPS, do NOT run `git clean`: untracked pre-restructure `*.pem` key files and legacy model `.pkl` files on the host may still be referenced.
-- Ensure `KALSHI_PRIVATE_KEY_PATH` is set explicitly in `.env`.
-- If `BTC_MODEL_PATH` / `ETH_MODEL_PATH` are unset, move the model files to `models/` first (the old pre-restructure candidate paths were removed).
+Every push to `main` that touches the app runs `.github/workflows/deploy-tradehub.yml`: tests, then build and push `ghcr.io/kevocado/tradehub`, then `ssh deploy@$VPS_HOST deploy tradehub <sha>`, which health-checks `/api/health` and rolls back on failure.
 
-- `KALSHI_ENV=demo` uses `https://demo-api.kalshi.co/trade-api/v2` and `wss://demo-api.kalshi.co/trade-api/ws/v2`.
-- `KALSHI_ENV=live` uses `https://api.elections.kalshi.com/trade-api/v2` and `wss://api.elections.kalshi.com/trade-api/ws/v2`.
-- The Kalshi private key file must exist on the VPS filesystem and match `KALSHI_PRIVATE_KEY_PATH`.
-- Live/latest crypto bars come from Alpaca; `yfinance` is used only to backfill older hourly bars when Alpaca does not yet have enough history for the long-window model features.
-- The crypto feature builder also requires the `ta` package inside the same PM2 interpreter environment; if it is missing, inference will fail after backfill.
+On the VPS (as `deploy`):
 
-Start or restart on VPS:
+    /opt/stack/bin/tradehub-job scan                 # run a scan now
+    journalctl -u tradehub-scan.service -n 100       # last scan logs
+    systemctl list-timers 'tradehub-*'               # next runs
+    /opt/stack/bin/deploy deploy tradehub <old-sha>  # roll back
 
-```bash
-cd /root/kalshibot
-PYTHONPATH=/root/kalshibot pm2 start /root/kalshibot/market_sentiment_tool/backend/orchestrator.py --name crypto-sniper --interpreter /root/kalshibot/.venv/bin/python
-pm2 restart crypto-sniper --update-env
-pm2 logs crypto-sniper --lines 80
-```
-
-Apply the latest code + runtime dependencies on VPS:
-
-```bash
-cd /root/kalshibot
-git pull
-pip install uv && uv pip install --python /root/kalshibot/.venv/bin/python -r pyproject.toml
-pm2 restart crypto-sniper --update-env
-pm2 logs crypto-sniper --lines 120 --nostream
-```
-
-Healthy startup should show:
-- repo-root `.env` loaded,
-- Supabase service-role client initialized,
-- Kalshi WS listener using the canonical host for the selected `KALSHI_ENV`,
-- `Kalshi WS connected; subscribing to ticker`,
-- either direct inference or a yfinance backfill log instead of repeated `Need at least 205 hourly bars...` errors,
-- `[CRYPTO EDGE] ... P(YES)=...` once markets begin streaming,
-- Telegram operator plane started if Telegram env vars are present,
-- `/balance`, `/positions`, `/trades`, and `/crypto_status` returning data from Telegram after the bot sees at least one chat message from the configured chat.
-
-Telegram commands:
-- `/crypto_status`
-- `/balance`
-- `/positions`
-- `/trades`
-- `/scan crypto`
-- `/performance crypto`
-- `/crypto_scan` *(alias)*
-- `/cryptoscan` *(alias)*
-- `/stats` *(alias)*
-- `/accuracy` *(alias)*
-
-Operator-plane behavior:
-- Telegram alerts are async and must never block the crypto LangGraph loop.
-- Telegram reads from Supabase and direct Kalshi REST reads; it does not share in-memory state with the worker.
-- Threshold-crossing opportunity alerts are deduped for 5 minutes per market.
-- Actual execution outcomes always alert.
-- Insufficient-funds Kalshi rejections disable further crypto trading in Supabase until an operator re-enables it.
+Live execution and the crypto shadow worker are parked (spec §7); their old PM2 files are in git history (removed in this commit).

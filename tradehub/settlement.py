@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 PREDICTIONS_TABLE = "predictions"
-TRACK_RECORD_TABLE = "track_record"
 
 OPEN = "OPEN"
 SETTLED = "SETTLED"

@@ -105,6 +105,14 @@ def test_refresh_writes_one_record_per_engine_version():
     assert {c for _, c in supa.upserts} == {"engine,engine_version"}
 
 
+def test_refresh_preserves_the_scans_weather_engine_version():
+    from tradehub.engines.weather import WEATHER_ENGINE_VERSION
+
+    supa = _Upserts([_row("A", 0.9, 0.5, "yes", version=WEATHER_ENGINE_VERSION)])
+    [payload] = track_record.refresh_track_record(supa, "weather", cadence="daily")
+    assert payload["engine_version"] == WEATHER_ENGINE_VERSION
+
+
 def test_backtest_rows_carry_their_market_ticker():
     from tradehub.backtest.metrics import prediction_row
 
