@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from tradehub.data.cleveland_fed import fetch_nowcast_history
 from tradehub.data.kalshi_live import KalshiLive
+from tradehub.data.labor_inputs import load_labor_inputs, payroll_nowcasts
 from tradehub.data.rbob import front_month_roll_dates, rbob_closes
 from tradehub.data.weather import (
     WEATHER_CITIES,
@@ -37,6 +38,13 @@ from tradehub.engines.cpi import (
     training_pairs,
 )
 from tradehub.engines.gas import GAS_ENGINE_VERSION, GAS_SERIES, fit_gas_model, gas_prob, gas_training_pairs, rbob_change
+from tradehub.engines.labor import (
+    LABOR_ENGINE_VERSION,
+    PAYROLL_SERIES,
+    TRAIN_START,
+    month_end,
+    payroll_prob,
+)
 from tradehub.engines.weather import (
     MIN_ERROR_PAIRS,
     WEATHER_ENGINE_VERSION,
@@ -138,9 +146,9 @@ def remove_closed_cpi_edges(client, now: datetime) -> None:
 
 
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
-    """Delete stale rows only for the scan-owned weather/gas engines."""
+    """Delete stale rows only for the scan-owned weather/gas/payrolls engines."""
     for engine, produced in produced_by_engine.items():
-        if engine not in {"weather", "gas", "cpi_nowcast", "sports_nfl", "sports_cfb"}:
+        if engine not in {"weather", "gas", "cpi_nowcast", "labor_nowcast", "sports_nfl", "sports_cfb"}:
             continue
         current_market_ids = {str(market_id)[:50] for market_id in produced}
         result = client.table("kalshi_edges").select("market_id").eq("engine", engine).execute()
@@ -356,6 +364,75 @@ def scan_cpi(
     return predictions, edges
 
 
+def scan_labor(
+    live, now: datetime, cfg: EngineConfig, *, inputs_fn: Callable[..., Any] = load_labor_inputs,
+) -> tuple[list[dict], list[dict]]:
+    """Nowcast the next jobs report once its reference month has ended; predict every open KXPAYROLLS strike."""
+    by_month: dict = defaultdict(list)
+    for lm in live.open_markets(PAYROLL_SERIES):
+        month = event_month(lm.market.event_ticker)
+        if month_end(month) < now.astimezone(_ET).date() and lm.market.close_time > now:
+            by_month[month].append(lm)
+    if not by_month:
+        return [], []
+    releases = {m: min(lm.market.close_time for lm in lms).astimezone(_ET).date()
+                for m, lms in by_month.items()}
+    inputs = inputs_fn(first_month=TRAIN_START, last_month=max(by_month), releases=releases, as_of=now.date(),
+                       with_adp=False)
+    nowcasts = payroll_nowcasts(inputs, sorted(by_month), releases, train_from=TRAIN_START)
+    predictions: list[dict] = []
+    edges: list[dict] = []
+    for month, markets in sorted(by_month.items()):
+        nc = nowcasts.get(month)
+        if nc is None:
+            continue
+        payload = {"month": month.isoformat(), "mu_k": round(nc.mu, 2), "sigma_k": round(nc.sigma, 2),
+                   "features": nc.features.values, "n_train": nc.model.n_train,
+                   "coef": dict(zip(nc.model.features, nc.model.coef))}
+        for lm in markets:
+            try:
+                prob = payroll_prob(lm.market, nc.mu, nc.sigma)
+            except Exception:
+                log.exception("scan engine=labor_nowcast market=%s failed; skipping", lm.market.ticker)
+                continue
+            predictions.append(build_prediction_row(
+                market_ticker=lm.market.ticker, our_prob=prob, market_prob=_mid(lm.quote), engine="labor_nowcast",
+                as_of=now, engine_version=LABOR_ENGINE_VERSION, raw_payload=payload,
+            ))
+            suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
+                                       prefer_maker=cfg.prefer_maker)
+            if suggestion:
+                edges.append(edge_row(lm.market, suggestion, "MACRO", engine="labor_nowcast",
+                                      engine_version=LABOR_ENGINE_VERSION, updated_at=now))
+    return predictions, edges
+
+
+LABOR_SCAN_HOURS_ET = (7, 12, 17)  # the :05 timer's 07:05 ET run is the last one before the 08:30 release
+
+
+def labor_scan_due(now: datetime) -> bool:
+    return now.astimezone(_ET).hour in LABOR_SCAN_HOURS_ET
+
+
+def run_labor_step(
+    live, now: datetime, cfg: EngineConfig, *,
+    scan_fn: Callable[..., tuple[list[dict], list[dict]]] | None = None,
+) -> tuple[list[dict], list[dict], str]:
+    """scan_labor three times a day, isolated: an ALFRED or Kalshi outage returns a status, never raises.
+
+    The traceback is logged HERE, at the point the exception is caught, so the status string that
+    travels to main() does not cost the run its cause.
+    """
+    if not labor_scan_due(now):
+        return [], [], "skipped"
+    try:
+        predictions, edges = (scan_fn or scan_labor)(live, now, cfg)
+    except Exception as exc:  # noqa: BLE001 - isolate the engine, report the error
+        log.exception("scan engine=labor_nowcast failed")
+        return [], [], f"error: {type(exc).__name__}: {exc}"
+    return predictions, edges, "ok"
+
+
 def main(
     *,
     now: datetime | None = None,
@@ -435,6 +512,30 @@ def main(
             "predictions": [], "edges": [], "errors": [], "complete": True, "ran": False,
         }
 
+    # labor_nowcast runs three times a day (07, 12, 17 ET) and owns its own isolation, because
+    # its failure mode is an ALFRED outage rather than a market problem. It is registered in
+    # `engine_states` with the same shape as every other engine, so it takes part in the shared
+    # gate lookup, the per-engine write status and the stale-edge cleanup guard below.
+    labor_predictions: list[dict] = []
+    labor_edges: list[dict] = []
+    labor_status = "skipped"
+    if labor_scan_due(now):
+        labor_cfg = load_engine_config("labor_nowcast")
+        labor_predictions, labor_edges, labor_status = run_labor_step(live, now, labor_cfg)
+        labor_failed = labor_status.startswith("error:")
+        labor_errors = [f"labor_nowcast: {labor_status}"] if labor_failed else []
+        engine_states["labor_nowcast"] = {
+            "predictions": labor_predictions, "edges": labor_edges, "errors": labor_errors,
+            # A failed step must never prune: "we could not look" is not "the engine produced
+            # nothing", and the second reading deletes live edges.
+            "complete": not labor_failed, "ran": True,
+        }
+        failures.extend(labor_errors)
+    else:
+        engine_states["labor_nowcast"] = {
+            "predictions": [], "edges": [], "errors": [], "complete": True, "ran": False,
+        }
+
     if client is None:
         try:
             client = get_client()
@@ -449,7 +550,7 @@ def main(
         except Exception as exc:
             failures.append(f"cpi_nowcast.closed_cleanup: {type(exc).__name__}: {exc}")
             log.exception("scan closed CPI edge cleanup failed")
-        all_edges = weather_edges + gas_edges + cpi_edges
+        all_edges = weather_edges + gas_edges + cpi_edges + labor_edges
         pairs = {(row["engine"], row.get("engine_version", "v0")) for row in all_edges}
         try:
             statuses = latest_gate_statuses(client, pairs)
@@ -458,7 +559,7 @@ def main(
             failures.append(message)
             statuses = {}
             log.exception("scan gate-status lookup failed")
-        for edges in (weather_edges, gas_edges, cpi_edges):
+        for edges in (weather_edges, gas_edges, cpi_edges, labor_edges):
             apply_gate_statuses(edges, statuses)
 
         prediction_writes: dict[str, str] = {}
@@ -467,6 +568,7 @@ def main(
             ("weather", weather_predictions, weather_edges),
             ("gas", gas_predictions, gas_edges),
             ("cpi_nowcast", cpi_predictions, cpi_edges),
+            ("labor_nowcast", labor_predictions, labor_edges),
         ):
             if not engine_states[name]["ran"]:
                 prediction_writes[name] = "skipped"
@@ -493,6 +595,7 @@ def main(
             ("weather", weather_edges),
             ("gas", gas_edges),
             ("cpi_nowcast", cpi_edges),
+            ("labor_nowcast", labor_edges),
         ):
             if not engine_states[name]["complete"] or edge_writes.get(name) != "ok":
                 continue
@@ -594,6 +697,12 @@ def main(
             "predictions": len(cpi_predictions),
             "edges": len(cpi_edges),
             "errors": cpi_errors,
+        },
+        "labor_nowcast": {
+            "status": labor_status,
+            "predictions": len(labor_predictions),
+            "edges": len(labor_edges),
+            "errors": engine_states["labor_nowcast"]["errors"],
         },
         "sports": sports_summary,
         "writes": writes,
