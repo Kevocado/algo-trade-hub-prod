@@ -5,14 +5,19 @@ a probability; any failure leaves the edge "unreviewed" and never blocks it."""
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
 
 import requests
 
+log = logging.getLogger(__name__)
+
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 REVIEWS_TABLE = "sports_reviews"
+# Sentinel for "the daily call count is unknown"; any real budget is smaller than this.
+_BUDGET_UNKNOWN = 10**9
 
 REVIEW_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -135,14 +140,23 @@ class ReviewStore(Protocol):
 class SupabaseReviewStore:
     """Append-only `sports_reviews` table: every API call is one row (so the daily count is exact);
     only status='ok' rows are served from the cache. Supabase, not a local file, because the VPS
-    scan runs in a throwaway container with no volume."""
+    scan runs in a throwaway container with no volume.
+
+    Every method fails open, per this module's contract that no review failure may block an edge.
+    The cache degrading to a miss costs one extra LLM call; letting the exception escape would
+    cost the entire sports scan, and losing a verdict we already paid for is worse than both.
+    """
 
     def __init__(self, supa, now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
         self._supa, self._now = supa, now
 
     def cached(self, key: str) -> Review | None:
-        rows = (self._supa.table(REVIEWS_TABLE).select("*").eq("cache_key", key).eq("status", "ok")
-                .order("created_at", desc=True).limit(1).execute().data or [])
+        try:
+            rows = (self._supa.table(REVIEWS_TABLE).select("*").eq("cache_key", key).eq("status", "ok")
+                    .order("created_at", desc=True).limit(1).execute().data or [])
+        except Exception:
+            log.warning("sports review cache lookup failed; treating as a miss key=%s", key, exc_info=True)
+            return None
         if not rows:
             return None
         row = rows[0]
@@ -150,30 +164,44 @@ class SupabaseReviewStore:
                       red_flags=tuple(row["red_flags"] or []), model=row.get("model"))
 
     def calls_since(self, since: datetime) -> int:
-        return len(self._supa.table(REVIEWS_TABLE).select("id").gte("created_at", since.isoformat()).execute().data or [])
+        try:
+            return len(self._supa.table(REVIEWS_TABLE).select("id").gte("created_at", since.isoformat()).execute().data or [])
+        except Exception:
+            # Unknown, not zero: report the budget as already spent so an outage cannot
+            # silently turn into unbounded LLM spend.
+            log.warning("sports review budget count failed; treating the daily budget as spent", exc_info=True)
+            return _BUDGET_UNKNOWN
 
     def save(self, request: ReviewRequest, review: Review) -> None:
-        self._supa.table(REVIEWS_TABLE).insert({
-            "cache_key": request.key, "sport": request.sport, "game_id": request.game_id,
-            "market_ticker": request.market_ticker, "side": request.side, "entry_price": request.entry_price,
-            "price_bucket": request.price_bucket, "our_prob": round(request.our_prob, 4),
-            "model": review.model, "status": review.status, "explainable": review.explainable,
-            "drivers": list(review.drivers), "red_flags": list(review.red_flags),
-            "created_at": self._now().isoformat(),
-        }).execute()
+        try:
+            self._supa.table(REVIEWS_TABLE).insert({
+                "cache_key": request.key, "sport": request.sport, "game_id": request.game_id,
+                "market_ticker": request.market_ticker, "side": request.side, "entry_price": request.entry_price,
+                "price_bucket": request.price_bucket, "our_prob": round(request.our_prob, 4),
+                "model": review.model, "status": review.status, "explainable": review.explainable,
+                "drivers": list(review.drivers), "red_flags": list(review.red_flags),
+                "created_at": self._now().isoformat(),
+            }).execute()
+        except Exception:
+            # The verdict is still returned to the caller; only the cache write is lost.
+            log.warning("sports review save failed key=%s", request.key, exc_info=True)
 
 
 def review_candidates(
     reqs: list[ReviewRequest], store: ReviewStore, reviewer: OpenRouterReviewer | None, *, budget: int, now: datetime,
 ) -> dict[str, Review]:
-    """Cache first, then call the model for the largest edges until today's UTC budget is spent."""
+    """Cache first, then call the model for the largest edges until today's UTC budget is spent.
+
+    Store calls are individually guarded: a broken cache must not cost the scan, and a failed
+    insert must not discard a verdict we already paid for.
+    """
     day_start = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    used = store.calls_since(day_start) if reviewer is not None else 0
+    used = _safe(store.calls_since, day_start, default=_BUDGET_UNKNOWN) if reviewer is not None else 0
     out: dict[str, Review] = {}
     for req in sorted(reqs, key=lambda r: r.net_edge_pct, reverse=True):
         if req.key in out:
             continue
-        hit = store.cached(req.key)
+        hit = _safe(store.cached, req.key)
         if hit is not None:
             out[req.key] = hit
         elif reviewer is None:
@@ -183,9 +211,17 @@ def review_candidates(
         else:
             review = reviewer.review(req.fact_pack)
             used += 1
-            store.save(req, review)
+            _safe(store.save, req, review)
             out[req.key] = review
     return out
+
+
+def _safe(fn: Callable[..., Any], *args: Any, default: Any = None) -> Any:
+    try:
+        return fn(*args)
+    except Exception:
+        log.warning("sports review store call failed: %s", getattr(fn, "__name__", fn), exc_info=True)
+        return default
 
 
 class MemoryReviewStore:
