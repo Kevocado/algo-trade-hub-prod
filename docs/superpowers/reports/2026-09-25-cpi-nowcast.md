@@ -210,3 +210,9 @@ Check specifically:
 - The CLI uses current `settled_markets`, bounded `lookback`, quote-only CPI scoring, monthly cadence and per-version `lead_days` config. Verify those interfaces remain after upstream merges.
 - Live results are genuinely SHADOW; do not reinterpret or suppress them.
 - Step 7b may be stacked from this branch's PR head, but do not merge any PR yourself.
+
+## Review fix 1 — gate every edge by (engine, engine_version)
+
+- RED: existing scan tests failed after `edge_row` began requiring `engine_version` and pair-keyed gate lookup.
+- GREEN: `pytest tests/test_scan.py tests/test_scan_cpi.py -q` → 29 passed including a main()-level test proving only `cpi-core-v1` is PROMOTED while `cpi-v1` remains SHADOW.
+- `edge_row` requires and writes `engine_version`; status lookup and application use `(engine, engine_version)` pairs collected from every produced edge.

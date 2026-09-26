@@ -65,6 +65,7 @@ def edge_row(
     edge_type: str,
     *,
     engine: str,
+    engine_version: str,
     gate_status: str = "SHADOW",
     updated_at: datetime | None = None,
 ) -> dict[str, Any]:
@@ -76,6 +77,7 @@ def edge_row(
         "model_probability": s.our_prob,
         "edge": s.net_edge_pct / 100.0,
         "engine": engine,
+        "engine_version": engine_version,
         "edge_type": edge_type,
         "market_url": market_url(market),
         "side": s.side,
@@ -93,49 +95,30 @@ def _mid(quote) -> float | None:
     return (quote.yes_bid + quote.yes_ask) / 2.0
 
 
-def latest_gate_statuses(client, engine_versions: dict[str, str]) -> dict[str, str]:
-    """Promote only when the latest backtest and the track record of the CURRENT version agree.
-
-    `engine_versions` maps engine -> the version this scan runs. A promoted
-    older version never promotes a new one. The latest backtest may cover a
-    single series or mode; that is accepted for now (all edges of the engine
-    share one status).
-    """
-    statuses: dict[str, str] = {}
-    for engine, current_version in engine_versions.items():
+def latest_gate_statuses(client, pairs: set[tuple[str, str]]) -> dict[tuple[str, str], str]:
+    """Promote a pair only when its latest backtest and track record both say PROMOTED."""
+    statuses: dict[tuple[str, str], str] = {}
+    for engine, version in pairs:
         backtest = client.table("backtest_runs") \
             .select("engine,engine_version,gate_status,created_at") \
-            .eq("engine", engine) \
-            .eq("engine_version", current_version) \
-            .order("created_at", desc=True) \
-            .limit(1) \
-            .execute()
+            .eq("engine", engine).eq("engine_version", version) \
+            .order("created_at", desc=True).limit(1).execute()
         rows = list(backtest.data or [])
         if not rows or rows[0].get("gate_status") != "PROMOTED":
-            statuses[engine] = "SHADOW"
+            statuses[(engine, version)] = "SHADOW"
             continue
-        version = rows[0].get("engine_version")
-        if not version:
-            statuses[engine] = "SHADOW"
-            continue
-        track = client.table("track_record") \
-            .select("gate_status") \
-            .eq("engine", engine) \
-            .eq("engine_version", version) \
-            .limit(1) \
-            .execute()
+        track = client.table("track_record").select("gate_status") \
+            .eq("engine", engine).eq("engine_version", version).limit(1).execute()
         track_rows = list(track.data or [])
-        statuses[engine] = (
-            "PROMOTED"
-            if track_rows and track_rows[0].get("gate_status") == "PROMOTED"
-            else "SHADOW"
+        statuses[(engine, version)] = (
+            "PROMOTED" if track_rows and track_rows[0].get("gate_status") == "PROMOTED" else "SHADOW"
         )
     return statuses
 
 
-def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[str, str]) -> None:
+def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[tuple[str, str], str]) -> None:
     for row in edges:
-        row["gate_status"] = statuses.get(row["engine"], "SHADOW")
+        row["gate_status"] = statuses.get((row["engine"], row.get("engine_version", "v0")), "SHADOW")
 
 
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
@@ -220,7 +203,8 @@ def _scan_weather_city(
             suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
                                        prefer_maker=cfg.prefer_maker)
             if suggestion:
-                edges.append(edge_row(lm.market, suggestion, "WEATHER", engine="weather", updated_at=now))
+                edges.append(edge_row(lm.market, suggestion, "WEATHER", engine="weather",
+                                      engine_version=WEATHER_ENGINE_VERSION, updated_at=now))
     return predictions, edges
 
 
@@ -306,7 +290,8 @@ def scan_gas(
         suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
                                    prefer_maker=cfg.prefer_maker)
         if suggestion:
-            edges.append(edge_row(lm.market, suggestion, "ENERGY", engine="gas", updated_at=now))
+            edges.append(edge_row(lm.market, suggestion, "ENERGY", engine="gas",
+                                  engine_version=GAS_ENGINE_VERSION, updated_at=now))
     return predictions, edges
 
 
@@ -347,7 +332,8 @@ def scan_cpi(
             suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
                                        prefer_maker=cfg.prefer_maker)
             if suggestion:
-                edges.append(edge_row(lm.market, suggestion, "MACRO", engine="cpi_nowcast", updated_at=now))
+                edges.append(edge_row(lm.market, suggestion, "MACRO", engine="cpi_nowcast",
+                                      engine_version=version, updated_at=now))
     return predictions, edges
 
 
@@ -439,15 +425,17 @@ def main(
             log.exception("scan client initialization failed")
 
     if client is not None:
+        all_edges = weather_edges + gas_edges + cpi_edges
+        pairs = {(row["engine"], row.get("engine_version", "v0")) for row in all_edges}
         try:
-            statuses = latest_gate_statuses(client, {"weather": WEATHER_ENGINE_VERSION, "gas": GAS_ENGINE_VERSION})
+            statuses = latest_gate_statuses(client, pairs)
         except Exception as exc:
             message = f"gate_status: {type(exc).__name__}: {exc}"
             failures.append(message)
-            statuses = {"weather": "SHADOW", "gas": "SHADOW"}
+            statuses = {}
             log.exception("scan gate-status lookup failed")
-        apply_gate_statuses(weather_edges, statuses)
-        apply_gate_statuses(gas_edges, statuses)
+        for edges in (weather_edges, gas_edges, cpi_edges):
+            apply_gate_statuses(edges, statuses)
 
         prediction_writes: dict[str, str] = {}
         edge_writes: dict[str, str] = {}

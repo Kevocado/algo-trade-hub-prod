@@ -95,7 +95,7 @@ def test_main_isolates_a_cpi_failure(monkeypatch, capsys):
     monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
     monkeypatch.setattr(scan, "scan_weather", lambda live, now, cfg, **kwargs: ([{"w": 1}], []))
     monkeypatch.setattr(scan, "scan_gas", lambda live, now, cfg, **kwargs: ([{"g": 1}], [{"e": 1, "engine": "gas"}]))
-    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, versions: {"weather": "SHADOW", "gas": "SHADOW"})
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
 
@@ -109,3 +109,30 @@ def test_main_isolates_a_cpi_failure(monkeypatch, capsys):
     summary = json.loads(capsys.readouterr().out)
     assert summary["cpi_nowcast"]["status"].startswith("error: RuntimeError")
     assert summary["cpi_nowcast"]["predictions"] == 0
+
+
+def test_main_gates_cpi_edges_per_engine_version(monkeypatch):
+    from tradehub.core import supabase_client
+    from tradehub import predictions
+
+    upserted = []
+    monkeypatch.setattr(supabase_client, "get_client", lambda: object())
+    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
+    monkeypatch.setattr(predictions, "record_predictions", lambda *args: None)
+    monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
+    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
+    monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
+    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
+    monkeypatch.setattr(scan, "remove_stale_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {
+        ("cpi_nowcast", "cpi-core-v1"): "PROMOTED",
+    })
+    monkeypatch.setattr(scan, "scan_cpi", lambda *a, **k: ([], [
+        {"market_ticker": "A", "engine": "cpi_nowcast", "engine_version": "cpi-v1"},
+        {"market_ticker": "B", "engine": "cpi_nowcast", "engine_version": "cpi-core-v1"},
+    ]))
+
+    assert scan.main(now=datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc), live=object(), client=object()) == 0
+    assert {row["engine_version"]: row["gate_status"] for row in upserted} == {
+        "cpi-v1": "SHADOW", "cpi-core-v1": "PROMOTED",
+    }
