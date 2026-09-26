@@ -193,29 +193,155 @@ The plan's extracted `_edge_row` omitted `engine`, `gate_status`, `updated_at` a
 ### Final verification
 
 ```text
-Python baseline 391 → final 458 passed
+Python baseline 391 → final 501 passed
 Scoped Ruff F401,F811,F821: All checks passed
-Frontend: 4 files / 12 vitest tests passed
+Frontend: 6 files / 23 vitest tests passed
+tsc --noEmit: clean
 Vite production build: OK
 git diff --check: clean
 ```
 
 ### Merge order / stacking
 
-This branch is stacked on step 6 plus cherry-picked VPS commits. No PR was merged. Review/merge in order: #5 (2b), #6 (VPS), #7 (step 6), then this PR; rebase/retest if any upstream head changes.
+This branch was stacked on step 6 plus cherry-picked VPS commits. **It now also contains the step-6
+follow-up branch** (`plan/2026-09-26-cpi-followup`, PR #10), merged with `git merge` — no rebase,
+no force-push, no rewritten history. Review/merge in order: #5, #6, #7, #10, then this PR.
+
+The merge of the follow-up branch was resolved by hand, not by auto-merge. The auto-merge of
+`origin/main` had silently dropped `remove_closed_cpi_edges` (step-6 fix 5) because that fix lives
+on the follow-up branch and not yet on `main`; the resulting `tradehub/scripts/scan.py` was then
+audited line by line to confirm the `(engine, engine_version)` pair gate, the CPI cleanup entry and
+the new function were all still present alongside the sports wiring.
+
+## Second review round — fixes 1-7
+
+One commit per numbered fix. RED first in each case, evidence below.
+
+### 1. Reviewer cache did not fail open
+
+`SupabaseReviewStore.cached/calls_since/save` called `.execute()` with no guard, so a Supabase
+blip propagated out of `review_candidates` and killed the whole sports scan — contradicting this
+module's own contract that "any failure leaves the edge unreviewed and never blocks it".
+
+- RED: 4 of 5 new tests failed (`cached` raised `ConnectionError` through to the caller).
+- GREEN: `pytest tests/test_sports_reviewer_failopen.py tests/test_sports_reviewer.py -q` → 21 passed.
+- The cache degrades to a **miss** (one extra LLM call is cheaper than losing the scan).
+- The budget count deliberately fails **closed** — an unknown count must not become unbounded
+  spend. `test_an_unmeasurable_budget_stops_new_llm_calls` proves no reviewer call is made.
+- A failed insert no longer discards a verdict already paid for.
+- A control test pins `MemoryReviewStore` so the fail-open tests cannot pass for the wrong reason.
+
+### 2. Sports edges were not gated per version and had no badge
+
+`_edge_row` hardcoded `gate_status="SHADOW"` and carried no `engine_version`, so sports edges
+could never be promoted and had no key to look up.
+
+- RED: 4 new tests in `tests/test_sports_gate_pair.py` failed; the two `scan.main` sports tests
+  also failed because their stub rows had no `engine` (the pair set is built from `row["engine"]`).
+- GREEN: `pytest tests/test_sports_gate_pair.py tests/test_sports_scan.py -q` → 16 passed.
+- Sports edges now join the `(engine, engine_version)` pair set and go through
+  `apply_gate_statuses`; a version with no backtest row fails closed to SHADOW
+  (`test_an_unmatched_sports_edge_version_stays_shadow`).
+- The API returns `gate_status`, `engine` and `engine_version`; the Sports Edges page renders
+  `GateBadge` plus the predictor version. New `sportsEdgeGate.test.ts`, 3 vitest tests.
+
+### 3. Sports edges were never cleaned up
+
+- RED: 2 of 6 new tests failed; the three "must not prune" tests passed from the start.
+- GREEN: `pytest tests/test_sports_cleanup.py -q` → 6 passed.
+- Cleanup runs only when the sport ran AND its edge write succeeded — a failed upsert must never
+  read as "the engine produced nothing". Per-sport engine names, so a silent sport cannot prune
+  another sport's rows (`test_a_silent_sport_cannot_prune_another_sport`).
+- A structural test asserts the allowlist still contains `sports_nfl`/`sports_cfb`.
+
+### 4. `/api/sports-edges` was unbounded
+
+It selected every SPORTS row, every ok review and every settled sports prediction with no filter
+and no limit. With finding 3 unfixed, that table grew all season.
+
+- RED: 7 of 8 new tests failed (`KeyError: 'total'`).
+- GREEN: `pytest tests/test_sports_api_pagination.py -q` → 8 passed.
+- `sport` and `tier` filters, `limit` (default 100, max 200) and `offset`; `total` is counted
+  after filtering and before paging so the UI can say "20 of 240". Bad pagination and unknown
+  filter values are 422, not silent clamps. Review/settlement reads are capped.
+- Also fixed: a row whose `start_utc` does not parse used to raise and 500 the endpoint.
+
+### 5. Sports scan ignored the deadline; one bad row killed a series
+
+- RED: 5 of 6 new tests failed.
+- GREEN: `pytest tests/test_sports_robustness.py -q` → 6 passed.
+- `run_sports_for_cron` now takes `deadline` and passes it to `SportsKalshi`; `scan.main` hands
+  over the same `SCAN_DEADLINE_SECONDS` budget the other engines get, so sports can no longer
+  overrun the hourly timer and overlap the next run.
+- `parse_markets_tolerantly` skips rows that do not parse instead of losing the whole series, and
+  returns the rejected rows so a broken series cannot look like an empty one.
+- `scan_sport` isolates a per-market pricing failure and reports `markets_skipped`.
+
+### 6. Prediction Lab ignored the sports tier
+
+Sports edges render in the Lab with a prominent "Execute Trade" button. A candidate the filter
+**rejected** (predictor miscalibrated in that bucket, wide quote, starts too soon) looked
+identical to a Top Pick.
+
+- `sportsTierOf` / `isExecutableSportsEdge` in `sportsEdges.ts`; new `sportsTier.test.ts`,
+  8 vitest tests covering unknown tiers, null `raw_payload` and non-sports rows.
+- The Lab now shows the tier badge, and a `filtered` edge gets "Rejected by candidate filter —
+  not tradeable" with its reject reasons instead of the trade button.
+
+### 7. Kevin checklist was stale
+
+Rewritten with the real variable names, the reserved migration range, what is optional versus
+required, and the `(engine, engine_version)` warning so a future reader does not "fix" the gate
+by keying on the engine alone. See the checklist and handover risks above.
+
+### Incidental fix found while testing
+
+`test_scan_main_includes_sports_when_due` and `test_scan_main_survives_a_sports_crash` called
+`scan.main()` with the wall clock. `cpi_nowcast` only runs at 08/12/16 ET, so both tests failed
+whenever the suite ran inside one of those hours — they had been passing only because of when
+they were executed. Both now stub `cpi_scan_due`.
 
 ### Kevin checklist — pending
 
-1. Apply `20260416000008_sports_reviews.sql` after migrations `000003`–`000007`.
-2. Add `OPENROUTER_API_KEY` and the four `SPORTS_*_URL` variables to the VPS stack environment; use VPS hostnames after cutover.
-3. Record one real OpenRouter review and replace the hand-built OK fixture.
-4. Sports runs on the existing hourly timer every third UTC hour; no new timer.
-5. After ≥100 settled reviewed picks, read `reviewer_scorecard.verdict`; drop the reviewer if it says drop.
+Reviewed and updated after the second review round; numbering is unchanged, the content is not.
+
+1. Apply `20260416000008_sports_reviews.sql` after migrations `000003`–`000007`. Reserved range for
+   this rollout: `000007` step 2b, `000008` step 7b, `000009` step 8. Do not renumber.
+2. Add `OPENROUTER_API_KEY` to the VPS stack environment. **Optional**: with no key every
+   candidate is written as `unreviewed` and still appears on the board, so the sports scan runs
+   correctly before the reviewer is configured. With a key, also confirm the model in
+   `tradehub/sports/config.yaml` (`sports_reviewer.model`) is one your OpenRouter account can
+   actually route to; the reviewer sends `provider.require_parameters`, so a model that ignores
+   `response_format` will return `status=invalid` and every edge will read `unreviewed`.
+3. Point the feed at the deployed predictor sites. Optional overrides, per sport:
+   `SPORTS_NFL_BASE_URL` / `SPORTS_NFL_SITE_URL` and `SPORTS_CFB_BASE_URL` /
+   `SPORTS_CFB_SITE_URL`. Use VPS hostnames after cutover. With no overrides the YAML defaults
+   are used, and until step 7a is deployed those return 404 — which the scan already reports as
+   `{"feed_error": "404"}` per sport rather than failing.
+4. `SPORTS_SCAN_EVERY_RUN=1` forces sports onto every hourly run instead of every third UTC
+   hour. Leave unset in production unless you want the extra load.
+5. Record one real OpenRouter review and replace the hand-built OK fixture.
+6. After ≥100 settled reviewed picks, read `reviewer_scorecard.verdict`; drop the reviewer if it
+   says drop. The endpoint pages, so read `total` and page with `limit`/`offset` rather than
+   assuming the first page is everything.
 
 ### Handover risks
 
-- The live feed is 404 until 7a is deployed; the dry run above is the expected result, not a passing scored run.
-- Do not suppress large predictor-vs-market gaps; the calibration gate blocks them and Kevin's rule keeps all edges visible as SHADOW.
+- The live feed is 404 until 7a is deployed; the dry run above is the expected result, not a
+  passing scored run. Sports edges stay non-scored until 7a's rebuilt-picks PRs and pre-game
+  feed are merged and deployed.
+- Do not suppress large predictor-vs-market gaps; the calibration gate blocks them and Kevin's
+  rule keeps all edges visible as SHADOW. A losing engine's edges keep their `engine` and are
+  tagged `SHADOW`; they are never hidden.
+- The promotion gate is keyed on `(engine, engine_version)`, where the sports version is
+  `feed:<predictor model_version>`. A new predictor snapshot therefore starts at SHADOW on its
+  own, which is intended. Do not "fix" this by keying on the engine alone — that would merge
+  the headline/core CPI track records in step 6 and let one version's promotion leak to another.
+- Stale-edge cleanup now covers sports, but only after a successful edge write for that sport
+  and only for a sport that actually ran. A sport that produced nothing (feed down) is
+  deliberately left alone rather than having its rows treated as stale.
+- `remove_stale_edges` deletes by `engine`, so the sport engines (`sports_nfl`, `sports_cfb`) are
+  in its allowlist. Anything else writing to `kalshi_edges` is out of scope by design.
 - CFB spread/total calibration may remain empty because recorded sportsbook lines are mostly null.
 - Reviewer budget/fixture follow-ups are in the plan's Kevin checklist and were not executed.
 - No Supabase write, LLM call, migration application or deployment was performed.
