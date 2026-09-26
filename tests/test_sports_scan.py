@@ -153,7 +153,9 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "sports_due", lambda now: True)
     monkeypatch.setattr(scan, "run_sports_for_cron", lambda now, supa: (
-        [{"engine": "sports_nfl"}], [{"edge_type": "SPORTS", "engine": "sports_nfl"}], {"nfl": {"matched": 1}}))
+        [{"engine": "sports_nfl"}],
+        [{"edge_type": "SPORTS", "engine": "sports_nfl", "market_ticker": "T1"}],
+        {"nfl": {"matched": 1}}))
     monkeypatch.setattr(supabase_client, "get_client", lambda: "supa")
     monkeypatch.setattr(predictions, "record_predictions", lambda supa, rows: prediction_writes.append(rows))
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: edge_writes.append(rows))
@@ -164,7 +166,7 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
     assert scan.main() == 0
     assert [r["engine"] for rows in prediction_writes for r in rows] == ["weather", "sports_nfl"]
     assert [row for rows in edge_writes for row in rows] == [
-        {"edge_type": "SPORTS", "engine": "sports_nfl", "gate_status": "SHADOW"}
+        {"edge_type": "SPORTS", "engine": "sports_nfl", "market_ticker": "T1", "gate_status": "SHADOW"}
     ]
     assert json.loads(capsys.readouterr().out)["sports"] == {"nfl": {"matched": 1}}
 

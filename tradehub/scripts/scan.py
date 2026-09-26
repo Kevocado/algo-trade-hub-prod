@@ -137,7 +137,7 @@ def remove_closed_cpi_edges(client, now: datetime) -> None:
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
     """Delete stale rows only for the scan-owned weather/gas engines."""
     for engine, produced in produced_by_engine.items():
-        if engine not in {"weather", "gas", "cpi_nowcast"}:
+        if engine not in {"weather", "gas", "cpi_nowcast", "sports_nfl", "sports_cfb"}:
             continue
         current_market_ids = {str(market_id)[:50] for market_id in produced}
         result = client.table("kalshi_edges").select("market_id").eq("engine", engine).execute()
@@ -528,6 +528,24 @@ def main(
         else:
             writes["predictions"]["sports"] = "skipped"
             writes["edges"]["sports"] = "skipped"
+
+        # Sports edges are written after the engine loop above, so they are pruned here.
+        # Only for a sport engine that actually ran AND whose edge write succeeded: a failed
+        # upsert must never be read as "the engine produced nothing", which would delete the
+        # live edges. Each sport is pruned under its own engine name so a sport that produced
+        # nothing (e.g. its feed 404'd) cannot delete the other sport's rows.
+        if sports_ran and writes["edges"].get("sports") == "ok":
+            sports_engines = {row.get("engine") for row in sports_edges if row.get("engine")}
+            for sport_engine in sorted(sports_engines):
+                try:
+                    remove_stale_edges(client, {
+                        sport_engine: {row["market_ticker"] for row in sports_edges
+                                       if row.get("engine") == sport_engine},
+                    })
+                except Exception as exc:
+                    message = f"{sport_engine}.cleanup: {type(exc).__name__}: {exc}"
+                    failures.append(message)
+                    log.exception("scan stale-edge cleanup failed engine=%s", sport_engine)
     else:
         writes = {"predictions": {}, "edges": {}}
 
