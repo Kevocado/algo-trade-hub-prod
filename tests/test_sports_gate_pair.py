@@ -13,6 +13,7 @@ from tradehub.sports import scan as sports_scan
 from tradehub.sports.config import load_sport_config
 from tradehub.sports.feed import parse_feed
 from tradehub.sports.kalshi import parse_sports_market
+from tradehub.sports.scan import SportsRun
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sports"
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
@@ -71,16 +72,19 @@ def test_sports_gate_lookup_promotes_only_the_promoted_feed_version(monkeypatch)
     monkeypatch.setattr(scan, "sports_due", lambda now: True)
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "remove_stale_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "remove_started_sports_edges_errors", lambda *a, **k: [])
     monkeypatch.setattr(supabase_client, "get_client", lambda: "supa")
     monkeypatch.setattr(predictions, "record_predictions", lambda *a, **k: None)
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
 
     live_version = "feed:ridge@2026-09-04T22:12:49.750941+00:00"
-    monkeypatch.setattr(scan, "run_sports_for_cron", lambda now, supa, **k: (
-        [{"engine": "sports_nfl", "market_ticker": "T"}],
-        [{"market_ticker": "T", "edge_type": "SPORTS",
-          "engine": "sports_nfl", "engine_version": live_version}],
-        {"nfl": {"matched": 1}},
+    edges = [{"market_ticker": "T", "edge_type": "SPORTS",
+              "engine": "sports_nfl", "engine_version": live_version}]
+    monkeypatch.setattr(scan, "run_sports_for_cron", lambda now, supa, **k: SportsRun(
+        predictions=[{"engine": "sports_nfl", "market_ticker": "T"}],
+        edges=edges,
+        reports={"nfl": {"matched": 1}},
+        per_sport={"nfl": {"feed_ok": True, "edges": edges}},
     ))
     # A PROMOTED verdict exists only for this exact pair.
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {
@@ -108,14 +112,17 @@ def test_an_unmatched_sports_edge_version_stays_shadow(monkeypatch):
     monkeypatch.setattr(scan, "sports_due", lambda now: True)
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "remove_stale_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "remove_started_sports_edges_errors", lambda *a, **k: [])
     monkeypatch.setattr(supabase_client, "get_client", lambda: "supa")
     monkeypatch.setattr(predictions, "record_predictions", lambda *a, **k: None)
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
-    monkeypatch.setattr(scan, "run_sports_for_cron", lambda now, supa, **k: (
-        [],
-        [{"market_ticker": "T", "edge_type": "SPORTS",
-          "engine": "sports_nfl", "engine_version": "feed:brand-new"}],
-        {"nfl": {"matched": 1}},
+    new_edges = [{"market_ticker": "T", "edge_type": "SPORTS",
+                  "engine": "sports_nfl", "engine_version": "feed:brand-new"}]
+    monkeypatch.setattr(scan, "run_sports_for_cron", lambda now, supa, **k: SportsRun(
+        predictions=[],
+        edges=new_edges,
+        reports={"nfl": {"matched": 1}},
+        per_sport={"nfl": {"feed_ok": True, "edges": new_edges}},
     ))
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {
         ("sports_nfl", "feed:old"): "PROMOTED",

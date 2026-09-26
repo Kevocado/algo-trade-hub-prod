@@ -46,7 +46,9 @@ from tradehub.engines.weather import (
 )
 from tradehub.markets import KalshiMarket, event_date, event_month, market_url
 from tradehub.predictions import build_prediction_row
-from tradehub.sports.scan import run_sports_for_cron, sports_due
+from tradehub.sports.scan import (
+    prune_sports_if_healthy, remove_started_sports_edges_errors, run_sports_for_cron, sports_due,
+)
 
 
 log = logging.getLogger(__name__)
@@ -443,14 +445,19 @@ def main(
 
     sports_predictions: list[dict] = []
     sports_edges: list[dict] = []
+    sports_per_sport: dict[str, dict[str, Any]] = {}
     sports_summary: dict[str, Any] = {"status": "skipped: not due (every third UTC hour)"}
     sports_ran = False
     if client is not None and sports_due(now):
         try:
-            sports_predictions, sports_edges, sports_summary = run_sports_for_cron(now, client, deadline=deadline)
+            run = run_sports_for_cron(now, client, deadline=deadline)
+            sports_predictions, sports_edges, sports_summary = run.predictions, run.edges, run.reports
+            sports_per_sport = run.per_sport
             sports_ran = True
         except Exception as exc:  # a predictor/Kalshi outage must not cost weather/gas
             sports_summary = {"error": repr(exc)}
+            failures.append(f"sports: {type(exc).__name__}: {exc}")
+            log.exception("scan sports step failed")
 
     if client is not None:
         try:
@@ -531,22 +538,17 @@ def main(
             writes["edges"]["sports"] = "skipped"
 
         # Sports edges are written after the engine loop above, so they are pruned here.
-        # Only for a sport engine that actually ran AND whose edge write succeeded: a failed
-        # upsert must never be read as "the engine produced nothing", which would delete the
-        # live edges. Each sport is pruned under its own engine name so a sport that produced
-        # nothing (e.g. its feed 404'd) cannot delete the other sport's rows.
-        if sports_ran and writes["edges"].get("sports") == "ok":
-            sports_engines = {row.get("engine") for row in sports_edges if row.get("engine")}
-            for sport_engine in sorted(sports_engines):
-                try:
-                    remove_stale_edges(client, {
-                        sport_engine: {row["market_ticker"] for row in sports_edges
-                                       if row.get("engine") == sport_engine},
-                    })
-                except Exception as exc:
-                    message = f"{sport_engine}.cleanup: {type(exc).__name__}: {exc}"
-                    failures.append(message)
-                    log.exception("scan stale-edge cleanup failed engine=%s", sport_engine)
+        # A sport prunes only when its feed fetch AND its edge write both succeeded, so neither
+        # a feed outage nor a failed upsert can be read as "the engine produced nothing" and
+        # delete the live edges. Pruning a zero-edge run is the point: that is exactly when the
+        # previous hour's rows must go.
+        if sports_ran:
+            # Fill in write_ok before pruning, so the health check sees the real outcome.
+            for state in sports_per_sport.values():
+                state["write_ok"] = writes["edges"].get("sports") == "ok"
+            failures.extend(remove_started_sports_edges_errors(client, now))
+            failures.extend(prune_sports_if_healthy(client, sports_per_sport,
+                                                    remove=remove_stale_edges, now=now))
     else:
         writes = {"predictions": {}, "edges": {}}
 

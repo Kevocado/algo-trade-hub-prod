@@ -176,6 +176,9 @@ class SportsRun:
     predictions: list[dict[str, Any]]
     edges: list[dict[str, Any]]
     reports: dict[str, Any]
+    # sport -> {feed_ok, edges}. The write_ok flag is filled in by the caller, which is the only
+    # place that knows whether the upsert landed.
+    per_sport: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[[str], Feed] = fetch_feed, store=None,
@@ -185,24 +188,43 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[[str], Feed] = fet
     edges: list[dict[str, Any]] = []
     requests: list[ReviewRequest] = []
     reports: dict[str, Any] = {}
+    per_sport: dict[str, dict[str, Any]] = {}
     for sport in sports:
         cfg = load_sport_config(sport)
         try:
             feed = fetch(cfg.base_url)
         except FeedUnavailable as exc:
             reports[sport] = {"feed_error": str(exc)}
+            per_sport[sport] = {"feed_ok": False, "edges": []}
             continue
-        markets = {series: kalshi.open_markets(series) for series in cfg.series.values()}
+        # open_markets is a paginated public-API call per series; one series failing must not
+        # cost the sport, and must certainly not be read as "this sport has no edges".
+        markets: dict[str, list[SportsMarket]] = {}
+        series_errors: dict[str, str] = {}
+        for series in cfg.series.values():
+            try:
+                markets[series] = kalshi.open_markets(series)
+            except Exception as exc:
+                series_errors[series] = f"{type(exc).__name__}: {exc}"
+                log.exception("sports market fetch failed sport=%s series=%s", sport, series)
+        if series_errors and not markets:
+            reports[sport] = {"kalshi_error": "; ".join(f"{s}: {e}" for s, e in series_errors.items())}
+            per_sport[sport] = {"feed_ok": False, "edges": []}
+            continue
         result = scan_sport(cfg, markets, feed, now)
         predictions += result.predictions
         edges += result.edges
         requests += result.review_requests
-        reports[sport] = result.report
+        report = dict(result.report)
+        if series_errors:
+            report["series_errors"] = series_errors
+        reports[sport] = report
+        per_sport[sport] = {"feed_ok": True, "edges": result.edges}
     reviews = review_candidates(requests, store or MemoryReviewStore(), reviewer, budget=budget, now=now)
     apply_reviews(edges, reviews)
     reports["reviews"] = {status: sum(r.status == status for r in reviews.values())
                           for status in sorted({r.status for r in reviews.values()})}
-    return SportsRun(predictions, edges, reports)
+    return SportsRun(predictions, edges, reports, per_sport)
 
 
 def unrecorded(supa, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -226,7 +248,79 @@ def sports_due(now: datetime) -> bool:
     return os.getenv("SPORTS_SCAN_EVERY_RUN") == "1" or now.astimezone(timezone.utc).hour % 3 == 0
 
 
-def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -> tuple[list[dict], list[dict], dict]:
+SPORTS_ENGINES = {"nfl": "sports_nfl", "cfb": "sports_cfb"}
+
+
+def sports_prune_targets(edges: list[dict[str, Any]]) -> set[str]:
+    """Engines eligible for stale-edge pruning: the CONFIGURED sports, not whatever this run
+    happened to produce.
+
+    Deriving this from the produced rows meant a sport that legitimately produced zero edges
+    (no market cleared the candidate filter this hour) pruned nothing, and its previous rows
+    stayed up indefinitely. A zero-edge run is exactly when pruning matters most.
+    """
+    return set(SPORTS_ENGINES.values())
+
+
+def remove_started_sports_edges(client, now: datetime) -> None:
+    """Delete sports rows whose game has already started.
+
+    `remove_stale_edges` only drops rows whose market_id is absent from the produced set, so a
+    game that kicked off kept its row until some later scan happened to omit it. expires_at is
+    the indexed column and is set to the market close, which for a sports market is the start.
+    """
+    for engine in sorted(SPORTS_ENGINES.values()):
+        client.table("kalshi_edges").delete() \
+            .eq("engine", engine) \
+            .lte("expires_at", now.isoformat()) \
+            .execute()
+
+
+def remove_started_sports_edges_errors(client, now: datetime) -> list[str]:
+    """`remove_started_sports_edges` with the failure isolated per sport."""
+    errors: list[str] = []
+    for engine in sorted(SPORTS_ENGINES.values()):
+        try:
+            client.table("kalshi_edges").delete() \
+                .eq("engine", engine) \
+                .lte("expires_at", now.isoformat()) \
+                .execute()
+        except Exception as exc:
+            errors.append(f"{engine}.started_cleanup: {type(exc).__name__}: {exc}")
+            log.exception("scan started-sports cleanup failed engine=%s", engine)
+    return errors
+
+
+def prune_sports_if_healthy(
+    client,
+    per_sport: dict[str, dict[str, Any]],
+    *,
+    remove: Callable[[Any, dict[str, set[str]]], None],
+    now: datetime,
+) -> list[str]:
+    """Prune each sport whose feed fetch AND edge write both succeeded. Returns error strings.
+
+    The two conditions are the whole safety story: a feed error means we do not know what the
+    sport looks like now, and a failed write means our produced set is not what is on the board.
+    Either one would turn "produced nothing" into "delete everything", so neither may prune.
+    """
+    errors: list[str] = []
+    for sport, state in per_sport.items():
+        engine = SPORTS_ENGINES.get(sport)
+        if engine is None:
+            continue
+        if not state.get("feed_ok") or not state.get("write_ok"):
+            continue
+        produced = {row["market_ticker"] for row in state.get("edges") or [] if row.get("market_ticker")}
+        try:
+            remove(client, {engine: produced})
+        except Exception as exc:
+            errors.append(f"{engine}.cleanup: {type(exc).__name__}: {exc}")
+            log.exception("scan stale-edge cleanup failed engine=%s", engine)
+    return errors
+
+
+def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -> SportsRun:
     cfg = load_reviewer_config()
     key = os.getenv("OPENROUTER_API_KEY")
     reviewer = OpenRouterReviewer(key, cfg.model, cfg.timeout_seconds) if key else None
@@ -234,7 +328,7 @@ def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -
     # series and must not be able to overrun the hourly timer and overlap the next run.
     run = run_sports_scan(now, SportsKalshi(deadline=deadline), store=SupabaseReviewStore(supa), reviewer=reviewer,
                           budget=cfg.daily_budget)
-    return unrecorded(supa, run.predictions), run.edges, run.reports
+    return SportsRun(unrecorded(supa, run.predictions), run.edges, run.reports, run.per_sport)
 
 
 def main(argv: list[str] | None = None) -> int:

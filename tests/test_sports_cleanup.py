@@ -13,18 +13,34 @@ The safety rules that matter:
 - a crashed or not-due sports scan must not prune.
 """
 import inspect
+import json
 from datetime import datetime, timezone
 
 from tradehub.scripts import scan as scan_mod
+from tradehub.sports.scan import SportsRun
 
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
 SPORT_EDGES = [{"market_ticker": "T1", "edge_type": "SPORTS", "engine": "sports_nfl",
                 "engine_version": "feed:v1", "gate_status": "SHADOW"}]
-SPORT_RESULT = ([{"engine": "sports_nfl", "market_ticker": "T1"}], SPORT_EDGES, {"nfl": {"matched": 1}})
+# run_sports_for_cron returns a SportsRun; per_sport is what the health check reads, so a stub
+# that omits it would make every sport look like it produced nothing.
+SPORT_RESULT = SportsRun(
+    predictions=[{"engine": "sports_nfl", "market_ticker": "T1"}],
+    edges=SPORT_EDGES,
+    reports={"nfl": {"matched": 1}},
+    per_sport={"nfl": {"feed_ok": True, "edges": SPORT_EDGES}},
+)
 
 
 def _sports_cleanup_calls(calls):
-    return [produced for call in calls for name, produced in call.items() if name.startswith("sports")]
+    """Flatten remove_stale_edges calls into one {engine: produced} view, so the order the
+    engines are visited in does not matter and weather/gas entries drop out."""
+    merged: dict[str, set] = {}
+    for call in calls:
+        for name, produced in call.items():
+            if name.startswith("sports"):
+                merged[name] = produced
+    return [merged] if merged else []
 
 
 def _run_main(monkeypatch, *, sports_due=True, sports_result=SPORT_RESULT,
@@ -41,6 +57,7 @@ def _run_main(monkeypatch, *, sports_due=True, sports_result=SPORT_RESULT,
     monkeypatch.setattr(scan_mod, "sports_due", lambda now: sports_due)
     monkeypatch.setattr(scan_mod, "remove_closed_cpi_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan_mod, "remove_stale_edges", lambda client, produced: calls.append(produced))
+    monkeypatch.setattr(scan_mod, "remove_started_sports_edges_errors", lambda *a, **k: [])
     monkeypatch.setattr(scan_mod, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(supabase_client, "get_client", lambda: "supa")
     monkeypatch.setattr(predictions, "record_predictions", lambda *a, **k: None)
@@ -74,7 +91,7 @@ def test_cleanup_allowlist_includes_the_sport_engines():
 def test_sports_cleanup_runs_after_a_successful_write(monkeypatch):
     rc, calls = _run_main(monkeypatch)
     assert rc == 0
-    assert _sports_cleanup_calls(calls) == [{"T1"}]
+    assert _sports_cleanup_calls(calls) == [{"sports_nfl": {"T1"}}]
 
 
 def test_sports_cleanup_is_skipped_when_the_edge_write_fails(monkeypatch):
@@ -84,10 +101,16 @@ def test_sports_cleanup_is_skipped_when_the_edge_write_fails(monkeypatch):
     assert rc == 1, "the failed write must still be reported"
 
 
-def test_sports_cleanup_is_skipped_when_the_sport_scan_crashed(monkeypatch):
+def test_sports_cleanup_is_skipped_when_the_sport_scan_crashed(monkeypatch, capsys):
     rc, calls = _run_main(monkeypatch, sports_raises=True)
     assert _sports_cleanup_calls(calls) == [], "cleanup ran despite the sports scan crashing"
-    assert rc == 0, "a sports outage must not fail the whole scan"
+    # B6 requires the sports failure to be logged and recorded in `failures`; that makes the exit
+    # code 1 (partial_failure) while leaving every other engine's write intact.
+    assert rc == 1, "a sports outage must be reported via the exit code"
+    summary = json.loads(capsys.readouterr().out)
+    assert "kalshi down" in str(summary["sports"])
+    assert any("kalshi down" in f for f in summary["failures"]), summary["failures"]
+    assert summary["writes"]["edges"]["weather"] == "ok", "weather's write was affected"
 
 
 def test_sports_cleanup_is_skipped_on_a_not_due_hour(monkeypatch):
@@ -97,15 +120,34 @@ def test_sports_cleanup_is_skipped_on_a_not_due_hour(monkeypatch):
 
 
 def test_a_silent_sport_cannot_prune_another_sport(monkeypatch):
-    """If the NFL feed 404s and CFB works, only CFB is pruned. An engine that produced
-    nothing this run is left alone rather than having its rows treated as stale."""
-    result = (
-        [{"engine": "sports_cfb", "market_ticker": "C1"}],
-        [{"market_ticker": "C1", "edge_type": "SPORTS", "engine": "sports_cfb",
-          "engine_version": "feed:v1", "gate_status": "SHADOW"}],
-        {"nfl": {"feed_error": "404"}, "cfb": {"matched": 1}},
+    """If the NFL feed 404s and CFB works, only CFB is pruned. A sport whose feed failed is
+    left alone rather than having its rows treated as stale — and a sport that succeeded but
+    produced nothing still IS pruned, which is the round-3 fix."""
+    cfb_edges = [{"market_ticker": "C1", "edge_type": "SPORTS", "engine": "sports_cfb",
+                  "engine_version": "feed:v1", "gate_status": "SHADOW"}]
+    result = SportsRun(
+        predictions=[{"engine": "sports_cfb", "market_ticker": "C1"}],
+        edges=cfb_edges,
+        reports={"nfl": {"feed_error": "404"}, "cfb": {"matched": 1}},
+        per_sport={"nfl": {"feed_ok": False, "edges": []},
+                   "cfb": {"feed_ok": True, "edges": cfb_edges}},
     )
     rc, calls = _run_main(monkeypatch, sports_result=result)
     assert rc == 0
-    assert _sports_cleanup_calls(calls) == [{"C1"}]
-    assert "sports_nfl" not in calls[0], "a silent sport must not be pruned"
+    assert _sports_cleanup_calls(calls) == [{"sports_cfb": {"C1"}}], calls
+    assert "sports_nfl" not in _sports_cleanup_calls(calls)[0], "a sport whose feed failed must not be pruned"
+
+
+def test_a_healthy_sport_with_zero_edges_is_still_pruned(monkeypatch):
+    """The round-3 fix: pruning used to be driven by the produced rows, so a sport that
+    legitimately produced nothing kept its previous rows up forever."""
+    result = SportsRun(
+        predictions=[],
+        edges=[],
+        reports={"nfl": {"matched": 0}, "cfb": {"matched": 0}},
+        per_sport={"nfl": {"feed_ok": True, "edges": []},
+                   "cfb": {"feed_ok": True, "edges": []}},
+    )
+    rc, calls = _run_main(monkeypatch, sports_result=result)
+    assert rc == 0
+    assert _sports_cleanup_calls(calls) == [{"sports_nfl": set(), "sports_cfb": set()}], calls
