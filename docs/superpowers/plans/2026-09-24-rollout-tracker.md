@@ -16,7 +16,7 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 | 5 | VPS deploy: API + War Room container, hourly scan/settle timers (replaces the Azure plan) | ✅ implemented, pending Kevin's first deploy (Task 5) | [2026-09-25-vps-deploy.md](2026-09-25-vps-deploy.md) |
 | 6 | `cpi_nowcast` (KXCPI + KXCPICORE, Cleveland Fed nowcast) | 🟡 merged to `main` (PR #7) + follow-up fixes in PR #10; shadow; backtest loses to market on Brier (headline 0.099 vs 0.071) | [2026-09-25-cpi-nowcast.md](2026-09-25-cpi-nowcast.md) |
 | 7 | Sports adapters + LLM reviewer (NFL + CFB) | 🟡 implemented on branch, shadow; predictor feed 404 until 7a deploy; 7 review fixes applied, review pending | [2026-09-25-predictor-pregame-feed.md](2026-09-25-predictor-pregame-feed.md) → [2026-09-25-sports-edges-llm-reviewer.md](2026-09-25-sports-edges-llm-reviewer.md) |
-| 8 | `labor_nowcast` + Jobs Scorecard | 🗺️ outline only; detail after step 4 lands | — |
+| 8 | `labor_nowcast` + Jobs Scorecard | ✅ implemented on `plan/2026-09-25-labor-nowcast-jobs-scorecard`, SHADOW (backtest Brier 0.179 vs Kalshi 0.166); Kevin: migration 000009, **VPS ALFRED check (blocking)**, scorecard timer | [2026-09-25-labor-nowcast-jobs-scorecard.md](2026-09-25-labor-nowcast-jobs-scorecard.md) |
 
 **Implementation order:** 2 → 3 → 4 → 5, each on its own `plan/<basename>` branch, reviewed and merged before the next one starts. Each plan's code was validated before publishing:
 - **Step 2:** 42/42 of the plan's own tests pass.

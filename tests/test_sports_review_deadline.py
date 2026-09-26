@@ -115,16 +115,17 @@ def test_cached_reviews_are_still_applied_when_the_deadline_has_passed(clock):
 
 def test_reviewing_stops_mid_list_when_the_deadline_approaches(clock):
     """The check is per call, not once up front: 10 candidates, 90s of budget, each call costs
-    10s and reviewing stops at the 60s margin, so exactly three are reviewed."""
+    10s and reviewing stops at the 60s margin. Four calls fit (the one that starts with exactly
+    60s left counts, see `should_review`), and the sixth would start with 50s."""
     reqs = [_request(i) for i in range(10)]
     store, reviewer = _Store(), _Reviewer(clock=clock, cost=10.0)
     out = review_candidates(reqs, store, reviewer, budget=40, now=NOW, deadline=1090.0)
-    assert reviewer.calls == 3, f"expected 3 calls before the 60s margin, made {reviewer.calls}"
+    assert reviewer.calls == 4, f"expected 4 calls down to the 60s margin, made {reviewer.calls}"
     statuses = [out[r.key].status for r in reqs]
-    assert statuses[:3] == ["ok", "ok", "ok"], statuses
-    assert set(statuses[3:]) == {"skipped_deadline"}, statuses
-    # The three verdicts we paid for are kept, and only those are logged as calls.
-    assert [k for k, _ in store.saved] == [r.key for r in reqs[:3]], store.saved
+    assert statuses[:4] == ["ok", "ok", "ok", "ok"], statuses
+    assert set(statuses[4:]) == {"skipped_deadline"}, statuses
+    # The verdicts we paid for are kept, and only those are logged as calls.
+    assert [k for k, _ in store.saved] == [r.key for r in reqs[:4]], store.saved
 
 
 def test_the_review_deadline_is_reported_not_silent(clock, caplog):
@@ -326,3 +327,20 @@ def test_the_dry_run_still_works_with_no_deadline():
     out = sports.run_sports_scan(NOW, object(), fetch=fetch, sports=("nfl",))
     assert out.reports["nfl"] == {"feed_error": "404: the feed is not deployed yet"}
     assert out.edges == [] and out.predictions == []
+
+
+def test_exactly_the_margin_remaining_is_still_enough_to_review(clock):
+    """`should_review` is `>=` REVIEW_STOP_MARGIN_SECONDS, not `>`. A 60s margin means 60s is
+    enough to make one call, not none; the boundary is the difference between a review that
+    happens and one that silently does not."""
+    assert deadline_mod.should_review(1060.0) is True, "exactly the 60s margin was treated as too late"
+    assert deadline_mod.should_review(1060.001) is True
+    assert deadline_mod.should_review(1059.999) is False
+
+
+def test_a_call_at_exactly_the_margin_is_made(clock):
+    reqs = [_request(i) for i in range(3)]
+    store, reviewer = _Store(), _Reviewer(clock=clock, cost=0.0)
+    out = review_candidates(reqs, store, reviewer, budget=40, now=NOW, deadline=1060.0)
+    assert reviewer.calls == 3, f"a free call at exactly 60s left was skipped: {reviewer.calls}"
+    assert all(r.status == "ok" for r in out.values()), out

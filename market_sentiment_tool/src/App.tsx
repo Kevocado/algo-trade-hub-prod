@@ -4,8 +4,9 @@ import Home from "@/pages/Home";
 import PredictionLab from "@/pages/PredictionLab";
 import ShadowBacktester from "@/pages/ShadowBacktester";
 import SportsEdges from "@/pages/SportsEdges";
+import JobsScorecard from "@/pages/JobsScorecard";
 import { usePortfolio } from "@/hooks/usePortfolio";
-import { LayoutDashboard, Activity, Wallet, Brain, LineChart, Trophy } from "lucide-react";
+import { LayoutDashboard, Activity, Wallet, Brain, LineChart, Trophy, Briefcase } from "lucide-react";
 
 const Sidebar = () => {
   const { portfolio } = usePortfolio();
@@ -47,6 +48,12 @@ const Sidebar = () => {
         >
           <Trophy className="w-5 h-5 text-cyan-400" /> Sports
         </NavLink>
+        <NavLink
+          to="/jobs"
+          className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
+        >
+          <Briefcase className="w-5 h-5 text-sky-400" /> Jobs Scorecard
+        </NavLink>
       </nav>
 
       <div className="p-4 border-t border-slate-900">
@@ -87,6 +94,7 @@ function App() {
           <Route path="/lab" element={<PredictionLab />} />
           <Route path="/shadow" element={<ShadowBacktester />} />
           <Route path="/sports" element={<SportsEdges />} />
+          <Route path="/jobs" element={<JobsScorecard />} />
         </Routes>
       </AppShell>
     </BrowserRouter>

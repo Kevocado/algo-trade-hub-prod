@@ -91,7 +91,7 @@ def upsert_opportunities(opportunities: list):
             gate_status = "SHADOW"
         updated_at = op.get("updated_at") or datetime.now(timezone.utc).isoformat()
 
-        unique_rows[market_id] = {
+        row = {
             "market_id": market_id,
             "title": title,
             "engine": engine,
@@ -104,12 +104,19 @@ def upsert_opportunities(opportunities: list):
             "gate_status": gate_status,
             "updated_at": updated_at,
             "expires_at": op.get("expires_at"),
-            # Game start as its own indexed column (sports edges). expires_at is the Kalshi close
-            # time, which for a sports market is ~2 days AFTER kickoff, so nothing could be
-            # deleted or filtered by "has this game started" without this column.
-            "start_utc": op.get("start_utc"),
             "raw_payload": op
         }
+        # Game start as its own indexed column (sports edges). expires_at is the Kalshi close
+        # time, which for a sports market is ~2 days AFTER kickoff, so nothing could be deleted
+        # or filtered by "has this game started" without this column.
+        #
+        # Sent ONLY when the engine set it. This writer is shared by every engine, and PostgREST
+        # rejects a payload containing a column the table does not have, so always sending it made
+        # a missing migration break weather and gas too, not just sports. Omitting the key also
+        # leaves an existing row's value alone on conflict instead of nulling it.
+        if op.get("start_utc"):
+            row["start_utc"] = op["start_utc"]
+        unique_rows[market_id] = row
         
     rows = list(unique_rows.values())
     client.table("kalshi_edges").upsert(rows, on_conflict="market_id").execute()

@@ -41,6 +41,9 @@ def _run_main(monkeypatch, *, cpi_due, closed_raises=False):
             raise RuntimeError("supabase down")
 
     monkeypatch.setattr(scan_mod, "remove_closed_cpi_edges", closed)
+    # The labor closed-market cleanup has its own schedule and its own tests; stub it here so
+    # these stay about the CPI one.
+    monkeypatch.setattr(scan_mod, "remove_closed_labor_edges", lambda *a, **k: None)
     rc = scan_mod.main(now=NOW, live=object(), client=object())
     return rc, closed_calls, upserts, cleanups
 

@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from tradehub.data.cleveland_fed import fetch_nowcast_history
 from tradehub.data.kalshi_live import KalshiLive
+from tradehub.data.labor_inputs import load_labor_inputs, payroll_nowcasts
 from tradehub.data.rbob import front_month_roll_dates, rbob_closes
 from tradehub.data.weather import (
     WEATHER_CITIES,
@@ -28,6 +29,7 @@ from tradehub.data.weather import (
 )
 from tradehub.edges import EdgeSuggestion, evaluate_edge
 from tradehub.engine_config import EngineConfig, load_engine_config
+from tradehub.gate_status import latest_gate_statuses
 from tradehub.engines.cpi import (
     CPI_TARGETS,
     CPI_TRAIN_MONTHS,
@@ -37,6 +39,13 @@ from tradehub.engines.cpi import (
     training_pairs,
 )
 from tradehub.engines.gas import GAS_ENGINE_VERSION, GAS_SERIES, fit_gas_model, gas_prob, gas_training_pairs, rbob_change
+from tradehub.engines.labor import (
+    LABOR_ENGINE_VERSION,
+    PAYROLL_SERIES,
+    TRAIN_START,
+    month_end,
+    payroll_prob,
+)
 from tradehub.engines.weather import (
     MIN_ERROR_PAIRS,
     WEATHER_ENGINE_VERSION,
@@ -98,27 +107,6 @@ def _mid(quote) -> float | None:
     return (quote.yes_bid + quote.yes_ask) / 2.0
 
 
-def latest_gate_statuses(client, pairs: set[tuple[str, str]]) -> dict[tuple[str, str], str]:
-    """Promote a pair only when its latest backtest and track record both say PROMOTED."""
-    statuses: dict[tuple[str, str], str] = {}
-    for engine, version in pairs:
-        backtest = client.table("backtest_runs") \
-            .select("engine,engine_version,gate_status,created_at") \
-            .eq("engine", engine).eq("engine_version", version) \
-            .order("created_at", desc=True).limit(1).execute()
-        rows = list(backtest.data or [])
-        if not rows or rows[0].get("gate_status") != "PROMOTED":
-            statuses[(engine, version)] = "SHADOW"
-            continue
-        track = client.table("track_record").select("gate_status") \
-            .eq("engine", engine).eq("engine_version", version).limit(1).execute()
-        track_rows = list(track.data or [])
-        statuses[(engine, version)] = (
-            "PROMOTED" if track_rows and track_rows[0].get("gate_status") == "PROMOTED" else "SHADOW"
-        )
-    return statuses
-
-
 def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[tuple[str, str], str]) -> None:
     for row in edges:
         row["gate_status"] = statuses.get((row["engine"], row.get("engine_version", "v0")), "SHADOW")
@@ -137,10 +125,26 @@ def remove_closed_cpi_edges(client, now: datetime) -> None:
         .execute()
 
 
+def remove_closed_labor_edges(client, now: datetime) -> None:
+    """Delete labor_nowcast rows whose market has closed.
+
+    A payroll market's `expires_at` is its Kalshi close, which for a monthly ladder is the release
+    day itself, so this needs no separate predicate -- but it does need to run: a row that
+    outlived its market would otherwise sit on the board until some later scan happened to omit
+    it, and `remove_stale_edges` only drops rows absent from the produced set. One atomic delete,
+    engine-scoped, like `remove_closed_cpi_edges`, and on EVERY scan: markets close on their own
+    schedule, not on the engine's 07/12/17 ET cadence.
+    """
+    client.table("kalshi_edges").delete() \
+        .eq("engine", "labor_nowcast") \
+        .lte("expires_at", now.isoformat()) \
+        .execute()
+
+
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
-    """Delete stale rows only for the scan-owned weather/gas engines."""
+    """Delete stale rows only for the scan-owned weather/gas/payrolls engines."""
     for engine, produced in produced_by_engine.items():
-        if engine not in {"weather", "gas", "cpi_nowcast", "sports_nfl", "sports_cfb"}:
+        if engine not in {"weather", "gas", "cpi_nowcast", "labor_nowcast", "sports_nfl", "sports_cfb"}:
             continue
         current_market_ids = {str(market_id)[:50] for market_id in produced}
         result = client.table("kalshi_edges").select("market_id").eq("engine", engine).execute()
@@ -356,6 +360,88 @@ def scan_cpi(
     return predictions, edges
 
 
+def scan_labor(
+    live, now: datetime, cfg: EngineConfig, *, inputs_fn: Callable[..., Any] = load_labor_inputs,
+    deadline: float | None = None,
+) -> tuple[list[dict], list[dict], str, list[str]]:
+    """Nowcast the next jobs report once its reference month has ended; predict every open KXPAYROLLS strike.
+
+    Returns (predictions, edges, status, months_without_nowcast). The last item matters: a month
+    whose markets exist but produced no nowcast is a FEATURE GAP, and the caller must not read it
+    as "this engine produced nothing" -- that reading prunes live edges.
+    """
+    by_month: dict = defaultdict(list)
+    for lm in live.open_markets(PAYROLL_SERIES):
+        month = event_month(lm.market.event_ticker)
+        if month_end(month) < now.astimezone(_ET).date() and lm.market.close_time > now:
+            by_month[month].append(lm)
+    if not by_month:
+        return [], [], "ok", []
+    releases = {m: min(lm.market.close_time for lm in lms).astimezone(_ET).date()
+                for m, lms in by_month.items()}
+    inputs = inputs_fn(first_month=TRAIN_START, last_month=max(by_month), releases=releases, as_of=now.date(),
+                       with_adp=False, deadline=deadline)
+    nowcasts = payroll_nowcasts(inputs, sorted(by_month), releases, train_from=TRAIN_START)
+    predictions: list[dict] = []
+    edges: list[dict] = []
+    months_without_nowcast: list[str] = []
+    for month, markets in sorted(by_month.items()):
+        nc = nowcasts.get(month)
+        if nc is None:
+            months_without_nowcast.append(month.isoformat())
+            log.warning("scan labor_nowcast: no nowcast for %s (%d open markets); this is a "
+                        "feature gap, not an empty result", month.isoformat(), len(markets))
+            continue
+        payload = {"month": month.isoformat(), "mu_k": round(nc.mu, 2), "sigma_k": round(nc.sigma, 2),
+                   "features": nc.features.values, "n_train": nc.model.n_train,
+                   "coef": dict(zip(nc.model.features, nc.model.coef))}
+        for lm in markets:
+            try:
+                prob = payroll_prob(lm.market, nc.mu, nc.sigma)
+            except Exception:
+                log.exception("scan engine=labor_nowcast market=%s failed; skipping", lm.market.ticker)
+                continue
+            predictions.append(build_prediction_row(
+                market_ticker=lm.market.ticker, our_prob=prob, market_prob=_mid(lm.quote), engine="labor_nowcast",
+                as_of=now, engine_version=LABOR_ENGINE_VERSION, raw_payload=payload,
+            ))
+            suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
+                                       prefer_maker=cfg.prefer_maker)
+            if suggestion:
+                edges.append(edge_row(lm.market, suggestion, "MACRO", engine="labor_nowcast",
+                                      engine_version=LABOR_ENGINE_VERSION, updated_at=now))
+    return predictions, edges, "ok", months_without_nowcast
+
+
+LABOR_SCAN_HOURS_ET = (7, 12, 17)  # the :05 timer's 07:05 ET run is the last one before the 08:30 release
+
+
+def labor_scan_due(now: datetime) -> bool:
+    return now.astimezone(_ET).hour in LABOR_SCAN_HOURS_ET
+
+
+def run_labor_step(
+    live, now: datetime, cfg: EngineConfig, *,
+    scan_fn: Callable[..., tuple[list[dict], list[dict], str, list[str]]] | None = None,
+    deadline: float | None = None,
+) -> tuple[list[dict], list[dict], str, list[str]]:
+    """scan_labor three times a day, isolated: an ALFRED or Kalshi outage returns a status, never raises.
+
+    The traceback is logged HERE, at the point the exception is caught, so the status string that
+    travels to main() does not cost the run its cause.
+    """
+    if not labor_scan_due(now):
+        return [], [], "skipped", []
+    try:
+        predictions, edges, status, gap = (scan_fn or scan_labor)(live, now, cfg, deadline=deadline)
+    except Exception as exc:  # noqa: BLE001 - isolate the engine, report the error
+        log.exception("scan engine=labor_nowcast failed")
+        # A crash is not a feature gap, and a feature gap is not a crash. Either way the run is
+        # incomplete, which is what stops it pruning.
+        return [], [], f"error: {type(exc).__name__}: {exc}", []
+    return predictions, edges, status, gap
+
+
 def main(
     *,
     now: datetime | None = None,
@@ -435,6 +521,18 @@ def main(
             "predictions": [], "edges": [], "errors": [], "complete": True, "ran": False,
         }
 
+    # labor_nowcast is declared here but RUNS LATER, after the weather/gas/CPI writes: its failure
+    # mode is an ALFRED outage, and a hung predictor request must not delay or endanger another
+    # engine's writes. Its own gated write and cleanup live in the labor block below, ahead of
+    # sports (which still runs last of all).
+    labor_predictions: list[dict] = []
+    labor_edges: list[dict] = []
+    labor_status = "skipped: not due (07, 12, 17 ET)"
+    engine_states["labor_nowcast"] = {
+        "predictions": [], "edges": [], "errors": [], "complete": True, "ran": False,
+        "months_without_nowcast": [],
+    }
+
     if client is None:
         try:
             client = get_client()
@@ -505,6 +603,88 @@ def main(
 
         writes = {"predictions": prediction_writes, "edges": edge_writes}
 
+        # ── labor_nowcast ────────────────────────────────────────────────────────────────
+        # After the weather/gas/CPI gate lookup, upserts and cleanups, so an ALFRED hang cannot
+        # push those back; before sports, which still runs last. Gated and written separately
+        # for the same reason sports is: its edges are keyed on their own (engine,
+        # engine_version) pair, and its inputs are a third-party HTTP service.
+        # Closed markets are cleaned up on EVERY scan, due hour or not: a payroll ladder closes on
+        # its own schedule, so a not-due hour still has dead rows to remove.
+        try:
+            remove_closed_labor_edges(client, now)
+        except Exception as exc:
+            failures.append(f"labor_nowcast.closed_cleanup: {type(exc).__name__}: {exc}")
+            log.exception("scan closed labor edge cleanup failed")
+        if not labor_scan_due(now):
+            writes["predictions"]["labor_nowcast"] = "skipped"
+            writes["edges"]["labor_nowcast"] = "skipped"
+        else:
+            try:
+                _ensure_scan_deadline(deadline)
+            except TimeoutError:
+                labor_status = "skipped: scan deadline reached before the labor step"
+                writes["predictions"]["labor_nowcast"] = "skipped"
+                writes["edges"]["labor_nowcast"] = "skipped"
+            else:
+                try:
+                    labor_cfg = load_engine_config("labor_nowcast")
+                    labor_predictions, labor_edges, labor_status, labor_gap = run_labor_step(
+                        live, now, labor_cfg, deadline=deadline)
+                    labor_failed = labor_status.startswith("error:")
+                    labor_errors = [f"labor_nowcast: {labor_status}"] if labor_failed else []
+                    engine_states["labor_nowcast"] = {
+                        "predictions": labor_predictions, "edges": labor_edges, "errors": labor_errors,
+                        # A failed step must never prune, and neither must one with a FEATURE GAP:
+                        # a month whose markets exist but produced no nowcast means "we could not
+                        # look", not "the engine produced nothing", and the second reading deletes
+                        # live edges.
+                        "complete": not labor_failed and not labor_gap, "ran": True,
+                        "months_without_nowcast": labor_gap,
+                    }
+                    failures.extend(labor_errors)
+                    if not labor_failed:
+                        try:
+                            labor_statuses = latest_gate_statuses(
+                                client, {(row["engine"], row.get("engine_version", "v0"))
+                                         for row in labor_edges})
+                        except Exception as exc:
+                            failures.append(f"labor_nowcast.gate_status: {type(exc).__name__}: {exc}")
+                            log.exception("scan labor gate-status lookup failed")
+                            labor_statuses = {}
+                        apply_gate_statuses(labor_edges, labor_statuses)
+                        try:
+                            record_predictions(client, labor_predictions)
+                            writes["predictions"]["labor_nowcast"] = "ok"
+                        except Exception as exc:
+                            failures.append(f"labor_nowcast.predictions: {type(exc).__name__}: {exc}")
+                            writes["predictions"]["labor_nowcast"] = "failed"
+                            log.exception("scan labor prediction write failed")
+                        try:
+                            upsert_opportunities(labor_edges)
+                            writes["edges"]["labor_nowcast"] = "ok"
+                        except Exception as exc:
+                            failures.append(f"labor_nowcast.edges: {type(exc).__name__}: {exc}")
+                            writes["edges"]["labor_nowcast"] = "failed"
+                            log.exception("scan labor edge write failed")
+                        # Stale rows go only when the step ran completely AND its write landed.
+                        if engine_states["labor_nowcast"]["complete"] and writes["edges"]["labor_nowcast"] == "ok":
+                            try:
+                                remove_stale_edges(client, {
+                                    "labor_nowcast": {row["market_ticker"] for row in labor_edges}})
+                            except Exception as exc:
+                                failures.append(f"labor_nowcast.cleanup: {type(exc).__name__}: {exc}")
+                                log.exception("scan stale-edge cleanup failed engine=labor_nowcast")
+                except Exception as exc:  # a predictor outage must not cost the other engines
+                    labor_status = f"error: {type(exc).__name__}: {exc}"
+                    engine_states["labor_nowcast"]["errors"] = [f"labor_nowcast: {labor_status}"]
+                    engine_states["labor_nowcast"]["complete"] = False
+                    engine_states["labor_nowcast"]["ran"] = True
+                    writes["predictions"]["labor_nowcast"] = "failed"
+                    writes["edges"]["labor_nowcast"] = "failed"
+                    failures.append(f"labor_nowcast: {type(exc).__name__}: {exc}")
+                    log.exception("scan labor step failed")
+
+
         # ── Sports LAST ────────────────────────────────────────────────────────────────
         # The weather/gas/CPI gate lookup, upserts and cleanups above are already done, so a
         # slow sports run can no longer delay them or put them at risk. Sports is gated and
@@ -560,6 +740,11 @@ def main(
                 log.exception("scan sports step failed")
     else:
         writes = {"predictions": {}, "edges": {}}
+        # No Supabase client (get_client raised), so nothing below ran. These are read by the
+        # summary, and leaving them unbound made main() die with an UnboundLocalError in the one
+        # situation where a clear report matters most.
+        sports_summary = {"status": "skipped: no Supabase client"}
+        labor_status = "skipped: no Supabase client"
 
     cpi_state = engine_states["cpi_nowcast"]
     cpi_errors = cpi_state["errors"]
@@ -594,6 +779,15 @@ def main(
             "predictions": len(cpi_predictions),
             "edges": len(cpi_edges),
             "errors": cpi_errors,
+        },
+        "labor_nowcast": {
+            "status": labor_status,
+            "predictions": len(labor_predictions),
+            "edges": len(labor_edges),
+            "errors": engine_states["labor_nowcast"]["errors"],
+            # Months whose markets existed but produced no nowcast: a feature gap, and the reason
+            # this run did not prune.
+            "months_without_nowcast": engine_states["labor_nowcast"].get("months_without_nowcast", []),
         },
         "sports": sports_summary,
         "writes": writes,

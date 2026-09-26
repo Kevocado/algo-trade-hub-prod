@@ -24,14 +24,23 @@ MIN_TIMEOUT_SECONDS = 1.0
 _clock: Callable[[], float] = time.monotonic
 
 
-def remaining_seconds(deadline: float) -> float:
-    """Seconds left before `deadline`; negative once it has passed."""
-    return deadline - _clock()
+def remaining_seconds(deadline: float, clock: Callable[[], float] | None = None) -> float:
+    """Seconds left before `deadline`; negative once it has passed.
+
+    `clock` is injectable so a caller that owns its own clock (the ALFRED fetcher, which passes
+    one down for testability) does not have to reach into this module's global.
+    """
+    return deadline - (clock or _clock)()
 
 
 def should_review(deadline: float) -> bool:
-    """Whether there is enough of the scan budget left to spend on reviewer calls."""
-    return remaining_seconds(deadline) > REVIEW_STOP_MARGIN_SECONDS
+    """Whether there is enough of the scan budget left to spend on reviewer calls.
+
+    `>=`, not `>`: the margin is a floor on the time a call may consume, so exactly 60s left is
+    still enough for one call. With `>`, a call landing exactly on the boundary was skipped and
+    the edge silently read `unreviewed`.
+    """
+    return remaining_seconds(deadline) >= REVIEW_STOP_MARGIN_SECONDS
 
 
 def clamp_timeout(timeout: float, deadline: float | None, floor: float = MIN_TIMEOUT_SECONDS) -> float:

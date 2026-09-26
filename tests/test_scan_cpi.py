@@ -102,6 +102,10 @@ def test_main_isolates_a_cpi_failure(monkeypatch, capsys):
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
+    # This test calls scan.main() with no `now`, so it runs on the wall clock. labor_nowcast is due
+    # at 07/12/17 ET, and in those hours the real scan_labor would run against the stub client and
+    # turn this into a labor failure. Same trap as cpi_scan_due, wider window.
+    monkeypatch.setattr(scan, "labor_scan_due", lambda now: False)
 
     def boom(live, now, cfg):
         raise RuntimeError("cleveland fed down")
@@ -131,6 +135,7 @@ def test_main_gates_cpi_edges_per_engine_version(monkeypatch):
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {
         ("cpi_nowcast", "cpi-core-v1"): "PROMOTED",
     })
@@ -162,6 +167,7 @@ def test_cpi_cleanup_runs_only_on_a_due_hour(monkeypatch, due):
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *a, **k: None)
     edge = {"market_ticker": "CPI", "engine": "cpi_nowcast", "engine_version": "cpi-v1"}
     monkeypatch.setattr(scan, "scan_cpi", lambda *a, **k: ([], [edge] if due else []))
 

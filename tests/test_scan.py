@@ -512,6 +512,7 @@ def test_scan_main_assigns_one_fifteen_minute_deadline_to_network_scan(monkeypat
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
     import tradehub.predictions as predictions_module
@@ -555,6 +556,7 @@ def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, caps
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
     import tradehub.predictions as predictions_module
@@ -589,6 +591,7 @@ def test_scan_main_persists_successful_rows_from_a_partial_weather_scan(monkeypa
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
     import tradehub.predictions as predictions_module
@@ -617,6 +620,7 @@ def test_scan_main_writes_edges_for_engines_whose_gate_loses(monkeypatch):
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
+    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
     import tradehub.predictions as predictions_module
