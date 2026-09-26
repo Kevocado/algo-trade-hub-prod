@@ -84,7 +84,7 @@ def test_apply_reviews_sets_tiers_without_touching_probabilities():
 def test_run_sports_scan_reports_a_down_predictor_and_keeps_going():
     kalshi = FakeKalshi("cfb")
 
-    def fetch(base_url):
+    def fetch(base_url, **_kw):        # the scan deadline is threaded in as a kwarg
         if "nfl" in base_url:
             raise FeedUnavailable("404")
         return _feed("cfb")

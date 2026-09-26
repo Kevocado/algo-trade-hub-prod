@@ -585,3 +585,49 @@ feed, and the two-day gap is still there.)
 **Worth repeating:** two independent writers of the same idea is how this survived a review.
 `remove_started_sports_edges_errors` was a line-for-line copy of `remove_started_sports_edges`
 with the `try` added, and main called the copy, so the tested function was not the one running.
+
+### 2. The deadline only covered Kalshi, and only before the review loop
+
+Round 3 threaded `SCAN_DEADLINE_SECONDS` into `SportsKalshi` and checked `should_review` **once**,
+before `review_candidates`. That left three holes:
+
+- the check was not repeated **per call**, so a 40-candidate list that started inside the margin
+  walked straight past it;
+- each OpenRouter call used the reviewer's configured timeout, not the time actually left, so one
+  slow call could sit past the deadline — once per candidate;
+- `fetch_feed` had its own 60s timeout and an **unconditional** retry: up to 122 seconds of
+  predictor call inside a 15-minute scan that also has to serve weather, gas and CPI.
+
+**RED** — the new module did not exist, so the first failure was at import:
+
+```
+ImportError while importing test module 'tests/test_sports_review_deadline.py'
+E   ImportError: cannot import name 'deadline' from 'tradehub.sports'
+```
+
+**GREEN** — 563 passed (was 545); `tests/test_sports_review_deadline.py` is 18 tests.
+
+- `tradehub/sports/deadline.py` is the single definition of the rule: the 60s margin,
+  `remaining_seconds`, `should_review` and `clamp_timeout`. The orchestrator, the feed client and
+  the reviewer all import it, so a second copy of the margin cannot drift from the first — which
+  is exactly how the one-shot check survived review.
+- `_clock` is a module global rather than a direct `time.monotonic()` call, so the tests drive a
+  real clock through the real predicate instead of monkeypatching the stdlib `time` module out
+  from under everything else in the process.
+- `review_candidates(..., deadline=...)` re-checks `should_review` **before every call**. Skipped
+  requests come back as `skipped_deadline`, which is deliberately *not* written to
+  `sports_reviews`: that table is append-only with a `status IN ('ok','invalid','error')` CHECK,
+  and a skip logged there would both fail the constraint and corrupt the exact daily budget count.
+  Cache hits are still applied with the budget gone — no API call, and that verdict was paid for.
+- `OpenRouterReviewer(..., deadline=...)` clamps each call's timeout to the remaining time, with a
+  1s floor so an abandoned request never gets a zero timeout. A configured 30s timeout still wins
+  when there is time, and a reviewer built without a deadline behaves exactly as before.
+- `fetch_feed(..., deadline=...)` clamps each attempt and skips the retry when what is left cannot
+  cover one more attempt (`left < per_attempt + RETRY_PAUSE_SECONDS`). It raises
+  `FeedUnavailable` without issuing a request when the budget is already gone, so a sport skipped
+  for time is reported like any other feed error rather than looking like a cold predictor.
+
+**Worth repeating:** a deadline check that is evaluated once is not a deadline. The Kalshi client
+was genuinely bounded, the two HTTP paths around it were not, and the test suite could not see it
+because the fakes never spent time. The mid-list test now advances a fake clock 10s per reviewer
+call, which is the only way the "stops part-way through" claim can be checked.

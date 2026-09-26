@@ -12,6 +12,8 @@ from typing import Any, Callable, Protocol
 
 import requests
 
+from tradehub.sports.deadline import REVIEW_STOP_MARGIN_SECONDS, clamp_timeout, remaining_seconds, should_review
+
 log = logging.getLogger(__name__)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -103,8 +105,12 @@ def cache_key(sport: str, game_id: str, market_ticker: str, side: str, bucket: i
 
 
 class OpenRouterReviewer:
-    def __init__(self, api_key: str, model: str, timeout: float, post: Callable[..., Any] = requests.post):
+    def __init__(self, api_key: str, model: str, timeout: float, post: Callable[..., Any] = requests.post,
+                 deadline: float | None = None):
         self._key, self.model, self._timeout, self._post = api_key, model, timeout, post
+        # The scan's deadline, not a fresh budget. Without it every call waits the full configured
+        # timeout, so a slow model could overrun the hourly timer once per candidate.
+        self._deadline = deadline
 
     def review(self, fact_pack: dict[str, Any]) -> Review:
         body = {
@@ -123,7 +129,7 @@ class OpenRouterReviewer:
         }
         try:
             resp = self._post(OPENROUTER_URL, headers={"Authorization": f"Bearer {self._key}"}, json=body,
-                              timeout=self._timeout)
+                              timeout=clamp_timeout(self._timeout, self._deadline))
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
         except (requests.RequestException, ValueError, KeyError, IndexError, TypeError):
@@ -188,16 +194,23 @@ class SupabaseReviewStore:
 
 
 def review_candidates(
-    reqs: list[ReviewRequest], store: ReviewStore, reviewer: OpenRouterReviewer | None, *, budget: int, now: datetime,
+    reqs: list[ReviewRequest], store: ReviewStore, reviewer: OpenRouterReviewer | None, *, budget: int,
+    now: datetime, deadline: float | None = None,
 ) -> dict[str, Review]:
     """Cache first, then call the model for the largest edges until today's UTC budget is spent.
 
     Store calls are individually guarded: a broken cache must not cost the scan, and a failed
     insert must not discard a verdict we already paid for.
+
+    `deadline` is the SCAN's deadline and is re-checked before every OpenRouter call, not once at
+    the top. Checking once is not enough: each call can take seconds, so a list of 40 candidates
+    that starts inside the margin walks straight past it. Cache hits cost no API call and are
+    still applied with the budget gone, because that verdict was already paid for.
     """
     day_start = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     used = _safe(store.calls_since, day_start, default=_BUDGET_UNKNOWN) if reviewer is not None else 0
     out: dict[str, Review] = {}
+    stopped = False
     for req in sorted(reqs, key=lambda r: r.net_edge_pct, reverse=True):
         if req.key in out:
             continue
@@ -208,6 +221,15 @@ def review_candidates(
             out[req.key] = _unreviewed("no_key")
         elif used >= budget:
             out[req.key] = _unreviewed("skipped_budget")
+        elif deadline is not None and not should_review(deadline):
+            # Skipped, not an API call, so it is never written to sports_reviews: that table is
+            # append-only with a status CHECK, and a skip there would corrupt the budget count.
+            if not stopped:
+                stopped = True
+                log.warning("sports review: scan deadline is %0.0fs away, inside the %ss margin; "
+                            "stopping reviewer calls", remaining_seconds(deadline),
+                            REVIEW_STOP_MARGIN_SECONDS)
+            out[req.key] = _unreviewed("skipped_deadline")
         else:
             review = reviewer.review(req.fact_pack)
             used += 1

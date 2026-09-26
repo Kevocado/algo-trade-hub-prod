@@ -21,6 +21,9 @@ from tradehub.markets import kalshi_event_url
 from tradehub.predictions import build_prediction_row
 from tradehub.sports.candidates import CandidateCheck, check_candidate
 from tradehub.sports.config import SportConfig, load_reviewer_config, load_sport_config
+from tradehub.sports.deadline import (
+    REVIEW_STOP_MARGIN_SECONDS, remaining_seconds, should_review,
+)
 from tradehub.sports.feed import Feed, FeedUnavailable, fetch_feed
 from tradehub.sports.kalshi import SportsKalshi, SportsMarket
 from tradehub.sports.mapping import MatchedGame, load_aliases, match_games
@@ -32,22 +35,8 @@ from tradehub.sports.reviewer import (
 
 SPORTS = ("nfl", "cfb")
 LEDGER_CHUNK = 100
-# Stop spending the remaining scan budget on LLM calls once this little is left. Reviewing is
-# the optional part of the sports step; the edges are already computed and get written either
-# way, just with tier=unreviewed.
-REVIEW_STOP_MARGIN_SECONDS = 60
 
 log = logging.getLogger(__name__)
-
-
-def remaining_seconds(deadline: float) -> float:
-    """Seconds left before `deadline`; negative once it has passed."""
-    return deadline - time.monotonic()
-
-
-def should_review(deadline: float) -> bool:
-    """Whether there is enough of the scan budget left to spend on reviewer calls."""
-    return remaining_seconds(deadline) > REVIEW_STOP_MARGIN_SECONDS
 
 
 @dataclass
@@ -221,7 +210,9 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[[str], Feed] = fet
             continue
         cfg = load_sport_config(sport)
         try:
-            feed = fetch(cfg.base_url)
+            # The deadline goes into the feed fetch, not just the Kalshi client: an unconditional
+            # 60s timeout plus a retry is 122s of predictor call inside a 15-minute scan.
+            feed = fetch(cfg.base_url, deadline=effective_deadline)
         except FeedUnavailable as exc:
             reports[sport] = {"feed_error": str(exc)}
             per_sport[sport] = {"feed_ok": False, "edges": []}
@@ -250,9 +241,11 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[[str], Feed] = fet
         reports[sport] = report
         per_sport[sport] = {"feed_ok": True, "edges": result.edges}
     # Reviewing is the optional, slow part: stop when the scan budget is nearly gone. The edges
-    # are already computed and are still written, just with tier=unreviewed.
+    # are already computed and are still written, just with tier=unreviewed. review_candidates
+    # re-checks the same rule before every call, so a long candidate list cannot walk past it.
     if should_review(effective_deadline):
-        reviews = review_candidates(requests, store or MemoryReviewStore(), reviewer, budget=budget, now=now)
+        reviews = review_candidates(requests, store or MemoryReviewStore(), reviewer, budget=budget,
+                                    now=now, deadline=effective_deadline)
         apply_reviews(edges, reviews)
     else:
         log.warning("sports scan: under %ss of scan budget left; skipping reviewer calls",
@@ -355,7 +348,7 @@ def prune_sports_if_healthy(
 def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -> SportsRun:
     cfg = load_reviewer_config()
     key = os.getenv("OPENROUTER_API_KEY")
-    reviewer = OpenRouterReviewer(key, cfg.model, cfg.timeout_seconds) if key else None
+    reviewer = OpenRouterReviewer(key, cfg.model, cfg.timeout_seconds, deadline=deadline) if key else None
     # The scan's deadline, not a fresh budget: sports paginates the public markets API per
     # series and must not be able to overrun the hourly timer and overlap the next run.
     run = run_sports_scan(now, SportsKalshi(deadline=deadline), store=SupabaseReviewStore(supa), reviewer=reviewer,
