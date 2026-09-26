@@ -152,7 +152,11 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
     monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([{"engine": "weather"}], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "sports_due", lambda now: True)
-    monkeypatch.setattr(scan, "run_sports_for_cron", lambda now, supa: (
+    # scan.main() defaults to the wall clock, and cpi_nowcast only runs at 08/12/16 ET. Without
+    # this the CPI engine runs against the stub client whenever the suite happens to execute in
+    # one of those hours, which is how these two sports tests became time-of-day flaky.
+    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: False)
+    monkeypatch.setattr(scan, "run_sports_for_cron", lambda now, supa, **kw: (
         [{"engine": "sports_nfl"}],
         [{"edge_type": "SPORTS", "engine": "sports_nfl", "market_ticker": "T1"}],
         {"nfl": {"matched": 1}}))
@@ -180,8 +184,10 @@ def test_scan_main_survives_a_sports_crash(monkeypatch, capsys):
     monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "sports_due", lambda now: True)
+    # See the note in test_scan_main_includes_sports_when_due: keep CPI off the wall clock.
+    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: False)
 
-    def boom(now, supa):
+    def boom(now, supa, **kw):
         raise RuntimeError("kalshi down")
 
     monkeypatch.setattr(scan, "run_sports_for_cron", boom)

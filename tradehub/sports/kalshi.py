@@ -36,7 +36,34 @@ def team_code(sm: SportsMarket) -> str | None:
     return code or None
 
 
+def parse_markets_tolerantly(
+    raws: list[dict[str, Any]], series_ticker: str
+) -> tuple[list[SportsMarket], list[dict[str, Any]]]:
+    """Parse a page of markets, skipping rows that do not parse.
+
+    Kalshi occasionally returns a row without a ticker or without prices, and
+    `parse_sports_market` does `raw["ticker"]` / `raw["event_ticker"]`. One such row used to
+    raise and take every other market in the series with it, so a partially broken series
+    looked exactly like an empty one. Rejected rows are returned so the caller can report
+    them rather than dropping them silently.
+    """
+    markets: list[SportsMarket] = []
+    rejected: list[dict[str, Any]] = []
+    for raw in raws:
+        try:
+            markets.append(parse_sports_market(raw))
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            rejected.append({
+                "ticker": raw.get("ticker") if isinstance(raw, dict) else None,
+                "series": series_ticker,
+                "reason": "malformed_market",
+                "detail": f"{type(exc).__name__}: {exc}",
+            })
+    return markets, rejected
+
+
 class SportsKalshi(KalshiHistoryClient):
     def open_markets(self, series_ticker: str) -> list[SportsMarket]:
         raws = self._paginate("/markets", "markets", {"series_ticker": series_ticker, "status": "open", "limit": PAGE_LIMIT})
-        return [parse_sports_market(r) for r in raws]
+        markets, _rejected = parse_markets_tolerantly(raws, series_ticker)
+        return markets

@@ -446,7 +446,7 @@ def main(
     sports_ran = False
     if client is not None and sports_due(now):
         try:
-            sports_predictions, sports_edges, sports_summary = run_sports_for_cron(now, client)
+            sports_predictions, sports_edges, sports_summary = run_sports_for_cron(now, client, deadline=deadline)
             sports_ran = True
         except Exception as exc:  # a predictor/Kalshi outage must not cost weather/gas
             sports_summary = {"error": repr(exc)}

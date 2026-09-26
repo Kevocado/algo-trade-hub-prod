@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from dataclasses import dataclass, field
@@ -30,6 +31,8 @@ from tradehub.sports.reviewer import (
 
 SPORTS = ("nfl", "cfb")
 LEDGER_CHUNK = 100
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -105,10 +108,18 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
     match = match_games(feed.games, markets_by_series, cfg.series, aliases)
     out = SportScan()
     priced = 0
+    skipped = 0
     for mg in match.matched:
         for kind, markets in mg.markets.items():
             for sm in markets:
-                prob = price_market(kind, sm, mg)
+                # One market the pricer or the candidate filter chokes on must not cost the
+                # whole sport: a single odd strike used to abort the scan with nothing written.
+                try:
+                    prob = price_market(kind, sm, mg)
+                except Exception:
+                    skipped += 1
+                    log.exception("sports price failed sport=%s market=%s", cfg.sport, sm.market.ticker)
+                    continue
                 if prob is None:
                     continue
                 priced += 1
@@ -142,7 +153,8 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
     out.report = {
         "feed_games": len(feed.games), "feed_rejected": feed.rejected, "matched": len(match.matched),
         "unmatched_games": match.unmatched_games, "unmatched_events": match.unmatched_events,
-        "markets_priced": priced, "predictions": len(out.predictions), "edges": len(out.edges),
+        "markets_priced": priced, "markets_skipped": skipped,
+        "predictions": len(out.predictions), "edges": len(out.edges),
         "candidates": len(out.review_requests), "alias_version": aliases.version,
     }
     return out
@@ -214,11 +226,13 @@ def sports_due(now: datetime) -> bool:
     return os.getenv("SPORTS_SCAN_EVERY_RUN") == "1" or now.astimezone(timezone.utc).hour % 3 == 0
 
 
-def run_sports_for_cron(now: datetime, supa) -> tuple[list[dict], list[dict], dict]:
+def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -> tuple[list[dict], list[dict], dict]:
     cfg = load_reviewer_config()
     key = os.getenv("OPENROUTER_API_KEY")
     reviewer = OpenRouterReviewer(key, cfg.model, cfg.timeout_seconds) if key else None
-    run = run_sports_scan(now, SportsKalshi(), store=SupabaseReviewStore(supa), reviewer=reviewer,
+    # The scan's deadline, not a fresh budget: sports paginates the public markets API per
+    # series and must not be able to overrun the hourly timer and overlap the next run.
+    run = run_sports_scan(now, SportsKalshi(deadline=deadline), store=SupabaseReviewStore(supa), reviewer=reviewer,
                           budget=cfg.daily_budget)
     return unrecorded(supa, run.predictions), run.edges, run.reports
 
