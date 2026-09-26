@@ -30,7 +30,7 @@ from tradehub.sports.scorecard import reviewer_scorecard
 
 # ── App ─────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="Kalshi Edge API",
+    title="Algo Trade Hub API",
     description="Thin API layer over the Kalshi prediction engine. Paper trading only until 200+ trade +EV proof.",
     version="1.0.0",
     docs_url="/docs",

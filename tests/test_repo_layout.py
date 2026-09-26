@@ -265,3 +265,18 @@ def test_deploy_workflow_pushes_with_the_built_in_token():
     text = (REPO / ".github/workflows/deploy-tradehub.yml").read_text(encoding="utf-8")
     assert "password: ${{ secrets.GITHUB_TOKEN }}" in text
     assert "GHCR_PAT" not in text
+
+
+def test_the_app_is_branded_algo_trade_hub():
+    html = (REPO / "market_sentiment_tool/index.html").read_text(encoding="utf-8")
+    assert "<title>Algo Trade Hub</title>" in html
+    assert "Lovable" not in html and "lovable.dev" not in html
+    assert "Algo Trade Hub" in (REPO / "market_sentiment_tool/src/App.tsx").read_text(encoding="utf-8")
+    assert 'title="Algo Trade Hub API"' in (REPO / "tradehub/api/main.py").read_text(encoding="utf-8")
+
+
+def test_rls_hardening_migration_is_recorded():
+    sql = (REPO / "market_sentiment_tool/supabase/migrations/20260416000010_rls_portfolio_news.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE kalshi_portfolio ENABLE ROW LEVEL SECURITY" in sql
+    assert "ALTER TABLE news_embeddings ENABLE ROW LEVEL SECURITY" in sql
+    assert "FOR SELECT" in sql and "FOR ALL" not in sql
