@@ -226,3 +226,8 @@ Check specifically:
 
 - `scan_cpi` catches per-market parse/probability errors, logs them and continues.
 - Regression with one malformed and one valid market keeps the valid prediction; `tests/test_scan_cpi.py` → 10 passed.
+
+## Review fix 4 — reject unknown CPI series
+
+- CLI now calls `parser.error` for any `--engine cpi_nowcast --series` outside `CPI_TARGETS`.
+- Regression added; `tests/test_backtest_cpi.py` → 7 passed.

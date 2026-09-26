@@ -132,3 +132,9 @@ def test_backtest_cli_core_series_uses_core_nowcast(monkeypatch):
                                   "--start", "2026-01-01", "--end", "2026-08-31", "--lead-days", "7"]) == 0
     assert kinds == ["core"]
     assert captured["engine_version"] == "cpi-core-v1" and captured["config"]["lead_days"] == 7
+
+
+def test_backtest_cli_rejects_unknown_cpi_series():
+    with pytest.raises(SystemExit):
+        backtest_engines.main(["--engine", "cpi_nowcast", "--series", "KXUNKNOWN",
+                               "--start", "2026-01-01", "--end", "2026-08-31"])
