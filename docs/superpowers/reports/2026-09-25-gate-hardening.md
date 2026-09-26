@@ -540,3 +540,8 @@ therefore completed inline by the controller against the plan, this report, the 
 - RED: `tests/test_track_record.py` failed 2 tests (`n_settled` counted unquoted rows; no `n_unquoted`).
 - GREEN: `pytest tests/test_track_record.py tests/test_track_record_contracts.py -q` → 23 passed.
 - `compute_engine_summary` and `compute_calibration` now score only settled rows with `market_prob`; `n_unquoted` counts the rest. A present `market_prob` with missing `market_brier` still fails closed.
+
+## Review fix 2 — preserve the scan's engine version
+
+- Added a regression using `WEATHER_ENGINE_VERSION` through `refresh_track_record`.
+- `pytest tests/test_track_record_contracts.py -q` → 8 passed. No production change was required because Task 2 already preserves the settled row's real version.
