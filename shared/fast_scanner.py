@@ -5,8 +5,6 @@ fast_scanner.py — High-Frequency Weather Arbitrage Scanner
 1. Polls NWS API (api.weather.gov) for active macro alerts
 2. Queries Kalshi for any weather-related open markets (Chicago rain, NY temps)
 3. Computes implied probability and generates WEATHER edges -> kalshi_edges
-
-Procfile: scanner_fast: PYTHONPATH=. python shared/fast_scanner.py
 """
 
 import time

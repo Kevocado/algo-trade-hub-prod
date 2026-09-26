@@ -186,3 +186,50 @@ def test_kalshi_edges_migration_never_hands_legacy_rows_to_scan_engines():
     assert "'legacy_' || lower(edge_type)" in sql
     # The unique index on market_id fails if the legacy inserters left duplicates: dedupe first.
     assert sql.index("DELETE FROM kalshi_edges") < sql.index("CREATE UNIQUE INDEX IF NOT EXISTS kalshi_edges_market_id_key")
+
+
+def test_dockerfile_and_dockerignore():
+    docker = (REPO / "Dockerfile").read_text(encoding="utf-8")
+    ignore = (REPO / ".dockerignore").read_text(encoding="utf-8").split()
+    assert "uvicorn tradehub.api.main:app" in docker
+    assert "uv pip install --system" in docker and "-r pyproject.toml" in docker
+    assert "npm run build" in docker and "ENV PYTHONPATH=/app" in docker
+    for pattern in (".env", ".env.*", "*.pem", "*.key", "_attic", ".venv", "**/node_modules", "models", "*.pkl"):
+        assert pattern in ignore, f".dockerignore must exclude {pattern}"
+    # Docker matches .dockerignore patterns against the context-root-relative path, so a bare
+    # `*.pem` / `models` only excludes the top level. Without the `**/` prefix a nested
+    # `subdir/.env`, `subdir/keys/private.pem` or `subdir/models/` would still enter the context.
+    for pattern in ("**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/models", "**/model", "**/*.pkl"):
+        assert pattern in ignore, f".dockerignore must exclude {pattern} at any depth"
+
+
+def test_deploy_workflow_builds_then_deploys_to_vps():
+    import yaml
+
+    path = REPO / ".github/workflows/deploy-tradehub.yml"
+    assert path.is_file(), "deploy workflow missing"
+    text = path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
+    assert set(workflow["jobs"]) == {"test", "build", "vps"}
+    assert workflow["jobs"]["build"]["needs"] == "test"
+    assert workflow["jobs"]["vps"]["needs"] == "build"
+    assert workflow["jobs"]["vps"]["if"] == "vars.VPS_HOST != ''"
+    assert workflow["env"]["IMAGE"] == "ghcr.io/kevocado/tradehub"
+    for needle in (
+        "deploy tradehub ${{ github.sha }}",
+        "SUPABASE_SERVICE_ROLE_KEY: dummy-baseline-placeholder",
+        "--build-arg VITE_SUPABASE_URL=",
+        "secrets.VPS_KNOWN_HOSTS",
+    ):
+        assert needle in text, f"workflow missing {needle}"
+    for azure in ("az login", "containerapp", "AZURE_"):
+        assert azure not in text, f"workflow must not reference Azure ({azure})"
+
+
+def test_pm2_process_files_are_retired():
+    assert not (REPO / "Procfile").exists()
+    assert not (REPO / "ecosystem.config.js").exists()
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "## VPS deployment" in readme
+    assert "tradehub-scan.timer" in readme and "deploy tradehub" in readme
+    assert "pm2 start" not in readme

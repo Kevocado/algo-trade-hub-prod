@@ -5,7 +5,7 @@ Single source of truth for all environment variables. Every sub-system
 (market_sentiment_tool, tradehub, shared scanners)
 imports from here. No sub-system keeps its own .env or load_dotenv call.
 
-Usage (with PYTHONPATH=. set in Procfile):
+Usage (with PYTHONPATH=. set):
     from shared.config import SUPABASE_URL, ALPACA_API_KEY, ...
 """
 
