@@ -8,6 +8,13 @@ series' data list lines up with the non-vline categories.
 Timing rules (the publish time of each daily value is not documented):
 - a nowcast labelled day L is treated as known from 00:00 ET on L+1;
 - the "Actual" value sits on the BLS release day R and is known from 08:30 ET on R.
+
+Revision policy: the "Actual" series is the BLS FIRST print for the month and the
+chart does not restate history, so an old month keeps its first print even after BLS
+revises the published number. The engine's error model is calibrated against first
+prints, so this is load-bearing; `tests/test_cleveland_fed.py` pins it on December
+2021, a month BLS revised by more than 0.2pp. The series is the seasonally adjusted
+month-over-month percent change, not NSA.
 """
 
 from __future__ import annotations

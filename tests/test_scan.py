@@ -42,12 +42,14 @@ def test_edge_row_shape():
         EdgeSuggestion(m.ticker, "yes", 0.30, True, 12.5, 0.45, 0.32),
         "WEATHER",
         engine="weather",
+        engine_version="weather-v1",
     )
     assert row["market_url"] == "https://kalshi.com/markets/kxhighny"
     assert row["edge"] == pytest.approx(0.125)
     assert row["model_probability"] == pytest.approx(0.45) and row["market_price"] == pytest.approx(0.32)
     assert row["edge_type"] == "WEATHER" and row["maker"] is True
     assert row["engine"] == "weather"
+    assert row["engine_version"] == "weather-v1"
     assert row["gate_status"] == "SHADOW"
     assert row["expires_at"] == m.close_time.isoformat()
     assert row["updated_at"]
@@ -111,11 +113,11 @@ def test_latest_gate_statuses_requires_latest_backtest_and_matching_track_record
             return Table(name)
 
     assert scan.latest_gate_statuses(
-        Client(), {"weather": "weather-v2", "gas": "gas-v9", "crypto": "crypto-v4"}
+        Client(), {("weather", "weather-v2"), ("gas", "gas-v9"), ("crypto", "crypto-v4")}
     ) == {
-        "weather": "PROMOTED",
-        "gas": "SHADOW",
-        "crypto": "SHADOW",
+        ("weather", "weather-v2"): "PROMOTED",
+        ("gas", "gas-v9"): "SHADOW",
+        ("crypto", "crypto-v4"): "SHADOW",
     }
     backtest_calls = [call for call in calls if call[0] == "backtest_runs"]
     assert len(backtest_calls) == 3
@@ -156,17 +158,17 @@ def test_latest_gate_statuses_never_promotes_a_different_engine_version():
         def table(self, name):
             return Table(name)
 
-    assert scan.latest_gate_statuses(Client(), {"gas": "gas-v1"}) == {"gas": "SHADOW"}
-    assert scan.latest_gate_statuses(Client(), {"gas": "gas-v0"}) == {"gas": "PROMOTED"}
+    assert scan.latest_gate_statuses(Client(), {("gas", "gas-v1")}) == {("gas", "gas-v1"): "SHADOW"}
+    assert scan.latest_gate_statuses(Client(), {("gas", "gas-v0")}) == {("gas", "gas-v0"): "PROMOTED"}
 
 
-def test_apply_gate_statuses_keys_on_engine_not_edge_type():
+def test_apply_gate_statuses_keys_on_engine_version_pair():
     edges = [
-        {"engine": "weather", "edge_type": "MACRO"},
-        {"engine": "gas", "edge_type": "WEATHER"},
+        {"engine": "weather", "engine_version": "weather-v1", "edge_type": "MACRO"},
+        {"engine": "gas", "engine_version": "gas-v2", "edge_type": "WEATHER"},
     ]
 
-    scan.apply_gate_statuses(edges, {"weather": "PROMOTED", "gas": "SHADOW"})
+    scan.apply_gate_statuses(edges, {("weather", "weather-v1"): "PROMOTED", ("gas", "gas-v2"): "SHADOW"})
 
     assert edges[0]["gate_status"] == "PROMOTED"
     assert edges[1]["gate_status"] == "SHADOW"
@@ -505,8 +507,9 @@ def test_scan_main_assigns_one_fifteen_minute_deadline_to_network_scan(monkeypat
     monkeypatch.setattr(scan, "load_engine_config", lambda engine: EngineConfig(min_edge_pct=3.0))
     monkeypatch.setattr(scan, "scan_weather", lambda *args, **kwargs: ([], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([], []))
-    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, engines: {"weather": "SHADOW", "gas": "SHADOW"})
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
+    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
     import tradehub.predictions as predictions_module
@@ -545,8 +548,9 @@ def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, caps
 
     monkeypatch.setattr(scan, "scan_weather", weather)
     monkeypatch.setattr(scan, "scan_gas", gas)
-    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, engines: {"weather": "SHADOW", "gas": "SHADOW"})
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: pruned.append(produced))
+    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
     import tradehub.predictions as predictions_module
@@ -576,8 +580,9 @@ def test_scan_main_persists_successful_rows_from_a_partial_weather_scan(monkeypa
         kwargs["failures"].append("weather/KXHIGHCHI: forecast unavailable") or ([prediction], [edge])
     ))
     monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([], []))
-    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, engines: {"weather": "SHADOW", "gas": "SHADOW"})
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: pruned.append(produced))
+    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
     import tradehub.predictions as predictions_module
@@ -601,8 +606,9 @@ def test_scan_main_writes_edges_for_engines_whose_gate_loses(monkeypatch):
     monkeypatch.setattr(scan, "load_engine_config", lambda engine: EngineConfig(min_edge_pct=3.0))
     monkeypatch.setattr(scan, "scan_weather", lambda *args, **kwargs: ([weather_prediction], [weather_edge]))
     monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([gas_prediction], [gas_edge]))
-    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, engines: {"weather": "SHADOW", "gas": "SHADOW"})
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
+    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
     import tradehub.predictions as predictions_module

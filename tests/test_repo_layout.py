@@ -203,6 +203,30 @@ def test_dockerfile_and_dockerignore():
         assert pattern in ignore, f".dockerignore must exclude {pattern} at any depth"
 
 
+def test_tradehub_data_package_is_not_gitignored():
+    """`Data/` in .gitignore is matched case-insensitively on macOS, so it also swallows
+    `tradehub/data/`. Files there must stay visible to `git status` and normal `git add`,
+    otherwise a new data module is silently left untracked and never reaches a PR."""
+    probe = "tradehub/data/_gitignore_probe.py"
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", probe], cwd=REPO, capture_output=True
+    )
+    assert ignored.returncode == 1, (
+        f"{probe} is ignored; a new tradehub/data module would be silently untracked. "
+        "Add a `!tradehub/data/` exception to .gitignore instead of `git add -f`."
+    )
+
+
+def test_tradehub_data_package_keeps_build_artifacts_ignored():
+    """Guard against fixing the case-insensitivity trap by blanket re-including the package,
+    which would un-hide its __pycache__ and litter `git status`."""
+    for artifact in ("tradehub/data/__pycache__/weather.cpython-312.pyc", "Data/big.parquet"):
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", "--no-index", artifact], cwd=REPO, capture_output=True
+        )
+        assert result.returncode == 0, f"{artifact} must stay ignored"
+
+
 def test_deploy_workflow_builds_then_deploys_to_vps():
     import yaml
 
@@ -233,3 +257,11 @@ def test_pm2_process_files_are_retired():
     assert "## VPS deployment" in readme
     assert "tradehub-scan.timer" in readme and "deploy tradehub" in readme
     assert "pm2 start" not in readme
+
+
+def test_deploy_workflow_pushes_with_the_built_in_token():
+    # A personal token needs write:packages to create the GHCR package; the
+    # workflow's own GITHUB_TOKEN (permissions: packages: write) always can.
+    text = (REPO / ".github/workflows/deploy-tradehub.yml").read_text(encoding="utf-8")
+    assert "password: ${{ secrets.GITHUB_TOKEN }}" in text
+    assert "GHCR_PAT" not in text

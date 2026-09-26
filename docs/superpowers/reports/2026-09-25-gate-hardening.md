@@ -534,3 +534,20 @@ therefore completed inline by the controller against the plan, this report, the 
   upsert for an engine/version with zero settled rows, and settle exit 0 despite write errors are
   plan-mandated follow-ups. Any change requires a recorded ruling and a test.
 - Wave B may start only after PR #5 is merged. Do not merge PRs or start step 6 from this branch.
+
+## Review fix 1 — ignore unquoted live predictions
+
+- RED: `tests/test_track_record.py` failed 2 tests (`n_settled` counted unquoted rows; no `n_unquoted`).
+- GREEN: `pytest tests/test_track_record.py tests/test_track_record_contracts.py -q` → 23 passed.
+- `compute_engine_summary` and `compute_calibration` now score only settled rows with `market_prob`; `n_unquoted` counts the rest. A present `market_prob` with missing `market_brier` still fails closed.
+
+## Review fix 2 — preserve the scan's engine version
+
+- Added a regression using `WEATHER_ENGINE_VERSION` through `refresh_track_record`.
+- `pytest tests/test_track_record_contracts.py -q` → 8 passed. No production change was required because Task 2 already preserves the settled row's real version.
+
+## Review fix 3 — synchronize plan/tracker and remove dead constant
+
+- Copied the updated plan byte-for-byte from `origin/plan/2026-09-25-docs-vps-and-gate`.
+- Tracker row 2b now mentions unquoted-prediction exclusion.
+- Removed unused `TRACK_RECORD_TABLE` from `tradehub/settlement.py`.

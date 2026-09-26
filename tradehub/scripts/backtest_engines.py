@@ -242,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     client = KalshiHistoryClient()
     default_series = {"weather": "KXHIGHNY", "gas": GAS_SERIES, "cpi_nowcast": CPI_SERIES}
     series = args.series or default_series[args.engine]
+    if args.engine == "cpi_nowcast" and series not in CPI_TARGETS:
+        parser.error(f"unknown CPI series {series!r}; choose from {sorted(CPI_TARGETS)}")
     cfg = load_engine_config(args.engine)
     settled_raws = client.settled_markets(series)
     if args.engine == "cpi_nowcast":

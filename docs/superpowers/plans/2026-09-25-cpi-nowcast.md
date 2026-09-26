@@ -230,8 +230,8 @@ index 7cd89a4..edd4aa1 100644
 +++ b/tradehub/markets.py
 @@ -47,6 +47,29 @@ def event_date(event_ticker: str) -> date:
      return datetime.strptime(event_ticker.split("-")[1], "%y%b%d").date()
-
-
+ 
+ 
 +def event_month(event_ticker: str) -> date:
 +    """Monthly-release events: 'KXCPI-26AUG' (and legacy 'CPI-22NOV') -> first day of that month.
 +
@@ -257,7 +257,7 @@ index 7cd89a4..edd4aa1 100644
 +
  def yes_interval(market: KalshiMarket, resolution: float) -> tuple[float, float]:
      """Continuous interval of the settled value for which the market resolves YES.
-
+ 
 ```
 
 - [ ] **Step 4: Run to verify it passes**
@@ -897,7 +897,7 @@ index 4de4bad..b856d24 100644
 @@ -1,4 +1,4 @@
 -"""One-shot scan (suggest-only): predict every open weather/gas market, flag trade-worthy edges.
 +"""One-shot scan (suggest-only): predict every open weather/gas/CPI market, flag trade-worthy edges.
-
+ 
  Writes every prediction to the predictions ledger and upserts edges (with Kalshi deep links)
  into kalshi_edges. Never places orders. Cron-ready: runs once and exits.
 @@ -9,20 +9,25 @@ from __future__ import annotations
@@ -908,7 +908,7 @@ index 4de4bad..b856d24 100644
 +from datetime import datetime, timedelta, timezone
  from typing import Any, Callable
  from zoneinfo import ZoneInfo
-
+ 
 +from tradehub.data.cleveland_fed import fetch_nowcast_history
  from tradehub.data.kalshi_live import KalshiLive
  from tradehub.data.rbob import rbob_closes
@@ -921,17 +921,17 @@ index 4de4bad..b856d24 100644
 -from tradehub.markets import KalshiMarket, event_date, market_url
 +from tradehub.markets import KalshiMarket, event_date, event_month, market_url
  from tradehub.predictions import build_prediction_row
-
+ 
 +CPI_SCAN_HOURS_ET = (8, 12, 16)  # 08:05 ET is the last run before the 08:25 ET release-day close
 +_ET = ZoneInfo("America/New_York")
 +
-
+ 
  def edge_row(market: KalshiMarket, s: EdgeSuggestion, edge_type: str) -> dict[str, Any]:
      return {
 @@ -107,6 +112,47 @@ def scan_gas(live, now: datetime, cfg: EngineConfig, *, rbob_fn: Callable[[], li
      return predictions, edges
-
-
+ 
+ 
 +def cpi_scan_due(now: datetime) -> bool:
 +    """The nowcast moves at most once a day, so CPI runs on three of the hourly scans, not all 24."""
 +    return now.astimezone(_ET).hour in CPI_SCAN_HOURS_ET
@@ -1000,7 +1000,7 @@ index 4de4bad..b856d24 100644
 +        "cpi_nowcast": {"predictions": len(cpi_preds), "edges": len(cpi_edges), "status": cpi_status},
      }))
      return 0
-
+ 
 ```
 
 - [ ] **Step 4: Run to verify it passes**
@@ -1195,13 +1195,13 @@ index 2895437..ec20707 100644
 @@ -1,4 +1,4 @@
 -"""Point-in-time decision builders for the weather and gas engines, plus a backtest CLI.
 +"""Point-in-time decision builders for the weather, gas and CPI engines, plus a backtest CLI.
-
+ 
  Each decision carries only observations published at or before its decision time
  (checked by tradehub.backtest.pit.check_no_lookahead inside run_backtest); model
 @@ -16,13 +16,24 @@ from datetime import date, datetime, time, timedelta, timezone
  from typing import Callable, Iterable, Mapping
  from zoneinfo import ZoneInfo
-
+ 
 +from tradehub.backtest.fills import quote_at
  from tradehub.backtest.kalshi_history import KalshiHistoryClient
  from tradehub.backtest.pit import Decision, Observation
@@ -1229,17 +1229,17 @@ index 2895437..ec20707 100644
  from tradehub.engines.weather import WEATHER_ENGINE_VERSION, fit_error_model, weather_prob
 -from tradehub.markets import KalshiMarket, event_date, parse_market
 +from tradehub.markets import KalshiMarket, event_date, event_month, parse_cpi_market, parse_market
-
+ 
  WEATHER_DECISION_TIME = time(23, 30)
  GAS_DECISION_LEAD = timedelta(hours=2)
 +CPI_DECISION_LEAD = timedelta(minutes=25)  # 08:00 ET on release morning (close is 08:25 ET)
  WEATHER_FETCH_MAX_WORKERS = 8
-
-
+ 
+ 
 @@ -115,24 +127,47 @@ def build_gas_decisions(markets: list[KalshiMarket], aaa: list[Observation], rbo
      return decisions
-
-
+ 
+ 
 +def build_cpi_decisions(
 +    markets: list[KalshiMarket],
 +    history: Mapping[date, MonthNowcast],
@@ -1287,8 +1287,8 @@ index 2895437..ec20707 100644
              else []
          )
 @@ -147,12 +182,12 @@ def _histories(
-
-
+ 
+ 
  def main(argv: list[str] | None = None) -> int:
 -    parser = argparse.ArgumentParser(description="Point-in-time backtest for the weather or gas engine.")
 -    parser.add_argument("--engine", choices=["weather", "gas"], required=True)
@@ -1309,7 +1309,7 @@ index 2895437..ec20707 100644
 +    parser.add_argument("--lead-days", type=int, default=0,
 +                        help="cpi_nowcast: decide this many days before release morning (default 0)")
      args = parser.parse_args(argv)
-
+ 
      client = KalshiHistoryClient()
 -    series = args.series or ("KXHIGHNY" if args.engine == "weather" else GAS_SERIES)
 +    default_series = {"weather": "KXHIGHNY", "gas": GAS_SERIES, "cpi_nowcast": CPI_SERIES}

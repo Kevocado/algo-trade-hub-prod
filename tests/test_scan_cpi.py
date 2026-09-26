@@ -95,7 +95,7 @@ def test_main_isolates_a_cpi_failure(monkeypatch, capsys):
     monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
     monkeypatch.setattr(scan, "scan_weather", lambda live, now, cfg, **kwargs: ([{"w": 1}], []))
     monkeypatch.setattr(scan, "scan_gas", lambda live, now, cfg, **kwargs: ([{"g": 1}], [{"e": 1, "engine": "gas"}]))
-    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, versions: {"weather": "SHADOW", "gas": "SHADOW"})
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
 
@@ -109,3 +109,93 @@ def test_main_isolates_a_cpi_failure(monkeypatch, capsys):
     summary = json.loads(capsys.readouterr().out)
     assert summary["cpi_nowcast"]["status"].startswith("error: RuntimeError")
     assert summary["cpi_nowcast"]["predictions"] == 0
+
+
+def test_main_gates_cpi_edges_per_engine_version(monkeypatch):
+    from tradehub.core import supabase_client
+    from tradehub import predictions
+
+    upserted = []
+    monkeypatch.setattr(supabase_client, "get_client", lambda: object())
+    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
+    monkeypatch.setattr(predictions, "record_predictions", lambda *args: None)
+    monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
+    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
+    monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
+    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
+    monkeypatch.setattr(scan, "remove_stale_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {
+        ("cpi_nowcast", "cpi-core-v1"): "PROMOTED",
+    })
+    monkeypatch.setattr(scan, "scan_cpi", lambda *a, **k: ([], [
+        {"market_ticker": "A", "engine": "cpi_nowcast", "engine_version": "cpi-v1"},
+        {"market_ticker": "B", "engine": "cpi_nowcast", "engine_version": "cpi-core-v1"},
+    ]))
+
+    assert scan.main(now=datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc), live=object(), client=object()) == 0
+    assert {row["engine_version"]: row["gate_status"] for row in upserted} == {
+        "cpi-v1": "SHADOW", "cpi-core-v1": "PROMOTED",
+    }
+
+
+@pytest.mark.parametrize("due", [True, False])
+def test_cpi_cleanup_runs_only_on_a_due_hour(monkeypatch, due):
+    from tradehub.core import supabase_client
+    from tradehub import predictions
+    cleaned = []
+    monkeypatch.setattr(supabase_client, "get_client", lambda: object())
+    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: None)
+    monkeypatch.setattr(predictions, "record_predictions", lambda *args: None)
+    monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
+    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
+    monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
+    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: due)
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda *a: {})
+    monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: cleaned.append(produced))
+    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
+    edge = {"market_ticker": "CPI", "engine": "cpi_nowcast", "engine_version": "cpi-v1"}
+    monkeypatch.setattr(scan, "scan_cpi", lambda *a, **k: ([], [edge] if due else []))
+
+    assert scan.main(now=datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc), live=object(), client=object()) == 0
+    cpi_cleaned = [produced for call in cleaned for name, produced in call.items() if name == "cpi_nowcast"]
+    assert bool(cpi_cleaned) is due
+
+
+def test_scan_cpi_skips_one_malformed_market(monkeypatch):
+    from dataclasses import replace
+    good = _lm("KXCPI", 0.3)
+    bad = replace(good, market=replace(good.market, event_ticker="not-a-month"))
+    preds, _ = scan.scan_cpi(FakeLive([bad, good]), NOW, CFG, nowcast_fn=_nowcast_fn([]))
+    assert [p["market_ticker"] for p in preds] == ["KXCPI-26AUG-T0.3"]
+
+
+def test_remove_closed_cpi_edges_deletes_only_past_expiry():
+    deleted = []
+
+    class Query:
+        def __init__(self, name):
+            self.name = name
+        def select(self, *a):
+            return self
+        def eq(self, key, value):
+            self.key, self.value = key, value
+            return self
+        def delete(self):
+            self.name = "delete"
+            return self
+        def execute(self):
+            if self.name == "delete":
+                deleted.append(self.value)
+                return type("R", (), {"data": []})()
+            return type("R", (), {"data": [
+                {"market_id": "closed", "expires_at": "2026-09-11T12:25:00Z"},
+                {"market_id": "open", "expires_at": "2026-09-11T16:25:00Z"},
+            ]})()
+
+    class Client:
+        def table(self, name):
+            return Query(name)
+
+    scan.remove_closed_cpi_edges(Client(), datetime(2026, 9, 11, 13, 0, tzinfo=timezone.utc))
+    assert deleted == ["closed"]

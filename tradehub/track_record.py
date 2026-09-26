@@ -39,6 +39,12 @@ def _settled_only(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [r for r in rows if r.get("result") in ("yes", "no")]
 
 
+def _quoted_settled(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    settled = _settled_only(rows)
+    quoted = [r for r in settled if r.get("market_prob") is not None]
+    return quoted, len(settled) - len(quoted)
+
+
 def _contract_key(row: dict[str, Any]) -> str:
     """Rows about the same Kalshi contract share a key; rows without a ticker stand alone."""
     ticker = row.get("market_ticker")
@@ -73,7 +79,7 @@ def compute_calibration(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     `n` is the effective number of contracts in the bucket (sum of row
     weights); `n_rows` is the raw row count.
     """
-    settled = _settled_only(rows)
+    settled, _ = _quoted_settled(rows)
     groups: dict[str, list[tuple[float, bool, float]]] = {b: [] for b in BUCKETS}
     for row, weight in zip(settled, _contract_weights(settled)):
         confidence, hit = _confidence_and_hit(row)
@@ -103,7 +109,7 @@ def compute_engine_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     contracts"). Market Brier still fails closed: every settled row must
     carry one.
     """
-    settled = _settled_only(rows)
+    settled, n_unquoted = _quoted_settled(rows)
     weights = _contract_weights(settled)
     ours = _weighted_mean([(float(r["brier"]), w) for r, w in zip(settled, weights) if r.get("brier") is not None])
     market_pairs = [(float(r["market_brier"]), w) for r, w in zip(settled, weights) if r.get("market_brier") is not None]
@@ -111,6 +117,7 @@ def compute_engine_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "n_settled": len({_contract_key(r) for r in settled}),
         "n_rows": len(settled),
+        "n_unquoted": n_unquoted,
         "brier_ours": round(ours, 5) if ours is not None else None,
         "brier_market": round(market, 5) if market is not None else None,
     }
