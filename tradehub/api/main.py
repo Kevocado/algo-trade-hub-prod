@@ -225,18 +225,25 @@ def _page(limit: int, offset: int) -> tuple[int, int]:
     return limit, offset
 
 
-def _fetch_all(supa, table: str, build, *, page: int = POSTGREST_CAP, cap: int | None = None) -> list[dict]:
-    """Read a whole table through .range() pages.
+def _fetch_all(supa, table: str, build, *, page: int = POSTGREST_CAP, cap: int | None = None,
+               order: tuple[str, ...] = ("id",)) -> list[dict]:
+    """Read a whole table through ordered `.range()` pages.
 
     A single `.execute()` returns at most PostgREST's 1000-row cap regardless of the `limit`
-    asked for, so any read that must see more than that has to page explicitly and stop on a
-    short page. `cap` bounds a scan that is a sample rather than a complete set.
+    asked for, so any read that must see more has to page explicitly and stop on a short page.
+
+    The `.order()` is not decoration. PostgREST without ORDER BY returns rows in whatever order
+    the query plan produces, and that order is not guaranteed to be the same between two
+    requests, so `.range(0,999)` followed by `.range(1000,1999)` can repeat a row and skip
+    another. On this endpoint that means a `total` that does not match the sum of the pages, and
+    a keep/drop scorecard computed from a set with duplicates. `id` is the only column that is
+    unique and immutable on all three tables read here, so it is the only safe ordering.
     """
     rows: list[dict] = []
     lo = 0
     while True:
         # PostgREST `Range` is inclusive of the last index, so page boundaries advance by `page`.
-        chunk = build(supa.table(table)).range(lo, lo + page - 1).execute().data or []
+        chunk = build(supa.table(table)).order(*order).range(lo, lo + page - 1).execute().data or []
         rows.extend(chunk)
         if len(chunk) < page:
             return rows[:cap] if cap is not None else rows
@@ -257,8 +264,9 @@ def get_sports_edges(
 
     Three things matter here and each has bitten before:
 
-    1. Every read pages with `.range()`. PostgREST caps a response at 1000 rows, so a single
-       `.execute()` silently truncates and `total` would be a lie on a table larger than that.
+    1. Every read pages with an ORDERED `.range()`. PostgREST caps a response at 1000 rows, so a
+       single `.execute()` silently truncates and `total` would be a lie on a larger table — and
+       without `.order()` the pages are not guaranteed to line up at all.
     2. Ranking is applied to ALL matching rows BEFORE offset/limit. Sorting after slicing ranks
        each arbitrary offset window on its own, so a `top_pick` can be stranded on a later page
        behind `filtered` rows.

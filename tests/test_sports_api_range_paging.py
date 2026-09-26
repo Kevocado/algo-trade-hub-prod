@@ -70,6 +70,7 @@ class _Q:
         self.filters: dict = {}
         self.window: tuple[int, int] | None = None
         self.ops: list[str] = []
+        self.ordered: list = []
 
     def select(self, *_a):
         self.ops.append("select")
@@ -99,8 +100,9 @@ class _Q:
         self.rows = [r for r in self.rows if str(r.get(col, "")) > str(val)]
         return self
 
-    def order(self, *_a, **_k):
+    def order(self, col, *rest, **_k):
         self.ops.append("order")
+        self.ordered.append(col if not rest else (col, *rest))
         return self
 
     def limit(self, n):
@@ -114,12 +116,21 @@ class _Q:
         return self
 
     def execute(self):
-        self.store.queries.append({"table": self.table, "ops": list(self.ops), "filters": dict(self.filters)})
+        self.store.queries.append({"table": self.table, "ops": list(self.ops),
+                                   "filters": dict(self.filters), "ordered": list(self.ordered)})
         # Supabase raises when a column does not exist on the real table; a fake that silently
         # returns [] for an unknown column would hide exactly the bug these tests hunt.
         for col in self.filters:
             if self.rows and col not in self.rows[0]:
                 raise AssertionError(f"unknown column {col!r} on {self.table}")
+        # PostgREST without ORDER BY returns rows in whatever order the plan happens to produce,
+        # and that order is not stable between two requests. Paging over an unordered read can
+        # therefore duplicate or skip rows, so a .range() read with no .order() is a bug here.
+        if self.window is not None and not self.ordered:
+            raise AssertionError(
+                f"{self.table} was paged with .range() and no .order(): the pages are not "
+                f"guaranteed to line up ({self.ops})"
+            )
         if self.window is not None:
             lo, hi = self.window
             # PostgREST `Range: lo-hi` is INCLUSIVE of hi and capped at 1000 rows per response.
@@ -304,3 +315,42 @@ def test_started_games_are_excluded_by_the_query_not_only_in_python():
     assert any(op.startswith("gt:") or op.startswith("gte:") for q in reads for op in q["ops"]), (
         f"the not-started filter was not pushed into the query: {reads}"
     )
+
+
+# ── stable ordering: paging an unordered read can skip and duplicate rows ───────
+
+def test_every_paged_read_carries_a_deterministic_order():
+    """PostgREST without ORDER BY returns rows in plan order, which is not stable between two
+    requests, so `.range(0,999)` then `.range(1000,1999)` can repeat a row and lose another. The
+    fake above now raises on any `.range()` without a preceding `.order()`, so this test is really
+    a check that the endpoint cannot regress to an unordered page."""
+    client, supa = _client()
+    client.get("/api/sports-edges", params={"limit": 10})
+    for q in supa.queries:
+        assert q["ordered"], f"{q['table']} was paged without an order clause: {q['ops']}"
+
+
+def test_exactly_one_full_page_then_an_empty_page():
+    """The boundary the old test could not see: 1000 rows is exactly one full page, so the loop
+    must ask for a second page and get nothing back. A `<` vs `<=` slip in the paging loop either
+    drops the 1000th row or sends a pointless extra round trip."""
+    supa = _Supa({"kalshi_edges": _rows()[:POSTGREST_CAP], "sports_reviews": [], "predictions": []})
+    app.dependency_overrides[get_supabase] = lambda: supa
+    body = TestClient(app).get("/api/sports-edges", params={"limit": 10}).json()
+    assert body["total"] == POSTGREST_CAP, body["total"]
+    reads = [q for q in supa.queries if q["table"] == "kalshi_edges"]
+    assert len(reads) == 2, f"1000 rows should be one full page plus one empty probe: {len(reads)}"
+    assert reads[0]["ops"][-1].startswith("range:0,999"), reads[0]["ops"]
+    assert reads[1]["ops"][-1].startswith("range:1000,1999"), reads[1]["ops"]
+    assert len(body["edges"]) == 10
+
+
+def test_the_ordering_column_is_the_primary_key():
+    """`id` is the only column that is unique and immutable on all three tables, so it is the only
+    safe tiebreak; a non-unique column can repeat a row across a page boundary."""
+    from tradehub.api.main import _fetch_all  # noqa: F401  (documents the intent below)
+
+    client, supa = _client()
+    client.get("/api/sports-edges", params={"limit": 10})
+    ordered = {tuple(q["ordered"]) for q in supa.queries}
+    assert ordered == {("id",)}, ordered

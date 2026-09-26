@@ -631,3 +631,33 @@ E   ImportError: cannot import name 'deadline' from 'tradehub.sports'
 was genuinely bounded, the two HTTP paths around it were not, and the test suite could not see it
 because the fakes never spent time. The mid-list test now advances a fake clock 10s per reviewer
 call, which is the only way the "stops part-way through" claim can be checked.
+
+### 3. Paged reads had no ORDER BY
+
+`_fetch_all` paged with `.range()` and no `.order()`. PostgREST without ORDER BY returns rows in
+whatever order the query plan produces, and that order is **not guaranteed to be the same between
+two requests** — so `.range(0,999)` followed by `.range(1000,1999)` can repeat a row and skip
+another. On this endpoint that means a `total` that does not match the sum of its pages, and a
+reviewer keep/drop scorecard computed over a set with duplicates in it.
+
+**RED** — the fake in `tests/test_sports_api_range_paging.py` now raises on any `.range()` that was
+not preceded by an `.order()`, which turned 11 previously-passing tests red plus the 3 new ones:
+
+```
+AssertionError: kalshi_edges was paged with .range() and no .order(): the pages are not
+guaranteed to line up (['select', 'eq', 'gte:expires_at', 'range:0,999'])
+14 failed
+```
+
+**GREEN** — 566 passed (was 563). `_fetch_all` orders by `id`, the only column that is unique and
+immutable on all three tables read here (`kalshi_edges`, `sports_reviews`, `predictions`), so it
+is the only safe tiebreak; a non-unique column can repeat a row across a page boundary.
+
+The new boundary test is the one the old suite could not see: **exactly** 1000 rows is one full
+page, so the loop must ask for a second page and get nothing. It asserts both round trips
+(`range:0,999` then `range:1000,1999`) and `total == 1000`, so a `<` vs `<=` slip in the paging
+loop cannot hide.
+
+**Worth repeating:** the fake, not the assertion, is what makes this class of bug testable. A fake
+that returns rows in insertion order and ignores `.order()` will happily pass a test that claims
+the pages line up.
