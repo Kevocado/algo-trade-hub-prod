@@ -124,6 +124,7 @@ def test_main_gates_cpi_edges_per_engine_version(monkeypatch):
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
     monkeypatch.setattr(scan, "remove_stale_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {
         ("cpi_nowcast", "cpi-core-v1"): "PROMOTED",
     })
@@ -152,6 +153,7 @@ def test_cpi_cleanup_runs_only_on_a_due_hour(monkeypatch, due):
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: due)
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda *a: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: cleaned.append(produced))
+    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
     edge = {"market_ticker": "CPI", "engine": "cpi_nowcast", "engine_version": "cpi-v1"}
     monkeypatch.setattr(scan, "scan_cpi", lambda *a, **k: ([], [edge] if due else []))
 
@@ -166,3 +168,34 @@ def test_scan_cpi_skips_one_malformed_market(monkeypatch):
     bad = replace(good, market=replace(good.market, event_ticker="not-a-month"))
     preds, _ = scan.scan_cpi(FakeLive([bad, good]), NOW, CFG, nowcast_fn=_nowcast_fn([]))
     assert [p["market_ticker"] for p in preds] == ["KXCPI-26AUG-T0.3"]
+
+
+def test_remove_closed_cpi_edges_deletes_only_past_expiry():
+    deleted = []
+
+    class Query:
+        def __init__(self, name):
+            self.name = name
+        def select(self, *a):
+            return self
+        def eq(self, key, value):
+            self.key, self.value = key, value
+            return self
+        def delete(self):
+            self.name = "delete"
+            return self
+        def execute(self):
+            if self.name == "delete":
+                deleted.append(self.value)
+                return type("R", (), {"data": []})()
+            return type("R", (), {"data": [
+                {"market_id": "closed", "expires_at": "2026-09-11T12:25:00Z"},
+                {"market_id": "open", "expires_at": "2026-09-11T16:25:00Z"},
+            ]})()
+
+    class Client:
+        def table(self, name):
+            return Query(name)
+
+    scan.remove_closed_cpi_edges(Client(), datetime(2026, 9, 11, 13, 0, tzinfo=timezone.utc))
+    assert deleted == ["closed"]
