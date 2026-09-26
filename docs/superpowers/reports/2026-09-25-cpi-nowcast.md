@@ -221,3 +221,8 @@ Check specifically:
 
 - Added `cpi_nowcast` to the engine-scoped cleanup allowlist and main cleanup loop.
 - Parametrized main() test proves cleanup runs on a due hour and not on a non-due hour; `tests/test_scan_cpi.py` → 9 passed.
+
+## Review fix 3 — isolate malformed CPI markets
+
+- `scan_cpi` catches per-market parse/probability errors, logs them and continues.
+- Regression with one malformed and one valid market keeps the valid prediction; `tests/test_scan_cpi.py` → 10 passed.

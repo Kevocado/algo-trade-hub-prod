@@ -315,25 +315,28 @@ def scan_cpi(
             continue
         history = nowcast_fn(kind)
         for lm in markets:
-            nowcast = latest_nowcast(history.get(event_month(lm.market.event_ticker)), now)
-            horizon = lm.market.close_time - now
-            if nowcast is None or horizon <= timedelta(0):
-                continue
-            pairs = training_pairs(history, now, horizon)[-window:]
-            model = fit_cpi_error(pairs, window=window, use_bias=use_bias)
-            prob = cpi_prob(lm.market, nowcast.value, model)
-            predictions.append(build_prediction_row(
-                market_ticker=lm.market.ticker, our_prob=prob, market_prob=_mid(lm.quote), engine="cpi_nowcast",
-                as_of=now, engine_version=version,
-                raw_payload={"nowcast": nowcast.value, "nowcast_obs": nowcast.name, "bias": model.bias,
-                             "sigma": model.sigma, "n_train": len(pairs),
-                             "hours_to_close": round(horizon.total_seconds() / 3600.0, 2)},
-            ))
-            suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
-                                       prefer_maker=cfg.prefer_maker)
-            if suggestion:
-                edges.append(edge_row(lm.market, suggestion, "MACRO", engine="cpi_nowcast",
-                                      engine_version=version, updated_at=now))
+            try:
+                nowcast = latest_nowcast(history.get(event_month(lm.market.event_ticker)), now)
+                horizon = lm.market.close_time - now
+                if nowcast is None or horizon <= timedelta(0):
+                    continue
+                pairs = training_pairs(history, now, horizon)[-window:]
+                model = fit_cpi_error(pairs, window=window, use_bias=use_bias)
+                prob = cpi_prob(lm.market, nowcast.value, model)
+                predictions.append(build_prediction_row(
+                    market_ticker=lm.market.ticker, our_prob=prob, market_prob=_mid(lm.quote), engine="cpi_nowcast",
+                    as_of=now, engine_version=version,
+                    raw_payload={"nowcast": nowcast.value, "nowcast_obs": nowcast.name, "bias": model.bias,
+                                 "sigma": model.sigma, "n_train": len(pairs),
+                                 "hours_to_close": round(horizon.total_seconds() / 3600.0, 2)},
+                ))
+                suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
+                                           prefer_maker=cfg.prefer_maker)
+                if suggestion:
+                    edges.append(edge_row(lm.market, suggestion, "MACRO", engine="cpi_nowcast",
+                                          engine_version=version, updated_at=now))
+            except Exception:
+                log.exception("scan engine=cpi_nowcast market=%s failed; skipping", lm.market.ticker)
     return predictions, edges
 
 

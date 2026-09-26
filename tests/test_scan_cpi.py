@@ -158,3 +158,11 @@ def test_cpi_cleanup_runs_only_on_a_due_hour(monkeypatch, due):
     assert scan.main(now=datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc), live=object(), client=object()) == 0
     cpi_cleaned = [produced for call in cleaned for name, produced in call.items() if name == "cpi_nowcast"]
     assert bool(cpi_cleaned) is due
+
+
+def test_scan_cpi_skips_one_malformed_market(monkeypatch):
+    from dataclasses import replace
+    good = _lm("KXCPI", 0.3)
+    bad = replace(good, market=replace(good.market, event_ticker="not-a-month"))
+    preds, _ = scan.scan_cpi(FakeLive([bad, good]), NOW, CFG, nowcast_fn=_nowcast_fn([]))
+    assert [p["market_ticker"] for p in preds] == ["KXCPI-26AUG-T0.3"]
