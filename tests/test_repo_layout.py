@@ -233,3 +233,11 @@ def test_pm2_process_files_are_retired():
     assert "## VPS deployment" in readme
     assert "tradehub-scan.timer" in readme and "deploy tradehub" in readme
     assert "pm2 start" not in readme
+
+
+def test_deploy_workflow_pushes_with_the_built_in_token():
+    # A personal token needs write:packages to create the GHCR package; the
+    # workflow's own GITHUB_TOKEN (permissions: packages: write) always can.
+    text = (REPO / ".github/workflows/deploy-tradehub.yml").read_text(encoding="utf-8")
+    assert "password: ${{ secrets.GITHUB_TOKEN }}" in text
+    assert "GHCR_PAT" not in text
