@@ -58,9 +58,20 @@ def test_sports_scan_passes_the_deadline_into_the_client(monkeypatch):
 
     monkeypatch.setattr(sports_scan, "SportsKalshi", FakeKalshi)
     monkeypatch.setattr(sports_scan, "load_sport_config", lambda sport: _cfg())
-    monkeypatch.setattr(sports_scan, "fetch_feed", lambda url, **k: _feed_stub())
-    sports_scan.run_sports_scan(NOW, FakeKalshi(deadline=99.0))
+    # Patching the module global was NOT enough: `run_sports_scan`'s `fetch` default binds
+    # fetch_feed at definition time, so the real one ran and opened a socket to the Azure
+    # predictor. The test still passed, because a 404 is handled as a feed error -- which is
+    # exactly how a test can quietly need the internet. Pass `fetch=` explicitly and assert it
+    # was used, so a regression to the network fails here.
+    feeds: list[str] = []
+
+    def fetch(url, **kwargs):
+        feeds.append(url)
+        return _feed_stub()
+
+    sports_scan.run_sports_scan(NOW, FakeKalshi(deadline=99.0), fetch=fetch)
     assert captured == {"deadline": 99.0}
+    assert feeds, "the stubbed feed fetch was not used"
 
 
 def _cfg():
@@ -69,8 +80,11 @@ def _cfg():
 
 
 def _feed_stub():
+    # This was never called before (the test's `fetch_feed` patch was ineffective, so the real
+    # one ran and 404'd), which is why it was allowed to be missing required arguments.
     from tradehub.sports.feed import Feed
-    return Feed(sport="nfl", games=(), rejected=[])
+    return Feed(sport="nfl", games=(), rejected=(), generated_at=NOW,
+                calibration={"winner": {}, "spread": {}, "total": {}})
 
 
 # ── (b) malformed market rows ─────────────────────────────────────────────────
