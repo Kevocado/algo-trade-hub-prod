@@ -262,3 +262,32 @@ Check specifically:
   `test_tradehub_data_package_keeps_build_artifacts_ignored`, asserts `__pycache__` and
   `Data/` stay ignored so this cannot be "fixed" later by blanket re-inclusion.
 - Verified by hand: a new `tradehub/data/_probe_tmp.py` now appears in `git status`.
+
+## Review fix 7 — pin the first-print assumption
+
+- Why it matters: `tradehub.engines.cpi` calibrates on (nowcast → BLS first print).
+  If the Cleveland Fed ever restated its "Actual" series to revised values, every pair
+  from `training_pairs()` would silently become a revised target and the fitted sigma
+  would stop describing a first-print payoff — degrading the model with no error raised.
+- Investigation (not assumed). Pulled the live 7.6 MB `nowcast_month.json` (159 months)
+  and queried the BLS public API, then compared the chart's `Actual` series against BLS
+  for every month. Two findings:
+  - The series is the **seasonally adjusted** MoM, not NSA (median abs diff 0.038 SA vs
+    0.136 NSA over 82 months) — the engine's market mapping is correct, no bug here.
+  - For recent months the chart equals BLS exactly (2026-06/07/08 match to 4dp) and the
+    gap widens with the age of the month (2021-12: 0.4705 vs 0.6905). That divergence is
+    the first-print signature: BLS has revised, the chart has not.
+- Chosen pin: **December 2021**, the largest revision in the sample. BLS first printed
+  +0.5% on 2021-12-10 and now publishes +0.69%; the chart still carries 0.470453241537583
+  and the last pre-release nowcast was 0.3890, so it was a genuine miss. The trimmed
+  fixture already contained this month, so the test needs no new fixture and no network.
+- RED / teeth: `test_first_print_pin_detects_a_switch_to_revised_values` replays the
+  payload with the December 2021 actual swapped for the BLS revised value — exactly what a
+  Cleveland Fed restatement would look like — and asserts the pin misses. Without this the
+  pinned assertion could be a tautology.
+- Guard: the pin also asserts the revision gap is still `> 0.1`, so if BLS ever catches up
+  the test says to re-pin a different month instead of silently going vacuous.
+- GREEN: `pytest tests/test_cleveland_fed.py -q` → 8 passed. The module docstring now
+  states the first-print policy, the SA basis, and points at the pin.
+- This supersedes the Task 2 deviation note above, which recorded the `git add -f`
+  workaround; fix 6 removes the need for it.

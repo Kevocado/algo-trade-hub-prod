@@ -57,3 +57,52 @@ def test_fetch_uses_the_keyless_json_url():
     history = fetch_nowcast_history(get_json=get_json)
     assert calls == [(NOWCAST_MONTH_URL, None)]
     assert set(history) == {date(2021, 12, 1), date(2025, 10, 1), date(2026, 8, 1)}
+
+
+# ── First-print pin ──────────────────────────────────────────────────────────
+# tradehub.engines.cpi models (nowcast -> BLS FIRST print). The chart's "Actual"
+# series is the release-day value and the chart never restates history, so for an
+# old month it still holds the first print while BLS's current published number
+# has since been revised. If the Cleveland Fed switched that series to revised
+# values, every pair from training_pairs() would silently become a revised target
+# and the fitted sigma would stop describing a first-print payoff.
+#
+# December 2021 is the pin because BLS revised it hard: first print +0.5% on
+# 2021-12-10, current published value +0.69%. The chart still carries 0.4705, and
+# the last pre-release nowcast was 0.3890, so the print was a genuine miss.
+DEC_2021_FIRST_PRINT = 0.470453241537583
+DEC_2021_BLS_REVISED = 0.69
+DEC_2021_REVISION_GAP = abs(DEC_2021_FIRST_PRINT - DEC_2021_BLS_REVISED)
+
+
+def test_actual_is_the_unrevised_first_print():
+    dec = parse_nowcast_month(PAYLOAD)[date(2021, 12, 1)]
+    assert dec.actual.value == pytest.approx(DEC_2021_FIRST_PRINT, abs=1e-9)
+    # Guard the guard: the pin only has teeth while the two values stay far apart.
+    assert DEC_2021_REVISION_GAP > 0.1, (
+        "BLS has caught up with the December 2021 first print; pick a month that was "
+        "revised more than 0.1pp so this pin can still detect a switch to revised values."
+    )
+
+
+def test_first_print_pin_detects_a_switch_to_revised_values():
+    """Proves the pin above is load-bearing rather than a tautology.
+
+    Replays the payload with the December 2021 actual swapped for the BLS revised
+    value, exactly as a Cleveland Fed restatement would, and the pin must miss.
+    """
+    mutated = json.loads(json.dumps(PAYLOAD))
+    patched = False
+    for entry in mutated:
+        for s in entry["dataset"]:
+            if s["seriesname"] != "Actual CPI Inflation":
+                continue
+            for point in s["data"]:
+                if point.get("value") not in (None, ""):
+                    point["value"] = DEC_2021_BLS_REVISED
+                    patched = True
+    assert patched, "fixture no longer carries a December 2021 headline actual to replace"
+
+    dec = parse_nowcast_month(mutated)[date(2021, 12, 1)]
+    assert dec.actual.value == pytest.approx(DEC_2021_BLS_REVISED)
+    assert dec.actual.value != pytest.approx(DEC_2021_FIRST_PRINT, abs=1e-9)
