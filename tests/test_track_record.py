@@ -63,10 +63,22 @@ def test_compute_engine_summary_briers():
     assert summary["brier_market"] == pytest.approx((0.25 + 0.81) / 2)
 
 
-def test_compute_engine_summary_missing_market_brier_is_none():
+def test_compute_engine_summary_missing_market_prob_is_unquoted():
     rows = [_settled("a", 0.7, None, "yes")]
     summary = track_record.compute_engine_summary(rows)
+    assert summary["n_settled"] == 0
+    assert summary["n_unquoted"] == 1
     assert summary["brier_market"] is None
+
+
+def test_unquoted_market_prob_is_excluded_from_scoring():
+    rows = [_settled("a", 0.9, 0.5, "yes"), _settled("b", 0.9, 0.5, "yes"),
+            _settled("c", 0.9, 0.5, "yes"), _settled("d", 0.9, None, "no")]
+    summary = track_record.compute_engine_summary(rows)
+    assert summary["n_settled"] == 3
+    assert summary["n_unquoted"] == 1
+    assert summary["brier_ours"] == pytest.approx(0.01)
+    assert summary["brier_market"] == pytest.approx(0.25)
 
 
 def test_partial_market_brier_coverage_fails_closed_and_blocks_gate():
