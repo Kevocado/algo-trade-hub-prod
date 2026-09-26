@@ -247,3 +247,18 @@ Check specifically:
   market retained).
 - Behaviour note: this is suggest-only and SHADOW, so no money is at risk; the defect was
   that the board showed edges on closed markets.
+
+## Review fix 6 — stop `.gitignore` from hiding `tradehub/data/`
+
+- Problem: `.gitignore` line 75 was `Data/`. On macOS git matches case-insensitively, so it
+  also matched `tradehub/data/`. The earlier PR worked around it with `git add -f` on one
+  file, which left every future module in that package silently untracked.
+- Rejected fix: `!tradehub/data/**`. It works for modules but also un-hides
+  `tradehub/data/__pycache__/`, which then litters `git status` (verified).
+- Fix: anchor the rule to the repo root as `/Data/`. It still ignores the legacy top-level
+  dataset directory (there is no root `Data/` today) and no longer matches the package.
+- RED: `test_tradehub_data_package_is_not_gitignored` failed with `assert 0 == 1`.
+- GREEN: `pytest tests/test_repo_layout.py -q` → 23 passed. A second guard,
+  `test_tradehub_data_package_keeps_build_artifacts_ignored`, asserts `__pycache__` and
+  `Data/` stay ignored so this cannot be "fixed" later by blanket re-inclusion.
+- Verified by hand: a new `tradehub/data/_probe_tmp.py` now appears in `git status`.

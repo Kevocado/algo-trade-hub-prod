@@ -72,7 +72,11 @@ models/
 *.h5
 *.pt
 *.onnx
-Data/
+# Legacy top-level dataset directory. This must stay anchored to the repo root: an
+# unanchored `Data/` is matched case-insensitively on macOS, so it also matches
+# `tradehub/data/` and a new module there is silently left untracked and never reaches a
+# PR. Re-including `tradehub/data/**` instead would also un-hide its `__pycache__/`.
+/Data/
 *.pdf
 
 # ── Logs ─────────────────────────────────────────
