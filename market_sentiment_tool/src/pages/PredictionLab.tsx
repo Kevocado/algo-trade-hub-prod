@@ -6,8 +6,23 @@ import { useMarketEdges, KalshiEdge } from "@/hooks/useMarketEdges";
 import { Loader2, TrendingUp, Cloud, Globe, Trophy, Brain, ExternalLink, Zap, Activity } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { GateBadge } from "@/components/GateBadge";
+import { TIER_LABELS, isExecutableSportsEdge, rejectReasonLabel, sportsTierOf } from "@/lib/sportsEdges";
+
+const TIER_BADGE_CLASS: Record<string, string> = {
+  top_pick: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
+  flagged: "bg-amber-500/10 text-amber-400 border-amber-500/30",
+  unreviewed: "bg-slate-500/10 text-slate-400 border-slate-500/30",
+  filtered: "bg-rose-500/10 text-rose-400 border-rose-500/30",
+};
 
 const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
+  // Sports edges carry a reviewer tier in raw_payload. A candidate the filter REJECTED must not
+  // be rendered like a Top Pick behind an "Execute Trade" button.
+  const sportsTier = sportsTierOf(edge);
+  const executable = isExecutableSportsEdge(sportsTier);
+  const rejectReasons: string[] = Array.isArray(edge.raw_payload?.reject_reasons)
+    ? edge.raw_payload.reject_reasons
+    : [];
   const getIcon = (type: string) => {
     switch (type) {
       case 'WEATHER': return <Cloud className="w-4 h-4 text-sky-400" />;
@@ -48,6 +63,19 @@ const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
             {edgePct}% EDGE
           </Badge>
           <GateBadge edge={edge} />
+          {sportsTier && (
+            <Badge
+              variant="outline"
+              title={sportsTier === "filtered"
+                ? "Rejected by the sports candidate filter. Shown for transparency, not tradeable."
+                : "Sports reviewer tier"}
+              className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                TIER_BADGE_CLASS[sportsTier] ?? TIER_BADGE_CLASS.unreviewed
+              }`}
+            >
+              {TIER_LABELS[sportsTier]}
+            </Badge>
+          )}
           </div>
         </div>
       </CardHeader>
@@ -85,9 +113,20 @@ const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
         )}
 
         <div className="flex gap-2 pt-2">
-           <button className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-emerald-950 font-bold py-2 rounded-md text-xs transition-colors flex items-center justify-center gap-2">
-             <Zap className="w-3 h-3" /> Execute Trade
-           </button>
+           {executable ? (
+             <button className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-emerald-950 font-bold py-2 rounded-md text-xs transition-colors flex items-center justify-center gap-2">
+               <Zap className="w-3 h-3" /> Execute Trade
+             </button>
+           ) : (
+             <p className="flex-1 bg-rose-500/5 border border-rose-500/30 text-rose-300 font-bold py-2 px-2 rounded-md text-xs text-center">
+               Rejected by candidate filter — not tradeable
+               {rejectReasons.length > 0 && (
+                 <span className="block font-normal normal-case text-rose-400/80 mt-0.5">
+                   {rejectReasons.map(rejectReasonLabel).join(" · ")}
+                 </span>
+               )}
+             </p>
+           )}
            <button className="p-2 aspect-square bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-md transition-colors group-hover:border-emerald-500/30">
              <ExternalLink className="w-3 h-3 text-slate-400" />
            </button>

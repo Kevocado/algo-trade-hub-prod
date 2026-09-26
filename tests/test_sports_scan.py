@@ -9,6 +9,7 @@ from tradehub.sports.config import load_sport_config
 from tradehub.sports.feed import FeedUnavailable, parse_feed
 from tradehub.sports.kalshi import parse_sports_market
 from tradehub.sports.reviewer import Review
+from tradehub.sports.scan import SportsRun
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sports"
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)   # Sunday 17:00Z games are 29h out
@@ -83,7 +84,7 @@ def test_apply_reviews_sets_tiers_without_touching_probabilities():
 def test_run_sports_scan_reports_a_down_predictor_and_keeps_going():
     kalshi = FakeKalshi("cfb")
 
-    def fetch(base_url):
+    def fetch(base_url, **_kw):        # the scan deadline is threaded in as a kwarg
         if "nfl" in base_url:
             raise FeedUnavailable("404")
         return _feed("cfb")
@@ -152,17 +153,30 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
     monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([{"engine": "weather"}], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "sports_due", lambda now: True)
-    monkeypatch.setattr(scan, "run_sports_for_cron", lambda now, supa: (
-        [{"engine": "sports_nfl"}], [{"edge_type": "SPORTS"}], {"nfl": {"matched": 1}}))
+    # scan.main() defaults to the wall clock, and cpi_nowcast only runs at 08/12/16 ET. Without
+    # this the CPI engine runs against the stub client whenever the suite happens to execute in
+    # one of those hours, which is how these two sports tests became time-of-day flaky.
+    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: False)
+    sport_edges = [{"edge_type": "SPORTS", "engine": "sports_nfl", "market_ticker": "T1"}]
+    monkeypatch.setattr(scan, "run_sports_for_cron", lambda now, supa, **kw: SportsRun(
+        predictions=[{"engine": "sports_nfl"}],
+        edges=sport_edges,
+        reports={"nfl": {"matched": 1}},
+        per_sport={"nfl": {"feed_ok": True, "edges": sport_edges}},
+    ))
     monkeypatch.setattr(supabase_client, "get_client", lambda: "supa")
     monkeypatch.setattr(predictions, "record_predictions", lambda supa, rows: prediction_writes.append(rows))
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: edge_writes.append(rows))
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, versions: {"weather": "SHADOW", "gas": "SHADOW"})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     assert scan.main() == 0
     assert [r["engine"] for rows in prediction_writes for r in rows] == ["weather", "sports_nfl"]
-    assert [row for rows in edge_writes for row in rows] == [{"edge_type": "SPORTS"}]
+    assert [row for rows in edge_writes for row in rows] == [
+        {"edge_type": "SPORTS", "engine": "sports_nfl", "market_ticker": "T1", "gate_status": "SHADOW"}
+    ]
     assert json.loads(capsys.readouterr().out)["sports"] == {"nfl": {"matched": 1}}
 
 
@@ -175,8 +189,10 @@ def test_scan_main_survives_a_sports_crash(monkeypatch, capsys):
     monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "sports_due", lambda now: True)
+    # See the note in test_scan_main_includes_sports_when_due: keep CPI off the wall clock.
+    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: False)
 
-    def boom(now, supa):
+    def boom(now, supa, **kw):
         raise RuntimeError("kalshi down")
 
     monkeypatch.setattr(scan, "run_sports_for_cron", boom)
@@ -185,6 +201,13 @@ def test_scan_main_survives_a_sports_crash(monkeypatch, capsys):
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: None)
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, versions: {"weather": "SHADOW", "gas": "SHADOW"})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
-    assert scan.main() == 0
-    assert "kalshi down" in json.loads(capsys.readouterr().out)["sports"]["error"]
+    # A sports failure is recorded in `failures` (B6), so the run reports partial_failure
+    # while every other engine's write still lands.
+    assert scan.main() == 1
+    summary = json.loads(capsys.readouterr().out)
+    assert "kalshi down" in summary["sports"]["error"]
+    assert any("kalshi down" in f for f in summary["failures"]), summary["failures"]
+    assert summary["writes"]["edges"]["weather"] == "ok"

@@ -16,6 +16,20 @@
 
 **Spec:** [docs/superpowers/specs/2026-09-23-trade-hub-prediction-scope-design.md](../specs/2026-09-23-trade-hub-prediction-scope-design.md) §6 (promotion gate). The "contract" and minimum-bucket rules were added to §6 on 2026-09-25 together with this plan.
 
+## Additions after PR #4 merged (2026-09-25) — apply throughout
+
+PR #4's final review surfaced two gate problems that belong to this plan. Implement both, test-first, as one extra commit after Task 4 (`fix: gate on the scan's engine version and ignore unquoted live predictions`):
+
+1. **The track-record version must match the scan's version.**
+   - **Problem:** `tradehub/scripts/scan.py` `latest_gate_statuses(client, {engine: current_version})` PROMOTES only if the `track_record` row for `(engine, WEATHER_ENGINE_VERSION / GAS_ENGINE_VERSION)`, e.g. `weather-v1`, is PROMOTED. Before this plan, `settle_predictions` wrote every record as `v0`.
+   - **What Task 2 already does:** it groups settled rows by their real `engine_version`, which fixes the mismatch.
+   - **Add:** a test in `tests/test_track_record_contracts.py` that feeds rows with `engine_version="weather-v1"` through `refresh_track_record`. Assert that the upserted payload's `engine_version` is `"weather-v1"`, the key `latest_gate_statuses` looks up.
+2. **Unquoted live predictions must not null the market Brier.**
+   - **Problem:** the scan records `market_prob=None` when a market has no bid or ask. `compute_engine_summary` fails closed when any settled row lacks `market_brier`, so one unquoted prediction would keep an engine's live gate SHADOW forever. Merged commit 193b7b5 fixed the same gap for backtests by skipping unquoted decisions.
+   - **Fix:** `compute_engine_summary` and `compute_calibration` score only rows with `market_prob` present (contract-weighted as in Task 2). They report `n_unquoted` = the number of settled rows without a market price. Market-Brier coverage is then complete by construction.
+   - **Test:** 3 quoted contracts plus 1 unquoted contract give `n_settled == 3`, `n_unquoted == 1` and a non-null `brier_market`.
+   - **Update** the plan's existing "partial market Brier fails closed" expectation, if any test asserts it, to the new rule. Leave the test in place with the new assertion and note the change in the report.
+
 ## Global Constraints
 
 - **Prerequisites:** PR #3 (backtesting suite) and PR #4 (data layer, weather/gas) are merged to `main`. The patches below were produced against PR #4's head (`31b66b1`). If a later fix changed the same lines and `git apply` fails, make the change by hand. Each task's **Intent** says exactly what must hold.
@@ -315,8 +329,8 @@ index d2c13de..3f14b1d 100644
 +++ b/tradehub/backtest/metrics.py
 @@ -49,9 +49,11 @@ def market_mid(candle: Candle | None) -> float | None:
      return (candle.yes_bid + candle.yes_ask) / 2.0
-
-
+ 
+ 
 -def prediction_row(our_prob: float, market_prob: float | None, result: str) -> dict[str, Any]:
 +def prediction_row(our_prob: float, market_prob: float | None, result: str,
 +                   market_ticker: str | None = None) -> dict[str, Any]:
@@ -353,12 +367,12 @@ index 3e05bc0..ff7354e 100644
 +# are still reported. Spec section 6.
 +MIN_BUCKET_CONTRACTS = 20
  TRACK_RECORD_TABLE = "track_record"
-
-
+ 
+ 
 @@ -35,6 +39,25 @@ def _settled_only(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
      return [r for r in rows if r.get("result") in ("yes", "no")]
-
-
+ 
+ 
 +def _contract_key(row: dict[str, Any]) -> str:
 +    """Rows about the same Kalshi contract share a key; rows without a ticker stand alone."""
 +    ticker = row.get("market_ticker")
@@ -382,8 +396,8 @@ index 3e05bc0..ff7354e 100644
      """Confidence in the favored side, and whether that side won."""
      prob = float(row["our_prob"])
 @@ -45,37 +68,51 @@ def _confidence_and_hit(row: dict[str, Any]) -> tuple[float, bool]:
-
-
+ 
+ 
  def compute_calibration(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 -    """Per-bucket n, mean confidence, and favored-side hit rate over settled rows."""
 -    groups: dict[str, list[tuple[float, bool]]] = {b: [] for b in BUCKETS}
@@ -413,8 +427,8 @@ index 3e05bc0..ff7354e 100644
 +        out.append({"bucket": bucket, "n": round(total, 2), "n_rows": len(members),
                      "predicted": round(predicted, 4), "observed": round(observed, 4)})
      return out
-
-
+ 
+ 
 +def _weighted_mean(pairs: list[tuple[float, float]]) -> float | None:
 +    total = sum(w for _, w in pairs)
 +    return sum(v * w for v, w in pairs) / total if total else None
@@ -449,8 +463,8 @@ index 3e05bc0..ff7354e 100644
 +        "brier_ours": round(ours, 5) if ours is not None else None,
 +        "brier_market": round(market, 5) if market is not None else None,
      }
-
-
+ 
+ 
 @@ -108,6 +145,8 @@ def check_promotion_gate(
          reasons.append("simulated P&L after fees/spread is not positive")
      worst_miss = 0.0
@@ -462,8 +476,8 @@ index 3e05bc0..ff7354e 100644
          if miss > MAX_CALIBRATION_MISS:
 @@ -136,11 +175,24 @@ def fetch_settled_rows(supa, engine: str) -> list[dict[str, Any]]:
          start += PAGE_SIZE
-
-
+ 
+ 
 -def refresh_track_record(supa, engine: str, engine_version: str = "v0",
 -                         cadence: str = "daily",
 -                         simulated_pnl_after_fees: float | None = None) -> dict[str, Any]:
@@ -542,10 +556,10 @@ index 6f877bb..dcf198a 100644
 +    assert update["id"] == "abc" and update["status"] == "CANCELED"
 +    assert update["settlement_payload"] == market and update["settled_at"]
      assert "result" not in update and "brier" not in update
-
-
+ 
+ 
 @@ -204,7 +205,8 @@ def test_run_settlement_pass_settles_finalized_and_skips_others():
-
+ 
      supa = _FakeSupaIO(rows)
      summary = settlement.run_settlement_pass(supa, fake_fetch)
 -    assert summary == {"checked": 4, "settled": 1, "canceled": 1, "skipped": 2}
@@ -553,7 +567,7 @@ index 6f877bb..dcf198a 100644
 +                       "fetch_errors": 1, "write_errors": 0}
      statuses = {u["id"]: u["status"] for u in supa.updates}
      assert statuses == {"a": "SETTLED", "c": "CANCELED"}
-
+ 
 @@ -219,7 +221,7 @@ def test_run_settlement_pass_is_idempotent():
      supa.rows = [{**row, "status": "SETTLED"}]
      supa.updates.clear()
@@ -561,18 +575,18 @@ index 6f877bb..dcf198a 100644
 -    assert second == {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0}
 +    assert second == {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0, "fetch_errors": 0, "write_errors": 0}
      assert supa.updates == []
-
-
+ 
+ 
 @@ -232,7 +234,8 @@ def test_run_settlement_pass_counts_conditional_update_miss_as_skipped(monkeypat
-
+ 
      summary = settlement.run_settlement_pass(supa, lambda _t: market)
-
+ 
 -    assert summary == {"checked": 2, "settled": 1, "canceled": 0, "skipped": 1}
 +    assert summary == {"checked": 2, "settled": 1, "canceled": 0, "skipped": 1,
 +                       "fetch_errors": 0, "write_errors": 0}
      assert [update["id"] for update in supa.updates] == ["a"]
      assert row["status"] == "SETTLED"
-
+ 
 @@ -240,4 +243,56 @@ def test_run_settlement_pass_counts_conditional_update_miss_as_skipped(monkeypat
  def test_run_settlement_pass_no_open_predictions():
      supa = _FakeSupaIO([])
@@ -646,21 +660,21 @@ index 0ea4743..b365cad 100644
 --- a/tradehub/settlement.py
 +++ b/tradehub/settlement.py
 @@ -8,6 +8,7 @@ portfolio settlement history, which covers only owned positions.
-
+ 
  from __future__ import annotations
-
+ 
 +from datetime import UTC, datetime
  from typing import Any
-
+ 
  PREDICTIONS_TABLE = "predictions"
 @@ -61,24 +62,28 @@ def is_market_canceled(market: Any) -> bool:
      return parse_market_result(market)[0] == CANCELED
-
-
+ 
+ 
 -def settle_prediction_row(row: dict[str, Any], market: Any) -> dict[str, Any] | None:
 +def settle_prediction_row(row: dict[str, Any], market: Any, *, now: datetime | None = None) -> dict[str, Any] | None:
      """Build the `predictions` update payload for one row against a fetched market.
-
+ 
      Returns None when the market is still open (caller skips the row).
      A canceled market yields a CANCELED payload with no fabricated result.
 +    The Kalshi payload goes to `settlement_payload`; the engine's own
@@ -687,7 +701,7 @@ index 0ea4743..b365cad 100644
      update["market_brier"] = (
 @@ -124,23 +129,42 @@ def run_settlement_pass(supa, fetch_market) -> dict[str, int]:
      """One idempotent settlement pass over all OPEN predictions.
-
+ 
      `fetch_market(ticker)` is injected so tests can fake it; the cron
 -    entrypoint passes the real Kalshi client. Fetch failures (404 unknown
 -    ticker, wrong demo/prod base URL, connection errors) skip the row —
@@ -769,12 +783,12 @@ index f50a15c..943bf8b 100644
 --- a/tests/test_settle_predictions.py
 +++ b/tests/test_settle_predictions.py
 @@ -36,7 +36,7 @@ def test_main_wires_pass_and_refresh(monkeypatch, capsys):
-
+ 
      def fake_refresh(supa, engine, **kwargs):
          refreshed.append(engine)
 -        return {"engine": engine}
 +        return [{"engine": engine, "engine_version": "v1"}]
-
+ 
      monkeypatch.setattr(settle_predictions, "get_client", fake_get_client)
      monkeypatch.setattr(settle_predictions, "fetch_market", fake_fetch_market)
 @@ -49,4 +49,4 @@ def test_main_wires_pass_and_refresh(monkeypatch, capsys):
@@ -812,7 +826,7 @@ index 124ad69..085d7ef 100644
 +++ b/tradehub/scripts/settle_predictions.py
 @@ -1,7 +1,7 @@
  """Cron entrypoint: settle open predictions against Kalshi market results.
-
+ 
  Runs one settlement pass and refreshes each engine's track record, then
 -exits. Designed for an hourly cron on Azure scale-to-zero — there is no
 +exits. Run hourly by the VPS `tradehub-settle.timer` — there is no

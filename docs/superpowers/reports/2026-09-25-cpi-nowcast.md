@@ -210,3 +210,88 @@ Check specifically:
 - The CLI uses current `settled_markets`, bounded `lookback`, quote-only CPI scoring, monthly cadence and per-version `lead_days` config. Verify those interfaces remain after upstream merges.
 - Live results are genuinely SHADOW; do not reinterpret or suppress them.
 - Step 7b may be stacked from this branch's PR head, but do not merge any PR yourself.
+
+## Review fix 1 — gate every edge by (engine, engine_version)
+
+- RED: existing scan tests failed after `edge_row` began requiring `engine_version` and pair-keyed gate lookup.
+- GREEN: `pytest tests/test_scan.py tests/test_scan_cpi.py -q` → 29 passed including a main()-level test proving only `cpi-core-v1` is PROMOTED while `cpi-v1` remains SHADOW.
+- `edge_row` requires and writes `engine_version`; status lookup and application use `(engine, engine_version)` pairs collected from every produced edge.
+
+## Review fix 2 — CPI stale-edge cleanup
+
+- Added `cpi_nowcast` to the engine-scoped cleanup allowlist and main cleanup loop.
+- Parametrized main() test proves cleanup runs on a due hour and not on a non-due hour; `tests/test_scan_cpi.py` → 9 passed.
+
+## Review fix 3 — isolate malformed CPI markets
+
+- `scan_cpi` catches per-market parse/probability errors, logs them and continues.
+- Regression with one malformed and one valid market keeps the valid prediction; `tests/test_scan_cpi.py` → 10 passed.
+
+## Review fix 4 — reject unknown CPI series
+
+- CLI now calls `parser.error` for any `--engine cpi_nowcast --series` outside `CPI_TARGETS`.
+- Regression added; `tests/test_backtest_cpi.py` → 7 passed.
+
+## Review fix 5 — delete closed CPI edges on every hourly scan
+
+- Problem: CPI scans only at 08:00/12:00/16:00 ET, so engine-scoped stale cleanup ran
+  three times a day. The 08:05 run leaves edges listed until noon for markets that close
+  at 08:25, and the 16:00 run leaves 16-hour-old prices on the board overnight.
+- Fix: new `remove_closed_cpi_edges(client, now)` deletes any `cpi_nowcast` row in
+  `kalshi_edges` whose `expires_at` has passed. `main()` runs it on every hourly scan
+  (including non-CPI-due hours) before gate lookup, wrapped in its own failure boundary
+  so a cleanup error is reported without failing the scan.
+- RED: existing main() tests started failing because the new cleanup hit the stub client.
+- GREEN: `pytest tests/test_scan_cpi.py tests/test_scan.py -q` → 33 passed, including
+  `test_remove_closed_cpi_edges_deletes_only_past_expiry` (closed market deleted, still-open
+  market retained).
+- Behaviour note: this is suggest-only and SHADOW, so no money is at risk; the defect was
+  that the board showed edges on closed markets.
+
+## Review fix 6 — stop `.gitignore` from hiding `tradehub/data/`
+
+- Problem: `.gitignore` line 75 was `Data/`. On macOS git matches case-insensitively, so it
+  also matched `tradehub/data/`. The earlier PR worked around it with `git add -f` on one
+  file, which left every future module in that package silently untracked.
+- Rejected fix: `!tradehub/data/**`. It works for modules but also un-hides
+  `tradehub/data/__pycache__/`, which then litters `git status` (verified).
+- Fix: anchor the rule to the repo root as `/Data/`. It still ignores the legacy top-level
+  dataset directory (there is no root `Data/` today) and no longer matches the package.
+- RED: `test_tradehub_data_package_is_not_gitignored` failed with `assert 0 == 1`.
+- GREEN: `pytest tests/test_repo_layout.py -q` → 23 passed. A second guard,
+  `test_tradehub_data_package_keeps_build_artifacts_ignored`, asserts `__pycache__` and
+  `Data/` stay ignored so this cannot be "fixed" later by blanket re-inclusion.
+- Verified by hand: a new `tradehub/data/_probe_tmp.py` now appears in `git status`.
+
+## Review fix 7 — pin the first-print assumption
+
+- Why it matters: `tradehub.engines.cpi` calibrates on (nowcast → BLS first print).
+  If the Cleveland Fed ever restated its "Actual" series to revised values, every pair
+  from `training_pairs()` would silently become a revised target and the fitted sigma
+  would stop describing a first-print payoff — degrading the model with no error raised.
+- Investigation (not assumed). Pulled the live 7.6 MB `nowcast_month.json` (159 months)
+  and queried the BLS public API, then compared the chart's `Actual` series against BLS
+  for every month. Two findings:
+  - The series is the **seasonally adjusted** MoM, not NSA (median abs diff 0.038 SA vs
+    0.136 NSA over 82 months) — the engine's market mapping is correct, no bug here.
+  - For recent months the chart equals BLS exactly (2026-06/07/08 match to 4dp) and the
+    gap widens with the age of the month (2021-12: 0.4705 vs 0.6905). That divergence is
+    the first-print signature: BLS has revised, the chart has not.
+- Chosen pin: **December 2021**, the largest revision in the sample. The chart dates the actual
+  to the BLS release day, 2022-01-12 08:30 ET, so the first print of December 2021 CPI landed in
+  January 2022, not December 2021; BLS now publishes +0.69% against the chart's 0.470453241537583,
+  and the last pre-release nowcast was 0.3890, so it was a genuine miss. The trimmed
+  fixture already contained this month, so the test needs no new fixture and no network.
+- RED / teeth: `test_first_print_pin_detects_a_switch_to_revised_values` replays the
+  payload with the December 2021 actual swapped for the BLS revised value — exactly what a
+  Cleveland Fed restatement would look like — and asserts the pin misses. Without this the
+  pinned assertion could be a tautology.
+- Guard: dropped in round 3. The `DEC_2021_REVISION_GAP > 0.1` assertion compared two constants
+  defined a few lines apart, so it could only ever fail if someone edited the constants — it
+  tested the test, not the data. The load-bearing check is
+  `test_first_print_pin_detects_a_switch_to_revised_values`, which proves the pin misses when
+  the payload carries the revised value.
+- GREEN: `pytest tests/test_cleveland_fed.py -q` → 8 passed. The module docstring now
+  states the first-print policy, the SA basis, and points at the pin.
+- This supersedes the Task 2 deviation note above, which recorded the `git add -f`
+  workaround; fix 6 removes the need for it.

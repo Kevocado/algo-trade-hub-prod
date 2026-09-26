@@ -29,6 +29,10 @@ export interface SportsEdge {
   candidate: boolean;
   reject_reasons: string[];
   review: SportsReview | null;
+  /** Promotion gate is keyed on this pair, not on the engine alone. */
+  engine: string | null;
+  engine_version: string | null;
+  gate_status: "SHADOW" | "PROMOTED" | null;
 }
 
 export interface ScorecardSide {
@@ -40,6 +44,10 @@ export interface ScorecardSide {
 export interface SportsEdgesResponse {
   as_of: string;
   edges: SportsEdge[];
+  /** Upcoming rows matching the filters, counted before paging. */
+  total: number;
+  limit: number;
+  offset: number;
   reviewer_scorecard: {
     n_settled: number;
     min_settled: number;
@@ -80,4 +88,25 @@ const REASONS: Record<string, string> = {
 
 export function rejectReasonLabel(reason: string): string {
   return REASONS[reason] ?? reason;
+}
+
+/**
+ * Tier of a sports edge as seen from the generic kalshi_edges row that Prediction Lab reads
+ * directly from Supabase. The reviewer writes the tier into raw_payload, so a sports edge that
+ * FAILED the candidate filter (predictor miscalibrated in this price bucket, wide quote, starts
+ * too soon) would otherwise render in the Lab exactly like a Top Pick, behind an
+ * "Execute Trade" button. Non-sports rows have no tier and must not be affected.
+ */
+export function sportsTierOf(edge: { edge_type?: string | null; raw_payload?: unknown }): SportsTier | null {
+  if ((edge.edge_type ?? "").toUpperCase() !== "SPORTS") return null;
+  const raw = (edge.raw_payload ?? {}) as { tier?: unknown; candidate?: unknown };
+  if (typeof raw.tier === "string" && raw.tier in TIER_LABELS) return raw.tier as SportsTier;
+  // No tier recorded: fall back to the candidate flag, then to unreviewed (fail visible).
+  if (raw.candidate === false) return "filtered";
+  return "unreviewed";
+}
+
+/** A rejected candidate is not tradeable and must not be presented as an executable trade. */
+export function isExecutableSportsEdge(tier: SportsTier | null): boolean {
+  return tier !== "filtered";
 }

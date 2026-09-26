@@ -46,7 +46,9 @@ from tradehub.engines.weather import (
 )
 from tradehub.markets import KalshiMarket, event_date, event_month, market_url
 from tradehub.predictions import build_prediction_row
-from tradehub.sports.scan import run_sports_for_cron, sports_due
+from tradehub.sports.scan import (
+    prune_sports_if_healthy, remove_started_sports_edges, run_sports_for_cron, sports_due,
+)
 
 
 log = logging.getLogger(__name__)
@@ -66,6 +68,7 @@ def edge_row(
     edge_type: str,
     *,
     engine: str,
+    engine_version: str,
     gate_status: str = "SHADOW",
     updated_at: datetime | None = None,
 ) -> dict[str, Any]:
@@ -77,6 +80,7 @@ def edge_row(
         "model_probability": s.our_prob,
         "edge": s.net_edge_pct / 100.0,
         "engine": engine,
+        "engine_version": engine_version,
         "edge_type": edge_type,
         "market_url": market_url(market),
         "side": s.side,
@@ -94,55 +98,49 @@ def _mid(quote) -> float | None:
     return (quote.yes_bid + quote.yes_ask) / 2.0
 
 
-def latest_gate_statuses(client, engine_versions: dict[str, str]) -> dict[str, str]:
-    """Promote only when the latest backtest and the track record of the CURRENT version agree.
-
-    `engine_versions` maps engine -> the version this scan runs. A promoted
-    older version never promotes a new one. The latest backtest may cover a
-    single series or mode; that is accepted for now (all edges of the engine
-    share one status).
-    """
-    statuses: dict[str, str] = {}
-    for engine, current_version in engine_versions.items():
+def latest_gate_statuses(client, pairs: set[tuple[str, str]]) -> dict[tuple[str, str], str]:
+    """Promote a pair only when its latest backtest and track record both say PROMOTED."""
+    statuses: dict[tuple[str, str], str] = {}
+    for engine, version in pairs:
         backtest = client.table("backtest_runs") \
             .select("engine,engine_version,gate_status,created_at") \
-            .eq("engine", engine) \
-            .eq("engine_version", current_version) \
-            .order("created_at", desc=True) \
-            .limit(1) \
-            .execute()
+            .eq("engine", engine).eq("engine_version", version) \
+            .order("created_at", desc=True).limit(1).execute()
         rows = list(backtest.data or [])
         if not rows or rows[0].get("gate_status") != "PROMOTED":
-            statuses[engine] = "SHADOW"
+            statuses[(engine, version)] = "SHADOW"
             continue
-        version = rows[0].get("engine_version")
-        if not version:
-            statuses[engine] = "SHADOW"
-            continue
-        track = client.table("track_record") \
-            .select("gate_status") \
-            .eq("engine", engine) \
-            .eq("engine_version", version) \
-            .limit(1) \
-            .execute()
+        track = client.table("track_record").select("gate_status") \
+            .eq("engine", engine).eq("engine_version", version).limit(1).execute()
         track_rows = list(track.data or [])
-        statuses[engine] = (
-            "PROMOTED"
-            if track_rows and track_rows[0].get("gate_status") == "PROMOTED"
-            else "SHADOW"
+        statuses[(engine, version)] = (
+            "PROMOTED" if track_rows and track_rows[0].get("gate_status") == "PROMOTED" else "SHADOW"
         )
     return statuses
 
 
-def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[str, str]) -> None:
+def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[tuple[str, str], str]) -> None:
     for row in edges:
-        row["gate_status"] = statuses.get(row["engine"], "SHADOW")
+        row["gate_status"] = statuses.get((row["engine"], row.get("engine_version", "v0")), "SHADOW")
+
+
+def remove_closed_cpi_edges(client, now: datetime) -> None:
+    """Delete cpi_nowcast edges as soon as their market closes, on every hourly scan.
+
+    One filtered DELETE rather than a SELECT followed by a DELETE per row: the predicate is
+    entirely expressible in PostgREST, so the database does the comparison and the round trip
+    count does not grow with the number of closed markets.
+    """
+    client.table("kalshi_edges").delete() \
+        .eq("engine", "cpi_nowcast") \
+        .lte("expires_at", now.isoformat()) \
+        .execute()
 
 
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
     """Delete stale rows only for the scan-owned weather/gas engines."""
     for engine, produced in produced_by_engine.items():
-        if engine not in {"weather", "gas"}:
+        if engine not in {"weather", "gas", "cpi_nowcast", "sports_nfl", "sports_cfb"}:
             continue
         current_market_ids = {str(market_id)[:50] for market_id in produced}
         result = client.table("kalshi_edges").select("market_id").eq("engine", engine).execute()
@@ -221,7 +219,8 @@ def _scan_weather_city(
             suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
                                        prefer_maker=cfg.prefer_maker)
             if suggestion:
-                edges.append(edge_row(lm.market, suggestion, "WEATHER", engine="weather", updated_at=now))
+                edges.append(edge_row(lm.market, suggestion, "WEATHER", engine="weather",
+                                      engine_version=WEATHER_ENGINE_VERSION, updated_at=now))
     return predictions, edges
 
 
@@ -307,7 +306,8 @@ def scan_gas(
         suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
                                    prefer_maker=cfg.prefer_maker)
         if suggestion:
-            edges.append(edge_row(lm.market, suggestion, "ENERGY", engine="gas", updated_at=now))
+            edges.append(edge_row(lm.market, suggestion, "ENERGY", engine="gas",
+                                  engine_version=GAS_ENGINE_VERSION, updated_at=now))
     return predictions, edges
 
 
@@ -331,24 +331,28 @@ def scan_cpi(
             continue
         history = nowcast_fn(kind)
         for lm in markets:
-            nowcast = latest_nowcast(history.get(event_month(lm.market.event_ticker)), now)
-            horizon = lm.market.close_time - now
-            if nowcast is None or horizon <= timedelta(0):
-                continue
-            pairs = training_pairs(history, now, horizon)[-window:]
-            model = fit_cpi_error(pairs, window=window, use_bias=use_bias)
-            prob = cpi_prob(lm.market, nowcast.value, model)
-            predictions.append(build_prediction_row(
-                market_ticker=lm.market.ticker, our_prob=prob, market_prob=_mid(lm.quote), engine="cpi_nowcast",
-                as_of=now, engine_version=version,
-                raw_payload={"nowcast": nowcast.value, "nowcast_obs": nowcast.name, "bias": model.bias,
-                             "sigma": model.sigma, "n_train": len(pairs),
-                             "hours_to_close": round(horizon.total_seconds() / 3600.0, 2)},
-            ))
-            suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
-                                       prefer_maker=cfg.prefer_maker)
-            if suggestion:
-                edges.append(edge_row(lm.market, suggestion, "MACRO", engine="cpi_nowcast", updated_at=now))
+            try:
+                nowcast = latest_nowcast(history.get(event_month(lm.market.event_ticker)), now)
+                horizon = lm.market.close_time - now
+                if nowcast is None or horizon <= timedelta(0):
+                    continue
+                pairs = training_pairs(history, now, horizon)[-window:]
+                model = fit_cpi_error(pairs, window=window, use_bias=use_bias)
+                prob = cpi_prob(lm.market, nowcast.value, model)
+                predictions.append(build_prediction_row(
+                    market_ticker=lm.market.ticker, our_prob=prob, market_prob=_mid(lm.quote), engine="cpi_nowcast",
+                    as_of=now, engine_version=version,
+                    raw_payload={"nowcast": nowcast.value, "nowcast_obs": nowcast.name, "bias": model.bias,
+                                 "sigma": model.sigma, "n_train": len(pairs),
+                                 "hours_to_close": round(horizon.total_seconds() / 3600.0, 2)},
+                ))
+                suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
+                                           prefer_maker=cfg.prefer_maker)
+                if suggestion:
+                    edges.append(edge_row(lm.market, suggestion, "MACRO", engine="cpi_nowcast",
+                                          engine_version=version, updated_at=now))
+            except Exception:
+                log.exception("scan engine=cpi_nowcast market=%s failed; skipping", lm.market.ticker)
     return predictions, edges
 
 
@@ -439,27 +443,23 @@ def main(
             failures.append(message)
             log.exception("scan client initialization failed")
 
-    sports_predictions: list[dict] = []
-    sports_edges: list[dict] = []
-    sports_summary: dict[str, Any] = {"status": "skipped: not due (every third UTC hour)"}
-    sports_ran = False
-    if client is not None and sports_due(now):
-        try:
-            sports_predictions, sports_edges, sports_summary = run_sports_for_cron(now, client)
-            sports_ran = True
-        except Exception as exc:  # a predictor/Kalshi outage must not cost weather/gas
-            sports_summary = {"error": repr(exc)}
-
     if client is not None:
         try:
-            statuses = latest_gate_statuses(client, {"weather": WEATHER_ENGINE_VERSION, "gas": GAS_ENGINE_VERSION})
+            remove_closed_cpi_edges(client, now)
+        except Exception as exc:
+            failures.append(f"cpi_nowcast.closed_cleanup: {type(exc).__name__}: {exc}")
+            log.exception("scan closed CPI edge cleanup failed")
+        all_edges = weather_edges + gas_edges + cpi_edges
+        pairs = {(row["engine"], row.get("engine_version", "v0")) for row in all_edges}
+        try:
+            statuses = latest_gate_statuses(client, pairs)
         except Exception as exc:
             message = f"gate_status: {type(exc).__name__}: {exc}"
             failures.append(message)
-            statuses = {"weather": "SHADOW", "gas": "SHADOW"}
+            statuses = {}
             log.exception("scan gate-status lookup failed")
-        apply_gate_statuses(weather_edges, statuses)
-        apply_gate_statuses(gas_edges, statuses)
+        for edges in (weather_edges, gas_edges, cpi_edges):
+            apply_gate_statuses(edges, statuses)
 
         prediction_writes: dict[str, str] = {}
         edge_writes: dict[str, str] = {}
@@ -492,6 +492,7 @@ def main(
         for name, edges in (
             ("weather", weather_edges),
             ("gas", gas_edges),
+            ("cpi_nowcast", cpi_edges),
         ):
             if not engine_states[name]["complete"] or edge_writes.get(name) != "ok":
                 continue
@@ -503,22 +504,60 @@ def main(
                 log.exception("scan stale-edge cleanup failed engine=%s", name)
 
         writes = {"predictions": prediction_writes, "edges": edge_writes}
-        if sports_ran:
-            try:
-                record_predictions(client, sports_predictions)
-                writes["predictions"]["sports"] = "ok"
-            except Exception as exc:
-                failures.append(f"sports.predictions: {type(exc).__name__}: {exc}")
-                writes["predictions"]["sports"] = "failed"
-            try:
-                upsert_opportunities(sports_edges)
-                writes["edges"]["sports"] = "ok"
-            except Exception as exc:
-                failures.append(f"sports.edges: {type(exc).__name__}: {exc}")
-                writes["edges"]["sports"] = "failed"
-        else:
+
+        # ── Sports LAST ────────────────────────────────────────────────────────────────
+        # The weather/gas/CPI gate lookup, upserts and cleanups above are already done, so a
+        # slow sports run can no longer delay them or put them at risk. Sports is gated and
+        # written separately because its edges are keyed on their own (engine, engine_version)
+        # pairs and it has its own pruning rules.
+        sports_predictions: list[dict] = []
+        sports_edges: list[dict] = []
+        sports_per_sport: dict[str, dict[str, Any]] = {}
+        sports_summary: dict[str, Any] = {"status": "skipped: not due (every third UTC hour)"}
+        if not sports_due(now):
             writes["predictions"]["sports"] = "skipped"
             writes["edges"]["sports"] = "skipped"
+        else:
+            try:
+                run = run_sports_for_cron(now, client, deadline=deadline)
+                sports_predictions, sports_summary = run.predictions, run.reports
+                sports_per_sport = run.per_sport
+                try:
+                    sports_pairs = {(row["engine"], row.get("engine_version", "v0"))
+                                    for row in run.edges}
+                    sports_statuses = latest_gate_statuses(client, sports_pairs)
+                except Exception as exc:
+                    failures.append(f"sports.gate_status: {type(exc).__name__}: {exc}")
+                    log.exception("scan sports gate-status lookup failed")
+                    sports_statuses = {}
+                apply_gate_statuses(run.edges, sports_statuses)
+                sports_edges = run.edges
+                try:
+                    record_predictions(client, sports_predictions)
+                    writes["predictions"]["sports"] = "ok"
+                except Exception as exc:
+                    failures.append(f"sports.predictions: {type(exc).__name__}: {exc}")
+                    writes["predictions"]["sports"] = "failed"
+                try:
+                    upsert_opportunities(sports_edges)
+                    writes["edges"]["sports"] = "ok"
+                except Exception as exc:
+                    failures.append(f"sports.edges: {type(exc).__name__}: {exc}")
+                    writes["edges"]["sports"] = "failed"
+                # A sport prunes only when its feed fetch AND its edge write both succeeded, so
+                # neither a feed outage nor a failed upsert can be read as "produced nothing".
+                # Pruning a zero-edge run is the point: that is when the previous rows must go.
+                for state in sports_per_sport.values():
+                    state["write_ok"] = writes["edges"].get("sports") == "ok"
+                failures.extend(remove_started_sports_edges(client, now))
+                failures.extend(prune_sports_if_healthy(client, sports_per_sport,
+                                                        remove=remove_stale_edges, now=now))
+            except Exception as exc:  # a predictor/Kalshi outage must not cost weather/gas
+                sports_summary = {"error": repr(exc)}
+                writes["predictions"]["sports"] = "failed"
+                writes["edges"]["sports"] = "failed"
+                failures.append(f"sports: {type(exc).__name__}: {exc}")
+                log.exception("scan sports step failed")
     else:
         writes = {"predictions": {}, "edges": {}}
 

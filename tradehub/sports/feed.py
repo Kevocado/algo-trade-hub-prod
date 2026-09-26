@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
+
+from tradehub.sports.deadline import remaining_seconds
+
+log = logging.getLogger(__name__)
 
 FEED_PATH = "/api/kalshi-feed"
 TIMEOUT_SECONDS = 60.0
@@ -96,16 +101,35 @@ def parse_feed(raw: dict[str, Any]) -> Feed:
 
 def fetch_feed(
     base_url: str, *, get: Callable[..., Any] = requests.get, sleep: Callable[[float], None] = time.sleep,
-    timeout: float = TIMEOUT_SECONDS,
+    timeout: float = TIMEOUT_SECONDS, deadline: float | None = None,
 ) -> Feed:
-    """GET the feed with one retry: scale-to-zero predictors can time out on the first request."""
+    """GET the feed with one retry: scale-to-zero predictors can time out on the first request.
+
+    The retry is bounded by the scan budget too. An unconditional retry after a 60s timeout means
+    up to 122 seconds of predictor call inside a 15-minute scan that also has to serve the other
+    engines, so when less than one attempt fits in what is left the second attempt is never
+    started. Each attempt's timeout is clamped to the time remaining, because a request allowed to
+    wait its full timeout is a request that can sit past the deadline.
+    """
     url = base_url.rstrip("/") + FEED_PATH
     last_error: Exception | None = None
     for attempt in range(2):
+        left = remaining_seconds(deadline) if deadline is not None else None
+        if left is not None and left <= 0:
+            raise FeedUnavailable(f"{url}: scan deadline reached before the feed fetch")
+        per_attempt = min(timeout, left) if left is not None else timeout
         if attempt:
-            sleep(RETRY_PAUSE_SECONDS)
+            if left is not None and left < per_attempt + RETRY_PAUSE_SECONDS:
+                log.warning("sports feed %s: %0.1fs of scan budget left, not enough for a retry "
+                            "(one attempt needs %0.1fs)", url, left, per_attempt)
+                break
+            sleep(RETRY_PAUSE_SECONDS if left is None else min(RETRY_PAUSE_SECONDS, left))
+            left = remaining_seconds(deadline) if deadline is not None else None
+            if left is not None and left <= 0:
+                break
+            per_attempt = min(timeout, left) if left is not None else timeout
         try:
-            resp = get(url, timeout=timeout)
+            resp = get(url, timeout=per_attempt)
             resp.raise_for_status()
             return parse_feed(resp.json())
         except (requests.RequestException, ValueError, KeyError) as exc:

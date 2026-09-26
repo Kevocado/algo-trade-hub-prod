@@ -8,6 +8,7 @@ const base: SportsEdge = {
   source_url: "https://sports.example.com/?sport=nfl&game=2026_03_HOU_IND", sport: "nfl", kind: "winner",
   side: "yes", entry_price: 0.25, maker: true, home: "IND", away: "HOU", start_utc: "2026-09-27T17:00:00+00:00",
   game_id: "2026_03_HOU_IND", tier: "top_pick", candidate: true, reject_reasons: [], review: null,
+  engine: "sports_nfl", engine_version: "feed:ridge@2026-09-04T22:12:49.750941+00:00", gate_status: "SHADOW",
 };
 
 describe("sports edges", () => {
