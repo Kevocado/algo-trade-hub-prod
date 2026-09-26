@@ -1,7 +1,7 @@
 """Cron entrypoint: settle open predictions against Kalshi market results.
 
 Runs one settlement pass and refreshes each engine's track record, then
-exits. Designed for an hourly cron on Azure scale-to-zero — there is no
+exits. Run hourly by the VPS `tradehub-settle.timer` — there is no
 polling loop here. Simulated P&L wiring (spec section 4.5's fees+spread
 term) lands with the paper-trading work; until then the gate receives
 None and promotion stays blocked on that criterion.
@@ -35,8 +35,8 @@ def main() -> int:
     summary = run_settlement_pass(supa, fetch_market)
     refreshed = []
     for engine, cadence in ENGINES:
-        refresh_track_record(supa, engine, cadence=cadence, simulated_pnl_after_fees=None)
-        refreshed.append(engine)
+        payloads = refresh_track_record(supa, engine, cadence=cadence, simulated_pnl_after_fees=None)
+        refreshed.extend(f"{engine}@{p['engine_version']}" for p in payloads)
     summary["track_record_refreshed"] = refreshed
     print(json.dumps(summary))
     return 0

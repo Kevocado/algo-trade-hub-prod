@@ -10,6 +10,7 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 |---|---|---|---|
 | 1 | Repo cleanup | ✅ merged to `main` | [2026-09-24-repo-cleanup.md](2026-09-24-repo-cleanup.md) |
 | 2 | Predictions ledger + settlement by market result + track record | 🟡 implemented on branch, review pending | [2026-09-24-predictions-ledger-settlement-track-record.md](2026-09-24-predictions-ledger-settlement-track-record.md) |
+| 2b | Promotion-gate and settlement hardening (contract-weighted gate, per-version track records, unquoted-prediction exclusion) | 🟡 implemented on branch, review pending | [2026-09-25-gate-hardening.md](2026-09-25-gate-hardening.md) |
 | 3 | Backtesting suite | 🟡 implemented on branch, review pending | [2026-09-24-backtesting-suite.md](2026-09-24-backtesting-suite.md) |
 | 4 | Shared data layer + `weather` + `gas` engines, suggest-only | 🟡 implemented on branch, review pending | [2026-09-24-data-layer-weather-gas-engines.md](2026-09-24-data-layer-weather-gas-engines.md) |
 | 5 | VPS deploy: API + War Room container, hourly scan/settle timers (replaces the Azure plan) | ✅ implemented, pending Kevin's first deploy (Task 5) | [2026-09-25-vps-deploy.md](2026-09-25-vps-deploy.md) |
@@ -19,6 +20,11 @@ This file is the index of the rollout: what is done, what has a ready plan, what
 
 **Implementation order:** 2 → 3 → 4 → 5, each on its own `plan/<basename>` branch, reviewed and merged before the next one starts. Each plan's code was validated before publishing:
 - **Step 2:** 42/42 of the plan's own tests pass.
+- **Step 2b:** hardens step 2's gate before the hourly scan feeds it — contract-weighted
+  Briers and calibration, a 20-contract minimum before a calibration bucket can block
+  promotion, one track record per `(engine, engine_version)`, settlement that keeps the
+  engine's inputs and fetches each market once per pass, and read-only client RLS. 353/353
+  pass. The VPS scan/settle timers must not be enabled until this merges.
 - **Steps 3 + 4:** 88/88 pass together on top of step 2's code. A live check against real Kalshi and Open-Meteo data found the v1 weather model not yet beating the market on a small sample, and the gate holds it in SHADOW as designed.
 - **Step 5:** 127/127 pass. A real Docker build and container smoke test were run, which found and fixed an out-of-sync frontend lockfile.
 

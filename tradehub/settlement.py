@@ -8,10 +8,10 @@ portfolio settlement history, which covers only owned positions.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 PREDICTIONS_TABLE = "predictions"
-TRACK_RECORD_TABLE = "track_record"
 
 OPEN = "OPEN"
 SETTLED = "SETTLED"
@@ -61,24 +61,28 @@ def is_market_canceled(market: Any) -> bool:
     return parse_market_result(market)[0] == CANCELED
 
 
-def settle_prediction_row(row: dict[str, Any], market: Any) -> dict[str, Any] | None:
+def settle_prediction_row(row: dict[str, Any], market: Any, *, now: datetime | None = None) -> dict[str, Any] | None:
     """Build the `predictions` update payload for one row against a fetched market.
 
     Returns None when the market is still open (caller skips the row).
     A canceled market yields a CANCELED payload with no fabricated result.
+    The Kalshi payload goes to `settlement_payload`; the engine's own
+    `raw_payload` (its inputs) is never overwritten.
     """
     disposition, outcome = parse_market_result(market)
     if disposition == OPEN:
         return None
+    settled_at = (now or datetime.now(UTC)).isoformat()
     if disposition == CANCELED:
-        return {"id": row["id"], "status": CANCELED}
+        return {"id": row["id"], "status": CANCELED, "settlement_payload": market, "settled_at": settled_at}
     outcome_str = "yes" if outcome == 1 else "no"
     update: dict[str, Any] = {
         "id": row["id"],
         "status": SETTLED,
         "result": outcome_str,
         "brier": round(brier_score(float(row["our_prob"]), outcome), 5),
-        "raw_payload": market,
+        "settlement_payload": market,
+        "settled_at": settled_at,
     }
     market_prob = row.get("market_prob")
     update["market_brier"] = (
@@ -124,23 +128,42 @@ def run_settlement_pass(supa, fetch_market) -> dict[str, int]:
     """One idempotent settlement pass over all OPEN predictions.
 
     `fetch_market(ticker)` is injected so tests can fake it; the cron
-    entrypoint passes the real Kalshi client. Fetch failures (404 unknown
-    ticker, wrong demo/prod base URL, connection errors) skip the row —
-    they never fabricate a result and never block the rest of the pass.
+    entrypoint passes the real Kalshi client. Each ticker is fetched at most
+    once per pass (the hourly scan writes many rows per market). Fetch
+    failures (404 unknown ticker, 429, connection errors) skip that ticker's
+    rows and are counted in `fetch_errors`; a failed write skips its row and
+    is counted in `write_errors`. Neither fabricates a result or blocks the
+    rest of the pass.
     """
-    summary = {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0}
+    summary = {"checked": 0, "settled": 0, "canceled": 0, "skipped": 0, "fetch_errors": 0, "write_errors": 0}
+    markets: dict[str, Any] = {}
+    failed: set[str] = set()
+    now = datetime.now(UTC)
     for row in fetch_open_predictions(supa):
         summary["checked"] += 1
-        try:
-            market = fetch_market(row["market_ticker"])
-        except Exception:  # noqa: BLE001 - injected fetcher failures must skip the row
+        ticker = row["market_ticker"]
+        if ticker in failed:
             summary["skipped"] += 1
             continue
-        update = settle_prediction_row(row, market)
+        if ticker not in markets:
+            try:
+                markets[ticker] = fetch_market(ticker)
+            except Exception:  # noqa: BLE001 - injected fetcher failures must skip the ticker
+                failed.add(ticker)
+                summary["fetch_errors"] += 1
+                summary["skipped"] += 1
+                continue
+        update = settle_prediction_row(row, markets[ticker], now=now)
         if update is None:
             summary["skipped"] += 1
             continue
-        if not apply_prediction_settlement(supa, update):
+        try:
+            written = apply_prediction_settlement(supa, update)
+        except Exception:  # noqa: BLE001 - one bad write must not abort the pass
+            summary["write_errors"] += 1
+            summary["skipped"] += 1
+            continue
+        if not written:
             summary["skipped"] += 1
             continue
         if update["status"] == SETTLED:
