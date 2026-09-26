@@ -681,3 +681,34 @@ assert []
 feed error is turned into a report entry. It is still not a failure: `test_a_feed_404_still_does_
 not_fail_the_scan` runs the real `scan.main` and asserts exit code 0 and an empty `failures`
 alongside the log line, so this cannot quietly become a red timer either way.
+
+### 4b. A failed series pruned that series' rows
+
+This is the one that could delete live data. `prune_sports_if_healthy` prunes a sport when its
+feed fetch and edge write both succeeded, but it never knew whether **every series** fetched. If
+`KXNFLGAME` (the winner series) returned 500 while spread and total were fine, the produced set
+held only spread and total market_ids — and `remove_stale_edges` deletes every row for the engine
+whose market_id is absent from that set. So one failing series would delete **every winner row**
+for that engine, and it would look exactly like a healthy cleanup.
+
+**RED** — 4 of 6 new tests failed:
+
+```
+AssertionError: a sport with a failed series pruned the winner rows
+AssertionError: a state with no series verdict pruned anyway
+AssertionError: {'nfl': {'feed_ok': True, 'edges': []}}   # no series_ok at all
+4 failed, 10 passed
+```
+
+**GREEN** — 573 passed.
+
+- `run_sports_scan` now records `series_ok` per sport, and `prune_sports_if_healthy` requires all
+  three verdicts: the feed fetch, the edge write and every series.
+- `series_ok` is **required, not defaulted to True**. A caller that does not state that every
+  series was fetched gets no pruning. Rows that go stale in that state are cleaned up on the next
+  healthy run, whereas deleting a market type is not recoverable. That choice is pinned by
+  `test_pruning_requires_an_explicit_series_ok`, and it is why four earlier tests had to say
+  `series_ok: True` rather than the fix being invisible to them.
+- Per-series pruning was considered and rejected: `remove_stale_edges` deletes by engine and
+  market_id, and the series lives inside `raw_payload` with no column to filter on, so the honest
+  answer is to skip the sport's prune and log a warning saying which engine and why.

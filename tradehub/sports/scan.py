@@ -244,7 +244,7 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[[str], Feed] = fet
         if series_errors:
             report["series_errors"] = series_errors
         reports[sport] = report
-        per_sport[sport] = {"feed_ok": True, "edges": result.edges}
+        per_sport[sport] = {"feed_ok": True, "edges": result.edges, "series_ok": not series_errors}
     # Reviewing is the optional, slow part: stop when the scan budget is nearly gone. The edges
     # are already computed and are still written, just with tier=unreviewed. review_candidates
     # re-checks the same rule before every call, so a long candidate list cannot walk past it.
@@ -333,13 +333,23 @@ def prune_sports_if_healthy(
     The two conditions are the whole safety story: a feed error means we do not know what the
     sport looks like now, and a failed write means our produced set is not what is on the board.
     Either one would turn "produced nothing" into "delete everything", so neither may prune.
+
+    `series_ok` is a third condition and it is required, not defaulted. `remove_stale_edges`
+    deletes by engine and market_id, so a sport where ONE series (say the winner markets)
+    failed to fetch has a produced set missing every row of that series — pruning it would
+    delete a whole market type. Per-series pruning is not expressible here: the series lives
+    inside raw_payload, not in a column, so the honest answer is to skip the sport's prune.
+    Rows that go stale in that case are cleaned up on the next healthy run.
     """
     errors: list[str] = []
     for sport, state in per_sport.items():
         engine = SPORTS_ENGINES.get(sport)
         if engine is None:
             continue
-        if not state.get("feed_ok") or not state.get("write_ok"):
+        if not state.get("feed_ok") or not state.get("write_ok") or not state.get("series_ok"):
+            if not state.get("series_ok") and state.get("feed_ok") and state.get("write_ok"):
+                log.warning("scan: not pruning %s; one of its series failed to fetch, so the "
+                            "produced set is incomplete", engine)
             continue
         produced = {row["market_ticker"] for row in state.get("edges") or [] if row.get("market_ticker")}
         try:

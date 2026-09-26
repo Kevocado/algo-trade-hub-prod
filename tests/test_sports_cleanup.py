@@ -23,12 +23,13 @@ NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
 SPORT_EDGES = [{"market_ticker": "T1", "edge_type": "SPORTS", "engine": "sports_nfl",
                 "engine_version": "feed:v1", "gate_status": "SHADOW"}]
 # run_sports_for_cron returns a SportsRun; per_sport is what the health check reads, so a stub
-# that omits it would make every sport look like it produced nothing.
+# that omits it would make every sport look like it produced nothing. All THREE verdicts are
+# required: the feed fetch, the edge write and every series' market fetch.
 SPORT_RESULT = SportsRun(
     predictions=[{"engine": "sports_nfl", "market_ticker": "T1"}],
     edges=SPORT_EDGES,
     reports={"nfl": {"matched": 1}},
-    per_sport={"nfl": {"feed_ok": True, "edges": SPORT_EDGES}},
+    per_sport={"nfl": {"feed_ok": True, "series_ok": True, "edges": SPORT_EDGES}},
 )
 
 
@@ -129,8 +130,8 @@ def test_a_silent_sport_cannot_prune_another_sport(monkeypatch):
         predictions=[{"engine": "sports_cfb", "market_ticker": "C1"}],
         edges=cfb_edges,
         reports={"nfl": {"feed_error": "404"}, "cfb": {"matched": 1}},
-        per_sport={"nfl": {"feed_ok": False, "edges": []},
-                   "cfb": {"feed_ok": True, "edges": cfb_edges}},
+        per_sport={"nfl": {"feed_ok": False, "series_ok": False, "edges": []},
+                   "cfb": {"feed_ok": True, "series_ok": True, "edges": cfb_edges}},
     )
     rc, calls = _run_main(monkeypatch, sports_result=result)
     assert rc == 0
@@ -145,8 +146,8 @@ def test_a_healthy_sport_with_zero_edges_is_still_pruned(monkeypatch):
         predictions=[],
         edges=[],
         reports={"nfl": {"matched": 0}, "cfb": {"matched": 0}},
-        per_sport={"nfl": {"feed_ok": True, "edges": []},
-                   "cfb": {"feed_ok": True, "edges": []}},
+        per_sport={"nfl": {"feed_ok": True, "series_ok": True, "edges": []},
+                   "cfb": {"feed_ok": True, "series_ok": True, "edges": []}},
     )
     rc, calls = _run_main(monkeypatch, sports_result=result)
     assert rc == 0

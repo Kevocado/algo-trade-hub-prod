@@ -58,7 +58,7 @@ def test_sport_prunes_when_feed_and_write_both_succeeded_even_with_zero_edges():
     calls = []
     assert sports.prune_sports_if_healthy(
         client="supa",
-        per_sport={"nfl": {"feed_ok": True, "write_ok": True, "edges": []}},
+        per_sport={"nfl": {"feed_ok": True, "write_ok": True, "series_ok": True, "edges": []}},
         remove= lambda client, produced: calls.append(produced),
         now=NOW,
     ) is not None
@@ -208,8 +208,8 @@ def test_a_feed_error_never_prunes_that_sport():
     calls = []
     sports.prune_sports_if_healthy(
         client="supa",
-        per_sport={"nfl": {"feed_ok": False, "write_ok": True, "edges": []},
-                   "cfb": {"feed_ok": True, "write_ok": True, "edges": []}},
+        per_sport={"nfl": {"feed_ok": False, "write_ok": True, "series_ok": True, "edges": []},
+                   "cfb": {"feed_ok": True, "write_ok": True, "series_ok": True, "edges": []}},
         remove=lambda client, produced: calls.append(produced),
         now=NOW,
     )
@@ -223,7 +223,7 @@ def test_a_failed_write_never_prunes_that_sport():
     calls = []
     sports.prune_sports_if_healthy(
         client="supa",
-        per_sport={"nfl": {"feed_ok": True, "write_ok": False, "edges": []}},
+        per_sport={"nfl": {"feed_ok": True, "write_ok": False, "series_ok": True, "edges": []}},
         remove=lambda client, produced: calls.append(produced),
         now=NOW,
     )
@@ -243,11 +243,100 @@ def test_prune_errors_are_isolated_per_sport():
 
     errors = sports.prune_sports_if_healthy(
         client="supa",
-        per_sport={"nfl": {"feed_ok": True, "write_ok": True, "edges": []},
-                   "cfb": {"feed_ok": True, "write_ok": True, "edges": []}},
+        per_sport={"nfl": {"feed_ok": True, "write_ok": True, "series_ok": True, "edges": []},
+                   "cfb": {"feed_ok": True, "write_ok": True, "series_ok": True, "edges": []}},
         remove=remove,
         now=NOW,
     )
     assert {"sports_nfl"} in seen and {"sports_cfb"} in seen, "the second sport was skipped"
     assert any("sports_nfl" in e for e in errors), errors
     assert not any("sports_cfb" in e for e in errors), errors
+
+
+# ── (4) a series that failed its market fetch must not prune that series' rows ──
+
+def test_a_sport_with_one_failed_series_does_not_prune_that_sport():
+    """The dangerous case. If KXNFLGAME (winner) 500s, the produced set holds only spread and
+    total markets, and `remove_stale_edges` deletes every row whose market_id is absent from it —
+    i.e. every winner row for the engine. A partial outage would wipe a whole market type."""
+    from tradehub.sports import scan as sports
+
+    calls = []
+    sports.prune_sports_if_healthy(
+        client="supa",
+        per_sport={"nfl": {"feed_ok": True, "write_ok": True, "series_ok": False, "edges": []},
+                   "cfb": {"feed_ok": True, "write_ok": True, "series_ok": True, "edges": []}},
+        remove=lambda client, produced: calls.append(produced),
+        now=NOW,
+    )
+    assert "sports_nfl" not in calls[0], f"a partial series outage pruned the winner rows: {calls}"
+    assert "sports_cfb" in calls[0], f"the healthy sport was skipped: {calls}"
+
+
+def test_a_fully_healthy_sport_still_prunes():
+    from tradehub.sports import scan as sports
+
+    calls = []
+    sports.prune_sports_if_healthy(
+        client="supa",
+        per_sport={"nfl": {"feed_ok": True, "write_ok": True, "series_ok": True, "edges": []}},
+        remove=lambda client, produced: calls.append(produced),
+        now=NOW,
+    )
+    assert calls == [{"sports_nfl": set()}], calls
+
+
+def test_pruning_requires_an_explicit_series_ok():
+    """Fail-safe by construction: a caller that does not say every series was fetched gets NO
+    pruning. Silently keeping rows is recoverable; silently deleting a market type is not."""
+    from tradehub.sports import scan as sports
+
+    calls = []
+    sports.prune_sports_if_healthy(
+        client="supa",
+        per_sport={"nfl": {"feed_ok": True, "write_ok": True, "edges": []}},
+        remove=lambda client, produced: calls.append(produced),
+        now=NOW,
+    )
+    assert calls == [], f"a state with no series verdict pruned anyway: {calls}"
+
+
+def test_run_sports_scan_marks_a_sport_ineligible_when_a_series_fails(monkeypatch):
+    """End to end through the orchestrator: one failing series must reach `per_sport`, which is
+    the only thing `prune_sports_if_healthy` reads."""
+    from tradehub.sports import scan as sports
+    from tradehub.sports.config import load_sport_config
+
+    cfg = load_sport_config("nfl")
+
+    class Kalshi:
+        def open_markets(self, series):
+            if series == cfg.series["winner"]:
+                raise RuntimeError("series 500")
+            return []
+
+    run = sports.run_sports_scan(NOW, Kalshi(), fetch=lambda url, **k: _empty_feed("nfl"),
+                                 sports=("nfl",))
+    assert run.per_sport["nfl"].get("series_ok") is False, run.per_sport
+    calls = []
+    sports.prune_sports_if_healthy(client="supa", per_sport=run.per_sport,
+                                   remove=lambda c, produced: calls.append(produced), now=NOW)
+    assert calls == [], f"a sport with a failed series pruned anyway: {calls}"
+
+
+def test_a_healthy_sport_is_marked_eligible_to_prune(monkeypatch):
+    from tradehub.sports import scan as sports
+
+    class Kalshi:
+        def open_markets(self, series):
+            return []
+
+    run = sports.run_sports_scan(NOW, Kalshi(), fetch=lambda url, **k: _empty_feed("nfl"),
+                                 sports=("nfl",))
+    assert run.per_sport["nfl"].get("series_ok") is True, run.per_sport
+
+
+def _empty_feed(sport):
+    from tradehub.sports.feed import Feed
+    return Feed(sport=sport, games=(), rejected=(), generated_at=NOW,
+                calibration={"winner": {}, "spread": {}, "total": {}})
