@@ -457,7 +457,7 @@ def main(
         except Exception as exc:
             failures.append(f"cpi_nowcast.closed_cleanup: {type(exc).__name__}: {exc}")
             log.exception("scan closed CPI edge cleanup failed")
-        all_edges = weather_edges + gas_edges + cpi_edges
+        all_edges = weather_edges + gas_edges + cpi_edges + sports_edges
         pairs = {(row["engine"], row.get("engine_version", "v0")) for row in all_edges}
         try:
             statuses = latest_gate_statuses(client, pairs)
@@ -466,7 +466,7 @@ def main(
             failures.append(message)
             statuses = {}
             log.exception("scan gate-status lookup failed")
-        for edges in (weather_edges, gas_edges, cpi_edges):
+        for edges in (weather_edges, gas_edges, cpi_edges, sports_edges):
             apply_gate_statuses(edges, statuses)
 
         prediction_writes: dict[str, str] = {}

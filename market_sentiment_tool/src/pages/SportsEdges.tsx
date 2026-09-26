@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { buildApiUrl } from "@/lib/api";
+import { GateBadge } from "@/components/GateBadge";
 import {
   TIER_LABELS,
   formatEdgePct,
@@ -25,6 +26,15 @@ function EdgeRow({ edge }: { edge: SportsEdge }) {
         {edge.review?.drivers.map((d) => <div key={d}>• {d}</div>)}
         {edge.review?.red_flags.map((f) => <div key={f} className="text-amber-400">⚠ {f}</div>)}
         {edge.reject_reasons.map((r) => <div key={r}>{rejectReasonLabel(r)}</div>)}
+      </td>
+      <td className="py-2 pr-3">
+        {/* Sports edges are gated per (engine, engine_version) like every other engine. */}
+        <GateBadge edge={edge} />
+        {edge.engine_version && (
+          <div className="mt-1 text-[10px] text-slate-500" title="Predictor snapshot this edge was priced from">
+            {edge.engine_version.replace(/^feed:/, "")}
+          </div>
+        )}
       </td>
       <td className="py-2 text-xs">
         <a className="text-emerald-400 hover:underline" href={edge.market_url} target="_blank" rel="noreferrer">Kalshi</a>

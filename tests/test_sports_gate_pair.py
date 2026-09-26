@@ -61,7 +61,6 @@ def test_sports_gate_lookup_promotes_only_the_promoted_feed_version(monkeypatch)
     for the live feed version must reach the edge."""
     from tradehub.core import supabase_client
     from tradehub.scripts import scan
-    from tradehub.sports import scan as sports
     import tradehub.predictions as predictions
 
     upserted = []
@@ -79,7 +78,8 @@ def test_sports_gate_lookup_promotes_only_the_promoted_feed_version(monkeypatch)
     live_version = "feed:ridge@2026-09-04T22:12:49.750941+00:00"
     monkeypatch.setattr(scan, "run_sports_for_cron", lambda now, supa, **k: (
         [{"engine": "sports_nfl", "market_ticker": "T"}],
-        [{"market_ticker": "T", "engine": "sports_nfl", "engine_version": live_version}],
+        [{"market_ticker": "T", "edge_type": "SPORTS",
+          "engine": "sports_nfl", "engine_version": live_version}],
         {"nfl": {"matched": 1}},
     ))
     # A PROMOTED verdict exists only for this exact pair.
@@ -98,7 +98,6 @@ def test_an_unmatched_sports_edge_version_stays_shadow(monkeypatch):
     another version's promotion."""
     from tradehub.core import supabase_client
     from tradehub.scripts import scan
-    from tradehub.sports import scan as sports
     import tradehub.predictions as predictions
 
     upserted = []

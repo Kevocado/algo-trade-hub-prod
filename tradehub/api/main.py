@@ -209,7 +209,7 @@ async def get_track_record(supabase=Depends(get_supabase)):
 # ════════════════════════════════════════════════════════════════════════════
 _TIER_ORDER = {"top_pick": 0, "flagged": 1, "unreviewed": 2, "filtered": 3}
 _EDGE_FIELDS = ("sport", "kind", "side", "entry_price", "maker", "home", "away", "start_utc", "game_id",
-                "tier", "candidate", "reject_reasons", "review")
+                "tier", "candidate", "reject_reasons", "review", "engine_version")
 
 
 @app.get("/api/sports-edges", tags=["Sports"])
@@ -229,6 +229,10 @@ def get_sports_edges(supabase=Depends(get_supabase)):
             "market_id": row["market_id"], "title": row.get("title"), "our_prob": row.get("our_prob"),
             "market_prob": row.get("market_prob"), "edge_pct": row.get("edge_pct"),
             "market_url": row.get("market_url"), "source_url": row.get("source_url"),
+            # The gate is keyed on (engine, engine_version); the UI needs both to badge the row
+            # and to explain which predictor version it is looking at.
+            "engine": row.get("engine"),
+            "gate_status": row.get("gate_status") or "SHADOW",
             **{k: raw.get(k) for k in _EDGE_FIELDS},
         })
     edges.sort(key=lambda e: (_TIER_ORDER.get(e["tier"], 9), -float(e["edge_pct"] or 0)))

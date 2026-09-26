@@ -29,6 +29,10 @@ export interface SportsEdge {
   candidate: boolean;
   reject_reasons: string[];
   review: SportsReview | null;
+  /** Promotion gate is keyed on this pair, not on the engine alone. */
+  engine: string | null;
+  engine_version: string | null;
+  gate_status: "SHADOW" | "PROMOTED" | null;
 }
 
 export interface ScorecardSide {

@@ -71,6 +71,9 @@ def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s:
         "edge": s.net_edge_pct / 100.0,
         "edge_type": "SPORTS",
         "engine": cfg.engine,
+        # Same key the ledger row uses, so the (engine, engine_version) promotion gate can
+        # actually match this edge instead of falling back to a placeholder.
+        "engine_version": f"feed:{mg.game.model_version or 'unknown'}",
         "gate_status": "SHADOW",
         "updated_at": now.isoformat(),
         "expires_at": sm.market.close_time.isoformat(),
