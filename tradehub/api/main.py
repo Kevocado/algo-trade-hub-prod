@@ -288,8 +288,10 @@ def get_sports_edges(
     if tier is not None:
         candidates = [r for r in candidates if _tier_of(r) == tier]
 
-    # Rank globally, then page. tier asc, then edge_pct desc.
-    candidates.sort(key=lambda r: (_TIER_ORDER.get(_tier_of(r), 9), -float(r.get("edge_pct") or 0)))
+    # Rank globally, THEN page. top_pick first, then any remaining candidate, then the rest;
+    # within a tier by edge_pct descending. Ranking after the slice would let each offset window
+    # order itself, stranding a top_pick behind filtered rows on a later page.
+    candidates.sort(key=_sports_rank)
     total = len(candidates)
     rows = candidates[offset:offset + limit]
 
@@ -322,6 +324,22 @@ def get_sports_edges(
 
 def _tier_of(row: dict) -> str | None:
     return ((row.get("raw_payload") or {}).get("tier"))
+
+
+def _sports_rank(row: dict) -> tuple[int, int, float]:
+    """Sort key: top_pick, then any other candidate, then the rest; edge_pct descending.
+
+    A `filtered` row is one the candidate filter rejected, so it ranks below every candidate
+    regardless of its edge — a large gap the filter already refused should not lead the board.
+    """
+    tier = _tier_of(row)
+    if tier == "top_pick":
+        group = 0
+    elif (row.get("raw_payload") or {}).get("candidate"):
+        group = 1
+    else:
+        group = 2
+    return group, _TIER_ORDER.get(tier, 9), -float(row.get("edge_pct") or 0)
 
 
 def _is_upcoming(row: dict, now: datetime) -> bool:

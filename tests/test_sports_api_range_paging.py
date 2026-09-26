@@ -30,11 +30,13 @@ PAST = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
 TOTAL_ROWS = 2500
 
 
-def _edge(i: int, *, tier: str, start: str = FUTURE, expires_at: str = FUTURE_EXPIRES) -> dict:
+def _edge(i: int, *, tier: str, start: str = FUTURE, expires_at: str = FUTURE_EXPIRES,
+          edge_pct: float | None = None) -> dict:
     return {
         "market_id": f"T{i:05d}", "title": f"T{i:05d}", "edge_type": "SPORTS", "engine": "sports_nfl",
         "gate_status": "SHADOW", "our_prob": 0.3, "market_prob": 0.25, "expires_at": expires_at,
-        "edge_pct": round(0.30 - (i % 100) / 1000, 6), "market_url": "https://kalshi.com/markets/x",
+        "edge_pct": round(0.30 - (i % 100) / 1000, 6) if edge_pct is None else edge_pct,
+        "market_url": "https://kalshi.com/markets/x",
         "source_url": "https://sports/x",
         "raw_payload": {"sport": "nfl", "kind": "winner", "side": "yes", "entry_price": 0.25, "maker": True,
                         "home": "IND", "away": "HOU", "start_utc": start, "tier": tier, "candidate": tier != "filtered",
@@ -185,6 +187,26 @@ def test_paging_uses_range_not_a_single_execute():
     assert all(any(op.startswith("range:") for op in q["ops"]) for q in edge_reads), (
         f"expected every kalshi_edges read to page with .range(), got {edge_reads}"
     )
+
+
+def test_top_pick_beats_candidates_which_beat_filtered():
+    """Rank order is top_pick, then any other candidate, then the rest — a filtered row with a
+    bigger edge must not outrank a real candidate."""
+    rows = [
+        _edge(1, tier="filtered", edge_pct=0.90),
+        _edge(2, tier="unreviewed", edge_pct=0.10),
+        _edge(3, tier="flagged", edge_pct=0.05),
+        _edge(4, tier="top_pick", edge_pct=0.01),
+    ]
+    # `filtered` rows carry candidate=False; the others are candidates.
+    for r in rows:
+        r["raw_payload"]["candidate"] = r["raw_payload"]["tier"] != "filtered"
+    supa = _Supa({"kalshi_edges": rows, "sports_reviews": [], "predictions": []})
+    app.dependency_overrides[get_supabase] = lambda: supa
+    body = TestClient(app).get("/api/sports-edges", params={"limit": 10}).json()
+    # top_pick leads; the two remaining candidates follow in tier order; filtered is last even
+    # though its edge_pct (0.90) is by far the largest.
+    assert [e["tier"] for e in body["edges"]] == ["top_pick", "flagged", "unreviewed", "filtered"]
 
 
 def test_page_one_starts_with_the_best_top_pick():

@@ -195,7 +195,7 @@ The plan's extracted `_edge_row` omitted `engine`, `gate_status`, `updated_at` a
 ### Final verification (round 3)
 
 ```text
-Python baseline 391 → final 534 passed
+Python baseline 391 → final 535 passed
 Scoped Ruff F401,F811,F821: All checks passed
 Frontend: 7 files / 25 vitest tests passed
 tsc --noEmit -p tsconfig.app.json: exit 0
@@ -330,6 +330,12 @@ page, and ranking is now applied to **all** matching rows before the slice.
 - The round-2 fixtures in `test_sports_api_pagination.py` and `test_sports_scorecard_api.py` had
   no `expires_at` and no `.range()`/`.gte()`; both updated, which is what the type of the change
   required.
+- Rank order is `top_pick`, then any other candidate, then the rest; within a tier by `edge_pct`
+  descending. Extracted as `_sports_rank`. A `filtered` row is one the candidate filter already
+  rejected, so it ranks below every candidate regardless of how large its gap is — a 0.90 edge
+  that the filter refused must not lead the board. Pinned by
+  `test_top_pick_beats_candidates_which_beat_filtered`, which gives the filtered row nine times
+  the edge of the candidates and still asserts it sorts last.
 
 ### B7. Kevin checklist: paths, ordering, and the two-places rule
 
