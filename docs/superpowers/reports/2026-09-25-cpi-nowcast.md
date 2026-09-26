@@ -231,3 +231,19 @@ Check specifically:
 
 - CLI now calls `parser.error` for any `--engine cpi_nowcast --series` outside `CPI_TARGETS`.
 - Regression added; `tests/test_backtest_cpi.py` → 7 passed.
+
+## Review fix 5 — delete closed CPI edges on every hourly scan
+
+- Problem: CPI scans only at 08:00/12:00/16:00 ET, so engine-scoped stale cleanup ran
+  three times a day. The 08:05 run leaves edges listed until noon for markets that close
+  at 08:25, and the 16:00 run leaves 16-hour-old prices on the board overnight.
+- Fix: new `remove_closed_cpi_edges(client, now)` deletes any `cpi_nowcast` row in
+  `kalshi_edges` whose `expires_at` has passed. `main()` runs it on every hourly scan
+  (including non-CPI-due hours) before gate lookup, wrapped in its own failure boundary
+  so a cleanup error is reported without failing the scan.
+- RED: existing main() tests started failing because the new cleanup hit the stub client.
+- GREEN: `pytest tests/test_scan_cpi.py tests/test_scan.py -q` → 33 passed, including
+  `test_remove_closed_cpi_edges_deletes_only_past_expiry` (closed market deleted, still-open
+  market retained).
+- Behaviour note: this is suggest-only and SHADOW, so no money is at risk; the defect was
+  that the board showed edges on closed markets.
