@@ -199,6 +199,9 @@ def test_a_feed_404_still_does_not_fail_the_scan(monkeypatch, capsys):
     monkeypatch.setattr(scan_mod, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "cpi_scan_due", lambda now: False)
+    # labor_nowcast runs at 07/12/17 ET, so a suite that executes in one of
+    # those hours would otherwise drive the real scan against the stub client.
+    monkeypatch.setattr(scan_mod, "labor_scan_due", lambda now: False)
     monkeypatch.setattr(scan_mod, "sports_due", lambda now: True)
     monkeypatch.setattr(scan_mod, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan_mod, "remove_closed_cpi_edges", lambda *a, **k: None)

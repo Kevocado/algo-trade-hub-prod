@@ -486,3 +486,63 @@ now passes with `socket.getaddrinfo` and `socket.create_connection` disabled (67
 
 Worth stating plainly: this test was green for three unrelated reasons at once, and no amount of
 reading it would have shown that. Disabling the socket turned it red in one run.
+
+### Round 2 — the re-review of 115ae9d: one regression, and a flake it exposed
+
+**The regression was mine, introduced in round 1.** To classify 5xx I moved `raise_for_status()` out
+of the `try` block, and in doing so made **429 fatal on the first call**. A 429 raises `HTTPError`,
+which *is* a `RequestException` — but raised from the `else:` clause, which the `except` (which only
+wraps `get`) cannot see. Before round 1 the 429 was caught and retried; after it, it escaped as a
+bare `HTTPError` rather than the documented `RuntimeError: ALFRED request failed after retries`.
+
+```
+RED:
+E   requests.exceptions.HTTPError: 429            # escaped the retry loop entirely
+4 failed, 10 passed
+GREEN: 14 passed
+```
+
+The fix classifies the status **before** calling `raise_for_status()`: retryable is
+`429 or 500 <= status <= 599`, everything else is final. Two related points, both now pinned:
+
+- **A 4xx fails fast but with the same error *type*.** A 404 means the series or vintage does not
+  exist, so retrying it four times only delays the same failure by ~9s of backoff. But callers and
+  log readers should not have to tell "404, do not retry" from "404 after four tries" by
+  exception class, so the non-retryable path raises `RuntimeError` too, with a message that says it
+  was not retried.
+- **A 429 still respects the deadline.** Retrying is still skipped when the budget cannot afford
+  one more attempt, which is the whole point of the clamp.
+
+#### The optional item: a missing JOLTS vintage
+
+I took the warning option, not "mark the month incomplete", and the reason is worth recording:
+JOLTS is genuinely optional. `labor-v1` ships `CORE_FEATURES`, which do not use it, and its
+vintages start years after payrolls — so treating a missing JOLTS vintage as a feature gap would
+mark nearly every early month incomplete and **block pruning for the entire backtest window**.
+That would have been a much worse bug than the silence it fixed. A missing input and a zero input
+are different facts, and `values` is where the difference disappears, so it is now logged with
+that distinction stated. Two tests: a missing vintage warns, a present one does not.
+
+#### A flake the fix exposed, which was ten files wide
+
+`test_scan_main_includes_sports_when_due` began failing — at 17:12 ET, a `labor_scan_due` hour.
+`scan.main()` defaults to the wall clock, and the real `scan_labor` ran against `live=object()`.
+This is the same trap that made two sports tests time-of-day flaky for CPI at 08/12/16 ET, and the
+labor window (07/12/17 ET) is wide enough that **a reviewer running the suite in the afternoon
+would have hit it**. An AST scan found **ten files** driving `scan.main()` without pinning
+`labor_scan_due`; all ten are fixed.
+
+I could not prove the fix with a frozen clock — patching `datetime.datetime` globally segfaults a C
+extension (exit 139) — so the property is now a standing static guard: every test file that drives
+`scan.main()` must either stub `labor_scan_due` or pass an explicit `now=`. That covers future
+engines with fixed hours too, which is the part worth having.
+
+#### Round 2 verification
+
+```
+pytest              683 passed in 5.69s      (675 at 115ae9d)
+ruff                All checks passed!
+npm run typecheck   exit 0
+vitest              7 files / 32 tests passed
+vite build          ✓ built
+```

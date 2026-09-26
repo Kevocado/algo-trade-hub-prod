@@ -102,6 +102,10 @@ def test_main_isolates_a_cpi_failure(monkeypatch, capsys):
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
+    # This test calls scan.main() with no `now`, so it runs on the wall clock. labor_nowcast is due
+    # at 07/12/17 ET, and in those hours the real scan_labor would run against the stub client and
+    # turn this into a labor failure. Same trap as cpi_scan_due, wider window.
+    monkeypatch.setattr(scan, "labor_scan_due", lambda now: False)
 
     def boom(live, now, cfg):
         raise RuntimeError("cleveland fed down")

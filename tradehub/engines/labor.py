@@ -9,6 +9,7 @@ public by the end of the reference month; its residual spread sets sigma.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ CORE_FEATURES = ("pay_last", "pay_3m", "icsa_ref_chg", "ccsa_ref_chg")
 ALL_FEATURES = CORE_FEATURES + ("adp_chg", "adp_missing", "jolts_hires_3m", "ghost_gap_3m", "post_2021")
 
 _ET = ZoneInfo("America/New_York")
+log = logging.getLogger(__name__)
 _STRIKE_SUFFIX = re.compile(r"-T(-?\d+(?:\.\d+)?)$")
 
 Vintage = Mapping[date, float]  # observation month -> value, as published on one vintage date
@@ -290,6 +292,16 @@ def labor_features(
     jolts_known = [m for m in (hires_v or {}) if m in (openings_v or {})
                    and end_of_day_et(month_end(m) + timedelta(days=JOLTS_LAG_DAYS)) <= as_of]
     hires_3m = ghost_3m = 0.0
+    if not hires_v or not openings_v:
+        # Optional input, deliberately NOT a feature gap: `labor-v1` ships CORE_FEATURES, which do
+        # not use JOLTS, and its vintages start years after payrolls -- so treating this as a gap
+        # would mark nearly every early month incomplete and block pruning forever. But a missing
+        # input and a zero input are different facts, and the values dict is where the difference
+        # disappears, so say so. The count is the thing worth knowing: how many months are
+        # silently running without the feature.
+        log.warning("labor_features %s: no JOLTS vintage at month end, so jolts_hires_3m and "
+                    "ghost_gap_3m are 0 rather than measured (they are not in CORE_FEATURES)",
+                    month.isoformat())
     if jolts_known:
         j = max(jolts_known)
         j3 = add_months(j, -3)

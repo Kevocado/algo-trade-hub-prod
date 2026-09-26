@@ -67,10 +67,26 @@ def default_get_text(
             last = exc
         else:
             status = int(getattr(resp, "status_code", 200) or 200)
-            if not 500 <= status <= 599:
-                resp.raise_for_status()
+            # Retryable: 429 (rate limited) and 5xx (FRED's edge under load). Everything else is
+            # final -- a 404 means the series or vintage does not exist, and retrying it four
+            # times only delays the same failure by ~9s of backoff.
+            #
+            # Classify BEFORE raise_for_status(), never after. raise_for_status() raises
+            # HTTPError, which IS a RequestException, but it is raised from this `else` clause,
+            # which the `except` above does not cover -- so a 429 raised there escapes the retry
+            # loop entirely and the caller gets a bare HTTPError instead of the documented
+            # RuntimeError. That is exactly the regression round 1 introduced.
+            if status == 429 or 500 <= status <= 599:
+                last = requests.HTTPError(f"{status} from {url}")
+            else:
+                try:
+                    resp.raise_for_status()
+                except requests.RequestException as exc:
+                    # Final, not retryable. Fail immediately -- and with the same error TYPE the
+                    # retry path raises, because callers (and readers of the log) should not have
+                    # to tell "404, do not retry" from "404 after four tries" by exception class.
+                    raise RuntimeError(f"ALFRED request failed: {exc}") from exc
                 return resp.text
-            last = requests.HTTPError(f"{status} from {url}")
         backoff = 1.5 * (attempt + 1)
         if deadline is not None and remaining_seconds(deadline, clock) < timeout + backoff:
             log.warning("alfred: %0.1fs of scan budget left, not enough for another attempt "

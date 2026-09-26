@@ -243,3 +243,126 @@ def test_the_deadline_reaches_the_alfred_fetcher(monkeypatch):
     assert seen.get("deadline") == 4242.0, (
         f"the ALFRED inputs were fetched with no deadline: {seen}"
     )
+
+
+# ── 429 must retry again ──────────────────────────────────────────────────────
+#
+# Round 1 moved `raise_for_status()` out of the try block so a 5xx could be classified, and in
+# doing so made a 429 fatal on the first call: it raises HTTPError from the `else:` clause, which
+# the `except requests.RequestException` (which only wraps `get`) never sees. The old code retried
+# it, because a 429 IS a RequestException.
+
+def test_a_429_is_retried():
+    from tradehub.data.alfred_vintages import default_get_text
+
+    responses = [_resp(429), _resp(200)]
+    attempts = []
+    clock = _Clock()
+
+    def get(url, params=None, headers=None, timeout=None):
+        attempts.append(timeout)
+        return responses.pop(0)
+
+    assert default_get_text("u", {}, get=get, sleep=clock.sleep, clock=clock) is not None
+    assert len(attempts) == 2, f"a 429 was treated as fatal: {attempts}"
+
+
+def test_a_5xx_is_still_retried():
+    from tradehub.data.alfred_vintages import default_get_text
+
+    responses = [_resp(503), _resp(200)]
+    attempts = []
+
+    def get(url, params=None, headers=None, timeout=None):
+        attempts.append(timeout)
+        return responses.pop(0)
+
+    clock = _Clock()
+    default_get_text("u", {}, get=get, sleep=clock.sleep, clock=clock)
+    assert len(attempts) == 2, attempts
+
+
+def test_a_4xx_is_not_retried():
+    """404 means the series or vintage does not exist. Retrying it four times just delays the
+    same failure by ~9s of backoff."""
+    from tradehub.data.alfred_vintages import default_get_text
+
+    attempts = []
+
+    def get(url, params=None, headers=None, timeout=None):
+        attempts.append(timeout)
+        return _resp(404)
+
+    clock = _Clock()
+    with pytest.raises(RuntimeError):
+        default_get_text("u", {}, get=get, sleep=clock.sleep, clock=clock)
+    assert len(attempts) == 1, attempts
+    assert clock.t == 1000.0, "a 4xx backed off before failing"
+
+
+def test_exhausted_retries_raise_the_documented_runtime_error():
+    """Callers (and the report) match on `RuntimeError: ALFRED request failed after retries`.
+    A 429 exhausting its retries must produce that, not a bare HTTPError from raise_for_status."""
+    from tradehub.data.alfred_vintages import default_get_text
+
+    def get(url, params=None, headers=None, timeout=None):
+        return _resp(429)
+
+    clock = _Clock()
+    with pytest.raises(RuntimeError, match="ALFRED request failed after retries"):
+        default_get_text("u", {}, get=get, sleep=clock.sleep, clock=clock)
+
+
+def test_a_429_still_respects_the_deadline():
+    from tradehub.data.alfred_vintages import default_get_text
+
+    attempts = []
+    clock = _Clock()
+
+    def get(url, params=None, headers=None, timeout=None):
+        attempts.append(timeout)
+        return _resp(429)
+
+    with pytest.raises(RuntimeError):
+        default_get_text("u", {}, get=get, sleep=clock.sleep, clock=clock, deadline=1000.0 + 5.0)
+    assert len(attempts) == 1, f"a 429 retry was started with less time than one attempt needs: {attempts}"
+
+
+# ── the time-of-day trap, as a standing guard ─────────────────────────────────
+
+def test_no_scan_main_test_is_left_unguarded_against_the_labor_clock():
+    """`scan.main()` defaults to the wall clock, and an engine that runs at fixed hours of the
+    day turns any test that does not stub its due-gate into a test that fails in some hours and
+    passes in others.
+
+    This has now bitten twice on this branch: cpi_scan_due at 08/12/16 ET, and labor_scan_due at
+    07/12/17 ET -- the second only showed up because the suite happened to run at 17:12 ET, and
+    the window is wide enough that a reviewer running it in the afternoon would have hit it. Ten
+    files were quietly wrong.
+
+    So: every test file that drives `scan.main()` must either stub `labor_scan_due` or pass an
+    explicit `now=`. Checked statically, because a frozen clock cannot be used to prove it (patching
+    datetime globally segfaults a C extension).
+    """
+    import pathlib
+    import re
+
+    tests_dir = pathlib.Path(__file__).resolve().parent
+    offenders: list[str] = []
+    for path in sorted(tests_dir.glob("test_*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "tradehub.scripts import scan" not in text and "from tradehub.scripts import scan as" not in text:
+            continue
+        if not re.search(r"\b(scan|scan_mod)\.main\(", text):
+            continue
+        if "labor_scan_due" in text:
+            continue
+        # Allowed instead: every main() call in the file passes an explicit `now=`.
+        calls = re.findall(r"\b(?:scan|scan_mod)\.main\([^)]*\)", text, re.S)
+        if calls and all("now=" in call for call in calls):
+            continue
+        offenders.append(path.name)
+    assert not offenders, (
+        f"these files drive scan.main() on the wall clock without stubbing labor_scan_due, so "
+        f"they fail whenever the suite runs at 07/12/17 ET: {offenders}"
+    )

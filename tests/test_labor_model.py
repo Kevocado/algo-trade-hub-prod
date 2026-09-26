@@ -127,3 +127,43 @@ def test_the_weekly_series_take_a_vintage_each():
     params = inspect.signature(labor_features).parameters
     for name in ("icsa", "ccsa", "hires", "openings"):
         assert "Vintage" in str(params[name].annotation), f"{name} still takes a flat series: {params[name]}"
+
+
+def test_a_missing_jolts_vintage_is_reported_rather_than_silently_zeroed(caplog):
+    """JOLTS is optional — `labor-v1` ships CORE_FEATURES, which do not use it, and its vintages
+    start years after payrolls — so a missing one must NOT mark the month incomplete, or every
+    early month would block pruning forever. But a missing input and a zero input are different
+    facts, and the values dict is where the difference disappears, so it is logged."""
+    import logging
+
+    from tradehub.sports import deadline as _deadline  # noqa: F401  (import kept out of the way)
+
+    month = date(2025, 1, 1)
+    end = month_end(month)
+    icsa = {end: _weekly(date(2024, 11, 2), 16, lambda i: 200000.0 + 1000 * i)}
+    ccsa = {end: _weekly(date(2024, 11, 2), 16, lambda i: 1800000.0 + 5000 * i)}
+    with caplog.at_level(logging.WARNING):
+        feats = labor_features(month, payems=PAYEMS, icsa=icsa, ccsa=ccsa, hires={}, openings={},
+                               adp={}, release=date(2025, 2, 7))
+    assert feats is not None, "a missing JOLTS vintage must not invalidate the month's features"
+    assert feats.values["jolts_hires_3m"] == 0.0 and feats.values["ghost_gap_3m"] == 0.0
+    assert any("JOLTS" in r.getMessage() for r in caplog.records), (
+        f"a missing JOLTS vintage was silent: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_jolts_present_produces_no_warning(caplog):
+    import logging
+
+    month = date(2025, 1, 1)
+    end = month_end(month)
+    icsa = {end: _weekly(date(2024, 11, 2), 16, lambda i: 200000.0 + 1000 * i)}
+    ccsa = {end: _weekly(date(2024, 11, 2), 16, lambda i: 1800000.0 + 5000 * i)}
+    jolts = {end: {date(2024, m, 1): 5000.0 + m for m in range(1, 13)}}
+    with caplog.at_level(logging.WARNING):
+        feats = labor_features(month, payems=PAYEMS, icsa=icsa, ccsa=ccsa, hires=jolts, openings=jolts,
+                               adp={}, release=date(2025, 2, 7))
+    assert feats is not None
+    assert not any("JOLTS" in r.getMessage() for r in caplog.records), (
+        f"a present JOLTS vintage still warned: {[r.getMessage() for r in caplog.records]}"
+    )
