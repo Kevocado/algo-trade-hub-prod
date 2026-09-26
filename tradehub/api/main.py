@@ -11,6 +11,7 @@ Run locally:
 Then visit: http://localhost:8000/docs  (Swagger UI — auto-generated)
 """
 
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,8 +26,11 @@ from tradehub.api.schemas import (
 )
 from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
+from tradehub.gate_status import latest_gate_statuses
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
 from tradehub.sports.scorecard import reviewer_scorecard
+
+log = logging.getLogger(__name__)
 
 # ── App ─────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -371,6 +375,11 @@ def _is_upcoming(row: dict, now: datetime) -> bool:
 # No limit: the table holds one row per (series, reference_month), so it is two
 # rows per month of history rather than a growing event log.
 # ════════════════════════════════════════════════════════════════════════════
+# The scorecard's series -> the engine whose gate applies. `unemployment` is deliberately absent:
+# its u3-naive-v0 baseline is not a gated engine.
+SCORECARD_ENGINE = {"payrolls": "labor_nowcast"}
+
+
 @app.get("/api/jobs-scorecard", tags=["Jobs Scorecard"])
 async def get_jobs_scorecard(
     series: str = Query("payrolls", pattern="^(payrolls|unemployment)$"),
@@ -381,7 +390,29 @@ async def get_jobs_scorecard(
     result = (
         supabase.table("jobs_scorecard").select("*").eq("series", series).order("reference_month").execute()
     )
-    return result.data or []
+    rows = result.data or []
+    if not rows:
+        return rows
+    # Kevin's decision: the /jobs page shows the engine's gate status next to the nowcast. The
+    # scorecard is built out of band, so the status is not on the row and has to be looked up --
+    # per (engine, engine_version), defaulting to SHADOW. The unemployment panel is a naive
+    # baseline rather than a gated engine, so it must not borrow labor_nowcast's promotion.
+    engine = SCORECARD_ENGINE.get(series)
+    versions = {row.get("engine_version") for row in rows if row.get("engine_version")}
+    statuses: dict[tuple[str, str], str] = {}
+    if engine and versions:
+        try:
+            statuses = latest_gate_statuses(supabase, {(engine, version) for version in versions})
+        except Exception:
+            # Failing closed: no gate record means SHADOW, and a lookup error must not take the
+            # whole page down when the rows themselves are readable.
+            log.exception("api: jobs scorecard gate-status lookup failed")
+            statuses = {}
+    for row in rows:
+        version = row.get("engine_version")
+        row["engine"] = engine
+        row["gate_status"] = statuses.get((engine, version), "SHADOW") if engine and version else "SHADOW"
+    return rows
 
 
 # ── War Room SPA (mounted last so every /api route above wins) ─────────────

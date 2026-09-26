@@ -29,6 +29,7 @@ from tradehub.data.weather import (
 )
 from tradehub.edges import EdgeSuggestion, evaluate_edge
 from tradehub.engine_config import EngineConfig, load_engine_config
+from tradehub.gate_status import latest_gate_statuses
 from tradehub.engines.cpi import (
     CPI_TARGETS,
     CPI_TRAIN_MONTHS,
@@ -104,27 +105,6 @@ def _mid(quote) -> float | None:
     if quote.yes_bid is None or quote.yes_ask is None:
         return None
     return (quote.yes_bid + quote.yes_ask) / 2.0
-
-
-def latest_gate_statuses(client, pairs: set[tuple[str, str]]) -> dict[tuple[str, str], str]:
-    """Promote a pair only when its latest backtest and track record both say PROMOTED."""
-    statuses: dict[tuple[str, str], str] = {}
-    for engine, version in pairs:
-        backtest = client.table("backtest_runs") \
-            .select("engine,engine_version,gate_status,created_at") \
-            .eq("engine", engine).eq("engine_version", version) \
-            .order("created_at", desc=True).limit(1).execute()
-        rows = list(backtest.data or [])
-        if not rows or rows[0].get("gate_status") != "PROMOTED":
-            statuses[(engine, version)] = "SHADOW"
-            continue
-        track = client.table("track_record").select("gate_status") \
-            .eq("engine", engine).eq("engine_version", version).limit(1).execute()
-        track_rows = list(track.data or [])
-        statuses[(engine, version)] = (
-            "PROMOTED" if track_rows and track_rows[0].get("gate_status") == "PROMOTED" else "SHADOW"
-        )
-    return statuses
 
 
 def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[tuple[str, str], str]) -> None:

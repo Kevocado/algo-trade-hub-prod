@@ -3,6 +3,7 @@ import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, X
 import { AlertTriangle, Loader2 } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { GateBadge } from "@/components/GateBadge";
 import { useJobsScorecard } from "@/hooks/useJobsScorecard";
 import { formatValue, summarizeScorecard, toChartPoints, type JobsSeries } from "@/lib/jobsScorecard";
 
@@ -19,6 +20,10 @@ export default function JobsScorecard() {
   const points = useMemo(() => toChartPoints(rows), [rows]);
   const summary = useMemo(() => summarizeScorecard(rows), [rows]);
   const errDigits = series === "payrolls" ? 1 : 2;
+  // The engine and version behind the newest row, so the badge says WHICH engine is being
+  // shadowed. The gate is keyed on (engine, engine_version), so a version change is exactly what
+  // resets a promotion, and a badge without the version is a claim rather than a fact.
+  const newest = rows[rows.length - 1];
 
   return (
     <div className="min-h-screen bg-slate-950 px-8 py-10 text-slate-100">
@@ -32,18 +37,28 @@ export default function JobsScorecard() {
               was revised afterwards.
             </p>
           </div>
-          <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-1">
-            {SERIES.map((s) => (
-              <button
-                key={s.key}
-                onClick={() => setSeries(s.key)}
-                className={`rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-widest ${
-                  series === s.key ? "bg-emerald-500/20 text-emerald-300" : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                {s.label}
-              </button>
-            ))}
+          <div className="flex flex-col items-end gap-3">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-1">
+              {SERIES.map((s) => (
+                <button
+                  key={s.key}
+                  onClick={() => setSeries(s.key)}
+                  className={`rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-widest ${
+                    series === s.key ? "bg-emerald-500/20 text-emerald-300" : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            {newest && (
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <GateBadge edge={newest} />
+                <span className="font-mono">
+                  {newest.engine ?? "no engine"}@{newest.engine_version ?? "?"}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 

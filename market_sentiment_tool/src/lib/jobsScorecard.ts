@@ -8,6 +8,10 @@ export type JobsScorecardRow = {
   nowcast_mu: number | null;
   nowcast_sigma: number | null;
   engine_version: string | null;
+  // Added by GET /api/jobs-scorecard, not stored on the row: the scorecard is built out of band,
+  // so the promotion gate has to be looked up per (engine, engine_version) at read time.
+  engine?: string | null;
+  gate_status?: string | null;
   kalshi_mean_1h: number | null;
   kalshi_median_1h: number | null;
   first_print: number | null;

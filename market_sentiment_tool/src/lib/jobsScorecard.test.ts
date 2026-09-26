@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { edgeGate } from "@/lib/edgeGate";
 import {
   formatValue,
   summarizeScorecard,
@@ -15,6 +16,8 @@ const row = (overrides: Partial<JobsScorecardRow>): JobsScorecardRow => ({
   nowcast_mu: 60,
   nowcast_sigma: 90,
   engine_version: "labor-v1",
+  engine: "labor_nowcast",
+  gate_status: "SHADOW",
   kalshi_mean_1h: 45,
   kalshi_median_1h: 44,
   first_print: 162,
@@ -66,5 +69,29 @@ describe("jobsScorecard helpers", () => {
     expect(formatValue("payrolls", -23.4)).toBe("-23k");
     expect(formatValue("unemployment", 4.1)).toBe("4.1%");
     expect(formatValue("payrolls", null)).toBe("—");
+  });
+});
+
+describe("jobsScorecard gate status", () => {
+  it("defaults to shadow when the API sends no gate status", () => {
+    // Kevin's decision: the page badges the engine's gate status next to the nowcast, and a
+    // missing status must read Shadow (fail closed), never Promoted.
+    expect(edgeGate({ gate_status: undefined }).isShadow).toBe(true);
+    expect(edgeGate({ gate_status: "SHADOW" }).isShadow).toBe(true);
+    expect(edgeGate({ gate_status: "PROMOTED" }).isShadow).toBe(false);
+  });
+
+  it("takes the gate status from the row the API returned", () => {
+    const promoted: JobsScorecardRow = { ...row({}), engine: "labor_nowcast", gate_status: "PROMOTED" };
+    expect(edgeGate(promoted).label).toBe("Promoted");
+    const shadow: JobsScorecardRow = { ...row({}), engine: "labor_nowcast", gate_status: "SHADOW" };
+    expect(edgeGate(shadow).label).toBe("Shadow");
+  });
+
+  it("keeps the engine version visible so a badge can be traced to a promotion", () => {
+    // The gate is keyed on (engine, engine_version), so showing the version is what makes a
+    // PROMOTED badge auditable rather than a claim.
+    expect(row({}).engine_version).toBe("labor-v1");
+    expect(row({}).engine).toBe("labor_nowcast");
   });
 });
