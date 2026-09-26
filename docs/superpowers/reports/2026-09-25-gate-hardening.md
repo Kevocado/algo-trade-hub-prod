@@ -545,3 +545,9 @@ therefore completed inline by the controller against the plan, this report, the 
 
 - Added a regression using `WEATHER_ENGINE_VERSION` through `refresh_track_record`.
 - `pytest tests/test_track_record_contracts.py -q` → 8 passed. No production change was required because Task 2 already preserves the settled row's real version.
+
+## Review fix 3 — synchronize plan/tracker and remove dead constant
+
+- Copied the updated plan byte-for-byte from `origin/plan/2026-09-25-docs-vps-and-gate`.
+- Tracker row 2b now mentions unquoted-prediction exclusion.
+- Removed unused `TRACK_RECORD_TABLE` from `tradehub/settlement.py`.
