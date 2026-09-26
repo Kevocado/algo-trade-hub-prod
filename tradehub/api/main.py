@@ -210,21 +210,66 @@ async def get_track_record(supabase=Depends(get_supabase)):
 _TIER_ORDER = {"top_pick": 0, "flagged": 1, "unreviewed": 2, "filtered": 3}
 _EDGE_FIELDS = ("sport", "kind", "side", "entry_price", "maker", "home", "away", "start_utc", "game_id",
                 "tier", "candidate", "reject_reasons", "review", "engine_version")
+_SPORTS_ENGINES = {"nfl": "sports_nfl", "cfb": "sports_cfb"}
+SPORTS_PAGE_MAX = 200
+SPORTS_PAGE_DEFAULT = 100
+SPORTS_REVIEW_SCAN = 5000
+
+
+def _page(limit: int, offset: int) -> tuple[int, int]:
+    if limit < 1 or limit > SPORTS_PAGE_MAX or offset < 0:
+        raise HTTPException(status_code=422, detail=f"limit must be 1..{SPORTS_PAGE_MAX} and offset >= 0")
+    return limit, offset
 
 
 @app.get("/api/sports-edges", tags=["Sports"])
-def get_sports_edges(supabase=Depends(get_supabase)):
-    """Upcoming SPORTS edges (Top Picks first) plus the reviewer keep-or-drop scorecard."""
+def get_sports_edges(
+    sport: str | None = None,
+    tier: str | None = None,
+    limit: int = SPORTS_PAGE_DEFAULT,
+    offset: int = 0,
+    supabase=Depends(get_supabase),
+):
+    """Upcoming SPORTS edges (Top Picks first) plus the reviewer keep-or-drop scorecard.
+
+    Filtered and paginated: the kalshi_edges table is never cleaned by sport alone and the
+    season's rows accumulate, so an unbounded select would grow with the schedule. `sport` and
+    `tier` are pushed into the query; `total` is the count AFTER filtering but BEFORE paging,
+    so the UI can say "20 of 240" rather than guessing.
+    """
     if supabase is None:
         raise HTTPException(status_code=503, detail="Supabase is not configured")
+    if sport is not None and sport not in _SPORTS_ENGINES:
+        raise HTTPException(status_code=422, detail=f"sport must be one of {sorted(_SPORTS_ENGINES)}")
+    if tier is not None and tier not in _TIER_ORDER:
+        raise HTTPException(status_code=422, detail=f"tier must be one of {sorted(_TIER_ORDER)}")
+    limit, offset = _page(limit, offset)
+
     now = datetime.now(timezone.utc)
-    rows = supabase.table("kalshi_edges").select("*").eq("edge_type", "SPORTS").execute().data or []
+
+    def base_query():
+        q = supabase.table("kalshi_edges").select("*").eq("edge_type", "SPORTS")
+        if sport is not None:
+            q = q.eq("engine", _SPORTS_ENGINES[sport])
+        return q
+
+    filtered = base_query()
+    if tier is not None:
+        # tier lives in raw_payload, so it cannot be filtered by the database; narrow in Python
+        # and count there, then page. Bounded by the review scan cap rather than the table.
+        candidates = [r for r in (filtered.execute().data or []) if _tier_of(r) == tier]
+        candidates = [r for r in candidates if _is_upcoming(r, now)]
+        total = len(candidates)
+        rows = candidates[offset:offset + limit]
+    else:
+        rows_all = base_query().execute().data or []
+        upcoming = [r for r in rows_all if _is_upcoming(r, now)]
+        total = len(upcoming)
+        rows = upcoming[offset:offset + limit]
+
     edges = []
     for row in rows:
         raw = row.get("raw_payload") or {}
-        start = raw.get("start_utc")
-        if not start or datetime.fromisoformat(start) <= now:
-            continue
         edges.append({
             "market_id": row["market_id"], "title": row.get("title"), "our_prob": row.get("our_prob"),
             "market_prob": row.get("market_prob"), "edge_pct": row.get("edge_pct"),
@@ -236,11 +281,32 @@ def get_sports_edges(supabase=Depends(get_supabase)):
             **{k: raw.get(k) for k in _EDGE_FIELDS},
         })
     edges.sort(key=lambda e: (_TIER_ORDER.get(e["tier"], 9), -float(e["edge_pct"] or 0)))
-    reviews = supabase.table("sports_reviews").select("*").eq("status", "ok").execute().data or []
+
+    reviews = (supabase.table("sports_reviews").select("*").eq("status", "ok")
+               .limit(SPORTS_REVIEW_SCAN).execute().data or [])
     settled = (supabase.table("predictions").select("market_ticker,result")
-               .in_("engine", ["sports_nfl", "sports_cfb"]).eq("status", "SETTLED").execute().data or [])
+               .in_("engine", sorted(_SPORTS_ENGINES.values())).eq("status", "SETTLED")
+               .limit(SPORTS_REVIEW_SCAN).execute().data or [])
     results = {r["market_ticker"]: r["result"] for r in settled}
-    return {"as_of": now.isoformat(), "edges": edges, "reviewer_scorecard": reviewer_scorecard(reviews, results)}
+    return {
+        "as_of": now.isoformat(), "edges": edges, "total": total, "limit": limit, "offset": offset,
+        "reviewer_scorecard": reviewer_scorecard(reviews, results),
+    }
+
+
+def _tier_of(row: dict) -> str | None:
+    return ((row.get("raw_payload") or {}).get("tier"))
+
+
+def _is_upcoming(row: dict, now: datetime) -> bool:
+    """A row with no parsable start_utc is not upcoming and is never shown."""
+    start = (row.get("raw_payload") or {}).get("start_utc")
+    if not start:
+        return False
+    try:
+        return datetime.fromisoformat(start) > now
+    except (TypeError, ValueError):
+        return False
 
 
 # ── War Room SPA (mounted last so every /api route above wins) ─────────────

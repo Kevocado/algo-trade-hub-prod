@@ -44,6 +44,10 @@ export interface ScorecardSide {
 export interface SportsEdgesResponse {
   as_of: string;
   edges: SportsEdge[];
+  /** Upcoming rows matching the filters, counted before paging. */
+  total: number;
+  limit: number;
+  offset: number;
   reviewer_scorecard: {
     n_settled: number;
     min_settled: number;

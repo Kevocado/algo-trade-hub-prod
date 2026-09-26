@@ -62,6 +62,13 @@ class _Q:
         self.rows = [r for r in self.rows if r.get(col) in vals]
         return self
 
+    def limit(self, n):
+        self.rows = self.rows[:n]
+        return self
+
+    def order(self, *_a, **_k):
+        return self
+
     def execute(self):
         return type("R", (), {"data": self.rows})()
 
