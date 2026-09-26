@@ -169,7 +169,7 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: edge_writes.append(rows))
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, versions: {"weather": "SHADOW", "gas": "SHADOW"})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
-    monkeypatch.setattr(scan, "remove_started_sports_edges_errors", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     assert scan.main() == 0
@@ -201,7 +201,7 @@ def test_scan_main_survives_a_sports_crash(monkeypatch, capsys):
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: None)
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, versions: {"weather": "SHADOW", "gas": "SHADOW"})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
-    monkeypatch.setattr(scan, "remove_started_sports_edges_errors", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     # A sports failure is recorded in `failures` (B6), so the run reports partial_failure

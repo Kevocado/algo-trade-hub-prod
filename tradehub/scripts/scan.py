@@ -47,7 +47,7 @@ from tradehub.engines.weather import (
 from tradehub.markets import KalshiMarket, event_date, event_month, market_url
 from tradehub.predictions import build_prediction_row
 from tradehub.sports.scan import (
-    prune_sports_if_healthy, remove_started_sports_edges_errors, run_sports_for_cron, sports_due,
+    prune_sports_if_healthy, remove_started_sports_edges, run_sports_for_cron, sports_due,
 )
 
 
@@ -549,7 +549,7 @@ def main(
                 # Pruning a zero-edge run is the point: that is when the previous rows must go.
                 for state in sports_per_sport.values():
                     state["write_ok"] = writes["edges"].get("sports") == "ok"
-                failures.extend(remove_started_sports_edges_errors(client, now))
+                failures.extend(remove_started_sports_edges(client, now))
                 failures.extend(prune_sports_if_healthy(client, sports_per_sport,
                                                         remove=remove_stale_edges, now=now))
             except Exception as exc:  # a predictor/Kalshi outage must not cost weather/gas

@@ -98,9 +98,9 @@ def test_main_isolates_a_cpi_failure(monkeypatch, capsys):
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
-    monkeypatch.setattr(scan, "remove_started_sports_edges_errors", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
-    monkeypatch.setattr(scan, "remove_started_sports_edges_errors", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
 
     def boom(live, now, cfg):
@@ -129,7 +129,7 @@ def test_main_gates_cpi_edges_per_engine_version(monkeypatch):
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
     monkeypatch.setattr(scan, "remove_stale_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
-    monkeypatch.setattr(scan, "remove_started_sports_edges_errors", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {
         ("cpi_nowcast", "cpi-core-v1"): "PROMOTED",
@@ -160,7 +160,7 @@ def test_cpi_cleanup_runs_only_on_a_due_hour(monkeypatch, due):
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda *a: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: cleaned.append(produced))
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
-    monkeypatch.setattr(scan, "remove_started_sports_edges_errors", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
     edge = {"market_ticker": "CPI", "engine": "cpi_nowcast", "engine_version": "cpi-v1"}
     monkeypatch.setattr(scan, "scan_cpi", lambda *a, **k: ([], [edge] if due else []))

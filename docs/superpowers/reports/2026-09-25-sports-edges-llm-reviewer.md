@@ -526,3 +526,62 @@ that are easy to get wrong are called out first.**
 - CFB spread/total calibration may remain empty because recorded sportsbook lines are mostly null.
 - Reviewer budget/fixture follow-ups are in the plan's Kevin checklist and were not executed.
 - No Supabase write, LLM call, migration application or deployment was performed.
+
+## Round 4 — the review of 9847837
+
+One commit per numbered item, test-first. Each section below records the RED output verbatim and
+what the GREEN changed. Nothing here was applied to a database, a container or a deploy.
+
+### 1. Started games are not actually removed
+
+**The defect.** `remove_started_sports_edges` deleted on `expires_at`, and `expires_at` is the
+Kalshi `close_time`. For a sports market that is about **two days after kickoff** — the recorded
+fixtures close `2026-09-29T17:00Z` for games kicking off `2026-09-27T17:00Z`. So the predicate
+`expires_at <= now` was false for every game that had started, and the rows stayed up for days.
+`useMarketEdges.ts` and `useSupabaseData.ts` read `kalshi_edges` directly, so they were on the
+board the whole time. The docstring claimed "for a sports market [expires_at] is the start", which
+was simply wrong.
+
+**RED** — `pytest tests/test_sports_started_games.py -q`:
+
+```
+9 failed, 1 passed in 0.66s
+FAILED test_a_started_game_produces_no_edges_or_predictions
+FAILED test_started_games_are_reported_not_silently_dropped
+FAILED test_a_game_that_has_not_started_yet_is_not_skipped
+FAILED test_started_rows_are_deleted_on_start_utc_not_expires_at
+FAILED test_one_failing_sport_delete_is_isolated_and_reported
+FAILED test_there_is_no_errors_twin_of_the_started_cleanup
+FAILED test_main_calls_the_tested_started_cleanup_and_reports_its_failures
+FAILED test_the_migration_adds_an_indexed_filterable_start_utc
+FAILED test_the_edge_writer_persists_start_utc_as_a_column
+E   KeyError: 'start_utc'
+```
+
+(the one that passed is the fixture-reproduction check: it only asserts facts about the recorded
+feed, and the two-day gap is still there.)
+
+**GREEN** — 545 passed (was 535).
+
+- `kalshi_edges.start_utc timestamptz` + `kalshi_edges_sports_start_idx (engine, start_utc)` in
+  migration `20260416000008`, which is still unapplied, so it is edited rather than renumbered.
+- The backfill matters and is easy to miss: rows written before the column existed have the start
+  inside `raw_payload`, and a NULL `start_utc` matches **no** `<= now` predicate, so without the
+  `UPDATE ... FROM raw_payload->>'start_utc'` those started games would be kept forever. The
+  `~ '^\d{4}-\d{2}-\d{2}[T ]'` guard means a malformed value is skipped instead of failing the
+  migration.
+- `upsert_opportunities` now writes `start_utc` as a top-level column. It writes
+  `"start_utc": op.get("start_utc")` for every engine, so weather/gas/CPI rows get a NULL there;
+  the delete is engine-scoped, so that is inert for them.
+- `scan_sport` skips a matched game whose `start_utc <= now` — no edge, no prediction, and
+  `games_started` in the report so the skip is visible rather than looking like an empty sport.
+  The boundary is pinned both ways: exactly at kickoff counts as started, one second earlier does
+  not.
+- The `_errors` twin is gone. `remove_started_sports_edges` is the one function: it isolates a
+  failure per sport, returns the error strings, and `scan.main` puts them in `failures` (so the
+  exit code is 1). `test_main_calls_the_tested_started_cleanup_and_reports_its_failures` fails if
+  main ever grows a second copy.
+
+**Worth repeating:** two independent writers of the same idea is how this survived a review.
+`remove_started_sports_edges_errors` was a line-for-line copy of `remove_started_sports_edges`
+with the `try` added, and main called the copy, so the tested function was not the one running.

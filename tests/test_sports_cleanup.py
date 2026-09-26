@@ -57,7 +57,7 @@ def _run_main(monkeypatch, *, sports_due=True, sports_result=SPORT_RESULT,
     monkeypatch.setattr(scan_mod, "sports_due", lambda now: sports_due)
     monkeypatch.setattr(scan_mod, "remove_closed_cpi_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan_mod, "remove_stale_edges", lambda client, produced: calls.append(produced))
-    monkeypatch.setattr(scan_mod, "remove_started_sports_edges_errors", lambda *a, **k: [])
+    monkeypatch.setattr(scan_mod, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan_mod, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(supabase_client, "get_client", lambda: "supa")
     monkeypatch.setattr(predictions, "record_predictions", lambda *a, **k: None)

@@ -9,8 +9,10 @@
 
 2. **Started games are never removed.** `remove_stale_edges` only deletes rows whose market_id is
    absent from the produced set. A game that kicked off keeps its row on the board until some
-   later scan happens to omit it. Sports rows must also be deleted once the game has started,
-   using the stored start time or expires_at.
+   later scan happens to omit it. Sports rows must also be deleted once the game has started.
+   (Round 4: the predicate is the indexed `start_utc` game start. It was `expires_at`, which for
+   a sports market is the Kalshi close time — about two days after kickoff — so the delete
+   almost never fired when it mattered. `tests/test_sports_started_games.py` covers the gap.)
 
 3. Feed errors never prune — the invariant that makes the rest of this safe.
 """
@@ -66,9 +68,14 @@ def test_sport_prunes_when_feed_and_write_both_succeeded_even_with_zero_edges():
 
 # ── (2) started games are deleted ─────────────────────────────────────────────
 
-def test_started_sports_rows_are_deleted_using_expires_at():
+def test_started_sports_rows_are_deleted_using_start_utc():
     """A game that kicked off must leave the board even though the market_id may still appear
-    in the produced set on a later scan."""
+    in the produced set on a later scan.
+
+    Round 3 filtered on `expires_at`, which for a sports market is the Kalshi close time — about
+    two days AFTER kickoff — so the delete did not fire until long after the game started. The
+    predicate is now the indexed game start.
+    """
     deleted = []
 
     class Q:
@@ -108,7 +115,7 @@ def test_started_sports_rows_are_deleted_using_expires_at():
     sports_scan.remove_started_sports_edges(store, NOW)
     assert store.lte_used, "the started-game delete did not use a lte() bound"
     assert {d["engine"] for d in store.deleted} == {"sports_nfl", "sports_cfb"}, store.deleted
-    assert all(d["expires_at"] == NOW.isoformat() for d in store.deleted), store.deleted
+    assert all(d["start_utc"] == NOW.isoformat() for d in store.deleted), store.deleted
 
 
 def test_started_sports_cleanup_failure_is_isolated_and_reported():
@@ -124,7 +131,7 @@ def test_started_sports_cleanup_failure_is_isolated_and_reported():
             return self
 
         def lte(self, k, v):
-            self.engine_holder["expires_at"] = v
+            self.engine_holder["start_utc"] = v
             return self
 
         def delete(self):
@@ -154,7 +161,7 @@ def test_started_sports_cleanup_failure_is_isolated_and_reported():
         return q
 
     supa.table = table
-    errors = sports_scan.remove_started_sports_edges_errors(supa, NOW)
+    errors = sports_scan.remove_started_sports_edges(supa, NOW)
     assert holder["ok"] == ["sports_cfb"], "the healthy sport was skipped after the other failed"
     assert any("sports_nfl" in e for e in errors), errors
 

@@ -124,7 +124,14 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
     out = SportScan()
     priced = 0
     skipped = 0
+    started = 0
     for mg in match.matched:
+        # A game that has kicked off is not tradeable and must not be written: its market stays
+        # open on Kalshi for days afterwards (expires_at is the close time, ~2 days after
+        # kickoff), so without this the board fills with edges on games already being played.
+        if mg.game.start_utc <= now:
+            started += 1
+            continue
         for kind, markets in mg.markets.items():
             for sm in markets:
                 # One market the pricer or the candidate filter chokes on must not cost the
@@ -168,7 +175,7 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
     out.report = {
         "feed_games": len(feed.games), "feed_rejected": feed.rejected, "matched": len(match.matched),
         "unmatched_games": match.unmatched_games, "unmatched_events": match.unmatched_events,
-        "markets_priced": priced, "markets_skipped": skipped,
+        "markets_priced": priced, "markets_skipped": skipped, "games_started": started,
         "predictions": len(out.predictions), "edges": len(out.edges),
         "candidates": len(out.review_requests), "alias_version": aliases.version,
     }
@@ -292,28 +299,23 @@ def sports_prune_targets(edges: list[dict[str, Any]]) -> set[str]:
     return set(SPORTS_ENGINES.values())
 
 
-def remove_started_sports_edges(client, now: datetime) -> None:
-    """Delete sports rows whose game has already started.
+def remove_started_sports_edges(client, now: datetime) -> list[str]:
+    """Delete sports rows whose game has already started. Returns error strings.
 
     `remove_stale_edges` only drops rows whose market_id is absent from the produced set, so a
-    game that kicked off kept its row until some later scan happened to omit it. expires_at is
-    the indexed column and is set to the market close, which for a sports market is the start.
+    game that kicked off kept its row until some later scan happened to omit it.
+
+    The predicate is on `start_utc`, the indexed game start, NOT on `expires_at`: expires_at is
+    the Kalshi `close_time`, which for a sports market is about two days AFTER kickoff, so an
+    expires_at filter left every started game visible on the board for days. Scoped to the two
+    sports engines, so no other engine's rows are touched.
     """
-    for engine in sorted(SPORTS_ENGINES.values()):
-        client.table("kalshi_edges").delete() \
-            .eq("engine", engine) \
-            .lte("expires_at", now.isoformat()) \
-            .execute()
-
-
-def remove_started_sports_edges_errors(client, now: datetime) -> list[str]:
-    """`remove_started_sports_edges` with the failure isolated per sport."""
     errors: list[str] = []
     for engine in sorted(SPORTS_ENGINES.values()):
         try:
             client.table("kalshi_edges").delete() \
                 .eq("engine", engine) \
-                .lte("expires_at", now.isoformat()) \
+                .lte("start_utc", now.isoformat()) \
                 .execute()
         except Exception as exc:
             errors.append(f"{engine}.started_cleanup: {type(exc).__name__}: {exc}")
