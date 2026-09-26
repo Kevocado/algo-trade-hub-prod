@@ -136,3 +136,25 @@ def test_main_gates_cpi_edges_per_engine_version(monkeypatch):
     assert {row["engine_version"]: row["gate_status"] for row in upserted} == {
         "cpi-v1": "SHADOW", "cpi-core-v1": "PROMOTED",
     }
+
+
+@pytest.mark.parametrize("due", [True, False])
+def test_cpi_cleanup_runs_only_on_a_due_hour(monkeypatch, due):
+    from tradehub.core import supabase_client
+    from tradehub import predictions
+    cleaned = []
+    monkeypatch.setattr(supabase_client, "get_client", lambda: object())
+    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: None)
+    monkeypatch.setattr(predictions, "record_predictions", lambda *args: None)
+    monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
+    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
+    monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
+    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: due)
+    monkeypatch.setattr(scan, "latest_gate_statuses", lambda *a: {})
+    monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: cleaned.append(produced))
+    edge = {"market_ticker": "CPI", "engine": "cpi_nowcast", "engine_version": "cpi-v1"}
+    monkeypatch.setattr(scan, "scan_cpi", lambda *a, **k: ([], [edge] if due else []))
+
+    assert scan.main(now=datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc), live=object(), client=object()) == 0
+    cpi_cleaned = [produced for call in cleaned for name, produced in call.items() if name == "cpi_nowcast"]
+    assert bool(cpi_cleaned) is due

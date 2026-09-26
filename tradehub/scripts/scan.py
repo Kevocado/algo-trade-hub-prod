@@ -124,7 +124,7 @@ def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[tuple[str, s
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
     """Delete stale rows only for the scan-owned weather/gas engines."""
     for engine, produced in produced_by_engine.items():
-        if engine not in {"weather", "gas"}:
+        if engine not in {"weather", "gas", "cpi_nowcast"}:
             continue
         current_market_ids = {str(market_id)[:50] for market_id in produced}
         result = client.table("kalshi_edges").select("market_id").eq("engine", engine).execute()
@@ -468,6 +468,7 @@ def main(
         for name, edges in (
             ("weather", weather_edges),
             ("gas", gas_edges),
+            ("cpi_nowcast", cpi_edges),
         ):
             if not engine_states[name]["complete"] or edge_writes.get(name) != "ok":
                 continue

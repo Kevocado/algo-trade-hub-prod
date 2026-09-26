@@ -216,3 +216,8 @@ Check specifically:
 - RED: existing scan tests failed after `edge_row` began requiring `engine_version` and pair-keyed gate lookup.
 - GREEN: `pytest tests/test_scan.py tests/test_scan_cpi.py -q` → 29 passed including a main()-level test proving only `cpi-core-v1` is PROMOTED while `cpi-v1` remains SHADOW.
 - `edge_row` requires and writes `engine_version`; status lookup and application use `(engine, engine_version)` pairs collected from every produced edge.
+
+## Review fix 2 — CPI stale-edge cleanup
+
+- Added `cpi_nowcast` to the engine-scoped cleanup allowlist and main cleanup loop.
+- Parametrized main() test proves cleanup runs on a due hour and not on a non-due hour; `tests/test_scan_cpi.py` → 9 passed.
