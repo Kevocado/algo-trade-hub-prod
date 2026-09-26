@@ -9,7 +9,6 @@ scan and the API would start disagreeing about whether an edge is tradable.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 log = logging.getLogger(__name__)
 
