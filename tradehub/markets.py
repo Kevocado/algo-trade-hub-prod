@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -48,8 +49,11 @@ def parse_market(raw: dict[str, Any]) -> KalshiMarket:
 
 
 def event_date(event_ticker: str) -> date:
-    """'KXHIGHNY-26SEP25' -> date(2026, 9, 25)."""
-    return datetime.strptime(event_ticker.split("-")[1], "%y%b%d").date()
+    """'KXHIGHNY-26SEP25' -> date(2026, 9, 25); 'KXNFLGAME-26OCT01PITCLE' -> date(2026, 10, 1).
+
+    The date is always the first 7 characters after the series; sports events append team codes.
+    """
+    return datetime.strptime(event_ticker.split("-")[1][:7], "%y%b%d").date()
 
 
 def event_month(event_ticker: str) -> date:
@@ -109,3 +113,9 @@ def prob_in_interval(mu: float, sigma: float, interval: tuple[float, float]) -> 
 
 def market_url(market: KalshiMarket) -> str:
     return f"https://kalshi.com/markets/{market.series_ticker.lower()}"
+
+
+def kalshi_event_url(series_ticker: str, series_title: str, event_ticker: str) -> str:
+    """Deep link to one event page: kalshi.com/markets/<series>/<series-title-slug>/<event>."""
+    slug = re.sub(r"[^a-z0-9]+", "-", series_title.lower()).strip("-")
+    return f"https://kalshi.com/markets/{series_ticker.lower()}/{slug}/{event_ticker.lower()}"

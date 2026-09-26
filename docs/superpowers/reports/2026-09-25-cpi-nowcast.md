@@ -277,16 +277,20 @@ Check specifically:
   - For recent months the chart equals BLS exactly (2026-06/07/08 match to 4dp) and the
     gap widens with the age of the month (2021-12: 0.4705 vs 0.6905). That divergence is
     the first-print signature: BLS has revised, the chart has not.
-- Chosen pin: **December 2021**, the largest revision in the sample. BLS first printed
-  +0.5% on 2021-12-10 and now publishes +0.69%; the chart still carries 0.470453241537583
+- Chosen pin: **December 2021**, the largest revision in the sample. The chart dates the actual
+  to the BLS release day, 2022-01-12 08:30 ET, so the first print of December 2021 CPI landed in
+  January 2022, not December 2021; BLS now publishes +0.69% against the chart's 0.470453241537583,
   and the last pre-release nowcast was 0.3890, so it was a genuine miss. The trimmed
   fixture already contained this month, so the test needs no new fixture and no network.
 - RED / teeth: `test_first_print_pin_detects_a_switch_to_revised_values` replays the
   payload with the December 2021 actual swapped for the BLS revised value — exactly what a
   Cleveland Fed restatement would look like — and asserts the pin misses. Without this the
   pinned assertion could be a tautology.
-- Guard: the pin also asserts the revision gap is still `> 0.1`, so if BLS ever catches up
-  the test says to re-pin a different month instead of silently going vacuous.
+- Guard: dropped in round 3. The `DEC_2021_REVISION_GAP > 0.1` assertion compared two constants
+  defined a few lines apart, so it could only ever fail if someone edited the constants — it
+  tested the test, not the data. The load-bearing check is
+  `test_first_print_pin_detects_a_switch_to_revised_values`, which proves the pin misses when
+  the payload carries the revised value.
 - GREEN: `pytest tests/test_cleveland_fed.py -q` → 8 passed. The module docstring now
   states the first-print policy, the SA basis, and points at the pin.
 - This supersedes the Task 2 deviation note above, which recorded the `git add -f`

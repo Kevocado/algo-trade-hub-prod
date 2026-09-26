@@ -97,6 +97,10 @@ def test_main_isolates_a_cpi_failure(monkeypatch, capsys):
     monkeypatch.setattr(scan, "scan_gas", lambda live, now, cfg, **kwargs: ([{"g": 1}], [{"e": 1, "engine": "gas"}]))
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
+    monkeypatch.setattr(scan, "sports_due", lambda now: False)
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
+    monkeypatch.setattr(scan, "sports_due", lambda now: False)
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
 
     def boom(live, now, cfg):
@@ -124,6 +128,8 @@ def test_main_gates_cpi_edges_per_engine_version(monkeypatch):
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
     monkeypatch.setattr(scan, "remove_stale_edges", lambda *a, **k: None)
+    monkeypatch.setattr(scan, "sports_due", lambda now: False)
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {
         ("cpi_nowcast", "cpi-core-v1"): "PROMOTED",
@@ -153,6 +159,8 @@ def test_cpi_cleanup_runs_only_on_a_due_hour(monkeypatch, due):
     monkeypatch.setattr(scan, "cpi_scan_due", lambda now: due)
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda *a: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: cleaned.append(produced))
+    monkeypatch.setattr(scan, "sports_due", lambda now: False)
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
     edge = {"market_ticker": "CPI", "engine": "cpi_nowcast", "engine_version": "cpi-v1"}
     monkeypatch.setattr(scan, "scan_cpi", lambda *a, **k: ([], [edge] if due else []))
@@ -170,32 +178,78 @@ def test_scan_cpi_skips_one_malformed_market(monkeypatch):
     assert [p["market_ticker"] for p in preds] == ["KXCPI-26AUG-T0.3"]
 
 
-def test_remove_closed_cpi_edges_deletes_only_past_expiry():
-    deleted = []
+class _RecordingQuery:
+    """Records the full filter chain so a test can assert on the query, not just the result.
 
-    class Query:
-        def __init__(self, name):
-            self.name = name
-        def select(self, *a):
-            return self
-        def eq(self, key, value):
-            self.key, self.value = key, value
-            return self
-        def delete(self):
-            self.name = "delete"
-            return self
-        def execute(self):
-            if self.name == "delete":
-                deleted.append(self.value)
-                return type("R", (), {"data": []})()
-            return type("R", (), {"data": [
-                {"market_id": "closed", "expires_at": "2026-09-11T12:25:00Z"},
-                {"market_id": "open", "expires_at": "2026-09-11T16:25:00Z"},
-            ]})()
+    Every `.eq` is kept (the earlier fake overwrote `self.value`, which silently discarded all
+    but the last filter) and `.lte` is supported for the atomic expiry predicate.
+    """
 
-    class Client:
-        def table(self, name):
-            return Query(name)
+    def __init__(self, recorder, table, *, mode="select"):
+        self._rec, self._table, self._mode = recorder, table, mode
+        self.filters: dict[str, object] = {}
+        self.ops: list[str] = []
 
-    scan.remove_closed_cpi_edges(Client(), datetime(2026, 9, 11, 13, 0, tzinfo=timezone.utc))
-    assert deleted == ["closed"]
+    def select(self, *_a):
+        self.ops.append("select")
+        return self
+
+    def delete(self):
+        self.ops.append("delete")
+        self._mode = "delete"
+        return self
+
+    def eq(self, key, value):
+        self.ops.append("eq")
+        self.filters[key] = value
+        return self
+
+    def lte(self, key, value):
+        self.ops.append("lte")
+        self.filters[key] = value
+        return self
+
+    def execute(self):
+        self._rec.calls.append({"table": self._table, "mode": self._mode, "ops": list(self.ops),
+                                "filters": dict(self.filters)})
+        if self._mode == "delete":
+            self._rec.deleted.append(dict(self.filters))
+            return type("R", (), {"data": None})()
+        return type("R", (), {"data": self._rec.rows})()
+
+
+class _RecordingClient:
+    def __init__(self, rows=()):
+        self.calls: list[dict] = []
+        self.deleted: list[dict] = []
+        self.rows = list(rows)
+
+    def table(self, name):
+        return _RecordingQuery(self, name)
+
+
+def test_remove_closed_cpi_edges_is_one_atomic_delete():
+    """A select-then-loop issued one DELETE per closed market and re-read the whole engine's
+    rows on every hourly scan. One filtered DELETE does it server-side in a single statement."""
+    now = datetime(2026, 9, 11, 13, 0, tzinfo=timezone.utc)
+    client = _RecordingClient(rows=[{"market_id": "closed", "expires_at": "2026-09-11T12:25:00Z"}])
+
+    scan.remove_closed_cpi_edges(client, now)
+
+    deletes = [c for c in client.calls if c["mode"] == "delete"]
+    assert len(deletes) == 1, f"expected one atomic delete, got {len(deletes)}"
+    assert deletes[0]["table"] == "kalshi_edges"
+    assert deletes[0]["filters"] == {"engine": "cpi_nowcast", "expires_at": "2026-09-11T13:00:00+00:00"}
+    assert "select" not in deletes[0]["ops"], "the atomic delete must not read rows first"
+    assert not [c for c in client.calls if c["mode"] == "select"], "no SELECT should remain"
+
+
+def test_remove_closed_cpi_edges_sends_a_comparable_expiry_bound():
+    """PostgREST compares text; the bound must be the same ISO form stored in expires_at, and it
+    must be timezone-aware rather than a bare local timestamp."""
+    now = datetime(2026, 9, 11, 13, 0, tzinfo=timezone.utc)
+    client = _RecordingClient()
+    scan.remove_closed_cpi_edges(client, now)
+    bound = client.deleted[0]["expires_at"]
+    assert bound.endswith("+00:00")
+    assert datetime.fromisoformat(bound) == now

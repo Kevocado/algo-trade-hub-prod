@@ -46,6 +46,9 @@ from tradehub.engines.weather import (
 )
 from tradehub.markets import KalshiMarket, event_date, event_month, market_url
 from tradehub.predictions import build_prediction_row
+from tradehub.sports.scan import (
+    prune_sports_if_healthy, remove_started_sports_edges, run_sports_for_cron, sports_due,
+)
 
 
 log = logging.getLogger(__name__)
@@ -122,21 +125,22 @@ def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[tuple[str, s
 
 
 def remove_closed_cpi_edges(client, now: datetime) -> None:
-    """Delete cpi_nowcast edges as soon as their market closes, on every hourly scan."""
-    result = client.table("kalshi_edges").select("market_id,expires_at").eq("engine", "cpi_nowcast").execute()
-    for row in result.data or []:
-        expires_at = row.get("expires_at")
-        if not expires_at:
-            continue
-        close_time = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
-        if close_time <= now:
-            client.table("kalshi_edges").delete().eq("market_id", row["market_id"]).execute()
+    """Delete cpi_nowcast edges as soon as their market closes, on every hourly scan.
+
+    One filtered DELETE rather than a SELECT followed by a DELETE per row: the predicate is
+    entirely expressible in PostgREST, so the database does the comparison and the round trip
+    count does not grow with the number of closed markets.
+    """
+    client.table("kalshi_edges").delete() \
+        .eq("engine", "cpi_nowcast") \
+        .lte("expires_at", now.isoformat()) \
+        .execute()
 
 
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
     """Delete stale rows only for the scan-owned weather/gas engines."""
     for engine, produced in produced_by_engine.items():
-        if engine not in {"weather", "gas", "cpi_nowcast"}:
+        if engine not in {"weather", "gas", "cpi_nowcast", "sports_nfl", "sports_cfb"}:
             continue
         current_market_ids = {str(market_id)[:50] for market_id in produced}
         result = client.table("kalshi_edges").select("market_id").eq("engine", engine).execute()
@@ -500,6 +504,60 @@ def main(
                 log.exception("scan stale-edge cleanup failed engine=%s", name)
 
         writes = {"predictions": prediction_writes, "edges": edge_writes}
+
+        # ── Sports LAST ────────────────────────────────────────────────────────────────
+        # The weather/gas/CPI gate lookup, upserts and cleanups above are already done, so a
+        # slow sports run can no longer delay them or put them at risk. Sports is gated and
+        # written separately because its edges are keyed on their own (engine, engine_version)
+        # pairs and it has its own pruning rules.
+        sports_predictions: list[dict] = []
+        sports_edges: list[dict] = []
+        sports_per_sport: dict[str, dict[str, Any]] = {}
+        sports_summary: dict[str, Any] = {"status": "skipped: not due (every third UTC hour)"}
+        if not sports_due(now):
+            writes["predictions"]["sports"] = "skipped"
+            writes["edges"]["sports"] = "skipped"
+        else:
+            try:
+                run = run_sports_for_cron(now, client, deadline=deadline)
+                sports_predictions, sports_summary = run.predictions, run.reports
+                sports_per_sport = run.per_sport
+                try:
+                    sports_pairs = {(row["engine"], row.get("engine_version", "v0"))
+                                    for row in run.edges}
+                    sports_statuses = latest_gate_statuses(client, sports_pairs)
+                except Exception as exc:
+                    failures.append(f"sports.gate_status: {type(exc).__name__}: {exc}")
+                    log.exception("scan sports gate-status lookup failed")
+                    sports_statuses = {}
+                apply_gate_statuses(run.edges, sports_statuses)
+                sports_edges = run.edges
+                try:
+                    record_predictions(client, sports_predictions)
+                    writes["predictions"]["sports"] = "ok"
+                except Exception as exc:
+                    failures.append(f"sports.predictions: {type(exc).__name__}: {exc}")
+                    writes["predictions"]["sports"] = "failed"
+                try:
+                    upsert_opportunities(sports_edges)
+                    writes["edges"]["sports"] = "ok"
+                except Exception as exc:
+                    failures.append(f"sports.edges: {type(exc).__name__}: {exc}")
+                    writes["edges"]["sports"] = "failed"
+                # A sport prunes only when its feed fetch AND its edge write both succeeded, so
+                # neither a feed outage nor a failed upsert can be read as "produced nothing".
+                # Pruning a zero-edge run is the point: that is when the previous rows must go.
+                for state in sports_per_sport.values():
+                    state["write_ok"] = writes["edges"].get("sports") == "ok"
+                failures.extend(remove_started_sports_edges(client, now))
+                failures.extend(prune_sports_if_healthy(client, sports_per_sport,
+                                                        remove=remove_stale_edges, now=now))
+            except Exception as exc:  # a predictor/Kalshi outage must not cost weather/gas
+                sports_summary = {"error": repr(exc)}
+                writes["predictions"]["sports"] = "failed"
+                writes["edges"]["sports"] = "failed"
+                failures.append(f"sports: {type(exc).__name__}: {exc}")
+                log.exception("scan sports step failed")
     else:
         writes = {"predictions": {}, "edges": {}}
 
@@ -537,6 +595,7 @@ def main(
             "edges": len(cpi_edges),
             "errors": cpi_errors,
         },
+        "sports": sports_summary,
         "writes": writes,
         "failures": failures,
     }

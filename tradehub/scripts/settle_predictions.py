@@ -27,6 +27,8 @@ ENGINES = [
     ("cpi_nowcast", "monthly"),
     ("labor_nowcast", "monthly"),
     ("crypto", "daily"),
+    ("sports_nfl", "daily"),
+    ("sports_cfb", "daily"),
 ]
 
 

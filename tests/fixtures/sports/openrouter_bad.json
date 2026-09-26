@@ -1,0 +1,11 @@
+{
+ "id": "gen-fixture-bad",
+ "model": "nvidia/nemotron-3-super-120b-a12b:free",
+ "choices": [
+  {
+   "index": 0,
+   "finish_reason": "stop",
+   "message": {"role": "assistant", "content": "Sure! Here is my review: {\"explainable\": true, \"probability\": 0.61"}
+  }
+ ]
+}

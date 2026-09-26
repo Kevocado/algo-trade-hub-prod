@@ -104,6 +104,10 @@ def upsert_opportunities(opportunities: list):
             "gate_status": gate_status,
             "updated_at": updated_at,
             "expires_at": op.get("expires_at"),
+            # Game start as its own indexed column (sports edges). expires_at is the Kalshi close
+            # time, which for a sports market is ~2 days AFTER kickoff, so nothing could be
+            # deleted or filtered by "has this game started" without this column.
+            "start_utc": op.get("start_utc"),
             "raw_payload": op
         }
         

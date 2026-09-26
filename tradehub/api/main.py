@@ -26,6 +26,7 @@ from tradehub.api.schemas import (
 from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
+from tradehub.sports.scorecard import reviewer_scorecard
 
 # ── App ─────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -201,6 +202,163 @@ async def get_track_record(supabase=Depends(get_supabase)):
         raise HTTPException(status_code=503, detail="Supabase is not configured")
     result = supabase.table("track_record").select("*").order("engine").execute()
     return result.data or []
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Sports edges (rollout step 7): candidate edges with review verdicts and links
+# ════════════════════════════════════════════════════════════════════════════
+_TIER_ORDER = {"top_pick": 0, "flagged": 1, "unreviewed": 2, "filtered": 3}
+_EDGE_FIELDS = ("sport", "kind", "side", "entry_price", "maker", "home", "away", "start_utc", "game_id",
+                "tier", "candidate", "reject_reasons", "review", "engine_version")
+_SPORTS_ENGINES = {"nfl": "sports_nfl", "cfb": "sports_cfb"}
+SPORTS_PAGE_MAX = 200
+SPORTS_PAGE_DEFAULT = 100
+SPORTS_REVIEW_SCAN = 5000
+# PostgREST caps a single response at 1000 rows whatever `limit` says, so any read that must
+# see more has to page with .range() explicitly.
+POSTGREST_CAP = 1000
+
+
+def _page(limit: int, offset: int) -> tuple[int, int]:
+    if limit < 1 or limit > SPORTS_PAGE_MAX or offset < 0:
+        raise HTTPException(status_code=422, detail=f"limit must be 1..{SPORTS_PAGE_MAX} and offset >= 0")
+    return limit, offset
+
+
+def _fetch_all(supa, table: str, build, *, page: int = POSTGREST_CAP, cap: int | None = None,
+               order: tuple[str, ...] = ("id",)) -> list[dict]:
+    """Read a whole table through ordered `.range()` pages.
+
+    A single `.execute()` returns at most PostgREST's 1000-row cap regardless of the `limit`
+    asked for, so any read that must see more has to page explicitly and stop on a short page.
+
+    The `.order()` is not decoration. PostgREST without ORDER BY returns rows in whatever order
+    the query plan produces, and that order is not guaranteed to be the same between two
+    requests, so `.range(0,999)` followed by `.range(1000,1999)` can repeat a row and skip
+    another. On this endpoint that means a `total` that does not match the sum of the pages, and
+    a keep/drop scorecard computed from a set with duplicates. `id` is the only column that is
+    unique and immutable on all three tables read here, so it is the only safe ordering.
+    """
+    rows: list[dict] = []
+    lo = 0
+    while True:
+        # PostgREST `Range` is inclusive of the last index, so page boundaries advance by `page`.
+        chunk = build(supa.table(table)).order(*order).range(lo, lo + page - 1).execute().data or []
+        rows.extend(chunk)
+        if len(chunk) < page:
+            return rows[:cap] if cap is not None else rows
+        lo += page
+        if cap is not None and len(rows) >= cap:
+            return rows[:cap]
+
+
+@app.get("/api/sports-edges", tags=["Sports"])
+def get_sports_edges(
+    sport: str | None = None,
+    tier: str | None = None,
+    limit: int = SPORTS_PAGE_DEFAULT,
+    offset: int = 0,
+    supabase=Depends(get_supabase),
+):
+    """Upcoming SPORTS edges (Top Picks first) plus the reviewer keep-or-drop scorecard.
+
+    Three things matter here and each has bitten before:
+
+    1. Every read pages with an ORDERED `.range()`. PostgREST caps a response at 1000 rows, so a
+       single `.execute()` silently truncates and `total` would be a lie on a larger table — and
+       without `.order()` the pages are not guaranteed to line up at all.
+    2. Ranking is applied to ALL matching rows BEFORE offset/limit. Sorting after slicing ranks
+       each arbitrary offset window on its own, so a `top_pick` can be stranded on a later page
+       behind `filtered` rows.
+    3. `tier` lives inside raw_payload and cannot be filtered by the database, so that one
+       filter is applied in Python — but the upcoming/started test IS pushed into the query via
+       `expires_at`, and Python re-checks it because a malformed `start_utc` must never show.
+    """
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase is not configured")
+    if sport is not None and sport not in _SPORTS_ENGINES:
+        raise HTTPException(status_code=422, detail=f"sport must be one of {sorted(_SPORTS_ENGINES)}")
+    if tier is not None and tier not in _TIER_ORDER:
+        raise HTTPException(status_code=422, detail=f"tier must be one of {sorted(_TIER_ORDER)}")
+    limit, offset = _page(limit, offset)
+
+    now = datetime.now(timezone.utc)
+
+    def build(q):
+        q = q.select("*").eq("edge_type", "SPORTS")
+        if sport is not None:
+            q = q.eq("engine", _SPORTS_ENGINES[sport])
+        # Not-started is the cheap, indexable half of "upcoming"; start_utc inside raw_payload
+        # is checked again below because it is what the reviewer/scan actually wrote.
+        return q.gte("expires_at", now.isoformat())
+
+    candidates = [r for r in _fetch_all(supabase, "kalshi_edges", build) if _is_upcoming(r, now)]
+    if tier is not None:
+        candidates = [r for r in candidates if _tier_of(r) == tier]
+
+    # Rank globally, THEN page. top_pick first, then any remaining candidate, then the rest;
+    # within a tier by edge_pct descending. Ranking after the slice would let each offset window
+    # order itself, stranding a top_pick behind filtered rows on a later page.
+    candidates.sort(key=_sports_rank)
+    total = len(candidates)
+    rows = candidates[offset:offset + limit]
+
+    edges = []
+    for row in rows:
+        raw = row.get("raw_payload") or {}
+        edges.append({
+            "market_id": row["market_id"], "title": row.get("title"), "our_prob": row.get("our_prob"),
+            "market_prob": row.get("market_prob"), "edge_pct": row.get("edge_pct"),
+            "market_url": row.get("market_url"), "source_url": row.get("source_url"),
+            # The gate is keyed on (engine, engine_version); the UI needs both to badge the row
+            # and to explain which predictor version it is looking at.
+            "engine": row.get("engine"),
+            "gate_status": row.get("gate_status") or "SHADOW",
+            **{k: raw.get(k) for k in _EDGE_FIELDS},
+        })
+
+    reviews = _fetch_all(supabase, "sports_reviews",
+                         lambda q: q.select("*").eq("status", "ok"), cap=SPORTS_REVIEW_SCAN)
+    settled = _fetch_all(supabase, "predictions",
+                         lambda q: q.select("market_ticker,result")
+                         .in_("engine", sorted(_SPORTS_ENGINES.values())).eq("status", "SETTLED"),
+                         cap=SPORTS_REVIEW_SCAN)
+    results = {r["market_ticker"]: r["result"] for r in settled}
+    return {
+        "as_of": now.isoformat(), "edges": edges, "total": total, "limit": limit, "offset": offset,
+        "reviewer_scorecard": reviewer_scorecard(reviews, results),
+    }
+
+
+def _tier_of(row: dict) -> str | None:
+    return ((row.get("raw_payload") or {}).get("tier"))
+
+
+def _sports_rank(row: dict) -> tuple[int, int, float]:
+    """Sort key: top_pick, then any other candidate, then the rest; edge_pct descending.
+
+    A `filtered` row is one the candidate filter rejected, so it ranks below every candidate
+    regardless of its edge — a large gap the filter already refused should not lead the board.
+    """
+    tier = _tier_of(row)
+    if tier == "top_pick":
+        group = 0
+    elif (row.get("raw_payload") or {}).get("candidate"):
+        group = 1
+    else:
+        group = 2
+    return group, _TIER_ORDER.get(tier, 9), -float(row.get("edge_pct") or 0)
+
+
+def _is_upcoming(row: dict, now: datetime) -> bool:
+    """A row with no parsable start_utc is not upcoming and is never shown."""
+    start = (row.get("raw_payload") or {}).get("start_utc")
+    if not start:
+        return False
+    try:
+        return datetime.fromisoformat(start) > now
+    except (TypeError, ValueError):
+        return False
 
 
 # ── War Room SPA (mounted last so every /api route above wins) ─────────────

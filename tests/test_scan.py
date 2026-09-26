@@ -509,6 +509,8 @@ def test_scan_main_assigns_one_fifteen_minute_deadline_to_network_scan(monkeypat
     monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([], []))
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
+    monkeypatch.setattr(scan, "sports_due", lambda now: False)
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
@@ -550,6 +552,8 @@ def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, caps
     monkeypatch.setattr(scan, "scan_gas", gas)
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: pruned.append(produced))
+    monkeypatch.setattr(scan, "sports_due", lambda now: False)
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
@@ -582,6 +586,8 @@ def test_scan_main_persists_successful_rows_from_a_partial_weather_scan(monkeypa
     monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([], []))
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: pruned.append(produced))
+    monkeypatch.setattr(scan, "sports_due", lambda now: False)
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client
@@ -608,6 +614,8 @@ def test_scan_main_writes_edges_for_engines_whose_gate_loses(monkeypatch):
     monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([gas_prediction], [gas_edge]))
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
+    monkeypatch.setattr(scan, "sports_due", lambda now: False)
+    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
 
     from tradehub.core import supabase_client

@@ -1,0 +1,14 @@
+{
+ "id": "gen-fixture-flagged",
+ "model": "nvidia/nemotron-3-super-120b-a12b:free",
+ "choices": [
+  {
+   "index": 0,
+   "finish_reason": "stop",
+   "message": {
+    "role": "assistant",
+    "content": "{\"explainable\": true, \"drivers\": [\"Large predicted margin\"], \"red_flags\": [\"Snapshot is 40h old; a late quarterback injury would not be in it\"]}"
+   }
+  }
+ ]
+}
