@@ -50,3 +50,41 @@ def test_fetch_never_requests_today_or_future(tmp_path):
                          get_text=_fake_server(calls), cache_dir=tmp_path, today=date(2026, 1, 1))
     assert calls == [["2025-12-31"]]
     assert list(out) == [date(2025, 12, 31)]
+
+
+def test_the_cache_round_trips_seven_digit_values_exactly(tmp_path):
+    """`_write_cache` used `{v:g}`, which is SIX significant digits. CCSA 1,897,123 was cached as
+    `1.897e+06` and read back as 1897000.0 — so a cached run and a fresh run produced different
+    nowcasts, and the difference was invisible unless you diffed two runs by hand.
+    """
+    from tradehub.data.alfred_vintages import _write_cache
+
+    vintage = date(2026, 8, 31)
+    values = {
+        date(2026, 8, 1): 1897123.0,      # 7 digits: the CCSA case
+        date(2026, 7, 1): 1_234_567.0,
+        date(2026, 6, 1): 0.1,
+        date(2026, 5, 1): -23.0,
+        date(2026, 4, 1): 0.000123,
+        date(2026, 3, 1): 1234567.5,
+    }
+    _write_cache(tmp_path / "CCSA" / f"{vintage}.csv", "CCSA", vintage, values)
+    text = (tmp_path / "CCSA" / f"{vintage}.csv").read_text(encoding="utf-8")
+    assert "1897123" in text and "e+0" not in text, text
+    assert parse_alfred_csv(text)[vintage] == values, parse_alfred_csv(text)[vintage]
+
+
+def test_a_warm_cache_gives_the_same_values_as_a_cold_one(tmp_path):
+    """The property the precision bug broke: fetch_vintages must be a pure function of the
+    requested vintage dates, whether or not they were already on disk."""
+    big = {date(2026, 8, 1): 1897123.0, date(2026, 7, 1): 1_234_567.0}
+    header = "observation_date,CCSA_20260831"
+
+    def server(url, params):
+        return header + "\n" + "\n".join(f"{obs.isoformat()},{value}" for obs, value in big.items()) + "\n"
+
+    days = [date(2026, 8, 31)]
+    cold = fetch_vintages("CCSA", days, get_text=server, cache_dir=tmp_path, today=date(2026, 9, 5))
+    warm = fetch_vintages("CCSA", days, get_text=server, cache_dir=tmp_path, today=date(2026, 9, 5))
+    assert cold == warm
+    assert warm[date(2026, 8, 31)] == big

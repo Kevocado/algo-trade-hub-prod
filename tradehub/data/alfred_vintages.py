@@ -70,9 +70,13 @@ def _cache_file(cache_dir: Path, series_id: str, vintage: date) -> Path:
 
 
 def _write_cache(path: Path, series_id: str, vintage: date, values: Vintage) -> None:
+    # repr(), not `:g`. `:g` is SIX significant digits, so CCSA 1,897,123 was cached as
+    # "1.897e+06" and read back as 1897000.0 — a cached run and a fresh run then produced
+    # different nowcasts, silently. Past vintages never change, so a cache written this way is
+    # wrong forever; repr(float) round-trips exactly in Python 3.
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"observation_date,{series_id}_{vintage.strftime('%Y%m%d')}"]
-    lines += [f"{obs.isoformat()},{values[obs]:g}" for obs in sorted(values)]
+    lines += [f"{obs.isoformat()},{values[obs]!r}" for obs in sorted(values)]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
