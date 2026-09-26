@@ -324,7 +324,7 @@ def test_a_deadline_already_past_does_not_leak_the_key_either():
     params = {"api_key": FAKE_KEY}
     with pytest.raises(RuntimeError) as caught:
         default_get_text(FRED_SERIES_OBSERVATIONS, params, get=lambda *a, **k: pytest.fail("no request"),
-                         secret=FAKE_KEY, deadline=1000.0 - 1.0)
+                         secret=FAKE_KEY, clock=lambda: 1000.0, deadline=1000.0 - 1.0)
     assert FAKE_KEY not in str(caught.value)
 
 
