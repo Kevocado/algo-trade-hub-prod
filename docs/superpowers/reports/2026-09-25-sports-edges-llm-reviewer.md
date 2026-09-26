@@ -290,6 +290,41 @@ src/lib/sportsEdges.test.ts(5,7):   error TS2739: Type '{...}' is missing the fo
   → **exit 0** (also `npm run typecheck`).
 - vitest: 6 files / 25 tests passed (the two gate suites gained cases).
 
+### B4. `/api/sports-edges` pages with `.range()` and ranks before it slices
+
+Two real defects, both silent:
+
+- **PostgREST's 1000-row cap.** A single `.execute()` returns at most 1000 rows whatever
+  `limit` says. On a larger table `total` was computed from a truncated page, so the endpoint
+  would have reported "3 of 1000" against 2,500 real rows and everything past the cap was
+  invisible. The same applied to `sports_reviews` and the settled-prediction read — a truncated
+  review scan would quietly *deflate* the keep/drop scorecard, which is the number used to decide
+  whether to keep the reviewer at all.
+- **Ranking after slicing.** `edges.sort(...)` ran on `rows[offset:offset+limit]`, so each
+  offset window was ranked independently. A `top_pick` could be stranded on a later page behind
+  `filtered` rows while a `filtered` row led page 1.
+
+New `_fetch_all(supa, table, build, cap=...)` pages with `.range(lo, lo+page-1)` until a short
+page, and ranking is now applied to **all** matching rows before the slice.
+
+- `sport`, `edge_type` and the not-started test are pushed into the query. The not-started
+  filter uses `expires_at` (an indexed column); Python still re-checks `start_utc` from
+  `raw_payload` because a malformed one must never be shown. `tier` genuinely cannot be filtered
+  by the database, so that one stays in Python — now over a fully-paged read rather than a
+  truncated one.
+- RED: 8 of 10 new tests failed. The decisive one:
+  `AssertionError: total was 999, expected 2500: a single execute() is silently capped at 1000
+  rows by PostgREST`. The 999 (rather than 1000) is what surfaced an off-by-one: PostgREST
+  `Range: lo-hi` is **inclusive** of `hi`, so `range(lo, lo+page-1)` was yielding `page` rows and
+  the loop advanced correctly, but the test fake modelled it as exclusive. The fake now matches
+  the server, and the advance is documented at the call site.
+- GREEN: `pytest tests/test_sports_api_range_paging.py -q` → 10 passed, plus 24 across the three
+  API test files. The fake enforces the 1000-row cap and raises on an unknown column, so a
+  regression to a single `.execute()` or a misnamed column fails here rather than in production.
+- The round-2 fixtures in `test_sports_api_pagination.py` and `test_sports_scorecard_api.py` had
+  no `expires_at` and no `.range()`/`.gte()`; both updated, which is what the type of the change
+  required.
+
 ## Second review round — fixes 1-7
 
 One commit per numbered fix. RED first in each case, evidence below.

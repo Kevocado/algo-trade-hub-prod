@@ -66,7 +66,16 @@ class _Q:
         self.rows = self.rows[:n]
         return self
 
+    def gte(self, col, val):
+        self.rows = [r for r in self.rows if str(r.get(col, "")) >= str(val)]
+        return self
+
     def order(self, *_a, **_k):
+        return self
+
+    def range(self, lo, hi):
+        # PostgREST `Range: lo-hi` is inclusive of hi.
+        self.rows = self.rows[lo:hi + 1]
         return self
 
     def execute(self):
@@ -85,6 +94,8 @@ def _edge(market_id, tier, edge_pct, hours):
     start = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
     return {"market_id": market_id, "title": market_id, "edge_type": "SPORTS", "our_prob": 0.3, "market_prob": 0.25,
             "edge_pct": edge_pct, "market_url": "https://kalshi.com/markets/x", "source_url": "https://sports/x",
+            # expires_at is the indexed column the query filters on; start_utc is in raw_payload.
+            "expires_at": start,
             "raw_payload": {"sport": "nfl", "kind": "winner", "side": "yes", "entry_price": 0.25, "maker": True,
                             "home": "IND", "away": "HOU", "start_utc": start, "tier": tier, "candidate": True,
                             "reject_reasons": [], "review": None, "game_id": "g"}}

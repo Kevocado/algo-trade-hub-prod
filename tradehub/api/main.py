@@ -214,12 +214,35 @@ _SPORTS_ENGINES = {"nfl": "sports_nfl", "cfb": "sports_cfb"}
 SPORTS_PAGE_MAX = 200
 SPORTS_PAGE_DEFAULT = 100
 SPORTS_REVIEW_SCAN = 5000
+# PostgREST caps a single response at 1000 rows whatever `limit` says, so any read that must
+# see more has to page with .range() explicitly.
+POSTGREST_CAP = 1000
 
 
 def _page(limit: int, offset: int) -> tuple[int, int]:
     if limit < 1 or limit > SPORTS_PAGE_MAX or offset < 0:
         raise HTTPException(status_code=422, detail=f"limit must be 1..{SPORTS_PAGE_MAX} and offset >= 0")
     return limit, offset
+
+
+def _fetch_all(supa, table: str, build, *, page: int = POSTGREST_CAP, cap: int | None = None) -> list[dict]:
+    """Read a whole table through .range() pages.
+
+    A single `.execute()` returns at most PostgREST's 1000-row cap regardless of the `limit`
+    asked for, so any read that must see more than that has to page explicitly and stop on a
+    short page. `cap` bounds a scan that is a sample rather than a complete set.
+    """
+    rows: list[dict] = []
+    lo = 0
+    while True:
+        # PostgREST `Range` is inclusive of the last index, so page boundaries advance by `page`.
+        chunk = build(supa.table(table)).range(lo, lo + page - 1).execute().data or []
+        rows.extend(chunk)
+        if len(chunk) < page:
+            return rows[:cap] if cap is not None else rows
+        lo += page
+        if cap is not None and len(rows) >= cap:
+            return rows[:cap]
 
 
 @app.get("/api/sports-edges", tags=["Sports"])
@@ -232,10 +255,16 @@ def get_sports_edges(
 ):
     """Upcoming SPORTS edges (Top Picks first) plus the reviewer keep-or-drop scorecard.
 
-    Filtered and paginated: the kalshi_edges table is never cleaned by sport alone and the
-    season's rows accumulate, so an unbounded select would grow with the schedule. `sport` and
-    `tier` are pushed into the query; `total` is the count AFTER filtering but BEFORE paging,
-    so the UI can say "20 of 240" rather than guessing.
+    Three things matter here and each has bitten before:
+
+    1. Every read pages with `.range()`. PostgREST caps a response at 1000 rows, so a single
+       `.execute()` silently truncates and `total` would be a lie on a table larger than that.
+    2. Ranking is applied to ALL matching rows BEFORE offset/limit. Sorting after slicing ranks
+       each arbitrary offset window on its own, so a `top_pick` can be stranded on a later page
+       behind `filtered` rows.
+    3. `tier` lives inside raw_payload and cannot be filtered by the database, so that one
+       filter is applied in Python — but the upcoming/started test IS pushed into the query via
+       `expires_at`, and Python re-checks it because a malformed `start_utc` must never show.
     """
     if supabase is None:
         raise HTTPException(status_code=503, detail="Supabase is not configured")
@@ -247,25 +276,22 @@ def get_sports_edges(
 
     now = datetime.now(timezone.utc)
 
-    def base_query():
-        q = supabase.table("kalshi_edges").select("*").eq("edge_type", "SPORTS")
+    def build(q):
+        q = q.select("*").eq("edge_type", "SPORTS")
         if sport is not None:
             q = q.eq("engine", _SPORTS_ENGINES[sport])
-        return q
+        # Not-started is the cheap, indexable half of "upcoming"; start_utc inside raw_payload
+        # is checked again below because it is what the reviewer/scan actually wrote.
+        return q.gte("expires_at", now.isoformat())
 
-    filtered = base_query()
+    candidates = [r for r in _fetch_all(supabase, "kalshi_edges", build) if _is_upcoming(r, now)]
     if tier is not None:
-        # tier lives in raw_payload, so it cannot be filtered by the database; narrow in Python
-        # and count there, then page. Bounded by the review scan cap rather than the table.
-        candidates = [r for r in (filtered.execute().data or []) if _tier_of(r) == tier]
-        candidates = [r for r in candidates if _is_upcoming(r, now)]
-        total = len(candidates)
-        rows = candidates[offset:offset + limit]
-    else:
-        rows_all = base_query().execute().data or []
-        upcoming = [r for r in rows_all if _is_upcoming(r, now)]
-        total = len(upcoming)
-        rows = upcoming[offset:offset + limit]
+        candidates = [r for r in candidates if _tier_of(r) == tier]
+
+    # Rank globally, then page. tier asc, then edge_pct desc.
+    candidates.sort(key=lambda r: (_TIER_ORDER.get(_tier_of(r), 9), -float(r.get("edge_pct") or 0)))
+    total = len(candidates)
+    rows = candidates[offset:offset + limit]
 
     edges = []
     for row in rows:
@@ -280,13 +306,13 @@ def get_sports_edges(
             "gate_status": row.get("gate_status") or "SHADOW",
             **{k: raw.get(k) for k in _EDGE_FIELDS},
         })
-    edges.sort(key=lambda e: (_TIER_ORDER.get(e["tier"], 9), -float(e["edge_pct"] or 0)))
 
-    reviews = (supabase.table("sports_reviews").select("*").eq("status", "ok")
-               .limit(SPORTS_REVIEW_SCAN).execute().data or [])
-    settled = (supabase.table("predictions").select("market_ticker,result")
-               .in_("engine", sorted(_SPORTS_ENGINES.values())).eq("status", "SETTLED")
-               .limit(SPORTS_REVIEW_SCAN).execute().data or [])
+    reviews = _fetch_all(supabase, "sports_reviews",
+                         lambda q: q.select("*").eq("status", "ok"), cap=SPORTS_REVIEW_SCAN)
+    settled = _fetch_all(supabase, "predictions",
+                         lambda q: q.select("market_ticker,result")
+                         .in_("engine", sorted(_SPORTS_ENGINES.values())).eq("status", "SETTLED"),
+                         cap=SPORTS_REVIEW_SCAN)
     results = {r["market_ticker"]: r["result"] for r in settled}
     return {
         "as_of": now.isoformat(), "edges": edges, "total": total, "limit": limit, "offset": offset,

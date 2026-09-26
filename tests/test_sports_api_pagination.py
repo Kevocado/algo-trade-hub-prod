@@ -21,10 +21,14 @@ PAST = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
 MAX_LIMIT = 200
 
 
-def _edge(market_id, *, sport="nfl", tier="top_pick", edge_pct=0.05, start=FUTURE, engine="sports_nfl"):
+def _edge(market_id, *, sport="nfl", tier="top_pick", edge_pct=0.05, start=FUTURE, engine="sports_nfl",
+          expires_at=FUTURE):
     return {
         "market_id": market_id, "title": market_id, "edge_type": "SPORTS", "engine": engine,
         "gate_status": "SHADOW", "our_prob": 0.3, "market_prob": 0.25, "edge_pct": edge_pct,
+        # expires_at is a real column and is what the query filters on; start_utc is in
+        # raw_payload and is re-checked in Python.
+        "expires_at": expires_at,
         "market_url": "https://kalshi.com/markets/x", "source_url": "https://sports/x",
         "raw_payload": {"sport": sport, "kind": "winner", "side": "yes", "entry_price": 0.25, "maker": True,
                         "home": "IND", "away": "HOU", "start_utc": start, "tier": tier, "candidate": True,
@@ -66,8 +70,9 @@ class _Q:
         return self
 
     def range(self, lo, hi):
+        # PostgREST `Range: lo-hi` is inclusive of hi.
         self.filters["_range"] = (lo, hi)
-        self.rows = self.rows[lo:hi]
+        self.rows = self.rows[lo:hi + 1]
         return self
 
     def execute(self):
@@ -157,7 +162,7 @@ def test_bad_pagination_is_rejected_not_silently_clamped():
 
 
 def test_started_games_are_still_hidden_and_do_not_inflate_the_total():
-    edges = [_edge("LIVE", start=PAST)]
+    edges = [_edge("LIVE", start=PAST, expires_at=PAST)]
     edges += [_edge(f"U{i}") for i in range(3)]
     client, _ = _client(edges)
     body = client.get("/api/sports-edges").json()
