@@ -452,12 +452,24 @@ that are easy to get wrong are called out first.**
 #### Order matters: migration BEFORE the deploy
 
 1. **Apply `20260416000008_sports_reviews.sql` BEFORE deploying the image that contains this
-   PR.** The sports scan writes to `sports_reviews` on every run; without the table the
-   reviewer store fails open (by design — it will not take the scan down) but every review is
-   silently discarded, so nothing is ever cached and the `reviewer_scorecard` stays empty. The
-   failure is invisible by construction, which is exactly why the order has to be deliberate.
+   PR.** Two things in that migration are load-bearing, and the second is new in round 4:
+
+   - `sports_reviews`: the scan writes to it on every run; without the table the reviewer store
+     fails open (by design — it will not take the scan down) but every review is silently
+     discarded, so nothing is ever cached and the `reviewer_scorecard` stays empty. The failure is
+     invisible by construction, which is exactly why the order has to be deliberate.
+   - **`kalshi_edges.start_utc` + `kalshi_edges_sports_start_idx`**: the started-game delete and
+     the API's not-started filter both need a real, indexed game start, because `expires_at` is
+     the Kalshi close time and sits about two days *after* kickoff. `upsert_opportunities` writes
+     `start_utc` on **every** edge row, for every engine — so if the column is missing, the edge
+     write fails for weather and gas too, not just sports. Deploying before the migration turns
+     the whole scan red.
+
    Apply it after migrations `000003`–`000007`. Reserved range for this rollout: `000007` step
-   2b, `000008` step 7b, `000009` step 8. Do not renumber.
+   2b, `000008` step 7b, `000009` step 8. Do not renumber. It is still unapplied, so round 4
+   edited it in place rather than adding a number; the backfill
+   (`UPDATE ... FROM raw_payload->>'start_utc'`) is idempotent and guards a malformed value with a
+   regex, so re-running it is safe.
 2. Then deploy. Migration first, always.
 
 #### Environment variables — two places, not one
@@ -514,9 +526,15 @@ that are easy to get wrong are called out first.**
   `feed:<predictor model_version>`. A new predictor snapshot therefore starts at SHADOW on its
   own, which is intended. Do not "fix" this by keying on the engine alone — that would merge
   the headline/core CPI track records in step 6 and let one version's promotion leak to another.
-- Stale-edge cleanup now covers sports, but only after a successful edge write for that sport
-  and only for a sport that actually ran. A sport that produced nothing (feed down) is
-  deliberately left alone rather than having its rows treated as stale.
+- Stale-edge cleanup now covers sports, but only after a successful edge write for that sport,
+  **and** only when every one of that sport's Kalshi series fetched. A sport that produced nothing
+  (feed down) is deliberately left alone rather than having its rows treated as stale, and a sport
+  where one series failed does not prune at all — the produced set would be missing every row of
+  that series, and pruning deletes by engine and market_id.
+- Started games are removed on `kalshi_edges.start_utc`, not `expires_at`. A sports market's
+  `expires_at` is the Kalshi close time, roughly two days after kickoff, so anything filtering on
+  it (including `useMarketEdges.ts` and `useSupabaseData.ts`, which read `kalshi_edges` directly)
+  will show a game that is already in progress for days.
 - `remove_stale_edges` deletes by `engine`, so the sport engines (`sports_nfl`, `sports_cfb`) are
   in its allowlist. Anything else writing to `kalshi_edges` is out of scope by design.
 - The reviewer store fails open by design, which means a **missing `sports_reviews` table looks
@@ -712,3 +730,46 @@ AssertionError: {'nfl': {'feed_ok': True, 'edges': []}}   # no series_ok at all
 - Per-series pruning was considered and rejected: `remove_stale_edges` deletes by engine and
   market_id, and the series lives inside `raw_payload` with no column to filter on, so the honest
   answer is to skip the sport's prune and log a warning saying which engine and why.
+
+### Round 4 — summary, and the one thing to know before merging
+
+| # | Commit | What |
+|---|---|---|
+| 1 | `0e8338e` | Started games: skip pricing them, delete their rows on `start_utc`, one cleanup function instead of two, migration 000008 gains the indexed column + backfill |
+| 2 | `f3b9234` | One shared deadline rule; re-checked before every reviewer call; both HTTP timeouts clamped; the feed retry is skipped when it cannot fit |
+| 3 | `82a9edb` | `.order("id")` on every paged read, plus the exactly-1000-rows boundary test |
+| 4a | `ff20fcd` | A feed 404 is logged at WARNING, still not a failure, still exit code 0 |
+| 4b | `54f1077` | A sport with a failed series does not prune; `series_ok` is required, not defaulted |
+
+**The one thing to know: migration `000008` is now a hard prerequisite for the whole scan, not
+just for sports.** `upsert_opportunities` writes `start_utc` on every edge row it writes, for
+every engine. If the column is not there, the edge upsert fails for weather and gas too and the
+scan goes red on the next run. That was already true of `sports_reviews` (invisibly, by design);
+it is now true of the edge write (visibly). Migration first, then deploy — see the checklist.
+
+#### Live dry run, 2026-09-26T18:04Z (no writes, no LLM, both feeds still 404 pre-7a)
+
+```
+sports feed unavailable sport=nfl url=https://nfl-predictor...: 404 Client Error: Not Found
+sports feed unavailable sport=cfb url=https://cfb-predictor...: 404 Client Error: Not Found
+{"as_of": "2026-09-26T18:04:26Z", "reports": {"nfl": {"feed_error": "... 404 ..."},
+ "cfb": {"feed_error": "... 404 ..."}, "reviews": {}}, "predictions": 0, "edges": 0, "candidates": 0}
+exit: 0
+```
+
+This is the expected result until 7a is deployed, and it is what item 4a is for: the 404 is now
+the first thing on the timer's log rather than something you have to go and find in the JSON.
+
+#### Round 4 final verification
+
+```
+pytest              573 passed   (was 535 at 9847837)
+ruff                All checks passed!   (F401,F811,F821 over tradehub tests shared)
+tsc                 exit 0      (./node_modules/.bin/tsc --noEmit -p tsconfig.app.json)
+vitest              6 files / 25 tests passed
+vite build          ✓ built in 4.16s
+git diff --check    clean
+```
+
+`SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder` for every pytest run. No PR merged, no
+force-push, no rebase, no migration applied, no deploy.
