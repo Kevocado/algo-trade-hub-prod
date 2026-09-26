@@ -361,6 +361,29 @@ def _is_upcoming(row: dict, now: datetime) -> bool:
         return False
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# ENDPOINT: /api/jobs-scorecard (service-role read, like /api/track-record;
+# jobs_scorecard keeps owner-only RLS)
+#
+# Registered BEFORE mount_frontend below: the SPA is mounted at "/", so a route
+# added after it is shadowed and this endpoint would answer with the app shell.
+#
+# No limit: the table holds one row per (series, reference_month), so it is two
+# rows per month of history rather than a growing event log.
+# ════════════════════════════════════════════════════════════════════════════
+@app.get("/api/jobs-scorecard", tags=["Jobs Scorecard"])
+async def get_jobs_scorecard(
+    series: str = Query("payrolls", pattern="^(payrolls|unemployment)$"),
+    supabase=Depends(get_supabase),
+):
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase is not configured")
+    result = (
+        supabase.table("jobs_scorecard").select("*").eq("series", series).order("reference_month").execute()
+    )
+    return result.data or []
+
+
 # ── War Room SPA (mounted last so every /api route above wins) ─────────────
 FRONTEND_DIST = Path(os.getenv("FRONTEND_DIST", str(Path(__file__).resolve().parents[2] / "market_sentiment_tool" / "dist")))
 mount_frontend(app, FRONTEND_DIST)
