@@ -24,9 +24,13 @@ MIN_TIMEOUT_SECONDS = 1.0
 _clock: Callable[[], float] = time.monotonic
 
 
-def remaining_seconds(deadline: float) -> float:
-    """Seconds left before `deadline`; negative once it has passed."""
-    return deadline - _clock()
+def remaining_seconds(deadline: float, clock: Callable[[], float] | None = None) -> float:
+    """Seconds left before `deadline`; negative once it has passed.
+
+    `clock` is injectable so a caller that owns its own clock (the ALFRED fetcher, which passes
+    one down for testability) does not have to reach into this module's global.
+    """
+    return deadline - (clock or _clock)()
 
 
 def should_review(deadline: float) -> bool:

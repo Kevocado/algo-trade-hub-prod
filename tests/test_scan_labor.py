@@ -98,7 +98,7 @@ def test_run_labor_step_runs_three_times_a_day_and_isolates_errors():
         raise RuntimeError("ALFRED down")
 
     assert scan.run_labor_step(live, at_9, cfg, scan_fn=boom) == ([], [], "skipped")
-    assert scan.run_labor_step(live, at_7, cfg, scan_fn=lambda *a: ([{"p": 1}], [])) == ([{"p": 1}], [], "ok")
+    assert scan.run_labor_step(live, at_7, cfg, scan_fn=lambda *a, **k: ([{"p": 1}], [])) == ([{"p": 1}], [], "ok")
     preds, edges, status = scan.run_labor_step(live, at_7, cfg, scan_fn=boom)
     assert (preds, edges) == ([], []) and status.startswith("error: RuntimeError")
 
@@ -182,8 +182,10 @@ def test_main_gates_labor_edges_per_engine_version(monkeypatch):
         {"market_ticker": "A", "engine": "labor_nowcast", "engine_version": "labor-v1"},
     ]))
     assert scan.main(now=NOW, live=object(), client=object()) == 0
-    assert ("labor_nowcast", "labor-v1") in seen_pairs[0], (
-        f"labor's (engine, engine_version) pair was not part of the gate lookup: {seen_pairs}"
+    # Labor has its own gate lookup (it runs after the shared one, so a hung ALFRED cannot delay
+    # the other engines' writes), so the pair must appear in SOME lookup, not the first.
+    assert any(("labor_nowcast", "labor-v1") in pairs for pairs in seen_pairs), (
+        f"labor's (engine, engine_version) pair was not part of any gate lookup: {seen_pairs}"
     )
     assert [r["gate_status"] for r in upserted if r["engine"] == "labor_nowcast"] == ["PROMOTED"]
 

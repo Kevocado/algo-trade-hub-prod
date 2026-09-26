@@ -18,7 +18,7 @@ def test_guess_release_date_is_first_friday_of_next_month():
 def test_load_labor_inputs_requests_point_in_time_vintages():
     calls = {}
 
-    def fetch(series, days, *, cache_dir, today):
+    def fetch(series, days, *, cache_dir, today, deadline=None):
         calls[series] = (days, today)
         return {d: {date(2000, 1, 1): 1.0} for d in days}
 
@@ -64,7 +64,7 @@ def test_point_in_time_ok_requires_every_months_own_vintage():
 def test_load_labor_inputs_fetches_unrate_when_asked():
     seen = {}
 
-    def fetch(series, days, *, cache_dir, today):
+    def fetch(series, days, *, cache_dir, today, deadline=None):
         seen[series] = days
         return {}
 
@@ -76,7 +76,7 @@ def test_load_labor_inputs_fetches_unrate_when_asked():
 def test_load_labor_inputs_can_skip_adp():
     seen = {}
 
-    def fetch(series, days, *, cache_dir, today):
+    def fetch(series, days, *, cache_dir, today, deadline=None):
         seen[series] = days
         return {}
 

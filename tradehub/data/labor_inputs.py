@@ -80,6 +80,7 @@ def load_labor_inputs(
     with_adp: bool = True,
     fetch: Callable[..., dict[date, Vintage]] = fetch_vintages,
     cache_dir: Path | None = None,
+    deadline: float | None = None,
 ) -> LaborInputs:
     """Fetch the vintages needed for reference months first_month..last_month, as known on `as_of`.
 
@@ -99,7 +100,10 @@ def load_labor_inputs(
                 for m in _months(max(first_month, ADP_FIRST_MONTH), last_month)]
 
     def get(series: str, days: list[date]) -> dict[date, Vintage]:
-        return fetch(series, sorted({d for d in days if d < as_of}), cache_dir=cache, today=as_of)
+        # `deadline` goes all the way to the HTTP request: a flat 60s timeout with four
+        # unconditional retries was up to ~246s of predictor call inside a 15-minute scan.
+        return fetch(series, sorted({d for d in days if d < as_of}), cache_dir=cache, today=as_of,
+                     deadline=deadline)
 
     return LaborInputs(
         payems=get("PAYEMS", month_ends + [latest]),
