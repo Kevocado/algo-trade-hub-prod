@@ -40,11 +40,28 @@ describe("sports edge gate badge", () => {
     expect(edgeGate(edge({ gate_status: "PROMOTED" }))).toEqual({ isShadow: false, label: "Promoted" });
   });
 
-  it("fails closed on a missing or unknown gate_status", () => {
+  it("fails closed on a missing gate_status", () => {
     // Legacy rows written before the gate field existed must read as Shadow, never Promoted.
     expect(edgeGate(edge({ gate_status: null })).isShadow).toBe(true);
-    expect(edgeGate(edge({ gate_status: undefined as unknown as string })).isShadow).toBe(true);
-    expect(edgeGate(edge({ gate_status: "promoted " })).isShadow).toBe(false);
-    expect(edgeGate(edge({ gate_status: "weird" })).isShadow).toBe(true);
+    expect(edgeGate({ gate_status: undefined }).isShadow).toBe(true);
+  });
+
+  it("normalises casing and surrounding whitespace, and rejects anything else", () => {
+    // The column is free text at the API boundary, so a padded or lower-case PROMOTED from a
+    // legacy writer must still badge as Promoted, while an unknown value must not.
+    const gate = (gate_status: string) => edgeGate({ gate_status });
+    expect(gate("promoted ").isShadow).toBe(false);
+    expect(gate("  PROMOTED").isShadow).toBe(false);
+    expect(gate("weird").isShadow).toBe(true);
+    expect(gate("").isShadow).toBe(true);
+  });
+
+  it("accepts any string gate_status, not just the two known literals", () => {
+    // The test helper builds a full SportsEdge, whose gate_status is a narrow union. edgeGate
+    // itself takes a plain string, which is the contract that matters at runtime.
+    const promoted = edgeGate({ gate_status: "PROMOTED" });
+    const unknown = edgeGate({ gate_status: "PROMOTED_MAYBE" });
+    expect(promoted.isShadow).toBe(false);
+    expect(unknown.isShadow).toBe(true);
   });
 });

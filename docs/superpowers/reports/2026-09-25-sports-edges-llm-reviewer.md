@@ -261,6 +261,35 @@ the merged tree and `501 passed` before any round-3 edit. One commit per numbere
   `test_first_print_pin_detects_a_switch_to_revised_values`, which proves the pin *misses* when
   the payload carries the revised value. That test is unchanged and still passes.
 
+### B3. `tsc --noEmit -p tsconfig.app.json` now exits 0
+
+`npx tsc --noEmit` had been reporting success in earlier rounds, but it resolves `tsconfig.json`
+rather than the app project, so it was not the check that matters. Run directly, the app project
+failed with 4 errors — the test files were never type-checked:
+
+```text
+src/lib/sportsEdgeGate.test.ts(46,28): error TS2322: Type 'string' is not assignable to type '"SHADOW" | "PROMOTED"'.
+src/lib/sportsEdgeGate.test.ts(47,28): error TS2820: Type '"promoted "' is not assignable to type '"SHADOW" | "PROMOTED"'.
+src/lib/sportsEdgeGate.test.ts(48,28): error TS2320: Type '"weird"' is not assignable to type '"SHADOW" | "PROMOTED"'.
+src/lib/sportsEdges.test.ts(5,7):   error TS2739: Type '{...}' is missing the following properties from type 'SportsEdge': engine, engine_version, gate_status
+```
+
+- `sportsEdges.test.ts`: the shared `base` fixture predated the round-2 gate fields and was
+  missing `engine`, `engine_version` and `gate_status`. Added, which is what the type was telling
+  us: the fixture no longer described a real API row.
+- `sportsEdgeGate.test.ts`: split the conflated case. The narrow `SportsEdge.gate_status` union
+  belongs to the *API response type*; `edgeGate` itself takes `EdgeGateInput`, whose
+  `gate_status` is `string | null | undefined` — and that is the contract that matters, because
+  the column is free text at the boundary. The normalisation cases (`"promoted "`, `"weird"`,
+  `""`) now go through `edgeGate` directly on widened input rather than being forced through a
+  full `SportsEdge` with a cast. This is stronger than the `as any` alternative: it tests the
+  real signature and keeps the `SportsEdge` type honest.
+- Added `"typecheck": "tsc --noEmit -p tsconfig.app.json"` to `package.json`, so CI and humans
+  run the project that includes `src` rather than the default one.
+- Command for the record: `cd market_sentiment_tool && ./node_modules/.bin/tsc --noEmit -p tsconfig.app.json`
+  → **exit 0** (also `npm run typecheck`).
+- vitest: 6 files / 25 tests passed (the two gate suites gained cases).
+
 ## Second review round — fixes 1-7
 
 One commit per numbered fix. RED first in each case, evidence below.
