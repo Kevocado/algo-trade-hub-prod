@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     client = KalshiHistoryClient(get_json=ThrottledGetJson())
-    all_raws = client.merged_settled_markets(PAYROLL_SERIES)
+    all_raws = client.settled_markets(PAYROLL_SERIES)
     raws = settled_ladder(all_raws, args.start, args.end)
     markets = [labor_market(raw) for raw in raws]
     results = {raw["ticker"]: raw["result"] for raw in raws}

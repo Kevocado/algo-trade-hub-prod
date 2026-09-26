@@ -93,3 +93,25 @@ def test_throttled_get_json_spaces_calls_and_retries_429():
     assert getter("u") == {"ok": 1}
     assert getter("u") == {"ok": 2}
     assert sleeps == [2.0, pytest.approx(0.25)]  # backoff after 429, then minimum spacing
+
+
+def test_the_clis_only_call_methods_the_real_client_has():
+    """`merged_settled_markets` was the plan's name for what is actually `settled_markets`
+    (it already merges the historical and live endpoints and dedupes by ticker). The name no
+    longer existed, and the first live run died with an AttributeError at the very first call --
+    with 644 green tests, because the unit tests never construct a KalshiHistoryClient.
+
+    This is the cheap structural guard for that whole class of drift.
+    """
+    import inspect
+    import re
+
+    from tradehub.backtest.kalshi_history import KalshiHistoryClient
+    from tradehub.scripts import backtest_labor, build_jobs_scorecard
+
+    for module in (backtest_labor, build_jobs_scorecard):
+        source = inspect.getsource(module)
+        for name in sorted(set(re.findall(r"\bclient\.(\w+)\(", source))):
+            assert hasattr(KalshiHistoryClient, name), (
+                f"{module.__name__} calls client.{name}(), which KalshiHistoryClient does not have"
+            )

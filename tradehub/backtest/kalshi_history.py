@@ -150,6 +150,18 @@ class KalshiHistoryClient:
                 by_ticker[ticker] = market
         return [*by_ticker.values(), *without_ticker]
 
+    def open_markets(self, series_ticker: str) -> list[dict]:
+        """Currently OPEN markets of one series, from the public /markets endpoint.
+
+        Public so callers outside this class do not have to reach into `_paginate`: the Jobs
+        Scorecard builder needs the open tail of a ladder that `settled_markets` cannot see.
+        """
+        return self._paginate(
+            "/markets",
+            "markets",
+            {"series_ticker": series_ticker, "status": "open", "limit": PAGE_LIMIT},
+        )
+
     def candles(
         self,
         ticker: str,

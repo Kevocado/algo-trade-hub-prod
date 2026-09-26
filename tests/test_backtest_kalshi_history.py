@@ -285,3 +285,21 @@ def test_removed_legacy_aliases_are_not_exposed():
     assert not hasattr(client, "cutoffs")
     assert not hasattr(client, "merge_candles")
     assert not hasattr(client, "merge_trades")
+
+
+def test_open_markets_is_public_and_paginates_with_the_open_status():
+    """The Jobs Scorecard needs the open tail of a ladder, which `settled_markets` cannot see.
+    It used to reach into the private `_paginate`; this is the public seam."""
+    from tradehub.backtest.kalshi_history import KalshiHistoryClient
+
+    calls = {}
+
+    def paginate(path, key, params):
+        calls.update(path=path, key=key, params=params)
+        return [{"ticker": "KXPAYROLLS-26SEP-T0"}]
+
+    client = KalshiHistoryClient.__new__(KalshiHistoryClient)
+    client._paginate = paginate
+    assert client.open_markets("KXPAYROLLS")[0]["ticker"] == "KXPAYROLLS-26SEP-T0"
+    assert calls["path"] == "/markets" and calls["key"] == "markets"
+    assert calls["params"]["status"] == "open" and calls["params"]["series_ticker"] == "KXPAYROLLS"

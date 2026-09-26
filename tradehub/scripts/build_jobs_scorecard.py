@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from tradehub.backtest.fills import quote_at
 from tradehub.backtest.http import ThrottledGetJson
-from tradehub.backtest.kalshi_history import PAGE_LIMIT, KalshiHistoryClient
+from tradehub.backtest.kalshi_history import KalshiHistoryClient
 from tradehub.data.labor_inputs import load_labor_inputs, payroll_nowcasts
 from tradehub.engines.labor import (
     LABOR_ENGINE_VERSION,
@@ -109,8 +109,7 @@ def _release(markets: list[KalshiMarket]) -> tuple[datetime, date]:
 def build_rows(client: KalshiHistoryClient, *, since: date, today: date, cache_dir: Path | None) -> list[dict[str, Any]]:
     events: dict[str, dict[date, list[KalshiMarket]]] = {}
     for series in (PAYROLL_SERIES, U3_SERIES):
-        raws = client.merged_settled_markets(series)
-        raws += client._paginate("/markets", "markets", {"series_ticker": series, "status": "open", "limit": PAGE_LIMIT})
+        raws = client.settled_markets(series) + client.open_markets(series)
         events[series] = group_events(raws, since, today)
     pay_months = sorted(events[PAYROLL_SERIES])
     releases = {month: _release(markets)[1] for month, markets in events[PAYROLL_SERIES].items()}
