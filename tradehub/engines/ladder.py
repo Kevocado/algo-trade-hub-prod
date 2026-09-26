@@ -11,8 +11,6 @@ import math
 import statistics
 from typing import Sequence
 
-from tradehub.markets import prob_in_interval
-
 MAX_SPREAD = 0.15  # a strike whose yes bid/ask spread is wider than this carries no price information
 
 Ladder = list[tuple[float, float]]  # (cut, P(X > cut)), cuts ascending
