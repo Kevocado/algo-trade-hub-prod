@@ -192,14 +192,20 @@ The plan's extracted `_edge_row` omitted `engine`, `gate_status`, `updated_at` a
 
 ### Final verification
 
+### Final verification (round 3)
+
 ```text
-Python baseline 391 → final 501 passed
+Python baseline 391 → final 534 passed
 Scoped Ruff F401,F811,F821: All checks passed
-Frontend: 6 files / 23 vitest tests passed
-tsc --noEmit: clean
+Frontend: 7 files / 25 vitest tests passed
+tsc --noEmit -p tsconfig.app.json: exit 0
 Vite production build: OK
 git diff --check: clean
 ```
+
+Typecheck command of record:
+`cd market_sentiment_tool && ./node_modules/.bin/tsc --noEmit -p tsconfig.app.json` (also
+`npm run typecheck`, added in B3).
 
 ### Merge order / stacking
 
@@ -325,6 +331,25 @@ page, and ranking is now applied to **all** matching rows before the slice.
   no `expires_at` and no `.range()`/`.gte()`; both updated, which is what the type of the change
   required.
 
+### B7. Kevin checklist: paths, ordering, and the two-places rule
+
+Rewritten, because the previous version would have led to a silently broken deploy.
+
+- **Migration before deploy, stated first.** The scan writes to `sports_reviews` every run and
+  the store fails open, so a missing table is indistinguishable from a working one: reviews are
+  discarded, nothing caches, the scorecard stays empty, and no error surfaces anywhere. Called
+  out in the handover risks too.
+- **`/opt/stack/.env` is not enough.** All five variables must ALSO be in the `tradehub`
+  service's `environment:` block in `vps-stack/compose.yml`. The scan runs in that container and
+  does not inherit `.env` wholesale; only what is listed in `environment:` is visible. The
+  failure mode is spelled out — feeds silently fall back to the YAML defaults and 404 until 7a
+  is deployed, with `{"nfl": {"feed_error": "404"}}` as the only clue.
+- **Reviewer model config path corrected** to `tradehub/config/engines.yaml` under
+  `sports_reviewer`. The round-2 checklist said `tradehub/sports/config.yaml`, which does not
+  exist; `CONFIG_PATH` is shared with the engine configs.
+- Optional-vs-required is now explicit for each variable, and the 1000-row paging note was
+  corrected to say the server pages internally so `total` is trustworthy.
+
 ## Second review round — fixes 1-7
 
 One commit per numbered fix. RED first in each case, evidence below.
@@ -415,27 +440,61 @@ they were executed. Both now stub `cpi_scan_due`.
 
 ### Kevin checklist — pending
 
-Reviewed and updated after the second review round; numbering is unchanged, the content is not.
+Rewritten in round 3 with the exact variable names, file paths and ordering. **The two things
+that are easy to get wrong are called out first.**
 
-1. Apply `20260416000008_sports_reviews.sql` after migrations `000003`–`000007`. Reserved range for
-   this rollout: `000007` step 2b, `000008` step 7b, `000009` step 8. Do not renumber.
-2. Add `OPENROUTER_API_KEY` to the VPS stack environment. **Optional**: with no key every
-   candidate is written as `unreviewed` and still appears on the board, so the sports scan runs
-   correctly before the reviewer is configured. With a key, also confirm the model in
-   `tradehub/sports/config.yaml` (`sports_reviewer.model`) is one your OpenRouter account can
-   actually route to; the reviewer sends `provider.require_parameters`, so a model that ignores
-   `response_format` will return `status=invalid` and every edge will read `unreviewed`.
-3. Point the feed at the deployed predictor sites. Optional overrides, per sport:
-   `SPORTS_NFL_BASE_URL` / `SPORTS_NFL_SITE_URL` and `SPORTS_CFB_BASE_URL` /
-   `SPORTS_CFB_SITE_URL`. Use VPS hostnames after cutover. With no overrides the YAML defaults
-   are used, and until step 7a is deployed those return 404 — which the scan already reports as
-   `{"feed_error": "404"}` per sport rather than failing.
-4. `SPORTS_SCAN_EVERY_RUN=1` forces sports onto every hourly run instead of every third UTC
+#### Order matters: migration BEFORE the deploy
+
+1. **Apply `20260416000008_sports_reviews.sql` BEFORE deploying the image that contains this
+   PR.** The sports scan writes to `sports_reviews` on every run; without the table the
+   reviewer store fails open (by design — it will not take the scan down) but every review is
+   silently discarded, so nothing is ever cached and the `reviewer_scorecard` stays empty. The
+   failure is invisible by construction, which is exactly why the order has to be deliberate.
+   Apply it after migrations `000003`–`000007`. Reserved range for this rollout: `000007` step
+   2b, `000008` step 7b, `000009` step 8. Do not renumber.
+2. Then deploy. Migration first, always.
+
+#### Environment variables — two places, not one
+
+3. Add all five to **`/opt/stack/.env`** on the VPS:
+
+   ```dotenv
+   SPORTS_NFL_BASE_URL=https://<nfl-predictor-host>
+   SPORTS_NFL_SITE_URL=https://<nfl-predictor-host>
+   SPORTS_CFB_BASE_URL=https://<cfb-predictor-host>
+   SPORTS_CFB_SITE_URL=https://<cfb-predictor-host>
+   OPENROUTER_API_KEY=sk-or-...
+   ```
+
+4. **They must ALSO be added to the `tradehub` service's `environment:` block in
+   `vps-stack/compose.yml`.** This is the step that is easy to miss: the scan runs in the
+   `tradehub` container, which does **not** inherit `/opt/stack/.env` wholesale. Only the
+   variables listed in that service's `environment:` are visible to it. Setting them in
+   `/opt/stack/.env` alone means the container sees none of them, the feeds fall back to the
+   YAML defaults, and — until step 7a is deployed — those defaults 404. The symptom is
+   `{"nfl": {"feed_error": "404"}}` in the scan summary with no other error anywhere.
+
+#### Optional vs required
+
+5. `OPENROUTER_API_KEY` is **optional**. With no key every candidate is written as
+   `unreviewed` and still appears on the board. With a key, confirm the model configured under
+   `sports_reviewer` in **`tradehub/config/engines.yaml`** is one your OpenRouter account can
+   actually route to. (The path is `tradehub/config/engines.yaml`, not
+   `tradehub/sports/config.yaml` — `CONFIG_PATH` is shared with the engine configs.) The
+   reviewer sends `provider.require_parameters`, so a model that ignores `response_format`
+   returns `status=invalid` and every edge reads `unreviewed` even with a valid key.
+6. The four `SPORTS_*` variables are optional overrides. With none set, the YAML defaults in
+   `tradehub/config/engines.yaml` are used.
+7. `SPORTS_SCAN_EVERY_RUN=1` forces sports onto every hourly run instead of every third UTC
    hour. Leave unset in production unless you want the extra load.
-5. Record one real OpenRouter review and replace the hand-built OK fixture.
-6. After ≥100 settled reviewed picks, read `reviewer_scorecard.verdict`; drop the reviewer if it
-   says drop. The endpoint pages, so read `total` and page with `limit`/`offset` rather than
-   assuming the first page is everything.
+
+#### After it is running
+
+8. Record one real OpenRouter review and replace the hand-built OK fixture.
+9. After ≥100 settled reviewed picks, read `reviewer_scorecard.verdict`; drop the reviewer if it
+   says drop. The endpoint pages past PostgREST's 1000-row cap server-side, so `total` is the
+   real count — but read it and page with `limit`/`offset` rather than assuming one page is
+   everything.
 
 ### Handover risks
 
@@ -454,6 +513,10 @@ Reviewed and updated after the second review round; numbering is unchanged, the 
   deliberately left alone rather than having its rows treated as stale.
 - `remove_stale_edges` deletes by `engine`, so the sport engines (`sports_nfl`, `sports_cfb`) are
   in its allowlist. Anything else writing to `kalshi_edges` is out of scope by design.
+- The reviewer store fails open by design, which means a **missing `sports_reviews` table looks
+  exactly like a working one** — reviews are simply discarded and nothing is cached. If the
+  scorecard stays empty and no `status=ok` row ever appears, check the migration before
+  suspecting the model or the key.
 - CFB spread/total calibration may remain empty because recorded sportsbook lines are mostly null.
 - Reviewer budget/fixture follow-ups are in the plan's Kevin checklist and were not executed.
 - No Supabase write, LLM call, migration application or deployment was performed.
