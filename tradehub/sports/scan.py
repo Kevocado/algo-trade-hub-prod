@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -31,8 +32,22 @@ from tradehub.sports.reviewer import (
 
 SPORTS = ("nfl", "cfb")
 LEDGER_CHUNK = 100
+# Stop spending the remaining scan budget on LLM calls once this little is left. Reviewing is
+# the optional part of the sports step; the edges are already computed and get written either
+# way, just with tier=unreviewed.
+REVIEW_STOP_MARGIN_SECONDS = 60
 
 log = logging.getLogger(__name__)
+
+
+def remaining_seconds(deadline: float) -> float:
+    """Seconds left before `deadline`; negative once it has passed."""
+    return deadline - time.monotonic()
+
+
+def should_review(deadline: float) -> bool:
+    """Whether there is enough of the scan budget left to spend on reviewer calls."""
+    return remaining_seconds(deadline) > REVIEW_STOP_MARGIN_SECONDS
 
 
 @dataclass
@@ -183,13 +198,20 @@ class SportsRun:
 
 def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[[str], Feed] = fetch_feed, store=None,
                     reviewer: OpenRouterReviewer | None = None, budget: int = 0,
-                    sports: tuple[str, ...] = SPORTS) -> SportsRun:
+                    sports: tuple[str, ...] = SPORTS,
+                    deadline: float | None = None) -> SportsRun:
     predictions: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     requests: list[ReviewRequest] = []
     reports: dict[str, Any] = {}
     per_sport: dict[str, dict[str, Any]] = {}
+    # No deadline given (tests, the dry run) means an effectively unbounded budget.
+    effective_deadline = deadline if deadline is not None else time.monotonic() + float("inf")
     for sport in sports:
+        if remaining_seconds(effective_deadline) <= 0:
+            reports[sport] = {"skipped": "scan deadline reached before this sport"}
+            per_sport[sport] = {"feed_ok": False, "edges": []}
+            continue
         cfg = load_sport_config(sport)
         try:
             feed = fetch(cfg.base_url)
@@ -220,8 +242,16 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[[str], Feed] = fet
             report["series_errors"] = series_errors
         reports[sport] = report
         per_sport[sport] = {"feed_ok": True, "edges": result.edges}
-    reviews = review_candidates(requests, store or MemoryReviewStore(), reviewer, budget=budget, now=now)
-    apply_reviews(edges, reviews)
+    # Reviewing is the optional, slow part: stop when the scan budget is nearly gone. The edges
+    # are already computed and are still written, just with tier=unreviewed.
+    if should_review(effective_deadline):
+        reviews = review_candidates(requests, store or MemoryReviewStore(), reviewer, budget=budget, now=now)
+        apply_reviews(edges, reviews)
+    else:
+        log.warning("sports scan: under %ss of scan budget left; skipping reviewer calls",
+                    REVIEW_STOP_MARGIN_SECONDS)
+        reports["reviews"] = {"skipped_deadline": len(requests)}
+        return SportsRun(predictions, edges, reports, per_sport)
     reports["reviews"] = {status: sum(r.status == status for r in reviews.values())
                           for status in sorted({r.status for r in reviews.values()})}
     return SportsRun(predictions, edges, reports, per_sport)
@@ -327,7 +357,7 @@ def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -
     # The scan's deadline, not a fresh budget: sports paginates the public markets API per
     # series and must not be able to overrun the hourly timer and overlap the next run.
     run = run_sports_scan(now, SportsKalshi(deadline=deadline), store=SupabaseReviewStore(supa), reviewer=reviewer,
-                          budget=cfg.daily_budget)
+                          budget=cfg.daily_budget, deadline=deadline)
     return SportsRun(unrecorded(supa, run.predictions), run.edges, run.reports, run.per_sport)
 
 

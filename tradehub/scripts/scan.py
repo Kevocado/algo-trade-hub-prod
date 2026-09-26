@@ -443,29 +443,13 @@ def main(
             failures.append(message)
             log.exception("scan client initialization failed")
 
-    sports_predictions: list[dict] = []
-    sports_edges: list[dict] = []
-    sports_per_sport: dict[str, dict[str, Any]] = {}
-    sports_summary: dict[str, Any] = {"status": "skipped: not due (every third UTC hour)"}
-    sports_ran = False
-    if client is not None and sports_due(now):
-        try:
-            run = run_sports_for_cron(now, client, deadline=deadline)
-            sports_predictions, sports_edges, sports_summary = run.predictions, run.edges, run.reports
-            sports_per_sport = run.per_sport
-            sports_ran = True
-        except Exception as exc:  # a predictor/Kalshi outage must not cost weather/gas
-            sports_summary = {"error": repr(exc)}
-            failures.append(f"sports: {type(exc).__name__}: {exc}")
-            log.exception("scan sports step failed")
-
     if client is not None:
         try:
             remove_closed_cpi_edges(client, now)
         except Exception as exc:
             failures.append(f"cpi_nowcast.closed_cleanup: {type(exc).__name__}: {exc}")
             log.exception("scan closed CPI edge cleanup failed")
-        all_edges = weather_edges + gas_edges + cpi_edges + sports_edges
+        all_edges = weather_edges + gas_edges + cpi_edges
         pairs = {(row["engine"], row.get("engine_version", "v0")) for row in all_edges}
         try:
             statuses = latest_gate_statuses(client, pairs)
@@ -474,7 +458,7 @@ def main(
             failures.append(message)
             statuses = {}
             log.exception("scan gate-status lookup failed")
-        for edges in (weather_edges, gas_edges, cpi_edges, sports_edges):
+        for edges in (weather_edges, gas_edges, cpi_edges):
             apply_gate_statuses(edges, statuses)
 
         prediction_writes: dict[str, str] = {}
@@ -520,35 +504,60 @@ def main(
                 log.exception("scan stale-edge cleanup failed engine=%s", name)
 
         writes = {"predictions": prediction_writes, "edges": edge_writes}
-        if sports_ran:
-            try:
-                record_predictions(client, sports_predictions)
-                writes["predictions"]["sports"] = "ok"
-            except Exception as exc:
-                failures.append(f"sports.predictions: {type(exc).__name__}: {exc}")
-                writes["predictions"]["sports"] = "failed"
-            try:
-                upsert_opportunities(sports_edges)
-                writes["edges"]["sports"] = "ok"
-            except Exception as exc:
-                failures.append(f"sports.edges: {type(exc).__name__}: {exc}")
-                writes["edges"]["sports"] = "failed"
-        else:
+
+        # ── Sports LAST ────────────────────────────────────────────────────────────────
+        # The weather/gas/CPI gate lookup, upserts and cleanups above are already done, so a
+        # slow sports run can no longer delay them or put them at risk. Sports is gated and
+        # written separately because its edges are keyed on their own (engine, engine_version)
+        # pairs and it has its own pruning rules.
+        sports_predictions: list[dict] = []
+        sports_edges: list[dict] = []
+        sports_per_sport: dict[str, dict[str, Any]] = {}
+        sports_summary: dict[str, Any] = {"status": "skipped: not due (every third UTC hour)"}
+        if not sports_due(now):
             writes["predictions"]["sports"] = "skipped"
             writes["edges"]["sports"] = "skipped"
-
-        # Sports edges are written after the engine loop above, so they are pruned here.
-        # A sport prunes only when its feed fetch AND its edge write both succeeded, so neither
-        # a feed outage nor a failed upsert can be read as "the engine produced nothing" and
-        # delete the live edges. Pruning a zero-edge run is the point: that is exactly when the
-        # previous hour's rows must go.
-        if sports_ran:
-            # Fill in write_ok before pruning, so the health check sees the real outcome.
-            for state in sports_per_sport.values():
-                state["write_ok"] = writes["edges"].get("sports") == "ok"
-            failures.extend(remove_started_sports_edges_errors(client, now))
-            failures.extend(prune_sports_if_healthy(client, sports_per_sport,
-                                                    remove=remove_stale_edges, now=now))
+        else:
+            try:
+                run = run_sports_for_cron(now, client, deadline=deadline)
+                sports_predictions, sports_summary = run.predictions, run.reports
+                sports_per_sport = run.per_sport
+                try:
+                    sports_pairs = {(row["engine"], row.get("engine_version", "v0"))
+                                    for row in run.edges}
+                    sports_statuses = latest_gate_statuses(client, sports_pairs)
+                except Exception as exc:
+                    failures.append(f"sports.gate_status: {type(exc).__name__}: {exc}")
+                    log.exception("scan sports gate-status lookup failed")
+                    sports_statuses = {}
+                apply_gate_statuses(run.edges, sports_statuses)
+                sports_edges = run.edges
+                try:
+                    record_predictions(client, sports_predictions)
+                    writes["predictions"]["sports"] = "ok"
+                except Exception as exc:
+                    failures.append(f"sports.predictions: {type(exc).__name__}: {exc}")
+                    writes["predictions"]["sports"] = "failed"
+                try:
+                    upsert_opportunities(sports_edges)
+                    writes["edges"]["sports"] = "ok"
+                except Exception as exc:
+                    failures.append(f"sports.edges: {type(exc).__name__}: {exc}")
+                    writes["edges"]["sports"] = "failed"
+                # A sport prunes only when its feed fetch AND its edge write both succeeded, so
+                # neither a feed outage nor a failed upsert can be read as "produced nothing".
+                # Pruning a zero-edge run is the point: that is when the previous rows must go.
+                for state in sports_per_sport.values():
+                    state["write_ok"] = writes["edges"].get("sports") == "ok"
+                failures.extend(remove_started_sports_edges_errors(client, now))
+                failures.extend(prune_sports_if_healthy(client, sports_per_sport,
+                                                        remove=remove_stale_edges, now=now))
+            except Exception as exc:  # a predictor/Kalshi outage must not cost weather/gas
+                sports_summary = {"error": repr(exc)}
+                writes["predictions"]["sports"] = "failed"
+                writes["edges"]["sports"] = "failed"
+                failures.append(f"sports: {type(exc).__name__}: {exc}")
+                log.exception("scan sports step failed")
     else:
         writes = {"predictions": {}, "edges": {}}
 
