@@ -121,6 +121,18 @@ def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[tuple[str, s
         row["gate_status"] = statuses.get((row["engine"], row.get("engine_version", "v0")), "SHADOW")
 
 
+def remove_closed_cpi_edges(client, now: datetime) -> None:
+    """Delete cpi_nowcast edges as soon as their market closes, on every hourly scan."""
+    result = client.table("kalshi_edges").select("market_id,expires_at").eq("engine", "cpi_nowcast").execute()
+    for row in result.data or []:
+        expires_at = row.get("expires_at")
+        if not expires_at:
+            continue
+        close_time = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        if close_time <= now:
+            client.table("kalshi_edges").delete().eq("market_id", row["market_id"]).execute()
+
+
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
     """Delete stale rows only for the scan-owned weather/gas engines."""
     for engine, produced in produced_by_engine.items():
@@ -428,6 +440,11 @@ def main(
             log.exception("scan client initialization failed")
 
     if client is not None:
+        try:
+            remove_closed_cpi_edges(client, now)
+        except Exception as exc:
+            failures.append(f"cpi_nowcast.closed_cleanup: {type(exc).__name__}: {exc}")
+            log.exception("scan closed CPI edge cleanup failed")
         all_edges = weather_edges + gas_edges + cpi_edges
         pairs = {(row["engine"], row.get("engine_version", "v0")) for row in all_edges}
         try:
