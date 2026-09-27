@@ -436,9 +436,30 @@ def get_scoreboard(supabase=Depends(get_supabase)):
     - The headline and the counts behind it are `market_comparison`, from the same module. The
       "is this engine ahead" threshold lives there, because a second copy of it here is how the
       page and the API start disagreeing with nothing downstream able to tell which one drifted.
+    - Each row's `market_verdict` is `market_verdict`, also from that module, so the page renders
+      a word rather than comparing ratios in TypeScript.
     - `MIN_SETTLED` is not named in this file. It rides on each row's `settled_distance` as the
       reviewer's floor, separately from the bar the gate itself stated, and the row says which
       one the verdict was made against.
+
+    The one lookup this endpoint makes, and the one it does not:
+
+    - `promotion_status` is `latest_gate_statuses` (`tradehub/gate_status.py`) -- the SAME
+      function the scan uses, keyed on `(engine, engine_version)`, requiring the latest backtest
+      for that exact version AND a `track_record` row to both say PROMOTED, and failing closed
+      otherwise. `row["gate_status"]` is NOT that: it is what `check_promotion_gate` returned when
+      the run was recorded (`tradehub/track_record.py:126`), which never consults `track_record`
+      at all. So a run can carry `gate_status: "PROMOTED"` while the engine is not promoted, and
+      rendering that under the word PROMOTED reads as a promotion to a human. Both travel, both
+      labelled. The alternative -- a private reimplementation here -- is what that function's
+      docstring exists to prevent, and the extra reads are the price of there being one answer
+      about whether an edge is tradable rather than two.
+    - The verdict is per `(engine, engine_version)` while a row is per `(engine, mode)`, so both
+      rows of one engine carry the same verdict. That is the gate's own key, not a convenience.
+    - **A failed lookup fails closed and is announced.** `SHADOW` is the safe direction -- it
+      cannot make a non-tradable edge look tradable -- but a column of SHADOW badges that were
+      never verified is still a claim, so `promotion_lookup_failed` says so and the page says it
+      too. Same shape as the read failure below, applied to a read that is not the whole story.
 
     Two decisions in the read itself:
 
@@ -464,10 +485,34 @@ def get_scoreboard(supabase=Depends(get_supabase)):
     except Exception as e:
         raise HTTPException(status_code=503, detail=_missing_table_message("backtest_runs", e))
     rows = current_runs(runs)
+
+    # The shared lookup, asked once for the pairs this board actually has. The version is part of
+    # the key and is dropped from neither side: a version that is not promoted must not inherit
+    # another version's promotion.
+    pairs = {(r["engine"], r["engine_version"]) for r in rows if r["engine"] and r["engine_version"]}
+    promotion: dict[tuple[str, str], str] = {}
+    promotion_lookup_failed = False
+    if pairs:
+        try:
+            promotion = latest_gate_statuses(supabase, pairs)
+        except Exception:
+            # Failing closed, and saying so. Same handling as /api/jobs-scorecard below, for the
+            # same reason: the rows are readable, so a failure here must not take the page down,
+            # and must not be mistaken for a verdict.
+            log.exception("api: scoreboard promotion-gate lookup failed")
+            promotion_lookup_failed = True
+    for row in rows:
+        row["promotion_status"] = promotion.get(
+            (row["engine"], row["engine_version"]), "SHADOW"
+        )
+
     return {
         "as_of": datetime.now(timezone.utc).isoformat(),
         "runs_read": len(runs),
         "rows": rows,
+        # True when the promotion verdict below could not be read. Every row then reads SHADOW,
+        # which is the fail-closed default and NOT a measurement.
+        "promotion_lookup_failed": promotion_lookup_failed,
         # Distinct engines, because `rows_*` below counts (engine, mode) pairs and one name under
         # two labels is what made a single number unable to say what it was counting.
         "engines": len({row["engine"] for row in rows}),

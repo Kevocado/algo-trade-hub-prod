@@ -24,10 +24,15 @@ from tradehub.scoreboard import (
     SOURCE_ENGINE,
     SOURCE_GATE,
     SOURCE_UNKNOWN,
+    VERDICT_AHEAD,
+    VERDICT_BEHIND,
+    VERDICT_LEVEL,
+    VERDICT_NOT_COMPARABLE,
     brier_ratio,
     current_runs,
     is_experiment_version,
     market_comparison,
+    market_verdict,
     required_settled,
     settled_distance,
     stated_settled_bar,
@@ -703,3 +708,155 @@ class TestMarketComparison:
     def test_the_threshold_is_a_named_constant_not_a_bare_literal(self):
         """So a second copy of "behind the market" is a search away rather than a hunt."""
         assert BEHIND_THE_MARKET == 1.0
+
+
+class TestMarketVerdict:
+    """The per-row "ahead of the market or not" verdict, which the page renders.
+
+    Added with the page, for the page's sake. The page has to say whether a row is ahead or
+    behind, and the only way to say that without a second copy of the threshold is for this
+    module to say it. `market_comparison` buckets on the SAME function, so a row's own verdict
+    and the headline's counts cannot come from two implementations of `> 1.0`.
+    """
+
+    def test_above_one_is_behind_below_one_is_ahead_and_one_is_level(self):
+        assert market_verdict(4.29) == VERDICT_BEHIND
+        assert market_verdict(0.5) == VERDICT_AHEAD
+        assert market_verdict(1.0) == VERDICT_LEVEL
+
+    def test_an_unrecorded_market_brier_is_not_comparable_and_not_a_defeat(self):
+        for absent in (None, "0.1", float("nan"), True, False):
+            assert market_verdict(absent) == VERDICT_NOT_COMPARABLE, absent
+
+    def test_it_is_exactly_the_threshold_market_comparison_already_used(self):
+        """One threshold, applied once. If these two ever disagree, the page's per-row verdict and
+        the API's headline are counting different things."""
+        for ratio in (0.0, 0.25, 0.9999, 1.0, 1.0001, 2.0, 4.29, 9.0, None, "x", True):
+            summary = market_comparison([{"engine": "gas", "brier_ratio": ratio}])
+            verdict = market_verdict(ratio)
+            assert summary["rows_total"] == 1
+            assert (summary["rows_behind_market"] == 1) == (verdict == VERDICT_BEHIND), ratio
+            assert (summary["rows_ahead_of_market"] == 1) == (verdict == VERDICT_AHEAD), ratio
+            assert (summary["rows_level_with_market"] == 1) == (verdict == VERDICT_LEVEL), ratio
+            assert (summary["rows_not_comparable"] == 1) == (verdict == VERDICT_NOT_COMPARABLE), ratio
+
+    def test_every_row_carries_its_own_verdict(self):
+        """The page renders one row at a time, so the verdict has to be ON the row. The page must
+        not recompute it, because then the threshold lives in two languages."""
+        rows = current_runs([
+            _run("gas", version="gas-v1", brier_ours=0.1148, brier_market=0.02676),
+            _run("weather", version="weather-v1", brier_ours=0.05, brier_market=0.1),
+            _run("cpi_nowcast", version="cpi-v1", brier_ours=0.1, brier_market=0.1),
+            _run("labor_nowcast", version="labor-v1", brier_market=None),
+        ])
+
+        got = {row["engine"]: row["market_verdict"] for row in rows}
+        assert got == {
+            "gas": VERDICT_BEHIND,
+            "weather": VERDICT_AHEAD,
+            "cpi_nowcast": VERDICT_LEVEL,
+            "labor_nowcast": VERDICT_NOT_COMPARABLE,
+        }
+
+    def test_the_row_verdict_agrees_with_the_bucket_the_row_falls_into(self):
+        rows = current_runs([
+            _run("gas", version="gas-v1", brier_ours=0.1148, brier_market=0.02676),
+            _run("weather", version="weather-v1", brier_market=None),
+        ])
+
+        summary = market_comparison(rows)
+        assert summary["rows_behind_market"] == 1
+        assert summary["rows_not_comparable"] == 1
+        assert [r["market_verdict"] for r in rows] == [VERDICT_BEHIND, VERDICT_NOT_COMPARABLE]
+
+    def test_market_comparison_asks_market_verdict_rather_than_re_applying_the_threshold(self):
+        """Structural, because the behavioural version of this cannot work.
+
+        A test that compares `market_comparison`'s buckets against `market_verdict` for a list of
+        ratios PASSES when `market_comparison` re-implements the same comparison inline -- two
+        implementations that agree are indistinguishable from one shared implementation, and the
+        drift only surfaces later, in the language of the thing that drifted. So the invariant is
+        pinned as what it is: one application of `BEHIND_THE_MARKET`, reached through one function.
+
+        Found by mutation: re-implementing the comparison inline left every other assertion in this
+        class green.
+        """
+        import inspect
+
+        from tradehub.scoreboard import market_comparison as fn
+
+        source = inspect.getsource(fn)
+        assert "market_verdict(" in source, "market_comparison no longer calls market_verdict at all"
+        assert "BEHIND_THE_MARKET" not in source, (
+            "market_comparison re-applies the threshold itself; that is a second implementation of "
+            "the same verdict, and the page renders the one that is on the row"
+        )
+
+
+class TestTheHeadlineSaysHowMuchOfTheBoardItCovers:
+    """`headline_kind` and `caveat`: the two things the page cannot compute for itself.
+
+    `headline` is a universal claim about ENGINES while the counts are about ROWS, so it is true
+    but incomplete whenever some row was never comparable. The page has to render the caveat
+    BESIDE it, and the only way that obligation survives a refactor is for the page to have
+    nothing to decide: the kind says how to style the claim, and the caveat is the count.
+    """
+
+    @staticmethod
+    def _row(**over):
+        row = {"engine": "gas", "brier_ratio": 4.29}
+        row.update(over)
+        return row
+
+    def test_the_kind_distinguishes_all_four_headlines(self):
+        empty = market_comparison([])
+        unmeasured = market_comparison([self._row(brier_ratio=None)])
+        behind = market_comparison([self._row(brier_ratio=4.29)])
+        ahead = market_comparison([self._row(brier_ratio=0.5)])
+
+        assert empty["headline_kind"] == "no_runs"
+        assert unmeasured["headline_kind"] == "not_comparable"
+        assert behind["headline_kind"] == "behind"
+        assert ahead["headline_kind"] == "ahead"
+
+    def test_the_kind_is_what_any_beats_market_cannot_tell_you(self):
+        """`any_beats_market` is False for BEHIND and for NOT_COMPARABLE alike, so a page that
+        derived its tone from it would colour a board nobody measured as though it had lost."""
+        assert (market_comparison([self._row(brier_ratio=4.29)])["any_beats_market"]
+                == market_comparison([self._row(brier_ratio=None)])["any_beats_market"])
+        assert (market_comparison([self._row(brier_ratio=4.29)])["headline_kind"]
+                != market_comparison([self._row(brier_ratio=None)])["headline_kind"])
+
+    def test_a_partly_comparable_board_carries_the_exact_unmeasured_count(self):
+        """Three of five comparable and none ahead: the headline is true, and 2 is how much of the
+        board it actually covers. The count has to travel, not be folded into the sentence."""
+        rows = [self._row(brier_ratio=4.29) for _ in range(3)]
+        rows += [self._row(brier_ratio=None) for _ in range(2)]
+
+        result = market_comparison(rows)
+
+        assert result["headline"] == HEADLINE_BEHIND
+        assert result["rows_not_comparable"] == 2
+        assert result["caveat"] is not None
+        assert "2" in result["caveat"], "the caveat must name the count it is qualifying"
+        assert "5" in result["caveat"], "and the size of the board it qualifies"
+
+    def test_a_fully_comparable_board_has_no_caveat_to_render(self):
+        """Nothing unmeasured means nothing to qualify, and a caveat that always renders trains the
+        reader to skip it."""
+        result = market_comparison([self._row(brier_ratio=4.29), self._row(brier_ratio=2.0)])
+
+        assert result["caveat"] is None
+
+    def test_a_board_nobody_could_compare_is_caveated_rather_than_merely_reported(self):
+        result = market_comparison([self._row(brier_ratio=None), self._row(brier_ratio=None)])
+
+        assert result["headline_kind"] == "not_comparable"
+        assert result["caveat"] is not None
+        assert "2" in result["caveat"]
+
+    def test_an_empty_board_has_no_caveat_and_claims_nothing(self):
+        result = market_comparison([])
+
+        assert result["headline_kind"] == "no_runs"
+        assert result["caveat"] is None

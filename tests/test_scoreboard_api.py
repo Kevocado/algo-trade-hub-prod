@@ -27,6 +27,7 @@ than in production. It is modelled on `tests/test_sports_api_range_paging.py`, w
 established shape for this in this repo.
 """
 import ast
+import inspect
 import json
 from pathlib import Path
 
@@ -70,13 +71,22 @@ class _Q:
         return self
 
     def eq(self, col, val):
-        self.ops.append(f"eq:{col}")
+        # The VALUE is recorded, not just the column: the gate lookup's whole job is which
+        # (engine, engine_version) pair it asked about, and a fake that recorded only `eq` names
+        # would make "the version is in the key" untestable.
+        self.ops.append(f"eq:{col}={val!r}")
         self.rows = [r for r in self.rows if r.get(col) == val]
         return self
 
-    def order(self, col, *rest, **_k):
+    def order(self, col, *rest, **kwargs):
         self.ops.append("order")
-        self.ordered.append(col if not rest else (col, *rest))
+        desc = kwargs.get("desc", bool(rest) and rest[0] == "desc")
+        self.ordered.append((col, "desc" if desc else "asc") if desc else col)
+        # Sorted, not merely recorded. `latest_gate_statuses` asks for the LATEST backtest for a
+        # pair with `.order("created_at", desc=True).limit(1)`, and a fake that recorded the clause
+        # without applying it would make every "the latest run says SHADOW" assertion vacuous -- it
+        # would be reading whichever row the fixture happened to put first.
+        self.rows = sorted(self.rows, key=lambda r: r.get(col), reverse=bool(desc))
         return self
 
     def limit(self, n):
@@ -186,20 +196,74 @@ def _get_body(rows, **kw):
     return response.json()
 
 
+def _get_board(backtest_runs, track_record=()):
+    """A board plus the `track_record` rows the promotion gate's second half reads.
+
+    `track_record` is the table the full promotion decision consults and `backtest_runs.gate_status`
+    never does -- which is the whole subject of `TestThePromotionVerdict` below.
+    """
+    return _get(_Supa({"backtest_runs": list(backtest_runs),
+                       "track_record": [dict(t) for t in track_record]})).json()
+
+
+def _promoted(engine, version):
+    """A `track_record` row that agrees the promotion holds, for exactly this version."""
+    return {"engine": engine, "engine_version": version, "gate_status": "PROMOTED",
+            "cadence": "daily", "as_of": "2026-09-27T00:00:00+00:00"}
+
+
+def _row_for(body, engine, mode="taker"):
+    return next(r for r in body["rows"] if r["engine"] == engine and r["mode"] == mode)
+
+
 # ── what it reads, and how ────────────────────────────────────────────────────
 class TestTheRead:
-    def test_it_reads_backtest_runs_and_nothing_else(self):
-        # The gate status on the row is the BACKTEST gate, not the full promotion decision, so
-        # this endpoint deliberately does not add `latest_gate_statuses` -- that would be a
-        # second gate lookup and a second source of truth for "is this engine promoted". See the
-        # report's open concern; the test pins the single read so the second one cannot arrive
-        # quietly.
+    def test_it_reads_backtest_runs_and_nothing_else_unless_the_gate_lookup_needs_more(self):
+        """REPLACES `test_it_reads_backtest_runs_and_nothing_else`, deliberately.
+
+        That test pinned `{tables read} == {"backtest_runs"}`, and its own comment said the pin
+        existed "so the second lookup cannot arrive quietly". The controller's ruling on 2026-09-27
+        is that the lookup MUST arrive: `backtest_runs.gate_status` is the BACKTEST gate, and
+        reporting it under the word PROMOTED reads as a promotion to a human. So the pin is
+        repurposed rather than deleted -- it still pins the same property, which is that the
+        endpoint has no lookup of its own. The extra reads are `track_record`, and they arrive
+        only through the shared function in `tradehub/gate_status.py`.
+
+        The falsifiable form of that is: the tables the endpoint reads are the run table plus the
+        tables `latest_gate_statuses` reads, and the route's own code contains no promotion
+        verdict to read off a run row.
+        """
         supa = _Supa({"backtest_runs": [_run("gas", "gas-v1")]})
 
-        response = _get(supa)
+        _get(supa)
 
-        assert response.status_code == 200, response.text
         assert {q["table"] for q in supa.queries} == {"backtest_runs"}
+
+    def test_a_promotion_verdict_is_never_decided_in_the_route(self):
+        """The route has no copy of the gate to keep in step with the scan's.
+
+        Parsed rather than grepped, so the docstring is allowed to NAME the rule while the code is
+        held to it: a `PROMOTED` literal anywhere in the route's executable text is a second gate
+        lookup, and a second gate lookup is how the War Room and the scan would start disagreeing
+        about whether an edge is tradable.
+        """
+        from tradehub.api import main
+
+        tree = ast.parse(inspect.getsource(main.get_scoreboard))
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and body
+                    and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)):
+                body[0].value.value = ""  # the docstring: prose about the rule, not the rule
+        executable = ast.unparse(tree)
+
+        assert "PROMOTED" not in executable, (
+            "the route decides a promotion verdict itself; it must carry "
+            "latest_gate_statuses' answer instead"
+        )
+        assert "latest_gate_statuses" in executable, (
+            "the route no longer asks the shared lookup at all"
+        )
 
     def test_every_page_is_ordered_by_the_primary_key(self):
         """`id` is the only column that is unique and immutable, so it is the only safe ordering.
@@ -216,7 +280,12 @@ class TestTheRead:
 
         _get(supa)
 
-        ordered = {tuple(q["ordered"]) for q in supa.queries}
+        # Scoped to the PAGED read. The shared gate lookup issues its own `.order("created_at",
+        # desc=True)`, and that is a single-row `limit(1)` query with no page boundary to be
+        # unstable across -- it wants the newest, which is a different question from lining pages up.
+        paged = [q for q in supa.queries if any(op.startswith("range:") for op in q["ops"])]
+        assert paged, "the board read no longer pages at all"
+        ordered = {tuple(q["ordered"]) for q in paged}
         assert ordered == {("id",)}, ordered
 
     def test_the_read_pages_past_the_postgrest_cap_instead_of_truncating(self):
@@ -447,6 +516,184 @@ class TestReadFailureIsNotEmpty:
         app.dependency_overrides[get_supabase] = lambda: None
 
         assert TestClient(app).get("/api/scoreboard").status_code == 503
+
+
+# ── the promotion verdict: the SHARED lookup, keyed on (engine, version) ──────
+class TestThePromotionVerdict:
+    """`promotion_status` is the full promotion decision, and it is not the row's `gate_status`.
+
+    `backtest_runs.gate_status` is what `check_promotion_gate` (`tradehub/track_record.py:126`) --
+    settled count, Brier, P&L, calibration -- returned at record time. The full decision is
+    `tradehub/gate_status.py::latest_gate_statuses`: the latest backtest for that exact version
+    AND a `track_record` row, both PROMOTED, and SHADOW otherwise. Nothing has ever passed the
+    backtest gate, so before the controller's ruling this defect was invisible -- and it would
+    have surfaced on the first promotion, which is the moment the page matters most.
+
+    The two therefore travel as two fields, and the page labels them. A field still carrying the
+    word PROMOTED from a partial gate reads as a promotion to a human, and this page is read by
+    humans deciding whether to trust an engine.
+    """
+
+    def test_a_backtest_gate_that_passed_is_not_reported_as_promoted_on_its_own(self):
+        """The defect, exactly. The row says the backtest gate passed; the page must not."""
+        body = _get_board(
+            [_run("gas", "gas-v1", gate_status="PROMOTED", gate_reasons=[])],
+            track_record=[],
+        )
+
+        row = _row_for(body, "gas")
+        assert row["gate_status"] == "PROMOTED", "the run's own gate verdict is still carried"
+        assert row["promotion_status"] == "SHADOW", (
+            "a backtest gate with no track record is not a promotion; the two tables must both say "
+            "PROMOTED, or the edge is not tradable"
+        )
+
+    def test_a_promotion_needs_both_a_promoted_backtest_and_a_promoted_track_record(self):
+        body = _get_board(
+            [_run("gas", "gas-v1", gate_status="PROMOTED", gate_reasons=[])],
+            track_record=[_promoted("gas", "gas-v1")],
+        )
+
+        assert _row_for(body, "gas")["promotion_status"] == "PROMOTED"
+
+    def test_a_shadow_track_record_demotes_an_otherwise_promoted_pair(self):
+        """Promotion is dynamic (spec section 6): a slip below any threshold demotes back."""
+        body = _get_board(
+            [_run("gas", "gas-v1", gate_status="PROMOTED", gate_reasons=[])],
+            track_record=[dict(_promoted("gas", "gas-v1"), gate_status="SHADOW")],
+        )
+
+        assert _row_for(body, "gas")["promotion_status"] == "SHADOW"
+
+    def test_a_promotion_is_not_inherited_by_another_version(self):
+        """The specific leak `gate_status.py`'s docstring warns about, pinned at the endpoint.
+
+        gas at `gas-v1` is promoted. gas at `gas-v2` has a track record that says PROMOTED but its
+        OWN latest backtest is SHADOW, so it is SHADOW. A lookup keyed on the engine alone returns
+        PROMOTED for both and the page then tells a reader that an unpromoted version is promoted.
+
+        Two modes, so both rows survive `current_runs` -- which keys on `(engine, mode)`, and would
+        otherwise keep only the newest run per engine and hide the second version entirely.
+        """
+        body = _get_board(
+            [
+                _run("gas", "gas-v1", mode="taker", gate_status="PROMOTED", gate_reasons=[]),
+                _run("gas", "gas-v2", mode="maker", gate_status="SHADOW",
+                     gate_reasons=[NEEDS_200_DAILY]),
+            ],
+            track_record=[_promoted("gas", "gas-v1"), _promoted("gas", "gas-v2")],
+        )
+
+        assert {r["engine_version"]: r["promotion_status"] for r in body["rows"]} == {
+            "gas-v1": "PROMOTED",
+            "gas-v2": "SHADOW",
+        }
+
+    def test_the_lookup_is_asked_with_the_version_in_the_key(self):
+        """Not just the right answer -- the right question.
+
+        The version is what stops one version's promotion leaking to another, so it has to reach
+        the query. Asserted on the recorded VALUES, because a lookup that dropped the version and
+        then happened to return the right answer in a test would be a passing accident.
+        """
+        supa = _Supa({
+            "backtest_runs": [
+                _run("gas", "gas-v1", mode="taker", gate_status="PROMOTED", gate_reasons=[]),
+                _run("gas", "gas-v2", mode="maker", gate_status="SHADOW"),
+                _run("weather", "weather-v1", mode="taker", gate_status="PROMOTED", gate_reasons=[]),
+            ],
+            "track_record": [_promoted("gas", "gas-v1"), _promoted("gas", "gas-v2")],
+        })
+
+        _get(supa)
+
+        asked = set()
+        for q in supa.queries:
+            filters = dict(op[3:].split("=", 1) for op in q["ops"] if op.startswith("eq:"))
+            if "engine" in filters and "engine_version" in filters:
+                asked.add((ast.literal_eval(filters["engine"]),
+                           ast.literal_eval(filters["engine_version"])))
+        assert asked == {
+            ("gas", "gas-v1"), ("gas", "gas-v2"), ("weather", "weather-v1"),
+        }, f"the gate was asked about the wrong pairs: {sorted(asked)}"
+
+    def test_two_modes_of_one_engine_share_one_promotion_verdict(self):
+        """The row key is `(engine, mode)`; the gate key is `(engine, engine_version)`.
+
+        Promotion is a property of an engine version, not of a fill mode, so both rows carry the
+        same verdict. A per-mode verdict would be a second gate to keep in step, and would let the
+        two rows of one engine disagree about whether the engine is tradable.
+        """
+        body = _get_board(
+            [
+                _run("gas", "gas-v1", mode="taker", gate_status="PROMOTED", gate_reasons=[]),
+                _run("gas", "gas-v1", mode="maker", gate_status="PROMOTED", gate_reasons=[]),
+            ],
+            track_record=[_promoted("gas", "gas-v1")],
+        )
+
+        assert body["rows_total"] == 2
+        assert {r["promotion_status"] for r in body["rows"]} == {"PROMOTED"}
+
+    def test_an_unreadable_gate_lookup_fails_closed_and_says_it_was_unread(self):
+        """A missing `track_record` table must not take the page down, and must not look measured.
+
+        `SHADOW` is the fail-closed default and is the safe direction: it cannot make a
+        non-tradable edge look tradable. But a column of SHADOW badges that were never verified
+        is still a claim, so the response says the lookup failed and the page has to say so too.
+        """
+        # No `track_record` in the fake's tables: `table()` raises the way PostgREST does.
+        body = _get_body([_run("gas", "gas-v1", gate_status="PROMOTED", gate_reasons=[])])
+
+        assert body["promotion_lookup_failed"] is True
+        assert [r["promotion_status"] for r in body["rows"]] == ["SHADOW"]
+        assert body["rows_total"] == 1, "the board itself was readable, so it is still rendered"
+
+    def test_a_healthy_lookup_does_not_raise_the_alarm(self):
+        body = _get_board([_run("gas", "gas-v1")], track_record=[_promoted("gas", "gas-v1")])
+
+        assert body["promotion_lookup_failed"] is False
+
+    def test_the_lookup_is_not_run_at_all_when_there_is_nothing_to_look_up(self):
+        """An empty board must not pay for a lookup, and must not read a table it has no row for."""
+        supa = _Supa({"backtest_runs": []})
+
+        body = _get(supa).json()
+
+        assert {q["table"] for q in supa.queries} == {"backtest_runs"}
+        assert body["promotion_lookup_failed"] is False
+        assert body["rows"] == []
+
+    def test_the_lookup_reads_only_the_two_gate_tables(self):
+        """The cost of not having two answers is two extra tables, and only those two."""
+        supa = _Supa({
+            "backtest_runs": [_run("gas", "gas-v1", gate_status="PROMOTED", gate_reasons=[])],
+            "track_record": [_promoted("gas", "gas-v1")],
+        })
+
+        _get(supa)
+
+        assert {q["table"] for q in supa.queries} == {"backtest_runs", "track_record"}
+
+
+class TestTheGateLookupIsShared:
+    def test_the_scoreboard_and_the_scan_share_one_gate_lookup(self):
+        """Two copies of this logic is how the War Room and the scan would start disagreeing about
+        whether an edge is tradable -- `tradehub/gate_status.py`'s own docstring.
+
+        Modelled on the identical assertion for `/api/jobs-scorecard`
+        (`tests/test_api_jobs_scorecard.py::test_the_scan_and_the_api_share_one_gate_lookup`), which
+        is why the endpoint had to import it rather than reimplement it: that endpoint already
+        does, and two endpoints doing it differently would be the failure the function exists to
+        prevent.
+        """
+        from tradehub import gate_status
+        from tradehub.api import main
+        from tradehub.scripts import scan
+
+        assert main.latest_gate_statuses is gate_status.latest_gate_statuses
+        assert scan.latest_gate_statuses is gate_status.latest_gate_statuses
+        assert "track_record" in inspect.getsource(gate_status.latest_gate_statuses)
 
 
 # ── the summary: derived here, never by the page ──────────────────────────────

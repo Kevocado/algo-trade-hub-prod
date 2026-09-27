@@ -3,11 +3,12 @@ import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
 import Home from "@/pages/Home";
 import PredictionLab from "@/pages/PredictionLab";
 import ShadowBacktester from "@/pages/ShadowBacktester";
+import Scoreboard from "@/pages/Scoreboard";
 import SportsEdges from "@/pages/SportsEdges";
 import JobsScorecard from "@/pages/JobsScorecard";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
-import { LayoutDashboard, Activity, Wallet, Brain, LineChart, Trophy, Briefcase } from "lucide-react";
+import { LayoutDashboard, Activity, Wallet, Brain, LineChart, Scale, Trophy, Briefcase } from "lucide-react";
 
 const Sidebar = () => {
   const { portfolio } = usePortfolio();
@@ -45,6 +46,14 @@ const Sidebar = () => {
           className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
         >
           <LineChart className="w-5 h-5 text-amber-400" /> Shadow
+        </NavLink>
+        <NavLink
+          to="/scoreboard"
+          className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
+        >
+          {/* "Scoreboard", not "Shadow": /shadow is the crypto shadow-timeline backtester, a
+              different page that happens to share a name with this one. */}
+          <Scale className="w-5 h-5 text-rose-400" /> Scoreboard
         </NavLink>
         <NavLink
           to="/sports"
@@ -100,6 +109,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/lab" element={<PredictionLab />} />
           <Route path="/shadow" element={<ShadowBacktester />} />
+          <Route path="/scoreboard" element={<Scoreboard />} />
           <Route path="/sports" element={<SportsEdges />} />
           <Route path="/jobs" element={<JobsScorecard />} />
         </Routes>

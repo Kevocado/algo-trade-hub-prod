@@ -25,6 +25,13 @@ The third rule, added with the endpoint: the page's headline is computed HERE, n
 route answers that as well as this module, the API and the page hold two copies of the same
 verdict and nothing downstream can tell which one drifted. `market_comparison` is that threshold,
 in one place, pure and tested.
+
+The fourth rule, added with the page: `market_verdict` puts the same threshold ON THE ROW, so the
+browser renders a word rather than comparing ratios in TypeScript. `market_comparison` buckets on
+it too, which is what makes "the row says behind" and "the headline counts it behind" the same
+statement. The headline is a claim about ENGINES and the buckets count ROWS, so `headline_kind`
+and `caveat` travel with it: the page is obliged to render the caveat beside the headline, and it
+cannot do that from a value it had to compose itself.
 """
 
 from __future__ import annotations
@@ -102,6 +109,15 @@ HEADLINE_AHEAD = (
 # direction of error as a losing engine being dropped: a number that is more flattering than the
 # data.
 BEHIND_THE_MARKET = 1.0
+
+# The four verdicts one row can carry against the market. `VERDICT_NOT_COMPARABLE` is the load-
+# bearing one: an unrecorded `brier_market` is a measurement nobody made, never a defeat, and it
+# is a separate state rather than a fifth flavour of "behind" so that no count can quietly absorb
+# it.
+VERDICT_AHEAD = "ahead"
+VERDICT_BEHIND = "behind"
+VERDICT_LEVEL = "level"
+VERDICT_NOT_COMPARABLE = "not_comparable"
 
 
 def is_experiment_version(engine_version: Any) -> bool:
@@ -252,6 +268,30 @@ def settled_distance(
     return out
 
 
+def market_verdict(brier_ratio: Any) -> str:
+    """Where one row stands against the market, as one of the four `VERDICT_*` values.
+
+    The single application of `BEHIND_THE_MARKET`, and it exists because the PAGE has to say the
+    same thing per row. Without it the browser would hold `ratio > 1.0` in TypeScript and this
+    module would hold it in Python, and the two would drift with nothing downstream able to tell
+    which one the reader was shown. `market_comparison` buckets on this function rather than
+    re-implementing it, so a row's own verdict and the headline's counts cannot disagree.
+
+    `bool` is refused because `bool` is an `int`: a stray `True` would otherwise be a measured
+    1.0, which is a tie invented out of a value that is not a measurement. Absent and
+    non-numeric are the same fact -- the market Brier was not recorded, so nothing was compared.
+    """
+    if isinstance(brier_ratio, bool) or not isinstance(brier_ratio, (int, float)):
+        return VERDICT_NOT_COMPARABLE
+    if brier_ratio != brier_ratio:  # NaN: the one float that compares false to itself
+        return VERDICT_NOT_COMPARABLE
+    if brier_ratio > BEHIND_THE_MARKET:
+        return VERDICT_BEHIND
+    if brier_ratio < BEHIND_THE_MARKET:
+        return VERDICT_AHEAD
+    return VERDICT_LEVEL
+
+
 def _recency(run: Mapping[str, Any]) -> tuple[int, float, str]:
     """Sort key for "which run is newer". Bigger wins.
 
@@ -321,6 +361,8 @@ def current_runs(runs: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
             # nothing rather than reading absence of a complaint as a pass.
             required, required_source = None, SOURCE_UNKNOWN
 
+        ratio = brier_ratio(run.get("brier_ours"), run.get("brier_market"))
+
         out.append({
             "engine": engine,
             "engine_version": run.get("engine_version"),
@@ -333,7 +375,10 @@ def current_runs(runs: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
             "n_settled": run.get("n_settled"),
             "brier_ours": run.get("brier_ours"),
             "brier_market": run.get("brier_market"),
-            "brier_ratio": brier_ratio(run.get("brier_ours"), run.get("brier_market")),
+            "brier_ratio": ratio,
+            # The page renders this rather than re-deriving it: `BEHIND_THE_MARKET` is a threshold,
+            # and a second copy of it in the browser is a second thing to keep wrong.
+            "market_verdict": market_verdict(ratio),
             "pnl_after_fees": run.get("pnl_after_fees"),
             "max_drawdown": run.get("max_drawdown"),
             "gate_status": status,
@@ -371,31 +416,41 @@ def market_comparison(rows: Iterable[Mapping[str, Any]] | None) -> dict[str, Any
     compared. It does make it incomplete, so the count travels beside it as a number rather than
     being folded into the sentence. An absent `brier_ratio` is a row we could not measure, never
     a row that lost.
+
+    `headline_kind` and `caveat` are the same argument made machine-readable, for the page:
+
+    - `headline_kind` names which of the four headlines this is. The page cannot infer it, because
+      `any_beats_market` is False for BEHIND and for NOT_COMPARABLE alike, so a page that styled
+      off that flag would colour a board nobody measured as though it had lost.
+    - `caveat` is the sentence qualifying the headline, present exactly when some row was not
+      comparable, and it names the count and the size of the board. The page is obliged to render
+      it beside the headline, and a value it can only pass through is one it cannot quietly drop.
     """
     behind = ahead = level = missing = 0
     for row in rows or []:
-        ratio = row.get("brier_ratio")
-        # `bool` is an `int`, and a True would otherwise count as a measured 1.0 -- a tie invented
-        # out of a value that is not a measurement. Absent and non-numeric are the same fact here:
-        # the market Brier was not recorded, so the row was not compared.
-        if isinstance(ratio, bool) or not isinstance(ratio, (int, float)):
-            missing += 1
-        elif ratio > BEHIND_THE_MARKET:
+        # Routed through `market_verdict` so the count and the per-row verdict the page renders are
+        # the same application of the same threshold, not two implementations of it. A dict rather
+        # than a `match`: the `VERDICT_*` values are bare names, which a `case` arm would read as
+        # a capture pattern and shadow.
+        verdict = market_verdict(row.get("brier_ratio"))
+        if verdict == VERDICT_BEHIND:
             behind += 1
-        elif ratio < BEHIND_THE_MARKET:
+        elif verdict == VERDICT_AHEAD:
             ahead += 1
-        else:
+        elif verdict == VERDICT_LEVEL:
             level += 1
+        else:
+            missing += 1
 
     total = behind + ahead + level + missing
     if total == 0:
-        headline = HEADLINE_NO_RUNS
+        headline, kind = HEADLINE_NO_RUNS, "no_runs"
     elif behind + ahead + level == 0:
-        headline = HEADLINE_NOT_COMPARABLE
+        headline, kind = HEADLINE_NOT_COMPARABLE, "not_comparable"
     elif ahead:
-        headline = HEADLINE_AHEAD
+        headline, kind = HEADLINE_AHEAD, "ahead"
     else:
-        headline = HEADLINE_BEHIND
+        headline, kind = HEADLINE_BEHIND, "behind"
     return {
         "rows_total": total,
         "rows_behind_market": behind,
@@ -404,4 +459,10 @@ def market_comparison(rows: Iterable[Mapping[str, Any]] | None) -> dict[str, Any
         "rows_not_comparable": missing,
         "any_beats_market": ahead > 0,
         "headline": headline,
+        "headline_kind": kind,
+        "caveat": (
+            None if not missing else
+            f"{missing} of {total} rows could not be compared: no market Brier was recorded for "
+            f"them, so the headline does not rest on those rows."
+        ),
     }
