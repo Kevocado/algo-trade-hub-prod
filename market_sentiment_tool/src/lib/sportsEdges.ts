@@ -12,8 +12,18 @@ export interface SportsEdge {
   market_id: string;
   title: string | null;
   our_prob: number;
+  /** The quote MID. Not what `edge_pct` is compared against -- see `rank_edge_pct`. */
   market_prob: number;
-  edge_pct: number;
+  /**
+   * The after-fee edge against the ENTRY price on `side`, or null when the candidate filter
+   * rejected the row. A wide quote makes this number large without the model disagreeing with the
+   * market by much at all, which is why it is withheld rather than shown small.
+   */
+  edge_pct: number | null;
+  /** The same number, for ranking across page boundaries. Never render it as a headline. */
+  rank_edge_pct?: number | null;
+  /** yes_ask - yes_bid on the entry side. The thing that explains the number above. */
+  quote_spread?: number | null;
   market_url: string;
   source_url: string;
   sport: string;
@@ -31,7 +41,9 @@ export interface SportsEdge {
   review: SportsReview | null;
   /** Promotion gate is keyed on this pair, not on the engine alone. */
   engine: string | null;
+  /** Null when the scan only had the `feed:unknown` placeholder; see `model_version_known`. */
   engine_version: string | null;
+  model_version_known?: boolean;
   gate_status: "SHADOW" | "PROMOTED" | null;
 }
 
@@ -46,6 +58,13 @@ export interface SportsEdgesResponse {
   edges: SportsEdge[];
   /** Upcoming rows matching the filters, counted before paging. */
   total: number;
+  /**
+   * How many of the WHOLE filtered set passed the candidate filter, counted before paging.
+   *
+   * A page cannot supply this: rows are ranked candidates-first, so page 2+ is always the reject
+   * tail, and a page-derived count reports "all rejected" on a board whose page 1 is full of picks.
+   */
+  candidate_count: number;
   limit: number;
   offset: number;
   reviewer_scorecard: {
@@ -72,7 +91,8 @@ export function groupByTier(edges: SportsEdge[]): { tier: SportsTier; edges: Spo
   );
 }
 
-export function formatEdgePct(edge: number): string {
+export function formatEdgePct(edge: number | null | undefined): string {
+  if (edge === null || edge === undefined) return "\u2014";
   return `${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(1)} pp`;
 }
 

@@ -252,8 +252,10 @@ def test_within_tier_edges_descend_across_page_boundaries():
     page2 = client.get("/api/sports-edges", params={"limit": 100, "offset": 100}).json()["edges"]
     filtered = [e for e in page1 + page2 if e["tier"] == "filtered"]
     assert len(filtered) > 100
-    edges = [float(e["edge_pct"]) for e in filtered]
-    assert edges == sorted(edges, reverse=True), "edge_pct is not descending across the page boundary"
+    # `edge_pct` is withheld on a rejected row on purpose (a wide quote makes the "edge" the
+    # spread), so the ordering invariant is asserted on `rank_edge_pct`, which exists for ranking.
+    edges = [float(e["rank_edge_pct"]) for e in filtered]
+    assert edges == sorted(edges, reverse=True), "edges are not descending across the page boundary"
 
 
 @pytest.mark.parametrize("table", ["sports_reviews", "predictions"])

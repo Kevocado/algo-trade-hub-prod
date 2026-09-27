@@ -66,6 +66,63 @@ def _fact_pack(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s
     }
 
 
+def edge_row(row: dict[str, Any]) -> dict[str, Any]:
+    """One sports edge as the API serves it, with the comparison it is actually making.
+
+    Two things this refuses to do, both found by reading the live page on 2026-09-27:
+
+    - It never shows `edge_pct` next to `market_prob` as though one were derived from the other.
+      `edge_pct` is the AFTER-FEE edge against the entry price on the chosen side; `market_prob` is
+      the quote mid. On the live rows those were a 0.18c entry against a 0.33 mid, which reads as
+      "78% vs 33%" and invites a subtraction that is not the number shown.
+    - It never puts a headline edge on a row the candidate filter rejected. Every one of those rows
+      was a ~30c-wide quote, so the "edge" WAS the spread -- `wide_quote` was the first reject
+      reason on all 100. A rejected row reports its reasons and no number.
+
+    `quote_spread` is carried so the page can show the thing that explains the number.
+    """
+    raw = row.get("raw_payload") or {}
+    tier = row.get("tier") or raw.get("tier") or "filtered"
+    candidate = bool(row.get("candidate", raw.get("candidate", False)))
+    reasons = list(raw.get("reject_reasons") or [])
+
+    yes_bid, yes_ask = raw.get("yes_bid"), raw.get("yes_ask")
+    spread = round(yes_ask - yes_bid, 4) if isinstance(yes_bid, (int, float)) and isinstance(yes_ask, (int, float)) else None
+
+    # A real row has engine_version as a column (sports/scan.py writes it flat); older rows and the
+    # API tests carry it inside raw_payload. Read both rather than depend on which.
+    version = row.get("engine_version") or raw.get("engine_version") or ""
+    # `feed:unknown` is a placeholder, not a version. Printing the bare word "unknown" under every
+    # row (as the live page did) reads as a bug; a blank plus the flag says what is true.
+    known = bool(version) and not version.endswith("unknown")
+
+    out = {
+        "market_id": row.get("market_id"), "title": row.get("title"), "our_prob": row.get("our_prob"),
+        "market_prob": row.get("market_prob"),
+        # No headline number on any row the filter rejected, whatever `candidate` and `tier` say.
+        # They can disagree after a re-scan, and the reasons are the authority: `wide_quote` in
+        # particular means the "edge" was the spread.
+        "edge_pct": row.get("edge_pct") if (candidate and tier != "filtered" and not reasons) else None,
+        # The same number, named for what it is for. Rows are RANKED by it across page boundaries
+        # (a real guarantee, and tests/test_sports_api_range_paging.py pins it), so it cannot simply
+        # be dropped -- but it is not the headline, and the UI must not render it on a rejected row.
+        "rank_edge_pct": row.get("edge_pct"),
+        "market_url": row.get("market_url"), "source_url": row.get("source_url"),
+        "engine": row.get("engine"), "gate_status": row.get("gate_status") or "SHADOW",
+        "engine_version": version if known else None,
+        "model_version_known": known,
+        "quote_spread": spread,
+    }
+    for key in ("side", "entry_price", "maker", "sport", "kind", "home", "away", "start_utc",
+                "game_id", "reject_reasons", "tier", "candidate"):
+        if key in raw:
+            out[key] = raw[key]
+    out.setdefault("tier", tier)
+    out.setdefault("candidate", candidate)
+    out["reject_reasons"] = reasons
+    return out
+
+
 def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s: EdgeSuggestion,
               check: CandidateCheck, now: datetime) -> dict[str, Any]:
     series = cfg.series[kind]

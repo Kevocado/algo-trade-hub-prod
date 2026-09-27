@@ -6,11 +6,15 @@ import ShadowBacktester from "@/pages/ShadowBacktester";
 import SportsEdges from "@/pages/SportsEdges";
 import JobsScorecard from "@/pages/JobsScorecard";
 import { usePortfolio } from "@/hooks/usePortfolio";
+import { portfolioHeadline } from "@/lib/portfolioTruth";
 import { LayoutDashboard, Activity, Wallet, Brain, LineChart, Trophy, Briefcase } from "lucide-react";
 
 const Sidebar = () => {
   const { portfolio } = usePortfolio();
-  const balance = portfolio?.balance ?? 0;
+  // The sidebar used to render "LIVE BALANCE $0.00" from an empty table, which reads as a flat
+  // book. This product places no orders, so it says that instead of showing a number nobody can act
+  // on -- and an unreadable payload reads as unknown, never as zero.
+  const headline = portfolioHeadline(portfolio);
   
   return (
     <div className="w-64 bg-slate-950 text-slate-200 border-r border-slate-900 h-screen sticky top-0 flex flex-col">
@@ -59,11 +63,14 @@ const Sidebar = () => {
       <div className="p-4 border-t border-slate-900">
         <div className="bg-slate-900/50 rounded-xl p-4 border border-slate-800 shadow-sm">
           <div className="flex items-center gap-2 mb-2 text-slate-400 text-sm font-medium uppercase tracking-tighter">
-            <Wallet className="w-4 h-4" /> Live Balance
+            <Wallet className="w-4 h-4" aria-hidden="true" /> {headline.label}
           </div>
-          <div className="text-2xl font-bold text-white tracking-tight">
-            ${Math.floor(balance).toLocaleString()}
-            <span className="text-slate-500 text-sm">.{((balance % 1) * 100).toFixed(0).padStart(2, '0')}</span>
+          <div
+            className={`text-2xl font-bold tracking-tight ${
+              headline.tone === "muted" ? "text-slate-400" : "text-white"
+            }`}
+          >
+            {headline.value}
           </div>
           <div className="text-[10px] text-emerald-400 flex items-center gap-1 mt-1 font-black bg-emerald-500/10 w-fit px-2 py-0.5 rounded-full border border-emerald-500/20 uppercase">
              Live Telemetry

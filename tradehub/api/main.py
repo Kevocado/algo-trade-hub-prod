@@ -28,9 +28,41 @@ from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
 from tradehub.gate_status import latest_gate_statuses
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
+from tradehub.sports.scan import edge_row
 from tradehub.sports.scorecard import reviewer_scorecard
 
 log = logging.getLogger(__name__)
+
+# Table -> the migration that creates it. A table that is missing is almost always a migration that
+# was never applied, so the response says which one instead of forwarding PostgREST's PGRST205 dump.
+# Found the hard way on 2026-09-27: /shadow, /api/positions and /api/pnl_summary were all red in
+# production with an error no reader could act on.
+TABLE_MIGRATIONS = {
+    "signal_events": "20260415090000_signal_events_unification.sql",
+    "crypto_signal_events": "20260415090000_signal_events_unification.sql",
+    "paper_trades": "20260416000011_war_room_tables.sql",
+    "live_opportunities": "20260416000011_war_room_tables.sql",
+    "paper_signals": "20260416000011_war_room_tables.sql",
+    "trade_history": "20260416000011_war_room_tables.sql",
+    "scanner_runs": "20260416000011_war_room_tables.sql",
+}
+
+
+def _missing_table_message(table: str, exc: Exception) -> str:
+    """An actionable sentence for a failure a human has to fix by applying a migration."""
+    migration = TABLE_MIGRATIONS.get(table)
+    detail = str(exc)
+    if "PGRST205" in detail or "schema cache" in detail or "Could not find the table" in detail:
+        if migration:
+            extra = ""
+            if table == "signal_events":
+                # The rename has not been applied, so the live project still has the old name.
+                extra = " The database still has crypto_signal_events under its old name."
+            return (f"table '{table}' is not in the database. Apply "
+                    f"market_sentiment_tool/supabase/migrations/{migration} and redeploy.{extra}")
+        return f"table '{table}' is not in the database and no migration in this repo creates it."
+    return detail
+
 
 # ── App ─────────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -99,7 +131,14 @@ async def get_positions(
     engine: Optional[str] = Query(None, description="Filter by engine name"),
     supabase=Depends(get_supabase),
 ):
-    """Open paper trade positions from Supabase."""
+    """Open paper trade positions from Supabase.
+
+    The ledger this reads (`paper_trades`) is created by migration 20260416000011 and has no
+    writer, because the product is suggest-only (spec section 6): an empty list is the true state,
+    not a fault. A table that is genuinely absent is reported as such rather than as a raw
+    PostgREST dump -- a 500 here is what put a red "unavailable" on the War Room, and the reader
+    could not tell a missing table from a broken query.
+    """
     if not supabase:
         raise HTTPException(status_code=503, detail="Supabase not configured")
     try:
@@ -109,7 +148,7 @@ async def get_positions(
         result = q.execute()
         return result.data or []
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=503, detail=_missing_table_message("paper_trades", e))
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -117,7 +156,12 @@ async def get_positions(
 # ════════════════════════════════════════════════════════════════════════════
 @app.get("/api/pnl_summary", response_model=PnLSummary, tags=["Portfolio"])
 async def get_pnl_summary(supabase=Depends(get_supabase)):
-    """Aggregated paper PnL statistics across all closed trades."""
+    """Aggregated paper PnL statistics across all closed trades.
+
+    Suggest-only product: nothing places an order, so the ledger is empty and every figure below is
+    zero. `suggest_only` is in the response so the UI can say "no orders are placed" rather than
+    rendering a confident $0.00 that reads as a flat book.
+    """
     if not supabase:
         raise HTTPException(status_code=503, detail="Supabase not configured")
     try:
@@ -147,7 +191,7 @@ async def get_pnl_summary(supabase=Depends(get_supabase)):
             as_of=datetime.now(timezone.utc),
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=503, detail=_missing_table_message("paper_trades", e))
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -191,7 +235,10 @@ async def get_shadow_performance(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        # The shadow timeline reads signal_events, which 20260415090000 renames into place. That
+        # migration was never applied to the live project, so this 503 names it rather than
+        # forwarding PostgREST's dump.
+        raise HTTPException(status_code=503, detail=_missing_table_message("signal_events", exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -306,20 +353,17 @@ def get_sports_edges(
     candidates.sort(key=_sports_rank)
     total = len(candidates)
     rows = candidates[offset:offset + limit]
+    # Counted over the whole filtered set, before slicing. The UI needs this because a page of
+    # rejects is not evidence that nothing passed: rows are ranked candidates-first, so page 2+ is
+    # always the reject tail, and a page-derived count reports "all rejected" on a board that has
+    # picks on page 1.
+    candidate_count = sum(1 for r in candidates if _tier_of(r) != "filtered")
 
-    edges = []
-    for row in rows:
-        raw = row.get("raw_payload") or {}
-        edges.append({
-            "market_id": row["market_id"], "title": row.get("title"), "our_prob": row.get("our_prob"),
-            "market_prob": row.get("market_prob"), "edge_pct": row.get("edge_pct"),
-            "market_url": row.get("market_url"), "source_url": row.get("source_url"),
-            # The gate is keyed on (engine, engine_version); the UI needs both to badge the row
-            # and to explain which predictor version it is looking at.
-            "engine": row.get("engine"),
-            "gate_status": row.get("gate_status") or "SHADOW",
-            **{k: raw.get(k) for k in _EDGE_FIELDS},
-        })
+    # sports.scan.edge_row owns the row shape AND the honesty rules: edge_pct is the after-fee
+    # edge vs the entry price (not vs market_prob, the mid), it is withheld from any row the
+    # candidate filter rejected, quote_spread travels so a wide quote is visible, and a placeholder
+    # engine_version is blanked rather than printed as the word "unknown".
+    edges = [edge_row(row) for row in rows]
 
     reviews = _fetch_all(supabase, "sports_reviews",
                          lambda q: q.select("*").eq("status", "ok"), cap=SPORTS_REVIEW_SCAN)
@@ -330,6 +374,9 @@ def get_sports_edges(
     results = {r["market_ticker"]: r["result"] for r in settled}
     return {
         "as_of": now.isoformat(), "edges": edges, "total": total, "limit": limit, "offset": offset,
+        # Whole-set candidate count. A client cannot derive it from one page, and deriving it is
+        # what made the "everything was rejected" banner wrong on every page after the first.
+        "candidate_count": candidate_count,
         "reviewer_scorecard": reviewer_scorecard(reviews, results),
     }
 
