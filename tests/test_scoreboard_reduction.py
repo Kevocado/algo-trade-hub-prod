@@ -11,15 +11,23 @@ So experiments are excluded from `current_runs` rather than shown with a footnot
 A footnote is a thing a reader skips; an absent row is a thing they cannot
 misread. They remain in `backtest_runs` and remain reproducible from the CLI.
 """
+import json
+
 import pytest
 
 from tradehub.scoreboard import (
+    BEHIND_THE_MARKET,
+    HEADLINE_AHEAD,
+    HEADLINE_BEHIND,
+    HEADLINE_NOT_COMPARABLE,
+    HEADLINE_NO_RUNS,
     SOURCE_ENGINE,
     SOURCE_GATE,
     SOURCE_UNKNOWN,
     brier_ratio,
     current_runs,
     is_experiment_version,
+    market_comparison,
     required_settled,
     settled_distance,
     stated_settled_bar,
@@ -606,3 +614,92 @@ class TestBacktestRunsProvenance:
         """`-lead` is safe to key on only because no real version contains it."""
         for version in ("gas-v1", "weather-v1", "cpi-v1", "cpi-core-v1", "labor-v1"):
             assert "-lead" not in version
+
+
+class TestMarketComparison:
+    """The endpoint's headline and counts, and the threshold behind them.
+
+    This is the third rule: `market_comparison` exists so the route does not. The plan's endpoint
+    computed `behind` and `any_beats_market` inline, which put a "is this engine ahead" threshold
+    in the transport layer -- a second copy of a verdict the page then also has to agree with.
+    """
+
+    @staticmethod
+    def _row(**over):
+        row = {"engine": "gas", "brier_ratio": 4.29}
+        row.update(over)
+        return row
+
+    def test_a_ratio_above_one_is_behind_and_below_one_is_ahead(self):
+        assert market_comparison([self._row(brier_ratio=4.29)])["rows_behind_market"] == 1
+        assert market_comparison([self._row(brier_ratio=0.5)])["rows_ahead_of_market"] == 1
+
+    def test_exactly_one_is_level_not_a_loss(self):
+        """Rounding a tie into a loss is the same direction of error as dropping a losing engine:
+        a number more flattering than the data."""
+        result = market_comparison([self._row(brier_ratio=1.0)])
+
+        assert result["rows_level_with_market"] == 1
+        assert result["rows_behind_market"] == 0
+        assert result["any_beats_market"] is False
+
+    def test_a_row_with_no_ratio_is_unmeasured_not_a_loss(self):
+        result = market_comparison([self._row(brier_ratio=None), self._row(brier_ratio=2.0)])
+
+        assert result["rows_not_comparable"] == 1
+        assert result["rows_behind_market"] == 1, "an absent market Brier is not a defeat"
+
+    def test_a_boolean_is_not_a_measurement(self):
+        """`bool` is an `int`, so a stray `True` would otherwise count as a measured 1.0 -- a tie
+        invented out of a value that is not a number."""
+        result = market_comparison([self._row(brier_ratio=True)])
+
+        assert result["rows_not_comparable"] == 1
+        assert result["rows_level_with_market"] == 0
+
+    def test_every_row_lands_in_exactly_one_bucket(self):
+        rows = [self._row(brier_ratio=r) for r in (4.29, 0.5, 1.0, None, "x")]
+        result = market_comparison(rows)
+
+        assert result["rows_total"] == len(rows)
+        assert sum(result[k] for k in ("rows_behind_market", "rows_ahead_of_market",
+                                       "rows_level_with_market", "rows_not_comparable")) == result["rows_total"]
+
+    def test_no_rows_is_not_a_verdict_about_the_engines(self):
+        result = market_comparison([])
+
+        assert result["rows_total"] == 0
+        assert result["headline"] == HEADLINE_NO_RUNS
+        assert result["headline"] != HEADLINE_BEHIND, (
+            "'no engine beats the market' is a claim about engines and there are none"
+        )
+
+    def test_nothing_comparable_says_it_measured_nothing(self):
+        result = market_comparison([self._row(brier_ratio=None), self._row(brier_ratio=None)])
+
+        assert result["headline"] == HEADLINE_NOT_COMPARABLE
+        assert result["any_beats_market"] is False
+
+    def test_the_headline_follows_the_data(self):
+        behind = market_comparison([self._row(brier_ratio=4.29)])
+        ahead = market_comparison([self._row(brier_ratio=0.5)])
+        mixed = market_comparison([self._row(brier_ratio=4.29), self._row(brier_ratio=0.5)])
+
+        assert behind["headline"] == HEADLINE_BEHIND
+        assert ahead["headline"] == HEADLINE_AHEAD
+        assert mixed["headline"] == HEADLINE_AHEAD, "one lead outranks the losses in the sentence"
+
+    def test_it_is_pure_and_does_not_mutate_its_input(self):
+        rows = [self._row(brier_ratio=4.29)]
+        before = json.dumps(rows, sort_keys=True, default=str)
+
+        market_comparison(rows)
+
+        assert json.dumps(rows, sort_keys=True, default=str) == before
+
+    def test_none_is_treated_as_no_rows_rather_than_raising(self):
+        assert market_comparison(None)["rows_total"] == 0
+
+    def test_the_threshold_is_a_named_constant_not_a_bare_literal(self):
+        """So a second copy of "behind the market" is a search away rather than a hunt."""
+        assert BEHIND_THE_MARKET == 1.0

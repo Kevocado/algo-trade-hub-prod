@@ -27,6 +27,7 @@ from tradehub.api.schemas import (
 from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
 from tradehub.gate_status import latest_gate_statuses
+from tradehub.scoreboard import current_runs, market_comparison
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
 from tradehub.sports.scan import edge_row
 from tradehub.sports.scorecard import reviewer_scorecard
@@ -45,6 +46,7 @@ TABLE_MIGRATIONS = {
     "paper_signals": "20260416000011_war_room_tables.sql",
     "trade_history": "20260416000011_war_room_tables.sql",
     "scanner_runs": "20260416000011_war_room_tables.sql",
+    "backtest_runs": "20260416000004_backtest_runs.sql",
 }
 
 
@@ -410,6 +412,67 @@ def _is_upcoming(row: dict, now: datetime) -> bool:
         return datetime.fromisoformat(start) > now
     except (TypeError, ValueError):
         return False
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ENDPOINT: /api/scoreboard — every engine's Brier beside the market's, and its
+# distance to its own gate. Approved 2026-09-27 (spec section 9, approval 4).
+#
+# Registered BEFORE mount_frontend below: the SPA is mounted at "/", so a route added after it
+# is shadowed and this endpoint would answer with the app shell.
+# ════════════════════════════════════════════════════════════════════════════
+@app.get("/api/scoreboard", tags=["Scoreboard"])
+def get_scoreboard(supabase=Depends(get_supabase)):
+    """Should I trust this engine? One row per engine and mode, from the current run.
+
+    The route reads and hands over. It decides nothing.
+
+    - The reduction is `current_runs` (`tradehub/scoreboard.py`), which is pure, so every rule
+      that decides what appears is testable without a database. In particular the rule this
+      endpoint exists to protect: a run whose `engine_version` carries a decision lead
+      (`gas-v1-lead12h`) is an EXPERIMENT, and is excluded from the page rather than footnoted.
+      The experiment stays in `backtest_runs` and stays reproducible from the CLI; presenting it
+      as the engine's record would make the page wrong in the direction that flatters the engine.
+    - The headline and the counts behind it are `market_comparison`, from the same module. The
+      "is this engine ahead" threshold lives there, because a second copy of it here is how the
+      page and the API start disagreeing with nothing downstream able to tell which one drifted.
+    - `MIN_SETTLED` is not named in this file. It rides on each row's `settled_distance` as the
+      reviewer's floor, separately from the bar the gate itself stated, and the row says which
+      one the verdict was made against.
+
+    Two decisions in the read itself:
+
+    - **The read is paged, with no cap.** PostgREST caps one response at 1000 rows, so a single
+      `.execute()` silently truncates; and a cap is worse, because the cap and the reduction pull
+      in opposite directions. `backtest_runs` grows by one row per recorded CLI run, so the 200
+      newest are overwhelmingly gas: a monthly-cadence engine whose only recent run falls outside
+      that window is not rendered slightly stale, it is ABSENT -- and an absent engine reads as
+      "this engine has no settled contracts", which is a claim about the engine. The table is one
+      row per recorded run rather than a growing event log, so paging it whole is cheap, and
+      `runs_read` travels in the response so a truncation is visible if one is ever added.
+    - **A read failure is a 503, never an empty scoreboard.** `_fetch_all` raises on the first
+      failing page, including a later one, so a partial read cannot be mistaken for a complete
+      one: either the whole ledger reduces or the page says it could not be read. The two are
+      distinguishable in the body as well as in the status -- a failure carries `detail` and no
+      `rows` at all, and a genuinely empty ledger returns 200 with `rows: []` and its own
+      headline. One sentinel, one meaning.
+    """
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
+    try:
+        runs = _fetch_all(supabase, "backtest_runs", lambda q: q.select("*"))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=_missing_table_message("backtest_runs", e))
+    rows = current_runs(runs)
+    return {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "runs_read": len(runs),
+        "rows": rows,
+        # Distinct engines, because `rows_*` below counts (engine, mode) pairs and one name under
+        # two labels is what made a single number unable to say what it was counting.
+        "engines": len({row["engine"] for row in rows}),
+        **market_comparison(rows),
+    }
 
 
 # ════════════════════════════════════════════════════════════════════════════

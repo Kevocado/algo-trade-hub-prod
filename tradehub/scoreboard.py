@@ -19,6 +19,12 @@ bar, so reporting it as 70/100 with met=False is a verdict against a number that
 bar. So `settled_distance` carries both bars and `required_source` says which one the verdict is
 made against. The floor is reported on every row, on its own fields, because the reviewer is the
 component that will eventually make the keep-or-drop call.
+
+The third rule, added with the endpoint: the page's headline is computed HERE, not in the route.
+"Is this engine ahead of the market" has a threshold in it -- ratio > 1.0 -- and the moment the
+route answers that as well as this module, the API and the page hold two copies of the same
+verdict and nothing downstream can tell which one drifted. `market_comparison` is that threshold,
+in one place, pure and tested.
 """
 
 from __future__ import annotations
@@ -66,6 +72,36 @@ _REQUIRED_IN_REASON = re.compile(r"need\s+(\d+)\b", re.IGNORECASE)
 SOURCE_GATE = "gate"
 SOURCE_ENGINE = "engine"
 SOURCE_UNKNOWN = "unknown"
+
+# The four sentences the page's headline can be. Four, not two, because "no engine beats the
+# market" is a claim about ENGINES and there are two states in which making it would be a lie:
+#
+#   nothing was recorded      there is no run to make a claim about
+#   nothing was comparable    the market Brier was never recorded, so we measured nothing
+#
+# and one in which it is true but incomplete:
+#
+#   some rows comparable, none ahead   true as a universal statement, and `rows_not_comparable`
+#                                      rides beside it as the number that says how much of the
+#                                      board it actually covers
+#
+# The wording lives here, in the data, rather than in a note the page renders, because prose is
+# what nobody re-reads when the number is what they look at. "on Brier", not "after fees": a
+# Brier ratio is a comparison of forecast accuracy and carries no fee adjustment at all, so
+# "after fees" attributes to the number a meaning it does not have.
+HEADLINE_NO_RUNS = "No backtest runs are recorded yet, so no engine has a record to show."
+HEADLINE_NOT_COMPARABLE = "No engine run could be compared: no market Brier was recorded at decision time."
+HEADLINE_BEHIND = "No engine beats the market on Brier."
+HEADLINE_AHEAD = (
+    "At least one engine beats the market on Brier. Check the settled count before reading that "
+    "as an edge."
+)
+
+# Above this the model is behind the market. 1.0 exactly is LEVEL -- neither behind nor ahead.
+# Rounding a tie into a loss would be a claim the numbers do not make, and it is the same
+# direction of error as a losing engine being dropped: a number that is more flattering than the
+# data.
+BEHIND_THE_MARKET = 1.0
 
 
 def is_experiment_version(engine_version: Any) -> bool:
@@ -313,3 +349,59 @@ def current_runs(runs: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
             ),
         })
     return out
+
+
+def market_comparison(rows: Iterable[Mapping[str, Any]] | None) -> dict[str, Any]:
+    """How the scoreboard's rows stand against the market, and the sentence to take away.
+
+    Consumes the row shape `current_runs` produces -- so it reads the `brier_ratio` that
+    `brier_ratio()` already computed, and never re-derives a ratio of its own.
+
+    **Every row lands in exactly one bucket, and the four counts sum to `rows_total`.** A row
+    that is silently uncounted is how "3 of 5 engines are behind" becomes true of a board of
+    five; `test_every_row_lands_in_exactly_one_bucket` pins the sum for that reason.
+
+    The buckets are named `rows_*` and not `engines_*` because they count ROWS, and a row is one
+    (engine, mode) pair: weather in both taker and maker is two rows and one engine. The old
+    name would have made "1 of 3 engines behind" a sentence about a board that had two engines in
+    it, which is the right-number-wrong-label defect this module keeps refusing.
+
+    `headline` is a universal claim about ENGINES, which is why `rows_not_comparable` does not
+    make it false -- no engine beat the market is still true when some engines were never
+    compared. It does make it incomplete, so the count travels beside it as a number rather than
+    being folded into the sentence. An absent `brier_ratio` is a row we could not measure, never
+    a row that lost.
+    """
+    behind = ahead = level = missing = 0
+    for row in rows or []:
+        ratio = row.get("brier_ratio")
+        # `bool` is an `int`, and a True would otherwise count as a measured 1.0 -- a tie invented
+        # out of a value that is not a measurement. Absent and non-numeric are the same fact here:
+        # the market Brier was not recorded, so the row was not compared.
+        if isinstance(ratio, bool) or not isinstance(ratio, (int, float)):
+            missing += 1
+        elif ratio > BEHIND_THE_MARKET:
+            behind += 1
+        elif ratio < BEHIND_THE_MARKET:
+            ahead += 1
+        else:
+            level += 1
+
+    total = behind + ahead + level + missing
+    if total == 0:
+        headline = HEADLINE_NO_RUNS
+    elif behind + ahead + level == 0:
+        headline = HEADLINE_NOT_COMPARABLE
+    elif ahead:
+        headline = HEADLINE_AHEAD
+    else:
+        headline = HEADLINE_BEHIND
+    return {
+        "rows_total": total,
+        "rows_behind_market": behind,
+        "rows_ahead_of_market": ahead,
+        "rows_level_with_market": level,
+        "rows_not_comparable": missing,
+        "any_beats_market": ahead > 0,
+        "headline": headline,
+    }
