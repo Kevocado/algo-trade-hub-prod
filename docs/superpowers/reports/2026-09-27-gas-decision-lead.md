@@ -240,3 +240,52 @@ discrimination hypothesis (better features, a different target) rather than a co
 Separately and independently worth fixing: **the calibration gate should not reject on a thin bucket.**
 That one is actionable now, needs no model work, and would apply to every engine behind the same check.
 
+---
+
+# Labor: blocked, not skipped
+
+§5's labor hypothesis — per-bucket calibration plus whether the 2003/2020-style revisions dominate the
+error — is the one I **could not test**, and it is the one most worth running. 0.1792 vs 0.1659 is the
+closest gap of the four engines, so it is the only one where the shortfall might be real rather than
+structural.
+
+The blocker is the same one recorded in `.agent/buffer/session_logs.md` from the FRED work:
+
+```
+RuntimeError: ALFRED request failed after retries:
+  HTTPSConnectionPool(host='alfred.stlouisfed.org', port=443): Read timed out. (read timeout=60.0)
+```
+
+With `FRED_API_KEY` unset, `alfred_vintages.py` uses the keyless `alfredgraph.csv` host, which this
+machine cannot reach. Verified there is no way around it locally:
+
+- `TRADEHUB_ALFRED_CACHE` is unset
+- no cache directory exists at `.cache/alfred`, `./cache/alfred`, or `~/Library/Caches/tradehub-alfred`
+- the only alternative path is `api.stlouisfed.org` via `fred/series/observations`, which requires
+  `FRED_API_KEY` — a secret I must not read or set
+
+**This is a blocker, not a negative result.** No claim is made about labor here.
+
+## How to run it
+
+On the VPS, where `vps-stack/compose.yml` already provides both the ALFRED cache and the
+`api.stlouisfed.org` path:
+
+```bash
+# inside the tradehub container, which has TRADEHUB_ALFRED_CACHE=/cache/alfred and a volume on it
+python -m tradehub.scripts.backtest_labor --start 2023-03 --end 2026-08 --mode taker
+```
+
+Or from a machine that can reach `alfred.stlouisfed.org`, with `FRED_API_KEY` exported.
+
+## What to check first, given the weather result
+
+Labor's hypothesis is partly a **calibration** claim, and weather is the cautionary case: there, perfect
+calibration could only close ~5% of the gap, so the calibration work would have been wasted. The
+cheapest first step is the same oracle bound — replace each prediction with its bucket's observed rate
+and compare against the market's 0.1659. If the oracle is still worse, the hypothesis is refuted the
+same way, and the revision-tail question becomes the only one worth pursuing.
+
+`backtest_labor.py` imports the same `run_backtest` as the other engines, so `result.cal_buckets` is
+available there too — it is simply not printed, exactly as with weather.
+
