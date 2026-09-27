@@ -546,3 +546,132 @@ npm run typecheck   exit 0
 vitest              7 files / 32 tests passed
 vite build          ✓ built
 ```
+
+
+---
+
+# Follow-up: Kalshi tier for settled markets, and per-row isolation
+
+Branch `fix/scorecard-kalshi-tiers`. Opened from the review comment on PR #18: the FRED half of
+`build_jobs_scorecard --since 2023-01` now completes on the VPS, and the build then dies on Kalshi.
+
+## The bug
+
+```text
+404 .../series/PROLLS/markets/PROLLS-23MAR-T0/candlesticks?...
+```
+
+`event_ladders` asked for candles like this:
+
+```python
+candles = client.merged_candles(market.ticker, first - CANDLE_LOOKBACK, last,
+                                series_ticker=market.series_ticker)
+```
+
+`merged_candles` picks the tier from `market_settled_at`, and **a missing settlement timestamp means
+"still live"** — so every call took the live path
+(`/series/{series}/markets/{ticker}/candlesticks`). That path 404s for every market that settled
+before `/historical/cutoff`'s `market_settled_ts`, which is *all* of them in a historical scorecard.
+The legacy `PROLLS-*` tickers in the report are pre-2024, so the very first event failed the build.
+
+The fix is the one-line the reviewer asked for — pass each market's own `settlement_ts` — and the
+client's existing tier logic does the rest. An **open** market has `settlement_ts is None` and
+correctly stays on the live path, so the fix does not over-correct; there is a test for each direction
+that asserts the actual URL, not just that a kwarg was passed.
+
+## One missing ladder no longer kills the build
+
+Isolated at two levels, because they fail for different reasons:
+
+- **Per market** (`event_ladders`): a strike whose candles 404 or come back empty is dropped with a
+  WARNING naming the ticker and the event, and the rest of the ladder stands. One dead strike costs
+  one strike.
+- **Per row** (`build_rows`): a row whose ladder cannot be built at all is still written, with null
+  Kalshi fields. The nowcast, the first print and the revisions come from ALFRED, not Kalshi, and
+  they are the reason the table exists — dropping the row would leave that release with no record at
+  all.
+
+The `except` around a market is deliberately broad. The failure modes are HTTP (404 on the wrong
+tier, 429, 5xx) and payload shape, and one unbuildable strike must not end a monthly job.
+
+## Counts and exit code
+
+```json
+{"rows": 42, "by_series": {...}, "written": 42, "with_first_print": 40,
+ "rows_with_full_ladder": 39, "rows_skipped": 1}
+```
+
+- `rows_with_full_ladder` — every strike in the event contributed a usable mid at **both** moments.
+  A partial ladder is neither full nor skipped, which is the distinction that matters when reading the
+  number: "39 full, 1 skipped" and "39 full, 3 partial" are different problems.
+- `rows_skipped` — the row has no Kalshi ladder at all.
+- `scorecard_exit_code` returns non-zero **only** when every row was skipped. A partial outage must
+  not fail a monthly job that still recorded 40 of 42 releases; a total one must, or the timer would
+  report success over an empty table. An empty run (`rows == 0`) is not a failure.
+
+## Idempotence
+
+`upsert_scorecard` was already keyed `on_conflict="series,reference_month"`. What the new tests pin is
+the half that was *not* covered: a row whose ladder came back empty must still carry the same
+`(series, reference_month)` key and the same content on a rerun, or a partial run would insert a
+second row for the same release. Two consecutive builds are asserted equal, key-for-key and
+content-for-content, with one event failing in both.
+
+## RED / GREEN
+
+```text
+# RED
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest -q tests/test_build_jobs_scorecard.py
+8 failed, 4 passed in 0.80s
+
+  # the first failure is the bug report, verbatim:
+  self = <test_build_jobs_scorecard._FakeGet object at 0x10cf7e90>
+  url = 'https://api.elections.kalshi.com/trade-api/v2/series/PROLLS/markets/PROLLS-23MAR-T0/candlesticks'
+  E   KeyError: '/series/PROLLS/markets/PROLLS-23MAR-T0/candlesticks'
+
+# GREEN
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest -q tests/test_build_jobs_scorecard.py
+12 passed in 1.26s          # 3 pre-existing + 9 new
+
+SUPABASE_SERVICE_ROLE_KEY=dummy-baseline-placeholder ... -m pytest -q
+722 passed in 29.25s        # 713 baseline + 9 new
+
+.../python -m ruff check --select F401,F811,F821 tradehub tests
+All checks passed!
+```
+
+## The two clock runs
+
+```text
+# a low CI monotonic clock
+... -c "import time; time.monotonic = lambda: 5.0; import pytest; pytest.main(['-q'])"
+722 passed in 25.91s
+
+# a high one
+... -c "import time; time.monotonic = lambda: 1e7; import pytest; pytest.main(['-q'])"
+722 passed in 24.36s
+```
+
+**I could not reproduce the three failures** — not on this branch, and not on `origin/main` before it
+(713 passed at both extremes). The most likely explanation is PR #16 (`test: fixed clock for the
+past-deadline ALFRED test`), merged 22:37 today, which is exactly this class of test; if CI is still
+red after this merges, the failing test names would pin it down faster than anything I can add here.
+
+## Test-harness bugs of my own, found and fixed in the tests
+
+Three, all caught before they could pass for the wrong reason: a fake client whose `merged_candles`
+lacked the new kwarg; a date string built from the wrong slice of an event tag (`2026-JU-007`); and a
+fake client that put every market's candles at one shared wall-clock time, so an event that closed in
+July got quotes from August and read as an empty ladder. The third is why candle times are now taken
+from the requested window.
+
+## Kevin's checklist
+
+1. Merge, then deploy. No migration, no Supabase change, no new env var.
+2. Re-run `python -m tradehub.scripts.build_jobs_scorecard --since 2023-01`. Expect completion, and a
+   count line — `rows_with_full_ladder` is the number to watch: it should be close to `rows`. A ladder
+   per strike is many requests, so a low value on the first run may mean rate limiting rather than
+   missing markets, and the per-market WARNINGs will say which.
+3. Old markets (`PROLLS-*`, `PAYROLLS-*`, `U3-*`) should now come from `/historical/markets/...`, so
+   the 404 above should not appear. If it does, the WARNING names the ticker and the event.
+4. Still Kevin's: migration `000009`, and the `tradehub-jobs-scorecard.timer`.
