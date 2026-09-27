@@ -58,6 +58,13 @@ export interface SportsEdgesResponse {
   edges: SportsEdge[];
   /** Upcoming rows matching the filters, counted before paging. */
   total: number;
+  /**
+   * How many of the WHOLE filtered set passed the candidate filter, counted before paging.
+   *
+   * A page cannot supply this: rows are ranked candidates-first, so page 2+ is always the reject
+   * tail, and a page-derived count reports "all rejected" on a board whose page 1 is full of picks.
+   */
+  candidate_count: number;
   limit: number;
   offset: number;
   reviewer_scorecard: {

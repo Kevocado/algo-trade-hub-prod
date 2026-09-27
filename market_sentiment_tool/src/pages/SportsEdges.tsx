@@ -123,7 +123,11 @@ export default function SportsEdges() {
   const shown = data.edges.length;
   const lastPage = Math.max(0, Math.ceil(data.total / pageSize) - 1);
   const groups = groupByTier(data.edges);
-  const noCandidates = !groups.some((g) => g.tier !== "filtered");
+  // From the API, over the whole filtered set. Was derived from `groups`, i.e. from the current
+  // page -- correct on page 1 by luck and wrong on every page after it, because ranking puts
+  // candidates first and so page 2+ is always the reject tail.
+  const candidateCount = data.candidate_count;
+  const noCandidates = candidateCount === 0;
 
   return (
     <div className="p-8 space-y-8">
@@ -143,7 +147,8 @@ export default function SportsEdges() {
         <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-300">
           <p className="font-semibold text-slate-100">No pick currently passes the filter.</p>
           <p className="mt-1 text-slate-400">
-            {data.total} upcoming sports markets were priced and all {data.total} were rejected. An edge
+            {" "}
+            {data.total} upcoming sports markets were priced and none of the {data.total} passed. An edge
             is only surfaced once it is tradeable (a tight quote with real size behind it), lands inside
             the decision window, and comes from a predictor that is calibrated in that price bucket.
             The reason each one failed is in the table below, and the gate stays in shadow until there

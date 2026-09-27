@@ -353,6 +353,11 @@ def get_sports_edges(
     candidates.sort(key=_sports_rank)
     total = len(candidates)
     rows = candidates[offset:offset + limit]
+    # Counted over the whole filtered set, before slicing. The UI needs this because a page of
+    # rejects is not evidence that nothing passed: rows are ranked candidates-first, so page 2+ is
+    # always the reject tail, and a page-derived count reports "all rejected" on a board that has
+    # picks on page 1.
+    candidate_count = sum(1 for r in candidates if _tier_of(r) != "filtered")
 
     # sports.scan.edge_row owns the row shape AND the honesty rules: edge_pct is the after-fee
     # edge vs the entry price (not vs market_prob, the mid), it is withheld from any row the
@@ -369,6 +374,9 @@ def get_sports_edges(
     results = {r["market_ticker"]: r["result"] for r in settled}
     return {
         "as_of": now.isoformat(), "edges": edges, "total": total, "limit": limit, "offset": offset,
+        # Whole-set candidate count. A client cannot derive it from one page, and deriving it is
+        # what made the "everything was rejected" banner wrong on every page after the first.
+        "candidate_count": candidate_count,
         "reviewer_scorecard": reviewer_scorecard(reviews, results),
     }
 
