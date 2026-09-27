@@ -19,10 +19,27 @@ reads and publishes.
 
 **Unrecognised kinds are reported, not dropped.** Both places that can meet a kind this build does
 not know -- the payload's calibration keys (`parse_feed`) and a settled row's `raw_payload.kind`
-(`_hub_settled_ledger`) -- count what they cannot use and say so, because "nothing of that kind
-settled" and "that kind is one this build cannot read" look identical from every downstream number
-and are not the same fact: the first is an absence of evidence, the second is a gap in the build.
-`unrecognised()` is the one definition of that test, so both sites cannot disagree about it either.
+(`_hub_settled_ledger`) -- count what they cannot use, because "nothing of that kind settled" and
+"that kind is one this build cannot read" look identical from every downstream number and are not
+the same fact: the first is an absence of evidence, the second is a gap in the build. Both read as a
+band with `n: 0`, so the distinction has to be carried rather than inferred.
+
+The two sites cannot disagree about which names are unrecognised, and not because they share a
+helper -- one of them counts, one of them filters a row at a time -- but because both test
+membership in the *same object* above. `KINDS` is a tuple, not a copy of one: the feed's filter and
+the ledger's filter are the same membership test against the same value, and a site that stops
+importing it is a site the identity test in `tests/test_sports_inversion.py` fails on.
+
+`unrecognised()` is the reporting helper for a caller that has already found names it cannot use and
+has to say so, which today is the feed: a payload is a set of keys, so the whole answer exists at
+once and the line can name every kind in it. The ledger's rows arrive one at a time, so that side
+tallies as it goes and reports the tally in the run report -- see `scan.HubLedger`.
+
+The two report in different places on purpose, and neither is a log line. The feed warning is
+immediate and per-fetch. The ledger's is a `per_sport` key in the run summary, because
+`_hub_settled_ledger` runs once in the cron entry point and a warning there is evidence nobody reads
+(this codebase upserts to four tables that never existed, with bare `print()`s, for its entire life
+without anyone noticing -- see the migration guard in PR #20).
 """
 
 from __future__ import annotations

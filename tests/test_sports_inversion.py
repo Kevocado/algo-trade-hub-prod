@@ -902,8 +902,15 @@ class _Supa:
 
 
 def _ledger(rows, cap=1000):
+    """The whole `HubLedger`, not just its pairs: these tests read both halves of it, and a helper
+    that unpacked the pairs for them would hide the shape change from every one of them."""
     supa = _Supa(rows, cap=cap)
     return scan_mod._hub_settled_ledger(supa), supa
+
+
+def _hub(pairs_by_engine, unrecognised_by_engine=None):
+    """A `HubLedger` for the tests that hand one to `run_sports_scan` rather than reading one."""
+    return scan_mod.HubLedger(pairs_by_engine, unrecognised_by_engine or {})
 
 
 def _row(engine, prob, result, kind=None, **extra):
@@ -939,11 +946,15 @@ def test_the_ledger_read_files_every_kind_under_its_own_name():
     ]
     ledger, supa = _ledger(rows)
 
-    assert ledger == {
+    assert ledger.pairs_by_engine == {
         "sports_nfl": {"winner": [(0.65, True), (0.62, False)],
                        "spread": [(0.30, False), (0.30, True)]},
         "sports_cfb": {"winner": [(0.40, False)], "total": [(0.72, True)]},
     }
+    # The kind nothing writes is not in the record, and it is not nowhere either: it is counted
+    # under the engine that owns the row. Attribution is the half that is easy to get wrong, and a
+    # flat tally would report an NFL gap against CFB as well.
+    assert ledger.unrecognised_by_engine == {"sports_nfl": {"moneyline": 1}}
     assert supa.asked["table"] == "predictions"
     assert supa.asked["eq"] == ("status", "SETTLED")
     assert supa.asked["engine"] == ("engine", ["sports_cfb", "sports_nfl"])
@@ -969,7 +980,7 @@ def test_the_ledger_read_pages_the_whole_table_in_a_stable_order():
     assert supa.ranges == [(0, 999), (1000, 1999)], "one 1000-row page, then the remainder"
     assert set(supa.asked["order"]) == {"id"}, "every page ordered, on the one immutable column"
     assert len(supa.asked["order"]) == len(supa.ranges)
-    pairs = ledger["sports_nfl"]["winner"]
+    pairs = ledger.pairs_by_engine["sports_nfl"]["winner"]
     assert len(pairs) == 1250, f"a 1250-row ledger was read as {len(pairs)} rows"
     assert pairs[0] == (0.10, False) and pairs[-1] == (0.10 + 1249 / 2000, True)
 
@@ -981,7 +992,9 @@ def test_a_ledger_read_that_fails_leaves_the_predictors_calibration_in_charge():
         def table(self, _name):
             raise RuntimeError("postgrest 500")
 
-    assert scan_mod._hub_settled_ledger(Broken()) == {}
+    # An empty ledger, not a `{}`-shaped one that happens to compare equal: the tally is empty too,
+    # because a count taken from a read that failed is not a count.
+    assert scan_mod._hub_settled_ledger(Broken()) == scan_mod.HubLedger()
 
 
 def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_truncated_record():
@@ -1010,6 +1023,10 @@ def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_trun
             return _Query(supa)
 
     rows = [_row("sports_nfl", 0.5, "yes", "winner", id=i) for i in range(scan_mod.LEDGER_PAGE + 200)]
+    # One row of a kind this build cannot read, inside the full first page. Without it the tally
+    # assertion below would hold on an empty tally, and "the failure path discards the tally too"
+    # would be a claim about nothing.
+    rows[0] = _row("sports_nfl", 0.5, "yes", "moneyline", id=0)
     flaky = Flaky(rows)
 
     assert len(rows) > scan_mod.LEDGER_PAGE, (
@@ -1018,19 +1035,23 @@ def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_trun
     ledger = scan_mod._hub_settled_ledger(flaky)
 
     # It demonstrably got to page two. Without these the assertion below proves nothing, because a
-    # read that failed on page one would also read as {} and for the wrong reason.
+    # read that failed on page one would also read as empty and for the wrong reason.
     assert flaky.calls == 2, f"the read must fail on page two; it made {flaky.calls} call(s)"
     assert flaky.served[0].ranges == [(0, scan_mod.LEDGER_PAGE - 1)], "page one was paged and full"
 
-    # And page one was not empty, so `{}` below is a claim about discarding a partial record rather
-    # than a claim that there was nothing to discard.
+    # And page one was not empty, so the assertions below are a claim about discarding a partial
+    # record rather than a claim that there was nothing to discard.
     healthy, _supa = _ledger(rows)
-    assert len(healthy["sports_nfl"]["winner"]) > scan_mod.LEDGER_PAGE, (
+    assert len(healthy.pairs_by_engine["sports_nfl"]["winner"]) > scan_mod.LEDGER_PAGE, (
         "the same read with nothing broken keeps page one's rows, so the flaky one had some to lose"
     )
-    assert ledger == {}, (
-        f"a failure on page two must discard page one's {scan_mod.LEDGER_PAGE} rows too, not hand "
-        f"back a truncated record: {list(ledger)}"
+    assert healthy.unrecognised_by_engine == {"sports_nfl": {"moneyline": 1}}, (
+        "the healthy read has a tally to lose too, or the next assertion is vacuous"
+    )
+    assert ledger == scan_mod.HubLedger(), (
+        f"a failure on page two must discard page one's {scan_mod.LEDGER_PAGE} rows and its tally "
+        f"too, not hand back a truncated record: {list(ledger.pairs_by_engine)} / "
+        f"{ledger.unrecognised_by_engine}"
     )
 
 
@@ -1045,13 +1066,21 @@ def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_trun
 # other, and no word about the gap.
 #
 # So the list now lives in `tradehub/sports/kinds.py` and is imported by every site that has to
-# agree with it, and a kind outside it is reported rather than dropped. "Reported" is a log line at
-# both ends, and that is the mechanism that fits: `_hub_settled_ledger` runs once in the cron entry
-# point before any run report exists and its other surprise is already a log line, so counting into a
-# return value would have meant widening a mapping that `run_sports_scan` and four tests consume, to
-# carry a diagnostic. What the lines have to do is name the kind and the count, so that "this build
-# cannot read that kind" is distinguishable from "nothing of that kind has settled" -- two facts
-# every number downstream looks identical under.
+# agree with it, and a kind outside it is reported rather than dropped. The two reports are in
+# different places, for different reasons, and neither of them is a log line alone:
+#
+#   - `parse_feed` warns, per fetch. A payload's calibration keys are all in hand at once, so the
+#     whole answer exists before the function returns and there is nowhere to put it but the log.
+#   - `_hub_settled_ledger` returns the tally on `HubLedger.unrecognised_by_engine`, and
+#     `run_sports_scan` publishes it as `per_sport[sport]["unrecognised_kinds"]`. Its rows arrive one
+#     at a time and it runs once in the cron entry point, so the report it has to reach is the one
+#     the caller builds. A log line here would be evidence nobody reads -- this codebase upserts to
+#     four tables that never existed, with bare `print()`s, for its whole life without anyone
+#     noticing (the migration guard in PR #20) -- which is what the log-only version of this was.
+#
+# What the reports have to do is name the kind and the count, so that "this build cannot read that
+# kind" is distinguishable from "nothing of that kind has settled": two facts every number downstream
+# looks identical under, because both read as a band with `n: 0`.
 
 
 def test_the_feed_client_the_publisher_and_the_ledger_filter_share_one_list():
@@ -1122,9 +1151,14 @@ def test_a_feed_that_publishes_no_unknown_kind_says_nothing(caplog):
 def test_settled_rows_of_a_kind_this_build_cannot_read_are_reported_not_dropped(caplog):
     """The ledger half, and the rows are the reason it matters: these are real settled results with
     a recorded hit, and keeping them out of the record is a deletion rather than a narrower view of
-    it. The behaviour is unchanged -- the rows are still not filed anywhere -- and what is new is
-    that the count is named, so "the hub has no record of this kind" can be read as the gap in the
-    build that it is instead of as an absence of evidence."""
+    it. The behaviour is unchanged -- the rows are still not filed anywhere -- and what the report
+    carries is the count, so "the hub has no record of this kind" can be read as the gap in the
+    build that it is instead of as an absence of evidence.
+
+    Two channels, because they are not substitutes. The log is the immediate one: the read happens
+    once in the cron entry point, so this line is what an operator sees during the run. The tally on
+    the returned `HubLedger` is the durable one, and it is the one `run_sports_scan` puts in the run
+    report, because a log line here is a place nobody reads."""
     rows = [_row("sports_nfl", 0.65, "yes", "winner"),
             _row("sports_nfl", 0.51, "yes", "moneyline"),
             _row("sports_nfl", 0.52, "no", "moneyline"),
@@ -1133,24 +1167,32 @@ def test_settled_rows_of_a_kind_this_build_cannot_read_are_reported_not_dropped(
     with caplog.at_level(logging.WARNING, logger="tradehub.sports.scan"):
         ledger, _supa = _ledger(rows)
 
-    assert ledger == {"sports_nfl": {"winner": [(0.65, True)]}}
+    assert ledger.pairs_by_engine == {"sports_nfl": {"winner": [(0.65, True)]}}
+    assert ledger.unrecognised_by_engine == {"sports_nfl": {"moneyline": 2}, "sports_cfb": {"prop": 1}}
     assert "does not recognise" in caplog.text
     assert "moneyline=2" in caplog.text and "prop=1" in caplog.text, caplog.text
-    assert "3 row(s)" in caplog.text, "the total has to be in the line, not just the per-kind tally"
+    # Each engine's own line carries its own count, so a reader learns which sport has the gap and
+    # not merely that somewhere in the table one does.
+    assert "engine sports_nfl has 2 settled row(s)" in caplog.text, caplog.text
+    assert "engine sports_cfb has 1 settled row(s)" in caplog.text, caplog.text
     # And the line has to be about the BUILD, or a reader takes the missing kind for a fact about
     # the market rather than a fact about this deployment.
     assert "not a kind with nothing settled" in caplog.text
 
 
 def test_a_ledger_of_only_known_kinds_says_nothing_about_unrecognised_ones(caplog):
-    """The inverse guard, for the same reason: a warning that fires on a normal read is noise, and
-    noise is how the real one stops being read."""
+    """The inverse guard, for the same reason: a report that fires on a normal read is noise, and
+    noise is how the real one stops being read. Asserted on the tally as well as the log, because a
+    key that is present and empty is a different claim from one that is absent -- the reader has to
+    be able to see "nothing here" rather than guess it."""
     rows = [_row("sports_nfl", 0.65, "yes", "winner"), _row("sports_nfl", 0.30, "no", "spread")]
 
     with caplog.at_level(logging.WARNING, logger="tradehub.sports.scan"):
         ledger, _supa = _ledger(rows)
 
-    assert ledger == {"sports_nfl": {"winner": [(0.65, True)], "spread": [(0.30, False)]}}
+    assert ledger.pairs_by_engine == {"sports_nfl": {"winner": [(0.65, True)],
+                                                     "spread": [(0.30, False)]}}
+    assert ledger.unrecognised_by_engine == {}
     assert "does not recognise" not in caplog.text
 
 
@@ -1197,8 +1239,8 @@ def test_each_scan_is_handed_only_its_own_sports_pairs(monkeypatch):
         return real(cfg, markets, feed, now, **kwargs)
 
     monkeypatch.setattr(scan_mod, "scan_sport", spy)
-    ledger = {"sports_nfl": {"winner": [(0.29, True)] * 3},
-              "sports_cfb": {"winner": [(0.74, True)] * 4, "spread": [(0.5, True)] * 5}}
+    ledger = _hub({"sports_nfl": {"winner": [(0.29, True)] * 3},
+                   "sports_cfb": {"winner": [(0.74, True)] * 4, "spread": [(0.5, True)] * 5}})
     _both_sports(ledger)
 
     assert seen["nfl"] == {"winner": [(0.29, True)] * 3}
@@ -1213,8 +1255,8 @@ def test_a_sports_ledger_never_reaches_the_other_sports_scan():
     without a deliberate collision a contaminated band is invisible.
 
     Correct: NFL's winner band holds 300 and CFB's holds 700. Shared: both hold 1000."""
-    ledger = {"sports_nfl": {"winner": [(0.2954, True)] * 150 + [(0.2954, False)] * 150},
-              "sports_cfb": {"winner": [(0.2954, True)] * 350 + [(0.2954, False)] * 350}}
+    ledger = _hub({"sports_nfl": {"winner": [(0.2954, True)] * 150 + [(0.2954, False)] * 150},
+                   "sports_cfb": {"winner": [(0.2954, True)] * 350 + [(0.2954, False)] * 350}})
     run = _both_sports(ledger)
     nfl, cfb = _band_counts(run, "nfl"), _band_counts(run, "cfb")
 
@@ -1232,12 +1274,75 @@ def test_a_sport_with_no_settled_rows_of_its_own_keeps_the_predictor_in_charge()
     of NFL's winner edges on CFB's history alone. 0.2633 is the home-oriented probability of the
     recorded CFB winner markets (`home_oriented` flips the away-team market, so both sides of the
     Temple/Army game read 0.2633), so CFB really is switched over rather than merely labelled."""
-    ledger = {"sports_cfb": {"winner": [(0.2633, True)] * 150 + [(0.2633, False)] * 150}}
+    ledger = _hub({"sports_cfb": {"winner": [(0.2633, True)] * 150 + [(0.2633, False)] * 150}})
     run = _both_sports(ledger)
 
     assert {row["calibration_source"] for row in run.per_sport["nfl"]["edges"]} == {"predictor"}
     assert {row["calibration_source"] for row in run.per_sport["cfb"]["edges"]} == {"hub_ledger"}
     assert 300 in _band_counts(run, "cfb")
+
+
+def test_the_run_report_carries_a_settled_kind_this_build_cannot_read():
+    """The property, end to end, and the one the finding is actually about.
+
+    A settled row of a kind this build does not know is kept out of the record -- correctly, since
+    filing it would be a wrong attribution -- and the cost of that is that the kind then has no band
+    anywhere. Every number downstream reads "no record" and cannot say whether nothing of that kind
+    has settled or this deployment cannot read it. So the run report has to say which of the two it
+    is, in the data:
+
+    - NFL has two settled `moneyline` rows it cannot place  -> the tally names them.
+    - CFB has none                                         -> the key is present and empty.
+
+    CFB is the control, and without it the first assertion would be satisfied by a key that is
+    simply never empty. Both facts have to be readable, and neither is inferable from the other.
+    """
+    rows = [_row("sports_nfl", 0.65, "yes", "winner"),
+            _row("sports_nfl", 0.51, "yes", "moneyline"),
+            _row("sports_nfl", 0.52, "no", "moneyline"),
+            _row("sports_cfb", 0.72, "yes", "total")]
+    ledger, _supa = _ledger(rows)
+    run = _both_sports(ledger)
+
+    # The gap, per sport, in the run summary beside the rest of the run's state.
+    assert run.per_sport["nfl"]["unrecognised_kinds"] == {"moneyline": 2}, run.per_sport["nfl"]
+    assert run.per_sport["cfb"]["unrecognised_kinds"] == {}, run.per_sport["cfb"]
+    # Separate objects, so a consumer that edits one sport's report cannot reach the other's or the
+    # measurement's -- the same reason the two scans are handed separate sub-ledgers.
+    assert (run.per_sport["nfl"]["unrecognised_kinds"]
+            is not run.per_sport["cfb"]["unrecognised_kinds"])
+    assert (run.per_sport["nfl"]["unrecognised_kinds"]
+            is not ledger.unrecognised_by_engine["sports_nfl"])
+
+    # The rows are still not in the record, and the kind still has no band anywhere: that is the
+    # whole reason the report carries the tally, because the numbers cannot.
+    assert ledger.pairs_by_engine == {"sports_nfl": {"winner": [(0.65, True)]},
+                                      "sports_cfb": {"total": [(0.72, True)]}}
+    published = scan_mod._hub_calibration(_recorded_feed(), ledger.pairs_by_engine["sports_nfl"])
+    assert published is not None and "moneyline" not in published, sorted(published)
+    # And no scan invents one: three kinds in, three kinds out.
+    for sport in ("nfl", "cfb"):
+        assert {row["kind"] for row in run.per_sport[sport]["edges"]} <= set(KINDS), sport
+
+
+def test_the_unrecognised_kinds_key_is_there_even_when_the_sport_never_scanned():
+    """Why the key is on all four paths and not only the one that scanned. The tally is learned when
+    the ledger is read, which happens before any of the exits in `run_sports_scan`, so it is a fact
+    about the run rather than a fact about a scan. A key that only appears when a sport scanned is a
+    key the reader has to wonder about on the runs where it is missing -- and the runs where a sport
+    does not scan are exactly the runs somebody reads the report to find out why."""
+    def no_feed(_url, **_kw):
+        raise feed_mod.FeedUnavailable("404")
+
+    run = scan_mod.run_sports_scan(
+        BOTH_NOW, _Kalshi({**_recorded_markets("nfl"), **_recorded_markets("cfb")}), fetch=no_feed,
+        hub_ledger=_hub({"sports_nfl": {"winner": []}}, {"sports_nfl": {"moneyline": 2}}),
+        sports=("nfl", "cfb"),
+    )
+
+    assert run.per_sport["nfl"]["feed_ok"] is False, "the sport really did not scan"
+    assert run.per_sport["nfl"]["unrecognised_kinds"] == {"moneyline": 2}, run.per_sport["nfl"]
+    assert run.per_sport["cfb"]["unrecognised_kinds"] == {}, run.per_sport["cfb"]
 
 
 def test_the_cron_path_actually_hands_the_ledger_to_the_scan(monkeypatch):
@@ -1258,4 +1363,4 @@ def test_the_cron_path_actually_hands_the_ledger_to_the_scan(monkeypatch):
     monkeypatch.setattr(scan_mod, "run_sports_scan", fake_scan)
     scan_mod.run_sports_for_cron(NOW, _Supa(rows))
 
-    assert seen["hub_ledger"] == {"sports_nfl": {"winner": [(0.28, True), (0.28, False)]}}
+    assert seen["hub_ledger"] == _hub({"sports_nfl": {"winner": [(0.28, True), (0.28, False)]}})

@@ -321,15 +321,50 @@ def apply_reviews(edges: list[dict[str, Any]], reviews: dict[str, Review]) -> No
 
 
 @dataclass
+class HubLedger:
+    """What the hub's own settled record says, and how much of it this build cannot read.
+
+    Two fields because a reader needs both to tell two different failures apart, and neither is
+    visible from the other:
+
+    - `pairs_by_engine` is the record the hub calibrates on: `engine -> kind -> [(our_prob, hit)]`.
+    - `unrecognised_by_engine` counts the settled rows this build had to keep OUT of that record
+      because they named a kind outside `sports.kinds.KINDS`, keyed the same way:
+      `engine -> kind -> rows`.
+
+    Without the second, "this kind has no hub record" reads identically whether nothing of that kind
+    has settled or this build cannot place that kind at all. Every number downstream is blind to the
+    difference -- both produce a band with `n: 0` -- so the difference has to be carried as data,
+    not as a log line nobody reads. It rides all the way to `per_sport[sport]["unrecognised_kinds"]`.
+    """
+    pairs_by_engine: dict[str, dict[str, list[tuple[float, bool]]]] = field(default_factory=dict)
+    unrecognised_by_engine: dict[str, dict[str, int]] = field(default_factory=dict)
+
+
+def _unrecognised_for(hub_ledger: HubLedger | None, sport: str) -> dict[str, int]:
+    """One sport's share of the tally, as its own dict (never the ledger's, so a reader that edits
+    the report cannot edit the measurement). `{}` when there was nothing this build could not read,
+    which is a fact the report has to state rather than leave out: an absent key and an empty one
+    are different claims."""
+    engine = SPORTS_ENGINES.get(sport, "")
+    return dict((hub_ledger.unrecognised_by_engine if hub_ledger else {}).get(engine, {}))
+
+
+@dataclass
 class SportsRun:
     predictions: list[dict[str, Any]]
     edges: list[dict[str, Any]]
     reports: dict[str, Any]
-    # sport -> {feed_ok, edges, series_ok, too_far} on the path that actually scanned, and only
-    # {feed_ok, edges} on the three early exits in `run_sports_scan` (deadline, feed 404, every
-    # series failed), which have no scan result to count. So read these with .get().
+    # sport -> {feed_ok, edges, series_ok, too_far, unrecognised_kinds} on the path that actually
+    # scanned, and {feed_ok, edges, unrecognised_kinds} on the three early exits in
+    # `run_sports_scan` (deadline, feed 404, every series failed), which have no scan result to
+    # count. So read these with .get().
     # `too_far` is games the far bound dropped before pricing; nothing consumes it yet, it is here
     # so the run state can tell "priced then rejected" from "never priced" (see SportScan.too_far).
+    # `unrecognised_kinds` is on EVERY path, including the early exits, because it is learned when
+    # the ledger is read -- which happens before any of them -- and is not a fact about the scan. A
+    # key that only appears on the runs that scanned is a key a reader has to wonder about on the
+    # runs where it is missing.
     # The write_ok flag is filled in by the caller, which is the only place that knows whether the
     # upsert landed.
     per_sport: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -339,7 +374,7 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
                     reviewer: OpenRouterReviewer | None = None, budget: int = 0,
                     sports: tuple[str, ...] = SPORTS,
                     deadline: float | None = None,
-                    hub_ledger: Mapping[str, Mapping[str, list[tuple[float, bool]]]] | None = None
+                    hub_ledger: HubLedger | None = None
                     ) -> SportsRun:
     predictions: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
@@ -351,7 +386,8 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
     for sport in sports:
         if remaining_seconds(effective_deadline) <= 0:
             reports[sport] = {"skipped": "scan deadline reached before this sport"}
-            per_sport[sport] = {"feed_ok": False, "edges": []}
+            per_sport[sport] = {"feed_ok": False, "edges": [],
+                                "unrecognised_kinds": _unrecognised_for(hub_ledger, sport)}
             continue
         cfg = load_sport_config(sport)
         try:
@@ -365,7 +401,8 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
             # it used to appear and `journalctl` on the timer showed nothing at all.
             log.warning("sports feed unavailable sport=%s url=%s: %s", sport, cfg.base_url, exc)
             reports[sport] = {"feed_error": str(exc)}
-            per_sport[sport] = {"feed_ok": False, "edges": []}
+            per_sport[sport] = {"feed_ok": False, "edges": [],
+                                "unrecognised_kinds": _unrecognised_for(hub_ledger, sport)}
             continue
         # open_markets is a paginated public-API call per series; one series failing must not
         # cost the sport, and must certainly not be read as "this sport has no edges".
@@ -379,13 +416,18 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
                 log.exception("sports market fetch failed sport=%s series=%s", sport, series)
         if series_errors and not markets:
             reports[sport] = {"kalshi_error": "; ".join(f"{s}: {e}" for s, e in series_errors.items())}
-            per_sport[sport] = {"feed_ok": False, "edges": []}
+            per_sport[sport] = {"feed_ok": False, "edges": [],
+                                "unrecognised_kinds": _unrecognised_for(hub_ledger, sport)}
             continue
         # Only this sport's own ledger, keyed by engine upstream. NFL and CFB are different models
         # with different records, so a shared one would hand a sport a calibration built from the
-        # other sport's settled history -- including enough of it to cross the threshold.
+        # other sport's settled history -- including enough of it to cross the threshold. The
+        # unrecognised-kind tally is split the same way, for the same reason: an NFL row the build
+        # cannot place is an NFL fact, and reporting it under CFB would make the one sport that has
+        # a gap look like both do.
         result = scan_sport(cfg, markets, feed, now,
-                            hub_pairs=(hub_ledger or {}).get(SPORTS_ENGINES.get(sport, "")))
+                            hub_pairs=(hub_ledger.pairs_by_engine if hub_ledger else {})
+                            .get(SPORTS_ENGINES.get(sport, "")))
         predictions += result.predictions
         edges += result.edges
         requests += result.review_requests
@@ -394,7 +436,13 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
             report["series_errors"] = series_errors
         reports[sport] = report
         per_sport[sport] = {"feed_ok": True, "edges": result.edges, "series_ok": not series_errors,
-                            "too_far": result.too_far}
+                            "too_far": result.too_far,
+                            # The build gap this sport's own settled rows exposed, in the run report
+                            # rather than only in a log. `{}` is a real answer: this sport has no
+                            # settled row of a kind the build cannot read, which is not the same as
+                            # having no such rows' worth of bands and not the same as another sport
+                            # having them.
+                            "unrecognised_kinds": _unrecognised_for(hub_ledger, sport)}
     # Reviewing is the optional, slow part: stop when the scan budget is nearly gone. The edges
     # are already computed and are still written, just with tier=unreviewed. review_candidates
     # re-checks the same rule before every call, so a long candidate list cannot walk past it.
@@ -510,8 +558,9 @@ def prune_sports_if_healthy(
     return errors
 
 
-def _hub_settled_ledger(supa) -> dict[str, dict[str, list[tuple[float, bool]]]]:
-    """The hub's own settled sports record: `engine -> kind -> [(our_prob, hit), ...]`.
+def _hub_settled_ledger(supa) -> HubLedger:
+    """The hub's own settled sports record: `engine -> kind -> [(our_prob, hit), ...]`, plus the
+    settled rows this build could not place.
 
     Read here, by the cron entry point, because `run_sports_scan` has no database access: it takes
     kalshi, fetch, store and reviewer, and no supa. The scan is given the answer rather than a way to
@@ -530,14 +579,26 @@ def _hub_settled_ledger(supa) -> dict[str, dict[str, list[tuple[float, bool]]]]:
 
     The kinds come from `sports.kinds.KINDS` -- the same object `parse_feed` reads the payload
     against -- because this filter is what makes an omission here a deletion of evidence rather than
-    a narrower view of it. A row of a kind outside KINDS is counted and reported below rather than
-    `continue`d: "this build cannot read that kind" and "nothing of that kind has settled" are
-    different facts and every number downstream looks identical under both.
+    a narrower view of it. A row of a kind outside KINDS is not `continue`d in silence: it is tallied
+    per engine onto `HubLedger.unrecognised_by_engine`, which `run_sports_scan` publishes in the run
+    report at `per_sport[sport]["unrecognised_kinds"]`. That is the channel, and it is the only
+    durable one: a log line in this codebase is demonstrably not an observed channel -- `core/
+    supabase_client.py` upserts to four tables that never existed with bare `print()`s, and nobody
+    found out for the life of the system (hence the migration guard in PR #20). A guard whose
+    evidence is a log line is the same failure as `feed:unknown` sitting on 100 live rows: the fact
+    is true, recorded, and in a place nobody reads. "This build cannot read that kind" and "nothing
+    of that kind has settled" are different failures and every number downstream is blind to the
+    difference, because both produce a band with `n: 0`. The log line below is kept as the immediate
+    half of the report; it is not the half the finding depends on.
 
     **BY ENGINE.** One ledger shared across both sports would put NFL's rows into CFB's bands and the
     reverse. They are different models with different records (NFL 0 settled, CFB ~61), so a sport
     that reached the threshold would be handing out a calibration built from another sport's history.
-    Keyed by engine so `run_sports_scan` can give each `scan_sport` only its own sport's pairs.
+    Keyed by engine so `run_sports_scan` can give each `scan_sport` only its own sport's pairs, and
+    so the unrecognised tally is attributable to the sport that owns the rows. A row with no engine
+    is skipped entirely: it cannot be filed, and it cannot be attributed to a sport either, so
+    counting it would report a gap against a sport it does not belong to. (Unreachable from the
+    database -- the query filters `engine` to the two sports -- but a row is a row.)
 
     **PAGED, ORDERED, ON `id`.** A single `.execute()` returns at most PostgREST's 1000-row cap, and
     nothing in this repo deletes sports `predictions` rows, so the table grows monotonically and
@@ -548,11 +609,12 @@ def _hub_settled_ledger(supa) -> dict[str, dict[str, list[tuple[float, bool]]]]:
 
     A failed read returns nothing rather than raising: this is a new failure mode on the sports path
     and it must not be able to cost a scan that works perfectly well on the published calibration.
-    A failed read also discards the unrecognised-kind tally, because it is reporting on a ledger that
-    was never complete and the `log.exception` above is the whole story.
+    A failed read also discards the unrecognised-kind tally, because a count taken from a ledger
+    that was never complete is a count nobody can trust, and the `log.exception` above is the whole
+    story for that run.
     """
-    ledger: dict[str, dict[str, list[tuple[float, bool]]]] = {}
-    unknown: dict[str, int] = {}
+    pairs: dict[str, dict[str, list[tuple[float, bool]]]] = {}
+    unknown: dict[str, dict[str, int]] = {}
     start = 0
     while True:
         try:
@@ -563,37 +625,35 @@ def _hub_settled_ledger(supa) -> dict[str, dict[str, list[tuple[float, bool]]]]:
             )
         except Exception:
             log.exception("sports scan: hub settled-ledger read failed; using the predictor's calibration")
-            return {}
+            return HubLedger()
         for row in page:
             prob, result = row.get("our_prob"), row.get("result")
             if not isinstance(prob, (int, float)) or result not in ("yes", "no"):
                 continue
-            # Absent or null kind is a winner row: that is what the scan writes for a winner market.
-            kind = (row.get("raw_payload") or {}).get("kind") or "winner"
-            if kind not in KINDS:
-                # Counted, not dropped in silence. The rows are real settled evidence this build
-                # cannot place, and the only difference between "nothing of that kind has settled"
-                # and "this build does not know that kind" would otherwise be a number nobody can
-                # see. A warning is the channel this function has: it runs once in the cron entry
-                # point, before any run report exists, and its other surprise is already a log line.
-                unknown[kind] = unknown.get(kind, 0) + 1
-                continue
             engine = row.get("engine")
             if not engine:
                 continue
-            ledger.setdefault(engine, {}).setdefault(kind, []).append((float(prob), result == "yes"))
+            # Absent or null kind is a winner row: that is what the scan writes for a winner market.
+            kind = (row.get("raw_payload") or {}).get("kind") or "winner"
+            if kind not in KINDS:
+                tally = unknown.setdefault(engine, {})
+                tally[kind] = tally.get(kind, 0) + 1
+                continue
+            pairs.setdefault(engine, {}).setdefault(kind, []).append((float(prob), result == "yes"))
         if len(page) < LEDGER_PAGE:
-            if unknown:
+            for engine, tally in sorted(unknown.items()):
                 log.warning(
-                    "sports scan: the hub's settled ledger is missing %d row(s) of %d kind(s) this "
-                    "build does not recognise (%s). Those rows are NOT in the ledger, so those "
-                    "kinds stay on the predictor's published calibration, or on no record at all -- "
-                    "a build that does not know the kind, not a kind with nothing settled. Adding "
-                    "it to tradehub/sports/kinds.py is the fix.",
-                    sum(unknown.values()), len(unknown),
-                    ", ".join(f"{kind}={n}" for kind, n in sorted(unknown.items())),
+                    "sports scan: engine %s has %d settled row(s) of %d kind(s) this build does not "
+                    "recognise (%s). Those rows are NOT in the ledger, so those kinds stay on the "
+                    "predictor's published calibration, or on no record at all -- a build that does "
+                    "not know the kind, not a kind with nothing settled. Adding it to "
+                    "tradehub/sports/kinds.py is the fix. This is the same tally the run report "
+                    "publishes as per_sport[...]['unrecognised_kinds'].",
+                    engine, sum(tally.values()), len(tally),
+                    ", ".join(f"{kind}={n}" for kind, n in sorted(tally.items())),
                 )
-            return ledger
+            return HubLedger(pairs, {e: {k: n for k, n in sorted(t.items())}
+                                     for e, t in sorted(unknown.items())})
         start += LEDGER_PAGE
 
 
