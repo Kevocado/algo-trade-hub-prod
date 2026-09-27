@@ -38,6 +38,10 @@ class PnLSummary(BaseModel):
     largest_win_cents: float
     largest_loss_cents: float
     as_of: datetime
+    # This product never places an order (spec section 6), so every figure above is zero by
+    # design. The flag is in the payload so the UI says "no orders are placed" instead of
+    # rendering a confident $0.00 that reads as a flat book.
+    suggest_only: bool = True
 
 
 # ─── Scanner Opportunities ───────────────────────────────────────────────────
