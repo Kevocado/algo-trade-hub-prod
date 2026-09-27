@@ -38,6 +38,13 @@ from tradehub.sports.deadline import remaining_seconds
 ALFRED_GRAPH_CSV = "https://alfred.stlouisfed.org/graph/alfredgraph.csv"
 FRED_SERIES_OBSERVATIONS = "https://api.stlouisfed.org/fred/series/observations"
 FRED_API_KEY_ENV = "FRED_API_KEY"
+FRED_MIN_INTERVAL_ENV = "FRED_MIN_INTERVAL_SECONDS"
+# FRED allows ~120 requests/minute. The keyed path cannot batch (one realtime window per response), so
+# it paces itself just under the limit instead of discovering it by being cut off.
+FRED_MIN_INTERVAL_SECONDS = 0.6
+# A 429 is not a blip: re-asking 1.5s later is how a rate limit becomes a failed scan. Wait what FRED
+# asks for, and never less than this.
+RATE_LIMIT_BACKOFF_SECONDS = 30.0
 REDACTED = "***"
 BROWSER_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -49,6 +56,62 @@ log = logging.getLogger(__name__)
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "tradehub" / "alfred"
 
 Vintage = dict[date, float]  # observation date -> value, as published on the vintage date
+
+
+class VintageNotPublished(RuntimeError):
+    """The requested realtime window predates the series' ALFRED coverage.
+
+    An empty vintage, not a failure: the labor inputs already read `{}` as "not known yet", and
+    `build_jobs_scorecard --since 2023-01` walks back before JTSHIL, JTSJOL and ADPMNUSNERSA begin.
+    """
+
+
+class SeriesNotFound(RuntimeError):
+    """FRED does not know this series id at all. Loud on purpose: a typo must not read as an empty
+    vintage, which would be cached and never noticed."""
+
+
+def fred_min_interval() -> float:
+    return float(os.getenv(FRED_MIN_INTERVAL_ENV) or FRED_MIN_INTERVAL_SECONDS)
+
+
+def _error_message(body: str) -> str:
+    """FRED's `error_message`, or '' for anything that is not one of its error payloads."""
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    return str(payload.get("error_message", "")) if isinstance(payload, dict) else ""
+
+
+def _classify_fred_400(body: str) -> type[RuntimeError] | None:
+    """Which of FRED's 400s this is, or None for "just a 400".
+
+    The order matters and is not cosmetic: "does not exist in ALFRED" CONTAINS "does not exist", so
+    testing the shorter phrase first would report a pre-history vintage as a missing series -- and the
+    caller treats those two in opposite ways.
+    """
+    message = _error_message(body)
+    if "does not exist in ALFRED" in message:
+        return VintageNotPublished
+    if "does not exist" in message:
+        return SeriesNotFound
+    return None
+
+
+def _retry_after_seconds(resp: Any, default: float) -> float:
+    """How long a 429 should wait: what FRED asked for, never less than `default`."""
+    headers = getattr(resp, "headers", None) or {}
+    raw = None
+    for name, value in (getattr(headers, "items", dict().items)()):
+        if str(name).lower() == "retry-after":
+            raw = value
+            break
+    try:
+        asked = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(default, asked)
 
 
 def redact(text: str, secret: str | None) -> str:
@@ -89,6 +152,7 @@ def default_get_text(
     used to keep the key out of the messages `requests` builds from the request URL.
     """
     last: Exception | None = None
+    status: int | None = None
     for attempt in range(4):
         left = remaining_seconds(deadline, clock) if deadline is not None else None
         if left is not None and left <= 0:
@@ -115,6 +179,11 @@ def default_get_text(
                 try:
                     resp.raise_for_status()
                 except requests.RequestException as exc:
+                    # FRED uses a 400 for two different things, and the caller can only treat one of
+                    # them as an empty vintage. Classify before the generic failure, from the body.
+                    classified = _classify_fred_400(getattr(resp, "text", "") or "")
+                    if classified is not None:
+                        raise classified(redact(f"FRED request failed: {_error_message(resp.text)}", secret)) from None
                     # Final, not retryable. Fail immediately -- and with the same error TYPE the
                     # retry path raises, because callers (and readers of the log) should not have
                     # to tell "404, do not retry" from "404 after four tries" by exception class.
@@ -128,7 +197,8 @@ def default_get_text(
                         raise RuntimeError(message) from None
                     raise RuntimeError(message) from exc
                 return resp.text
-        backoff = 1.5 * (attempt + 1)
+        backoff = _retry_after_seconds(resp, RATE_LIMIT_BACKOFF_SECONDS) if status == 429 \
+            else 1.5 * (attempt + 1)
         if deadline is not None and remaining_seconds(deadline, clock) < timeout + backoff:
             log.warning("alfred: %0.1fs of scan budget left, not enough for another attempt "
                         "(one needs %0.1fs)", remaining_seconds(deadline, clock), timeout + backoff)
@@ -196,6 +266,25 @@ def _write_cache(path: Path, series_id: str, vintage: date, values: Vintage) -> 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _series_exists(series_id: str, get_text: Callable[..., str], extra: dict) -> bool:
+    """Is this a real series id?
+
+    FRED's own 400 for a pre-history window suggests this probe: the same request without the
+    realtime window. 200 means the series exists, so the 400 was about coverage; 400 means the id is
+    wrong. The body alone cannot tell the two apart -- a nonsense id gets the same "does not exist in
+    ALFRED" text -- and guessing wrong would cache a permanently empty vintage for a typo.
+
+    The probe downloads the series' current values, which are then discarded: only the status is
+    wanted. One request per series, memoised by the caller.
+    """
+    try:
+        get_text(FRED_SERIES_OBSERVATIONS, {"series_id": series_id, "file_type": "json",
+                                            "api_key": extra.get("secret") or ""}, **extra)
+    except SeriesNotFound:
+        return False
+    return True
+
+
 def fetch_vintages(
     series_id: str,
     vintages: list[date],
@@ -205,12 +294,15 @@ def fetch_vintages(
     today: date | None = None,
     deadline: float | None = None,
     api_key: str | None = None,
+    min_interval: float | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[date, Vintage]:
     """The series as published on each requested date, batching uncached dates per request.
 
-    `FRED_API_KEY` (or `api_key`) set -> `fred/series/observations`, one request per uncached vintage.
-    Unset -> keyless `alfredgraph.csv`, up to `VINTAGES_PER_REQUEST` vintages per request. Both write
-    the same on-disk cache, so a run reads back what either path wrote.
+    `FRED_API_KEY` (or `api_key`) set -> `fred/series/observations`, one paced request per uncached
+    vintage. Unset -> keyless `alfredgraph.csv`, up to `VINTAGES_PER_REQUEST` vintages per request,
+    unpaced. Both write the same on-disk cache, so a run reads back what either path wrote.
     """
     today = today or datetime.now(timezone.utc).date()
     key = (api_key if api_key is not None else os.getenv(FRED_API_KEY_ENV, "")).strip()
@@ -224,11 +316,19 @@ def fetch_vintages(
         else:
             missing.append(vintage)
     if key:
+        interval = fred_min_interval() if min_interval is None else min_interval
+        extra = {} if deadline is None else {"deadline": deadline}
+        extra["secret"] = key
+        confirmed: set[str] = set()
+        last_request: float | None = None
         for vintage in missing:
-            # One request per vintage, not a batch: the API answers with the single realtime window
-            # asked for, so `realtime_start == realtime_end` IS the vintage. The key goes in the
-            # query string FRED requires, and is also passed as `secret` so the fetcher can keep it
-            # out of the errors `requests` builds from that request's URL.
+            if last_request is not None:
+                gap = interval - (clock() - last_request)
+                if gap > 0:
+                    # Capped by the budget: a wait that would run past the deadline is worse than the
+                    # request being refused, because the refusal is what `default_get_text` reports.
+                    left = remaining_seconds(deadline, clock) if deadline is not None else None
+                    sleep(gap if left is None else min(gap, max(0.0, left)))
             params = {
                 "series_id": series_id,
                 "realtime_start": vintage.isoformat(),
@@ -236,11 +336,28 @@ def fetch_vintages(
                 "file_type": "json",
                 "api_key": key,
             }
-            extra = {} if deadline is None else {"deadline": deadline}
-            extra["secret"] = key
-            values = parse_fred_observations_json(get_text(FRED_SERIES_OBSERVATIONS, params, **extra))
+            resolved_empty = False
+            try:
+                values = parse_fred_observations_json(get_text(FRED_SERIES_OBSERVATIONS, params, **extra))
+            except SeriesNotFound:
+                raise
+            except VintageNotPublished:
+                if series_id not in confirmed:
+                    if not _series_exists(series_id, get_text, extra):
+                        raise SeriesNotFound(f"FRED has no series {series_id!r}; the id is wrong, not the vintage")
+                    confirmed.add(series_id)
+                # A confirmed-empty PAST vintage is a permanent fact (ALFRED coverage only extends
+                # forwards), so it is cached like any other. Without this, every scan would pay a 400
+                # and a paced slot for every month before the series began.
+                values = {}
+                resolved_empty = True
+                log.warning("fred: %s has no ALFRED coverage on %s; treating the vintage as empty",
+                            series_id, vintage.isoformat())
+            last_request = clock()
             out[vintage] = values
-            if cache_dir is not None and values:
+            # An empty vintage is only cached when it was RESOLVED as empty. A 200 that happened to
+            # carry no observations is not the same claim, and caching that would freeze a gap.
+            if cache_dir is not None and (values or resolved_empty):
                 _write_cache(_cache_file(cache_dir, series_id, vintage), series_id, vintage, values)
         return out
     for start in range(0, len(missing), VINTAGES_PER_REQUEST):
