@@ -415,6 +415,18 @@ def _sports_rank(row: dict) -> tuple[int, int, float]:
         group = 2
     score = edge_sigma_score(row.get("edge_pct"), (row.get("raw_payload") or {}).get("sigma"))
     if score is None:
+        # A partly-publishing feed compares INCOMMENSURABLE UNITS in this one key, deliberately, and
+        # the ordering that produces is biased toward the scored rows. A scored row's key is a
+        # z-score, an unscored row's is its edge in decimal, and a probability-space sigma is
+        # always < 1, so `edge / sigma > edge`: at equal edge, a scored row always outranks an
+        # unscored one, however vague the distribution that earned it.
+        #
+        # The alternative is inventing a sigma for the row that has none, which is the one thing
+        # this feature must never do -- a made-up sigma ranks confidently off nothing, and
+        # 0.10 / 0.005 is the cap. So the bias stands, it is recorded here rather than left to be
+        # discovered, and the page's sentence says it out loud ("...wherever the feed publishes one,
+        # and by raw edge for the rest"), because a reader comparing a 4pp z-scored row against a
+        # 4pp unscored one is owed the reason one of them led.
         score = float(row.get("edge_pct") or 0)
     return group, _TIER_ORDER.get(tier, 9), -score
 
@@ -429,7 +441,10 @@ def _ranking_mode(rows: list[dict]) -> str:
     `edge_sigma` means the score was in play for at least one row — which is exactly the condition
     under which the sort stopped being a pure raw-edge sort. A *published* sigma of zero counts,
     because it was floored and scored like any other value and the sort did use it; a page reporting
-    `raw_edge` there would be describing a sort that did not happen. An empty set reports
+    `raw_edge` there would be describing a sort that did not happen. A *negative* sigma does not
+    count, because the score is `None` for it: a corrupt value is handled exactly as an absent one
+    is, so it is never the thing that put a row on the board, and a page must not claim the sort used
+    confidence because one broken predictor published a negative width. An empty set reports
     `raw_edge`: nothing was ranked, so the answer that claims the least is the honest one.
     """
     for row in rows:

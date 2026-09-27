@@ -11,6 +11,15 @@ information in it, which is the one thing this feature must not do.
 The second half of the file is about the other half of that promise. A score that is never used, and
 a page that cannot say which ranking it used, are the same dishonesty one layer up: the feature
 would exist, and nothing on the page would admit that it is inert.
+
+The refusals are three-valued, and telling them apart IS the test. A missing sigma is today's normal
+state and falls back. A published ZERO is degenerate but real -- a distribution with no width is a
+distribution that was measured -- so it is floored and scored, and the response says `edge_sigma`
+because the sort really did consume it. A NEGATIVE sigma is neither: it is corrupt input, and it is
+refused exactly as a missing one is, because flooring it hands the row the cap and the top of the
+board. The third case arrived on review (2026-09-27): a test named for a negative sigma was asserting
+a negative EDGE, so the negative-sigma branch had a name, a docstring clause, and no coverage at all
+-- and the value it was hiding was 20.0.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -73,14 +82,63 @@ class TestScore:
         as it applies to zero. The floor is not a stand-in for a missing number."""
         assert edge_sigma_score(0.10, 0.0001) == pytest.approx(0.10 / sigma_floor, abs=0.001)
 
-    def test_a_negative_sigma_scores_negative_rather_than_as_a_large_disagreement(self):
-        """The market being MORE confident than we are is the opposite of a wide disagreement.
+    def test_a_negative_EDGE_is_scored_negative_rather_than_as_a_large_disagreement(self):
+        """A negative EDGE, which is a real value: the market disagrees with us, or we are on the
+        wrong side of it.
 
+        The market being MORE confident than we are is the opposite of a wide disagreement.
         `abs()` here would score -0.10 at a tight sigma as +6.7, and `_sports_rank` negates the
         score, so a row whose edge points the wrong way would lead its tier instead of trailing it.
         That is a change in what the sign means, not a rounding detail.
+
+        (Named after its EDGE on purpose. This test used to be called `test_a_negative_sigma_...`
+        while asserting a negative edge, which left a branch nothing covered: a negative SIGMA is a
+        different value with the opposite answer, and it is pinned by the test below.)
         """
         assert edge_sigma_score(-0.10, 0.015) == pytest.approx(-6.667, abs=0.001)
+
+    def test_a_NEGATIVE_sigma_is_refused_rather_than_floored_to_the_cap(self):
+        """A negative sigma is corrupt input, not a degenerate real value, and it is the one thing
+        this feature must not turn into a rank.
+
+        Flooring it hands it the floor, so 0.10 / 0.005 = 20.0 -- SIGMA_SCORE_CAP, the highest score
+        the feature can produce and the top of the board. A predictor that published a negative width
+        would therefore lead its own tier, which is the same failure as flooring a MISSING sigma
+        (see above) wearing a different hat, and it is worse: a missing sigma is today's normal
+        state and visible to the reader, whereas a negative one only ever appears when something has
+        already gone wrong upstream.
+
+        There is no third option. Scoring it would mean inventing a confidence the feed never had,
+        and this feature exists to refuse exactly that.
+        """
+        assert edge_sigma_score(0.10, -0.05) is None
+        # Any negative width, not one magnitude: a tiny negative floors as hard as a large one.
+        assert edge_sigma_score(0.10, -0.0001) is None
+        # Including alongside an edge that is itself negative, so the two refusals are independent.
+        assert edge_sigma_score(-0.10, -0.05) is None
+
+    def test_a_zero_sigma_is_still_floored_so_the_refusal_above_is_not_just_the_floor(self):
+        """The load-bearing half of the pair: -0.0 and 0.0 are the same number to `sigma < 0`, and
+        the boundary is on the sign rather than on `sigma <= 0`."""
+        assert edge_sigma_score(0.10, 0.0) == SIGMA_SCORE_CAP
+        assert edge_sigma_score(0.10, -0.0) == SIGMA_SCORE_CAP
+
+
+class TestBoolIsNotANumber:
+    """`bool` is an `int` subclass and `float(True)` is 1.0, so the numeric checks have to exclude it
+    explicitly. Unreachable from jsonb, so these are cosmetic guards -- which is exactly why they need
+    a test, since a branch with no test is a branch nobody re-reads."""
+
+    def test_a_bool_edge_is_not_a_one_pp_edge(self):
+        """Without the guard this is 1.0 / 0.05 = 20.0: the cap, from a JSON `true` in the edge."""
+        assert edge_sigma_score(True, 0.05) is None
+        assert edge_sigma_score(False, 0.05) is None
+
+    def test_a_bool_sigma_is_not_a_full_width_confident_forecast(self):
+        """Without the guard this is 0.10 / 1.0 = 0.1 -- scored as though the predictor had published
+        a 100pp-wide distribution and were therefore the most confident thing on the board."""
+        assert edge_sigma_score(0.10, True) is None
+        assert edge_sigma_score(0.10, False) is None
 
 
 # ── the ranking, on real-shaped database rows ──────────────────────────────────────────────────
@@ -145,6 +203,24 @@ class TestRankFallsBackToTheRawEdge:
         right_way = _edge("P", edge_pct=0.10, sigma=0.015)
         assert _sports_rank(right_way) < _sports_rank(wrong_way)
 
+    def test_a_corrupt_sigma_cannot_lead_its_tier(self):
+        """The negative sigma refused above, seen through the sort that consumes it.
+
+        Floored, a -0.05 sigma scores this 2pp edge at 2.0 / 0.005 = 4.0, which is a HIGHER score
+        than the honest 10pp edge below it -- so the row from the broken predictor leads. That is the
+        whole failure in one line of test data: nothing about this edge is special, and the only
+        reason it would lead is that its denominator was corrupt.
+
+        The corrupt row falls back to its own 0.02 edge, so it ranks below the honest 0.10. Nothing
+        else about the ranking changes: same group, same tier, same key shape.
+        """
+        corrupt = _edge("X", edge_pct=0.02, sigma=-0.05)   # refused -> falls back to 0.02
+        honest = _edge("H", edge_pct=0.10, sigma=0.05)     # scored -> 2.0
+        assert edge_sigma_score(corrupt["edge_pct"], corrupt["raw_payload"]["sigma"]) is None
+        assert _sports_rank(honest) < _sports_rank(corrupt), (
+            "a sigma that came from a broken predictor must not buy its row the top of the tier"
+        )
+
     def test_tier_order_is_untouched_by_the_score(self):
         """The confidence score ranks WITHIN a tier. It must not let a filtered row with a huge
         score outrank a top pick, which is the one thing the group ordering exists to prevent."""
@@ -177,6 +253,25 @@ class TestRankingMode:
     def test_an_empty_result_set_reports_raw_edge(self):
         """Nothing was ranked, so the conservative answer is the one that claims the least."""
         assert _ranking_mode([]) == "raw_edge"
+
+    def test_a_set_whose_ONLY_sigma_is_corrupt_reports_raw_edge(self):
+        """A negative sigma scores to `None`, so it did not decide anything -- and a page that says
+        "ranked by edge over the predictor's own sigma" here is telling the reader the sort used a
+        confidence it refused to use.
+
+        The difference from `test_a_degenerate_published_sigma_still_counts_as_edge_sigma` above is the
+        whole point of the pair: a published ZERO is a degenerate value the sort really did consume
+        (floored), and a negative one is corrupt input it consumed not at all. Same literal field,
+        opposite answers, and the page's sentence turns on the distinction.
+        """
+        assert _ranking_mode([_edge("A", edge_pct=0.10, sigma=-0.05)]) == "raw_edge"
+
+    def test_a_corrupt_sigma_does_not_hide_a_real_one(self):
+        """Mixed set, and the mode reports what the sort actually did: the honest row was scored, so
+        the ranking is `edge_sigma`. The corrupt row falls back to its own edge and is still ranked,
+        correctly, just not on a score."""
+        rows = [_edge("A", edge_pct=0.10, sigma=-0.05), _edge("B", edge_pct=0.10, sigma=0.02)]
+        assert _ranking_mode(rows) == "edge_sigma"
 
 
 class _Q:

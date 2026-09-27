@@ -6,6 +6,7 @@ import {
   TIER_LABELS,
   formatEdgePct,
   groupByTier,
+  rankingSentence,
   rejectReasonLabel,
   type SportsEdge,
   type SportsEdgesResponse,
@@ -138,15 +139,11 @@ export default function SportsEdges() {
           snapshots; the reviewer never changes them. Reviewer check: {card.approved.n} approved vs{" "}
           {card.rejected.n} rejected settled picks ({card.n_settled}/{card.min_settled} needed), verdict{" "}
           <b>{card.verdict}</b>.{" "}
-          {/* Which ranking ordered the table, stated rather than implied. The score is
-              edge / sigma, and sigma is null on every game the feed publishes today, so the sort
-              falls back to raw edge -- and a page that says "ranked by confidence" while ranking
-              by raw edge is worse than one that never claimed it. The edge_sigma sentence covers
-              the partly-published case too: the score is per row, so rows whose feed carries no
-              sigma are still ranked on their raw edge. */}
-          {data.ranking === "edge_sigma"
-            ? "Ranked by edge over the predictor's own sigma wherever the feed publishes one, and by raw edge for the rest."
-            : "Ranked by raw edge: the feed reports no sigma yet, so there is no confidence to rank on."}
+          {/* Which ranking ordered the table. The sentences, and the reasoning behind their exact
+              wording, live in `rankingSentence` in @/lib/sportsEdges with their tests -- that branch
+              used to live here with nothing covering it, and getting it backwards is the failure this
+              feature exists to prevent. This is a caller, deliberately. */}
+          {rankingSentence(data.ranking)}
         </p>
       </header>
 

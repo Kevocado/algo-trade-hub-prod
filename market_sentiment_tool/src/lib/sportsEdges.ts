@@ -73,7 +73,7 @@ export interface SportsEdgesResponse {
    * and the page says which, because claiming to rank by confidence while ranking by raw edge is
    * worse than never claiming it.
    */
-  ranking: "edge_sigma" | "raw_edge";
+  ranking: SportsRanking;
   reviewer_scorecard: {
     n_settled: number;
     min_settled: number;
@@ -81,6 +81,45 @@ export interface SportsEdgesResponse {
     rejected: ScorecardSide;
     verdict: "insufficient" | "keep" | "drop";
   };
+}
+
+export type SportsRanking = "edge_sigma" | "raw_edge";
+
+/**
+ * Which ranking ordered the table, in the only sentence that says so.
+ *
+ * This lives here, with the other pure helpers and their tests, rather than as a ternary in the
+ * page's header, because that ternary was the one branch in this feature with NO coverage: inverting
+ * it -- or hardcoding either sentence -- is a page that claims to rank by confidence while ranking
+ * by raw edge, which is the precise failure the feature exists to prevent, and the entire Python
+ * suite stays green straight through it. The sentence is the only thing telling a reader which
+ * ranking they are looking at, so if it is wrong the feature is worse than not shipping it.
+ *
+ * There are three states the backend can report, and the field carries only two literals:
+ *
+ * - `raw_edge`: no row carries a sigma, so nothing was scored. Today's state.
+ * - `edge_sigma`, every row scored: the feed publishes a sigma for the whole board.
+ * - `edge_sigma`, only some rows scored: the feed publishes sigma for some games. The sort is
+ *   PER ROW, so a row without one falls back to its raw edge and the two kinds of key are compared
+ *   in one sort. `sigma` is deliberately not in the served row payload, so the page cannot tell
+ *   this state from the one above -- and must not have to. Hence ONE `edge_sigma` sentence, worded
+ *   to be true in both ("wherever the feed publishes one, and by raw edge for the rest"): it
+ *   under-claims on a fully scored board, which is harmless, rather than over-claiming on a partly
+ *   scored one, which is the dishonesty. A third literal would need a third signal the response does
+ *   not send.
+ *
+ * A `null`/`undefined` field is a backend predating the field, and degrades to the sentence that
+ * claims the least.
+ */
+export const RANKING_SENTENCE: Record<SportsRanking, string> = {
+  edge_sigma:
+    "Ranked by edge over the predictor's own sigma wherever the feed publishes one, and by raw edge for the rest.",
+  raw_edge:
+    "Ranked by raw edge: the feed reports no sigma yet, so there is no confidence to rank on.",
+};
+
+export function rankingSentence(ranking: SportsRanking | null | undefined): string {
+  return ranking === "edge_sigma" ? RANKING_SENTENCE.edge_sigma : RANKING_SENTENCE.raw_edge;
 }
 
 export const TIER_LABELS: Record<SportsTier, string> = {

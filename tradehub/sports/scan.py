@@ -62,17 +62,34 @@ def edge_sigma_score(edge_pct: Any, sigma: Any) -> float | None:
     of conservative and precisely the failure the feature exists to prevent. So absent sigma yields
     no score, and `_sports_rank` falls back to the raw edge.
 
-    The floor is for a *published* sigma of zero or less, which is a real value that would otherwise
+    The floor is for a *published* sigma of exactly zero, which is a real value that would otherwise
     divide by zero. Present-but-degenerate and absent are different facts and get different handling.
+
+    A NEGATIVE sigma is neither: it is corrupt input, not a degenerate real value, and it returns
+    `None` for the same reason a missing one does. Flooring it hands it the floor, so 0.10 / 0.005 =
+    20.0 -- the cap, the top of the board -- and a sigma that came from a broken predictor would rank
+    its row first, which is the identical failure to flooring a missing sigma and the reason the
+    missing case is load-bearing above. There is no way to score a disagreement measured with a
+    negative width, and the alternative to declining is inventing a confidence the feed never had.
 
     The sign is kept, so a negative edge scores negative. `abs()` here would score a -0.10 edge at a
     tight sigma as +6.7, and the caller negates the score to sort descending, which would put a row
     whose edge points the wrong way at the top of its tier. The edge's direction is the one thing
-    about it that is not a matter of taste.
+    about it that is not a matter of taste. (A negative EDGE is a real value -- the market disagrees
+    with us, or we are on the wrong side -- and a negative SIGMA is not. One is scored, one is
+    refused, and the tests name each after which it is.)
+
+    `bool` is excluded on both sides, because it is an `int` subclass in Python and `float(True)` is
+    1.0: a JSON `true` in the edge position would score 1.0 / sigma, and in the sigma position it
+    would be a sigma of 1.0 -- a full-width, perfectly confident forecast, published by a bug.
+    Unreachable from jsonb as it happens, but the guard is one line and the value it would accept is
+    catastrophic rather than merely wrong.
     """
     if not isinstance(edge_pct, (int, float)) or isinstance(edge_pct, bool):
         return None
     if not isinstance(sigma, (int, float)) or isinstance(sigma, bool):
+        return None
+    if sigma < 0:
         return None
     denominator = max(float(sigma), sigma_floor)
     return min(round(float(edge_pct) / denominator, 4), SIGMA_SCORE_CAP)
