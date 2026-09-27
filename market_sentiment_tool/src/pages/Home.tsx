@@ -18,7 +18,7 @@ const chartData = [
 
 export default function Home() {
   const { metrics, loading: mLoading } = usePortfolioMetrics();
-  const { portfolio, loading: pLoading } = usePortfolio();
+  const { portfolio, positions: paperPositions, loading: pLoading } = usePortfolio();
   const { edges, loading: eLoading } = useMarketEdges();
 
   const loading = mLoading || pLoading || eLoading;
@@ -42,7 +42,8 @@ export default function Home() {
   const balance = metrics?.cash_balance ?? 0;
   const portfolioValue = metrics?.total_value ?? 0;
   const dailyPnL = metrics?.daily_pnl ?? 0;
-  const positions = portfolio?.open_positions ?? [];
+  // From the API's paper ledger. Always empty today: this product places no orders.
+  const positions = paperPositions;
 
   const isPnLPositive = dailyPnL >= 0;
 
@@ -177,38 +178,51 @@ export default function Home() {
       {/* Bottom Row: Open Positions */}
       <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
         <CardHeader className="bg-slate-900/20 border-b border-slate-800">
-          <CardTitle className="text-white">Live Operations</CardTitle>
-          <CardDescription className="text-slate-400">Active Kalshi contracts currently managed by the Hub.</CardDescription>
+          <CardTitle className="text-white">Paper Ledger</CardTitle>
+          <CardDescription className="text-slate-400">
+            A record of positions the Hub would have taken. It places no orders, so this stays empty
+            unless a paper-trading feature is switched on deliberately.
+          </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader className="bg-slate-900/50">
               <TableRow className="hover:bg-transparent border-slate-800">
-                <TableHead className="w-[300px] pl-6 text-slate-400">Position Ticker</TableHead>
-                <TableHead className="text-slate-400 text-right">Quantity</TableHead>
-                <TableHead className="text-slate-400 text-right">Avg Entry</TableHead>
-                <TableHead className="text-slate-400 text-right">Current Price</TableHead>
-                <TableHead className="text-slate-400 text-right pr-6">Cost Basis</TableHead>
+                <TableHead className="w-[300px] pl-6 text-slate-400">Market</TableHead>
+                <TableHead className="text-slate-400 text-right">Side</TableHead>
+                <TableHead className="text-slate-400 text-right">Contracts</TableHead>
+                <TableHead className="text-slate-400 text-right">Avg Cost</TableHead>
+                <TableHead className="text-slate-400 text-right pr-6">P&amp;L (cents)</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {positions.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-10 text-slate-500">No active positions detected in Kalshi account.</TableCell>
+                  <TableCell colSpan={5} className="text-center py-10 text-slate-500">
+                    This product places no orders. Nothing is ever bought or sold &mdash; every row on this
+                    site is a suggestion, and an engine is only promoted once its settled results beat
+                    the market after fees.
+                  </TableCell>
                 </TableRow>
               ) : (
                 positions.map((pos, idx) => (
                   <TableRow key={idx} className="border-slate-800 hover:bg-slate-800/30 transition-colors">
-                    <TableCell className="font-semibold text-white pl-6">{pos.ticker}</TableCell>
+                    <TableCell className="font-semibold text-white pl-6">{pos.ticker ?? "—"}</TableCell>
                     <TableCell className="text-right font-medium text-slate-300">
-                      <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
-                        {pos.position > 0 ? 'YES' : 'NO'} {Math.abs(pos.position)}
-                      </Badge>
+                      {pos.side ? (
+                        <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
+                          {pos.side.toUpperCase()}
+                        </Badge>
+                      ) : (
+                        "—"
+                      )}
                     </TableCell>
-                    <TableCell className="text-right text-slate-400 font-medium">{pos.average_price}¢</TableCell>
-                    <TableCell className="text-right font-bold text-white">{pos.current_price ? pos.current_price + '¢' : '—'}</TableCell>
+                    <TableCell className="text-right text-slate-400 font-medium">{pos.contracts ?? "—"}</TableCell>
+                    <TableCell className="text-right font-bold text-white">
+                      {typeof pos.avg_cost_cents === "number" ? `${pos.avg_cost_cents}¢` : "—"}
+                    </TableCell>
                     <TableCell className="text-right pr-6 font-bold text-slate-300">
-                      ${(pos.total_traded / 100).toFixed(2)}
+                      {typeof pos.pnl_cents === "number" ? pos.pnl_cents.toFixed(1) : "—"}
                     </TableCell>
                   </TableRow>
                 ))
