@@ -169,3 +169,74 @@ conclusion §5 reached by reasoning and this run confirms by measurement.
 The untested remainder: §5 also suggested checking whether the market's price correlates with the
 nowcast publication *timestamp* specifically. The flat Brier curve is strong evidence it does not, but a
 direct regression on publication time would be the cleaner test and is not what I ran.
+
+---
+
+# Weather: the calibration hypothesis is refuted, and provably so
+
+§5's weather hypothesis was that the failure is **calibration, not discrimination**: *"the 60–70% bucket
+is off by 12–21pp, which is a calibration failure, not a discrimination failure: the model ranks fine and
+states its confidence too tightly."* The prescription was to recalibrate sigma per bucket per lead, with
+the bar being the market's 0.0971–0.1124 rather than zero.
+
+This is a testable claim with a clean answer, because the per-bucket calibration data already exists
+(`BacktestResult.cal_buckets`) and the CLI simply does not print it. Run on 2026-06-01 → 2026-09-20 —
+reproducing the published 0.1242 / 0.09713 on 672 decisions exactly:
+
+| bucket | n | predicted | observed | miss (pp) | SE (pp) | z |
+| --- | --- | --- | --- | --- | --- | --- |
+| 50-60 | 13 | 0.5568 | 0.5385 | −1.8 | 13.8 | −0.13 |
+| 60-70 | 23 | 0.6602 | 0.7826 | **+12.2** | 8.6 | **1.42** |
+| 70-80 | 227 | 0.7723 | 0.7489 | −2.3 | 2.9 | −0.81 |
+| 80-90 | 227 | 0.8456 | 0.9031 | **+5.8** | 2.0 | **2.93** |
+| 90-100 | 182 | 0.9493 | 0.9231 | −2.6 | 2.0 | −1.33 |
+
+## Two findings, and the first one indicts the gate
+
+**1. The gate's stated reason is inside the noise.** `calibration_max_dev: 0.10` rejects weather for
+"calibration miss 12.2% in bucket 60-70 (limit 10pp)". That bucket has **n = 23**, giving a standard
+error of **8.6pp** — the miss is **z = 1.42**, which is not significant. A 23-sample bucket is vetoing
+an engine on a coin-flip.
+
+This is a real defect independent of the model: the calibration check applies a fixed absolute
+deviation with **no minimum n and no significance test**, so thin buckets can reject a healthy engine.
+CFB's calibration already contains buckets at n = 0. A bucket that thin can reject on any fluctuation.
+The fix is a minimum-n or a significance test on the miss, and it belongs in `check_candidate` next to
+the existing `calibration_min_n` check.
+
+**2. Recalibrating sigma cannot close the gap, and this is provable rather than inferred.** Take the
+model's predictions and replace each one with **its own bucket's observed rate** — that removes
+calibration error entirely and leaves only resolution. It is the best Brier any pure recalibration could
+ever achieve:
+
+```
+model Brier, actual                              = 0.12420
+model Brier if PERFECTLY calibrated (oracle)     = 0.12294
+market Brier                                     = 0.09713
+```
+
+**The oracle is still 0.0258 worse than the market.** Perfect calibration buys 0.0013 of a 0.0271 gap —
+about 5%. So the hypothesis is refuted: the weather model's problem on this series is **discrimination**,
+and no amount of sigma work touches it.
+
+## A correction to the original diagnosis
+
+The prior report described the 60–70% miss as *sigma being too tight*, i.e. overconfident. The
+significant miss is in **80–90** (z = 2.93) and it points the **other way**: the model predicts 84.6%
+where the outcome is 90.3%, so it is **under**confident there. And the bucket the gate actually fires
+on (60–70) is the one that is not significant. So both the bucket and the direction in the original
+diagnosis are wrong.
+
+That does not rescue the engine — the oracle bound is what settles it — but it does mean the calibration
+work would have been aimed at the wrong bucket in the wrong direction.
+
+## Conclusion for weather
+
+**Refuted as stated.** Not "recalibrate sigma" but "the model is less accurate than the market on
+`KXHIGHNY` over this window, and the residual is discrimination." The right response is the same as gas
+and CPI: stop treating it as an edge engine and present it as a display engine, unless someone has a
+discrimination hypothesis (better features, a different target) rather than a confidence one.
+
+Separately and independently worth fixing: **the calibration gate should not reject on a thin bucket.**
+That one is actionable now, needs no model work, and would apply to every engine behind the same check.
+
