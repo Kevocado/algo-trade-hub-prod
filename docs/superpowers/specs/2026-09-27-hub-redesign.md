@@ -45,11 +45,39 @@ settled** — the system is 8 days old and the nearest games are CFB week 5 on 2
 fails `calibration_insufficient` (100/100), nothing is a candidate, no reviews run, and nothing
 settles. The page that would prove the product works is gated on the product already working.
 
-**The inversion (approved).** Admit an edge when it is tradeable *and* the publishing predictor is
-calibrated in that price bucket **by the predictor's own published record** — NFL and CFB now ship
-`calibration` buckets and a pre-kickoff track record via `/api/kalshi-feed`. The hub's own settled
-ledger becomes the *second* gate once it has data, not the first. Every row states which gate it
-passed.
+**The inversion (approved) — but on its own it does not open this gate, and I should have checked that
+before asking for it.**
+
+`check_candidate` takes its `calibration` argument from **the predictor's own feed payload**, and the
+inversion was to admit on that payload rather than on the hub's settled ledger. But it is the *same
+payload with the same n check*, so changing who gates does not change the arithmetic. Measured from the
+live VPS feeds:
+
+| | settled, winner | spread | total | largest single bucket |
+| --- | --- | --- | --- | --- |
+| NFL | **0** | 0 | 0 | 0 |
+| CFB | 42 | 33 | 32 | **11** |
+
+`calibration.n_buckets` is **10** (it comes from the predictor, not the hub) and the hub requires
+`calibration_min_n: 20`. Clearing the gate in *every* bucket therefore needs **10 × 20 = 200** settled
+contracts. There are **42** for CFB winner and **zero buckets reach 20**. NFL has no settled history at
+all, so it cannot clear at any threshold until it has graded games.
+
+**And the two thresholds contradict each other.** The reviewer's own bar is `MIN_SETTLED = 100`
+(`sports/scorecard.py:9`) — at 100 settled it renders a verdict. The candidate filter implicitly demands
+**200**. The product must be *twice as strict* about admitting an edge as its own reviewer is about
+judging one, so it cannot surface a candidate until roughly twice as long after launch as the point at
+which the reviewer could already have declared an engine good or bad.
+
+That is the real defect, and it is arithmetic rather than design. The settings encode an intent of ~100
+settled — that is the reviewer's number — while `10 buckets × min_n 20` encodes 200. Aligning them
+(**5 buckets × min_n 20 = 100**, or 10 buckets × min_n 10 = 100) makes the gate internally coherent and
+reachable in a season rather than two.
+
+To be plain about what this does and does not buy: even at a coherent 100, CFB's 42 settled contracts
+fall short, so **the gate does not open today under any threshold consistent with the reviewer's bar**.
+What the numbers buy is an honest, reachable target instead of an unreachable one. Any claim that the
+gate is "a few more settlements away" would be false.
 
 ### A correction to the audit that preceded this spec
 
@@ -286,7 +314,14 @@ not.
 
 ## 7. What I need approved
 
-1. **The inversion** — predictor's calibration first, the hub's own settled ledger second (§3).
+1. **The inversion, plus a threshold correction it does not subsume** (§3). Approving the inversion
+   alone does not open the gate: it reorders *who* gates on the same predictor payload with the same
+   `n < 20` check. The blocker is arithmetic — `10 buckets × min_n 20 = 200` required, against 42 settled
+   (CFB) and 0 (NFL), while the reviewer's own bar is `MIN_SETTLED = 100`. Two parts: keep the inversion
+   (predictor's calibration first, hub's settled ledger second) **and** align the candidate gate with the
+   reviewer — my recommendation is 5 buckets × min_n 20 = 100, or 10 buckets × min_n 10. The gate stays
+   shut until CFB passes ~100 settled either way, and I would rather the page say that than imply
+   otherwise.
 2. **The window decision, re-put because the original approval rested on a false premise** (§3). My
    recommendation is now the opposite of what I asked for before: **keep `max_hours_to_start: 72` and
    bound the scan by it**, rather than widening to ~168h. Pricing a 144h-out game buys nothing and
