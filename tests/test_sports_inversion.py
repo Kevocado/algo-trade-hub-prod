@@ -1364,3 +1364,145 @@ def test_the_cron_path_actually_hands_the_ledger_to_the_scan(monkeypatch):
     scan_mod.run_sports_for_cron(NOW, _Supa(rows))
 
     assert seen["hub_ledger"] == _hub({"sports_nfl": {"winner": [(0.28, True), (0.28, False)]}})
+
+
+# ── the diagnostics a reader actually receives ────────────────────────────────────────────────
+#
+# The same gap has now appeared twice in this one place: a key is computed, filed in `per_sport`,
+# and never read. `per_sport` is the run's own state; the cron entry point printed `run.reports`
+# and kept `per_sport` only to decide pruning. So both of these facts were real, recorded, and
+# invisible -- which is the `feed:unknown` shape: 100 live rows carrying a version nobody could see.
+#
+# The assertion that would have caught it reads the PRINTED summary, not `per_sport` and not even
+# `sports_run_summary`. A test on either of those would stay green with the one line in
+# `scripts/scan.py` deleted, which is the same gap a third time wearing a different hat.
+
+
+def _cron_summary_for(monkeypatch, capsys, run):
+    """Run `tradehub.scripts.scan.main()` with every engine but sports stubbed to nothing and `run`
+    spliced in where `run_sports_for_cron` would have produced it; return the printed sports summary.
+
+    `main()` writes the summary to stdout as JSON, so what comes back is the exact bytes an
+    operator's `journalctl` shows, and there is no separate "is the summary wired up" question to
+    ask. The stubs are not ceremony: sports is the last step, so stubbing the three other engines
+    is what lets the assertion be about the sports summary instead of about weather data sources.
+
+    The two writes are stubbed at their SOURCE modules, not on the scan module, because `main()`
+    imports them inside its own body. `record_predictions` is not among `scripts/scan.py`'s
+    top-level imports at all, so the `monkeypatch.setattr(scan_mod, "record_predictions", ...,
+    raising=False)` that the existing deadline tests use adds a name `main` then rebinds over: the
+    real function still runs, and it happens to be harmless there only because every row list in
+    those tests is empty and it no-ops on an empty batch. Verified, not assumed.
+    """
+    from tradehub.core import supabase_client
+    from tradehub.scripts import scan as cron
+    import tradehub.predictions as predictions_mod
+
+    monkeypatch.setattr(cron, "KalshiLive", lambda *_a, **_k: object())
+    monkeypatch.setattr(cron, "scan_weather", lambda *_a, **_k: ([], []))
+    monkeypatch.setattr(cron, "scan_gas", lambda *_a, **_k: ([], []))
+    monkeypatch.setattr(cron, "cpi_scan_due", lambda _now: False)
+    monkeypatch.setattr(cron, "labor_scan_due", lambda _now: False)
+    monkeypatch.setattr(cron, "sports_due", lambda _now: True)
+    monkeypatch.setattr(cron, "latest_gate_statuses", lambda *_a, **_k: {})
+    monkeypatch.setattr(cron, "remove_closed_cpi_edges", lambda *_a, **_k: None)
+    monkeypatch.setattr(cron, "remove_closed_labor_edges", lambda *_a, **_k: None)
+    monkeypatch.setattr(cron, "remove_started_sports_edges", lambda *_a, **_k: [])
+    monkeypatch.setattr(cron, "remove_stale_edges", lambda *_a, **_k: None)
+    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda _rows: None)
+    monkeypatch.setattr(predictions_mod, "record_predictions", lambda *_a, **_k: [])
+    monkeypatch.setattr(cron, "run_sports_for_cron", lambda *_a, **_k: run)
+    # `client=` is passed, so `get_client` is never reached; no Supabase call below goes anywhere.
+    cron.main(now=NOW, live=object(), client=object())
+    return json.loads(capsys.readouterr().out)["sports"]
+
+
+def _cfb_run_three_days_early():
+    """A real CFB scan in which both facts are true at once, three days before the recorded games.
+
+    Temple@Army is then 56h out and priced; Stanford@Georgia Tech is 86.5h out, past
+    `max_hours_to_start`, so exactly one game is dropped before it is ever priced -- which is what
+    `too_far` counts, and what makes this run's short board different from a run that priced
+    nothing. The ledger carries two settled rows naming a kind outside `sports.kinds.KINDS`, so
+    that kind has no band anywhere and the run has to say the kind is one this build cannot read
+    rather than one with nothing settled.
+    """
+    ledger, _supa = _ledger([_row("sports_cfb", 0.72, "yes", "winner"),
+                             _row("sports_cfb", 0.51, "yes", "moneyline"),
+                             _row("sports_cfb", 0.52, "no", "moneyline")])
+    return scan_mod.run_sports_scan(
+        NOW - timedelta(days=3), _Kalshi(_recorded_markets("cfb")),
+        fetch=lambda url, **_kw: _recorded_feed("cfb"), hub_ledger=ledger, sports=("cfb",),
+    )
+
+
+def test_the_summary_a_reader_receives_carries_both_diagnostic_facts(monkeypatch, capsys):
+    """The property, end to end, through the surface a human actually reads.
+
+    Both facts are real, not synthesised: the scan genuinely drops one game at the window's far
+    bound, and the ledger read genuinely finds settled rows it cannot file. And both are asserted
+    on the cron entry point's printed JSON, because that print is the whole surface.
+    """
+    run = _cfb_run_three_days_early()
+    # The facts exist, and they are the ones claimed: one game past the bound, two unreadable rows.
+    # Without these the summary assertions could be satisfied by an empty tally and a zero count.
+    assert run.per_sport["cfb"]["too_far"] == 1, run.per_sport["cfb"]
+    assert run.per_sport["cfb"]["unrecognised_kinds"] == {"moneyline": 2}, run.per_sport["cfb"]
+    assert run.reports["cfb"]["markets_priced"] == 2, "the 56h game must still be priced"
+
+    printed = _cron_summary_for(monkeypatch, capsys, run)
+
+    assert printed["cfb"]["too_far"] == 1, printed["cfb"]
+    assert printed["cfb"]["unrecognised_kinds"] == {"moneyline": 2}, printed["cfb"]
+    # The scan's own numbers survive: the diagnostics are folded IN, not substituted for the report.
+    assert printed["cfb"]["markets_priced"] == 2, printed["cfb"]
+
+
+def test_the_diagnostics_survive_for_a_sport_that_never_scanned(monkeypatch, capsys):
+    """Why the fold is per sport and not a join against the reports that happened to be written.
+
+    `unrecognised_kinds` is learned when the ledger is read, which happens before any of the exits
+    in `run_sports_scan`, so a feed that is down still leaves the run with a build gap to report. A
+    projection that iterated the reports and looked each sport up would drop exactly that, and the
+    run where a sport did not scan is precisely the run somebody opens the summary to find out why.
+
+    The `too_far` on this sport is `None`, not 0: there was no scan to count, and 0 would claim the
+    window dropped nothing rather than that nothing was looked at.
+    """
+    def no_feed(_url, **_kw):
+        raise feed_mod.FeedUnavailable("404")
+
+    run = scan_mod.run_sports_scan(
+        BOTH_NOW, _Kalshi({**_recorded_markets("nfl"), **_recorded_markets("cfb")}), fetch=no_feed,
+        hub_ledger=_hub({"sports_cfb": {"winner": []}}, {"sports_cfb": {"moneyline": 3}}),
+        sports=("nfl", "cfb"),
+    )
+    printed = _cron_summary_for(monkeypatch, capsys, run)
+
+    assert printed["cfb"]["unrecognised_kinds"] == {"moneyline": 3}, printed["cfb"]
+    assert printed["cfb"]["too_far"] is None, (
+        "a sport that never scanned has no count, and 0 would be a claim it did not make"
+    )
+    # NFL is the control: it shares the run and has no gap, so the key is present and empty rather
+    # than absent. Without it the assertion above would be satisfied by a key that is always full.
+    assert printed["nfl"]["unrecognised_kinds"] == {}, printed["nfl"]
+
+
+def test_a_sport_the_reports_never_mentioned_still_gets_its_facts():
+    """The projection walks `per_sport`, not `reports`, and this is the case that says why.
+
+    Every path in `run_sports_scan` today writes both, so the two dicts are in step and a projection
+    could iterate either one and pass every test above -- including the two that read the printed
+    summary. That is exactly why this is pinned separately rather than left as a comment: a join
+    written the obvious way would drop a sport's diagnostics the first time a path forgot to write a
+    report for it, and a dropped diagnostic is invisible in the one surface that exists.
+
+    Hand-built, so the shape really is "a sport with state and no report" rather than whatever the
+    orchestrator happens to produce today.
+    """
+    run = scan_mod.SportsRun([], [], {}, {"cfb": {"feed_ok": False, "edges": [],
+                                                   "too_far": None,
+                                                   "unrecognised_kinds": {"moneyline": 2}}})
+    summary = scan_mod.sports_run_summary(run)
+
+    assert summary == {"cfb": {"too_far": None, "unrecognised_kinds": {"moneyline": 2}}}, summary

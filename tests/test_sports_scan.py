@@ -194,7 +194,13 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
     assert [row for rows in edge_writes for row in rows] == [
         {"edge_type": "SPORTS", "engine": "sports_nfl", "market_ticker": "T1", "gate_status": "SHADOW"}
     ]
-    assert json.loads(capsys.readouterr().out)["sports"] == {"nfl": {"matched": 1}}
+    # The printed sports summary is `run.reports` with the per-sport diagnostics folded in -- the
+    # keys are the run's own (`too_far`, `unrecognised_kinds`) and this hand-built `per_sport`
+    # carries neither, so both read as `None`: "not measured", which is the truth about a run with
+    # no scan behind it, and not the `0` that would claim the window dropped nothing.
+    assert json.loads(capsys.readouterr().out)["sports"] == {
+        "nfl": {"matched": 1, "too_far": None, "unrecognised_kinds": None}
+    }
 
 
 def test_scan_main_survives_a_sports_crash(monkeypatch, capsys):

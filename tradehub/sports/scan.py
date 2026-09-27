@@ -359,8 +359,9 @@ class SportsRun:
     # scanned, and {feed_ok, edges, unrecognised_kinds} on the three early exits in
     # `run_sports_scan` (deadline, feed 404, every series failed), which have no scan result to
     # count. So read these with .get().
-    # `too_far` is games the far bound dropped before pricing; nothing consumes it yet, it is here
-    # so the run state can tell "priced then rejected" from "never priced" (see SportScan.too_far).
+    # `too_far` is games the far bound dropped before pricing. It is the difference between "priced
+    # and rejected" and "never priced", which is the first question anybody asks of an empty board
+    # (see SportScan.too_far). It reaches a reader through `sports_run_summary`, not from here.
     # `unrecognised_kinds` is on EVERY path, including the early exits, because it is learned when
     # the ledger is read -- which happens before any of them -- and is not a fact about the scan. A
     # key that only appears on the runs that scanned is a key a reader has to wonder about on the
@@ -368,6 +369,42 @@ class SportsRun:
     # The write_ok flag is filled in by the caller, which is the only place that knows whether the
     # upsert landed.
     per_sport: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+# The per-sport keys the printed run summary carries on top of the scan's own numbers. They are
+# named as one list rather than copied across key by key, because the reason this function exists
+# is that a key added to `per_sport` reaches nobody: the cron entry point takes `run.reports` as its
+# sports summary and keeps `per_sport` only to decide pruning. That is the `feed:unknown` shape --
+# a real measurement, recorded, that no human could see. One list is the answer to "the next
+# diagnostic key will not be carried either".
+DIAGNOSTIC_KEYS = ("too_far", "unrecognised_kinds")
+
+
+def sports_run_summary(run: SportsRun) -> dict[str, Any]:
+    """`run.reports` with the per-sport diagnostics folded in: the summary a human receives.
+
+    Two facts live only in `per_sport`, and each is the difference between two readings that look
+    identical otherwise:
+
+    - `too_far` -- games the window's far bound dropped before pricing. Without it, a run that
+      priced two of three games is indistinguishable from a run that priced none.
+    - `unrecognised_kinds` -- settled rows naming a kind outside `sports.kinds.KINDS`, which the hub
+      record cannot hold. Without it, a kind with no band is indistinguishable from a kind this
+      deployment cannot read.
+
+    Every sport in `per_sport` gets both, whether or not it scanned: a sport whose report entry has
+    to be synthesised is a sport whose diagnostics would otherwise be dropped by the join, and a
+    silently dropped diagnostic is the shape this exists to remove. A sport that never scanned has
+    no count to give, so `too_far` is `None` there -- "not measured", which is not the claim `0`
+    would be.
+    """
+    summary: dict[str, Any] = dict(run.reports)
+    for sport, state in run.per_sport.items():
+        report = dict(summary.get(sport) or {})
+        for key in DIAGNOSTIC_KEYS:
+            report[key] = state.get(key)
+        summary[sport] = report
+    return summary
 
 
 def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch_feed, store=None,
