@@ -63,6 +63,25 @@ GAS_DECISION_LEAD = timedelta(hours=2)
 CPI_DECISION_LEAD = timedelta(minutes=25)  # 08:00 ET on release morning (close is 08:25 ET)
 
 
+def gas_version_for_lead(lead_hours: float) -> str:
+    """`engine_version` for a gas run, carrying the decision lead when it is not the production one.
+
+    `engine_version` is what the promotion evidence is keyed on, so a run recorded at a 12h lead and
+    tagged `gas-v1` is indistinguishable from a production 2h run -- and the two do not agree. Gas is
+    4.29x behind the market at 2h and 2.16x behind at 12h (#24), so that is not a cosmetic
+    difference: it is the difference between an experiment and evidence about the live engine.
+
+    Tagging rather than refusing, which was the alternative. Refusing would discard the experiment,
+    which is worth keeping because it is informative; a tag makes the row self-describing and keeps it
+    out of the production population by construction.
+    """
+    if lead_hours == GAS_DECISION_LEAD.total_seconds() / 3600.0:
+        return GAS_ENGINE_VERSION
+    # `6` not `6.0`, but `6.5` stays `6.5`: `gas-v1-lead6h` reads as a configuration, not a float.
+    hours = f"{lead_hours:g}"
+    return f"{GAS_ENGINE_VERSION}-lead{hours}h"
+
+
 
 def fetch_weather_forecasts(
     city: City,
@@ -309,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
             markets, aaa, rbob, roll_dates=roll_dates,
             decision_lead=timedelta(hours=args.gas_lead_hours),
         )
-        version = GAS_ENGINE_VERSION
+        version = gas_version_for_lead(args.gas_lead_hours)
     histories = _histories(
         client,
         [market for market in markets if market.ticker in {decision.market_ticker for decision in decisions}],
