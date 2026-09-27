@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { TrendingUp, Wallet, ArrowUpRight, Activity, Loader2, Brain } from "lucide-react";
 import { usePortfolio, usePortfolioMetrics } from "@/hooks/usePortfolio";
+import { moneyMetric } from "@/lib/portfolioTruth";
 import { useMarketEdges } from "@/hooks/useMarketEdges";
 import { GateBadge } from "@/components/GateBadge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -18,7 +19,7 @@ const chartData = [
 
 export default function Home() {
   const { metrics, loading: mLoading } = usePortfolioMetrics();
-  const { portfolio, loading: pLoading } = usePortfolio();
+  const { portfolio, positions: paperPositions, loading: pLoading } = usePortfolio();
   const { edges, loading: eLoading } = useMarketEdges();
 
   const loading = mLoading || pLoading || eLoading;
@@ -39,12 +40,15 @@ export default function Home() {
     );
   }
 
-  const balance = metrics?.cash_balance ?? 0;
-  const portfolioValue = metrics?.total_value ?? 0;
-  const dailyPnL = metrics?.daily_pnl ?? 0;
-  const positions = portfolio?.open_positions ?? [];
-
-  const isPnLPositive = dailyPnL >= 0;
+  // These were `?? 0`, which is not a measured zero: PnLSummary carries no daily_pnl and no
+  // cash_balance, so all three figures were missing numbers rendered as confident ones, under
+  // headings claiming live equity and real-time P&L. This product places no orders, so they are
+  // unknown until it does -- a dash, with the reason, not $0.00.
+  const totalValue = moneyMetric(metrics?.total_value, metrics);
+  const dailyPnL = moneyMetric(metrics?.daily_pnl, metrics, { signed: true });
+  const availableCash = moneyMetric(metrics?.cash_balance, metrics);
+  // From the API's paper ledger. Always empty today: this product places no orders.
+  const positions = paperPositions;
 
   // Top 3 edges with AI summary
   const topEdges = edges
@@ -100,26 +104,53 @@ export default function Home() {
             <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-widest">
               <TrendingUp className="w-4 h-4 text-emerald-500" /> Total Value
             </div>
-            <CardTitle className="text-3xl font-black text-white tracking-tight">
-              ${portfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <CardTitle
+              className={`text-3xl font-black tracking-tight ${
+                totalValue.known ? "text-white" : "text-slate-500"
+              }`}
+              title={totalValue.note}
+            >
+              {totalValue.value}
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-xs text-slate-500 font-medium uppercase tracking-tight">Live equity + settled cash across all markets.</p>
+            {/* "Live equity" was never true: no order has ever been placed. */}
+            <p className="text-xs text-slate-500 font-medium uppercase tracking-tight">
+              {totalValue.known
+                ? "Settled cash across all markets."
+                : "No orders placed, so there is no equity to report."}
+            </p>
           </CardContent>
         </Card>
 
-        <Card className={`bg-slate-900/40 border-slate-800 shadow-xl overflow-hidden group hover:border-slate-700 transition-all border-l-4 ${isPnLPositive ? 'border-l-emerald-500' : 'border-l-rose-500'}`}>
+        <Card className="bg-slate-900/40 border-slate-800 shadow-xl overflow-hidden group hover:border-slate-700 transition-all">
           <CardHeader className="pb-2">
             <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-widest">
-              <ArrowUpRight className={`w-4 h-4 ${isPnLPositive ? 'text-emerald-500' : 'text-rose-500'}`} /> Daily PnL
+              {/* Neutral when unknown: a green or red arrow would imply a direction that was never measured. */}
+              <ArrowUpRight className={`w-4 h-4 ${
+                !dailyPnL.known ? "text-slate-500" : dailyPnL.value.startsWith("-") ? "text-rose-500" : "text-emerald-500"
+              }`} /> Daily PnL
             </div>
-            <CardTitle className={`text-3xl font-black tracking-tight ${isPnLPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
-              {isPnLPositive ? '+' : ''}${dailyPnL.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <CardTitle
+              className={`text-3xl font-black tracking-tight ${
+                !dailyPnL.known
+                  ? "text-slate-500"
+                  : dailyPnL.value.startsWith("-")
+                    ? "text-rose-400"
+                    : "text-emerald-400"
+              }`}
+              title={dailyPnL.note}
+            >
+              {dailyPnL.value}
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-xs text-slate-500 font-medium uppercase tracking-tight">Real-time profit/loss for the current 24h cycle.</p>
+            {/* "Real-time profit/loss" was never true either. */}
+            <p className="text-xs text-slate-500 font-medium uppercase tracking-tight">
+              {dailyPnL.known
+                ? "Realised profit/loss for the current 24h cycle."
+                : "No orders placed, so there is no profit or loss."}
+            </p>
           </CardContent>
         </Card>
 
@@ -128,8 +159,13 @@ export default function Home() {
             <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-widest">
               <Wallet className="w-4 h-4 text-amber-500" /> Available Cash
             </div>
-            <CardTitle className="text-3xl font-black text-white tracking-tight">
-              ${balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <CardTitle
+              className={`text-3xl font-black tracking-tight ${
+                availableCash.known ? "text-white" : "text-slate-500"
+              }`}
+              title={availableCash.note}
+            >
+              {availableCash.value}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -177,38 +213,51 @@ export default function Home() {
       {/* Bottom Row: Open Positions */}
       <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
         <CardHeader className="bg-slate-900/20 border-b border-slate-800">
-          <CardTitle className="text-white">Live Operations</CardTitle>
-          <CardDescription className="text-slate-400">Active Kalshi contracts currently managed by the Hub.</CardDescription>
+          <CardTitle className="text-white">Paper Ledger</CardTitle>
+          <CardDescription className="text-slate-400">
+            A record of positions the Hub would have taken. It places no orders, so this stays empty
+            unless a paper-trading feature is switched on deliberately.
+          </CardDescription>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader className="bg-slate-900/50">
               <TableRow className="hover:bg-transparent border-slate-800">
-                <TableHead className="w-[300px] pl-6 text-slate-400">Position Ticker</TableHead>
-                <TableHead className="text-slate-400 text-right">Quantity</TableHead>
-                <TableHead className="text-slate-400 text-right">Avg Entry</TableHead>
-                <TableHead className="text-slate-400 text-right">Current Price</TableHead>
-                <TableHead className="text-slate-400 text-right pr-6">Cost Basis</TableHead>
+                <TableHead className="w-[300px] pl-6 text-slate-400">Market</TableHead>
+                <TableHead className="text-slate-400 text-right">Side</TableHead>
+                <TableHead className="text-slate-400 text-right">Contracts</TableHead>
+                <TableHead className="text-slate-400 text-right">Avg Cost</TableHead>
+                <TableHead className="text-slate-400 text-right pr-6">P&amp;L (cents)</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {positions.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center py-10 text-slate-500">No active positions detected in Kalshi account.</TableCell>
+                  <TableCell colSpan={5} className="text-center py-10 text-slate-500">
+                    This product places no orders. Nothing is ever bought or sold &mdash; every row on this
+                    site is a suggestion, and an engine is only promoted once its settled results beat
+                    the market after fees.
+                  </TableCell>
                 </TableRow>
               ) : (
                 positions.map((pos, idx) => (
                   <TableRow key={idx} className="border-slate-800 hover:bg-slate-800/30 transition-colors">
-                    <TableCell className="font-semibold text-white pl-6">{pos.ticker}</TableCell>
+                    <TableCell className="font-semibold text-white pl-6">{pos.ticker ?? "—"}</TableCell>
                     <TableCell className="text-right font-medium text-slate-300">
-                      <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
-                        {pos.position > 0 ? 'YES' : 'NO'} {Math.abs(pos.position)}
-                      </Badge>
+                      {pos.side ? (
+                        <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
+                          {pos.side.toUpperCase()}
+                        </Badge>
+                      ) : (
+                        "—"
+                      )}
                     </TableCell>
-                    <TableCell className="text-right text-slate-400 font-medium">{pos.average_price}¢</TableCell>
-                    <TableCell className="text-right font-bold text-white">{pos.current_price ? pos.current_price + '¢' : '—'}</TableCell>
+                    <TableCell className="text-right text-slate-400 font-medium">{pos.contracts ?? "—"}</TableCell>
+                    <TableCell className="text-right font-bold text-white">
+                      {typeof pos.avg_cost_cents === "number" ? `${pos.avg_cost_cents}¢` : "—"}
+                    </TableCell>
                     <TableCell className="text-right pr-6 font-bold text-slate-300">
-                      ${(pos.total_traded / 100).toFixed(2)}
+                      {typeof pos.pnl_cents === "number" ? pos.pnl_cents.toFixed(1) : "—"}
                     </TableCell>
                   </TableRow>
                 ))

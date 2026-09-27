@@ -176,3 +176,17 @@ def test_gate_status_and_engine_version_are_exposed_for_the_badge():
     assert edge["gate_status"] == "SHADOW"
     assert edge["engine"] == "sports_nfl"
     assert edge["engine_version"] == "feed:v1"
+    assert edge["model_version_known"] is True
+
+
+def test_a_placeholder_model_version_is_blanked_not_printed_as_unknown():
+    """The live page carried the literal word "unknown" under all 100 rows, because the scan stamps
+    `feed:unknown` until a feed carries a model_version. A blank plus the flag is the truth; a bare
+    "unknown" reads as a bug."""
+    row = _edge("T")
+    row["engine_version"] = "feed:unknown"   # the placeholder the scan stamps today
+    client, _ = _client([row])
+    edge = client.get("/api/sports-edges").json()["edges"][0]
+    assert edge["engine_version"] is None
+    assert edge["model_version_known"] is False
+    assert edge["gate_status"] == "SHADOW", "the gate badge must survive blanking the version"
