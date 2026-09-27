@@ -73,3 +73,47 @@ export function describePortfolio(summary: {
     body: "Paper record only. No order has been placed with real money.",
   };
 }
+
+/**
+ * One money figure, with the distinction the War Room kept getting wrong.
+ *
+ * A zero is a measurement you can act on. `null` is the absence of one, and rendering the second as
+ * the first is how a suggest-only product ends up displaying `$0.00` under "Live equity" and "Real-time
+ * profit/loss". `PnLSummary` carries no `daily_pnl` and no `cash_balance` at all, so those were never
+ * measured — they were defaulted.
+ */
+export interface MetricDisplay {
+  value: string;
+  known: boolean;
+  note: string;
+}
+
+export interface MoneyMetricOptions {
+  /** Show a leading `+` on a positive figure, as P&L cards do. Negatives keep their own sign. */
+  signed?: boolean;
+}
+
+const NO_ORDERS = "This product places no orders, so there is nothing to measure.";
+const NOT_REPORTED = "Not reported by the API.";
+
+export function moneyMetric(
+  raw: number | null | undefined,
+  book: PortfolioBook | null | undefined,
+  options: MoneyMetricOptions = {},
+): MetricDisplay {
+  if (isSuggestOnly(book)) {
+    return { value: "\u2014", known: false, note: NO_ORDERS };
+  }
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return { value: "\u2014", known: false, note: NOT_REPORTED };
+  }
+  const formatted = raw.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+    style: "currency",
+    currency: "USD",
+  });
+  // `toLocaleString` already emits "-" for a negative, so a prepended "+" would give "+-$12.00".
+  const value = options.signed && raw > 0 ? `+${formatted}` : formatted;
+  return { value, known: true, note: "" };
+}
