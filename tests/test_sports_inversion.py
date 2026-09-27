@@ -11,13 +11,20 @@ The threshold is `HUB_LEDGER_MIN_SETTLED = 100` -- the same number as the review
 and 5b). It is a named constant rather than a literal so a later ruling changes one place, and one
 test ties it to the reviewer's own constant so the two cannot drift apart silently.
 
-Two things this file also pins, because both were open questions rather than decisions:
+Three things this file also pins, because each was a live hole rather than a decision:
 
-- `n_buckets` is read off the feed, not assumed here. It is being changed from 10 to 4 in the
-  predictors, and a hub bucket set cut on different edges is not a replacement for the predictor's
-  record, it is a different measurement wearing its name.
-- The hub's ledger is read as winner rows only, so a kind it does not cover finds no bucket and is
-  rejected as `calibration_insufficient` rather than borrowing the winner model's numbers.
+- **The ledger speaks for all three kinds, per engine.** `sports/scan.py` writes `"kind": kind` into
+  every sports `predictions` row's own `raw_payload`, so the kind is a fact the hub itself recorded.
+  Publishing only winners does not narrow the record, it makes every spread and total edge
+  `calibration_insufficient` on the day the hub crosses the threshold. And one ledger shared across
+  both sports would put NFL's rows into CFB's bands: different models, different records.
+- **`choose_calibration` counts only the kind it is judging.** The threshold is about evidence for
+  the band being looked up, and that band belongs to one kind. CFB's live ledger is 42 winner / 33
+  spread / 32 total: an aggregate of 107 would hand the hub authority on a winner bucket holding 42
+  settled rows.
+- **`n_buckets` is read off the feed, not assumed here**, and the hub's bands carry
+  `orientation: "raw"` so the fact that they are cut on un-normalised side-oriented probabilities
+  travels in the data rather than living in a docstring someone has to go looking for.
 """
 import inspect
 import json
@@ -31,7 +38,7 @@ from tradehub.markets import parse_market
 from tradehub.sports import scan as scan_mod
 from tradehub.sports.candidates import HUB_LEDGER_MIN_SETTLED, check_candidate, choose_calibration
 from tradehub.sports.feed import FeedGame, parse_feed
-from tradehub.sports.hub_calibration import settled_buckets
+from tradehub.sports.hub_calibration import HUB_ORIENTATION, KINDS, settled_buckets
 from tradehub.sports.kalshi import SportsMarket
 from tradehub.sports.mapping import MatchedGame
 from tradehub.sports.scorecard import MIN_SETTLED
@@ -47,14 +54,14 @@ HUB = {"winner": [{"lo": 0.6, "hi": 0.7, "n": 120, "mean_prob": 0.65, "hit_rate"
 
 
 def test_the_predictors_own_calibration_is_used_while_the_hub_has_too_little():
-    calibration, source = choose_calibration(PREDICTOR, {"winner": []}, {})
+    calibration, source = choose_calibration(PREDICTOR, {"winner": []}, {}, "winner")
 
     assert source == "predictor"
     assert calibration is PREDICTOR
 
 
 def test_the_hubs_ledger_takes_over_once_it_has_enough():
-    calibration, source = choose_calibration(PREDICTOR, HUB, {})
+    calibration, source = choose_calibration(PREDICTOR, HUB, {}, "winner")
 
     assert source == "hub_ledger"
     assert calibration is HUB
@@ -74,31 +81,99 @@ def test_the_threshold_is_the_reviewers_own_number():
 def test_one_short_of_the_threshold_stays_with_the_predictor():
     short = {"winner": [{"lo": 0.6, "hi": 0.7, "n": HUB_LEDGER_MIN_SETTLED - 1,
                          "mean_prob": 0.65, "hit_rate": 0.70}]}
-    _, source = choose_calibration(PREDICTOR, short, {})
+    _, source = choose_calibration(PREDICTOR, short, {}, "winner")
 
     assert source == "predictor"
 
 
 def test_no_hub_calibration_at_all_stays_with_the_predictor():
-    _, source = choose_calibration(PREDICTOR, None, {})
+    _, source = choose_calibration(PREDICTOR, None, {}, "winner")
 
     assert source == "predictor"
+
+
+def test_the_hubs_own_settled_rows_do_not_count_towards_another_kinds_bands():
+    """The threshold is about evidence for the band being looked up, and that band belongs to one
+    kind. Summing `n` across kinds is safe only while the hub published one kind, which was true
+    under the superseded winner-only ruling and is false now that all three are published.
+
+    The numbers are CFB's live ledger as read on 2026-09-27: 42 winner / 33 spread / 32 total. The
+    aggregate clears 100, so an aggregate count would put the hub in charge of a WINNER bucket
+    holding 42 settled rows -- under half the evidence this threshold is asking for -- and every
+    winner edge would be judged on it. A kind borrows no other kind's evidence.
+    """
+    cfb_ledger = {"winner": [{"lo": 0.0, "hi": 1.0, "n": 42}],
+                  "spread": [{"lo": 0.0, "hi": 1.0, "n": 33}],
+                  "total": [{"lo": 0.0, "hi": 1.0, "n": 32}]}
+
+    assert sum(b["n"] for bands in cfb_ledger.values() for b in bands) >= HUB_LEDGER_MIN_SETTLED, (
+        "this test only bites while the aggregate clears the threshold"
+    )
+    calibration, source = choose_calibration(PREDICTOR, cfb_ledger, {}, "winner")
+
+    assert source == "predictor", "a winner edge must be gated on WINNER evidence"
+    assert calibration is PREDICTOR
+
+
+def test_the_count_is_per_kind_so_one_thin_kind_cannot_speak_for_another():
+    """The complement of the test above, so the per-kind count is pinned from both sides: spread and
+    total both stay on the predictor when only the winner bands are thick, and the winner bands
+    alone are enough to switch a spread edge. Without a per-kind count every one of these returns
+    `hub_ledger`."""
+    thick_winner = {"winner": [{"lo": 0.0, "hi": 1.0, "n": 300}],
+                    "spread": [{"lo": 0.0, "hi": 1.0, "n": 4}],
+                    "total": [{"lo": 0.0, "hi": 1.0, "n": 0}]}
+
+    assert choose_calibration(PREDICTOR, thick_winner, {}, "winner")[1] == "hub_ledger"
+    for thin in ("spread", "total"):
+        calibration, source = choose_calibration(PREDICTOR, thick_winner, {}, thin)
+        assert source == "predictor", f"a {thin} band judged on the winner model's 300 rows"
+        assert calibration is PREDICTOR
 
 
 def test_no_predictor_calibration_and_no_hub_falls_through_to_the_hub_rather_than_nothing():
     # A missing predictor payload must not leave the filter with no calibration at all, which would
     # read as "no bucket" and reject every edge for a reason that looks like bad luck.
-    calibration, source = choose_calibration({}, HUB, {})
+    calibration, source = choose_calibration({}, HUB, {}, "winner")
 
     assert source == "hub_ledger"
     assert calibration is HUB
 
 
+def test_a_thin_hub_with_no_predictor_at_all_reaches_the_fall_through_rather_than_the_first_branch():
+    """The fall-through branch, reached on purpose. `HUB` above holds `n: 120`, so that test exits on
+    the FIRST branch and the third is never exercised: delete the third branch and the whole suite
+    still passes.
+
+    5 settled is under the threshold, so this can only return the hub by falling through, and
+    returning nothing would leave `check_candidate` with an empty calibration -- every edge rejected
+    for "no bucket", which reads as bad luck rather than as an absent measurement.
+    """
+    thin = {"winner": [{"lo": 0.0, "hi": 1.0, "n": 5, "mean_prob": 0.65, "hit_rate": 0.6}]}
+    assert sum(b["n"] for b in thin["winner"]) < HUB_LEDGER_MIN_SETTLED, "must not clear branch one"
+
+    calibration, source = choose_calibration({}, thin, {}, "winner")
+
+    assert source == "hub_ledger"
+    assert calibration is thin
+
+
 def test_with_neither_source_the_filter_is_told_so_rather_than_left_guessing():
-    calibration, source = choose_calibration(None, None, {})
+    calibration, source = choose_calibration(None, None, {}, "winner")
 
     assert source == "none"
     assert calibration == {}
+
+
+def test_the_kind_is_required_rather_than_defaulted():
+    """A default would be a silent wrong answer at a call site that forgot, and 'enough settled
+    evidence' is precisely the thing that must not be guessed. `check_candidate` already has `kind`
+    as its first positional argument, so it can pass it without a new parameter."""
+    parameter = inspect.signature(choose_calibration).parameters["kind"]
+
+    assert parameter.default is inspect.Parameter.empty
+    with pytest.raises(TypeError):
+        choose_calibration(PREDICTOR, HUB, {})
 
 
 class TestSettledBuckets:
@@ -124,10 +199,14 @@ class TestSettledBuckets:
         assert len(buckets) == 10
         assert all(b["n"] == 0 and b["mean_prob"] is None and b["hit_rate"] is None for b in buckets)
 
-    def test_the_bucket_count_is_the_callers_decision(self):
-        """10 and 4 both work and both are used in practice: the predictors are moving to 4."""
+    def test_the_bucket_count_is_the_callers_decision_and_is_required(self):
+        """10 and 4 both work and both are used in practice: the predictors are moving to 4, so a
+        default of 10 here would be a number this module has no business assuming -- which is what
+        its own docstring says, in as many words."""
         assert len(settled_buckets([], n_buckets=4)["winner"]) == 4
         assert len(settled_buckets([], n_buckets=10)["winner"]) == 10
+        with pytest.raises(TypeError):
+            settled_buckets([(0.5, True)])
 
     def test_it_refuses_a_bucket_count_it_cannot_cut_on(self):
         with pytest.raises(ValueError):
@@ -138,12 +217,28 @@ class TestSettledBuckets:
         record must not lose."""
         assert settled_buckets([(1.0, True)], n_buckets=10)["winner"][9]["n"] == 1
 
-    def test_a_kind_nobody_read_is_not_published(self):
-        """Winner rows only. Publishing the same pairs under 'spread' and 'total' would be a kind
-        attribution with no evidence behind it -- see hub_calibration.DEFAULT_KINDS."""
+    def test_every_kind_the_feed_publishes_is_published(self):
+        """All three, and the kind list is the feed's, not this module's invention: `parse_feed`
+        reads exactly winner/spread/total and `check_candidate` looks the calibration up by kind, so
+        publishing fewer is not a narrower record -- it is every spread and total edge becoming
+        `calibration_insufficient` the day the hub crosses the threshold."""
         buckets = settled_buckets([(0.65, True)] * 3, n_buckets=10)
 
-        assert set(buckets) == {"winner"}
+        assert KINDS == ("winner", "spread", "total")
+        assert set(buckets) == set(KINDS)
+
+    def test_every_band_says_its_probabilities_are_not_home_oriented(self):
+        """The limitation travels in the data. `our_prob` on a settled row is the probability for
+        that market's SIDE while `bucket_for` is asked for a home-oriented one, so a band built from
+        the ledger mixes orientations; NFL and CFB list a winner market for both teams of a game.
+        A limitation that lives only in a docstring is invisible to whoever reads the numbers, and
+        this is the kind that gets silently inherited."""
+        buckets = settled_buckets([(0.65, True)] * 3, n_buckets=10)
+
+        assert HUB_ORIENTATION == "raw"
+        for bands in buckets.values():
+            for band in bands:
+                assert band["orientation"] == "raw"
 
 
 # ── the filter, on real objects ──────────────────────────────────────────────────────────────
@@ -222,20 +317,55 @@ def test_a_band_the_predictor_was_happy_with_can_still_reject_the_edge_under_the
     assert check.reasons == ("calibration_insufficient",)
 
 
+def test_the_filter_counts_only_the_kind_it_is_filtering():
+    """`choose_calibration` reached through `check_candidate`, so the per-kind count is proven on the
+    path that actually runs rather than only on the function. The winner bands hold 6 -- under the
+    threshold -- and the spread bands hold 300, which is exactly the shape that would hand a winner
+    edge another kind's record."""
+    hub = {"winner": _banded_buckets({3: 6}), "spread": _banded_buckets({3: 300}),
+           "total": _banded_buckets({3: 300})}
+
+    winner = check_candidate("winner", MARKET, MG, EDGE, {"winner": _predictor_buckets()}, PARAMS, NOW,
+                             hub_calibration=hub)
+
+    assert winner.calibration_source == "predictor"
+    assert winner.bucket["n"] == 30, "the predictor's own band, not the hub's 300"
+
+
 # ── the threading, through the scan ───────────────────────────────────────────────────────────
 
 
-def _recorded_feed(sport="nfl", *, n_buckets=None, calibrated=True, bands=True):
+def _rebands(buckets, count):
+    """Re-cut a published band list into `count` bands of equal width, the same edges a predictor
+    publishing `n_buckets: count` would send.
+
+    Overwriting the `n_buckets` scalar while leaving ten bands in place is what the first version of
+    the n_buckets test did, and it does not prove a 4-band feed works: the edges the hub would cut on
+    would still be the ten the fixture happened to carry. The predictors are moving to four bands, so
+    the four-band feed has to be a real one.
+    """
+    return ([{"lo": i / count, "hi": (i + 1) / count, "n": 0, "mean_prob": None, "hit_rate": None}
+             for i in range(count)], count)
+
+
+def _recorded_feed(sport="nfl", *, n_buckets=None, calibrated=True, bands=True, calibration=True):
     """The recorded feed, so `n_buckets` is the number a live predictor actually publishes."""
     raw = json.loads((FIXTURES / f"{sport}_kalshi_feed.json").read_text())
-    if n_buckets is not None:
-        raw["calibration"]["n_buckets"] = n_buckets
-    if not bands:
-        # A feed that published no calibration at all: no count to read and no edges to cut on.
+    if not calibration:
+        # A feed with no calibration KEY at all, which is not the same input as one that published
+        # empty bands. `parse_feed` reads both to `n_buckets: 0`, so both are pinned below.
+        raw["calibration"] = {}
+    elif not bands:
+        # A feed that published no bands at all: no count to read and no edges to cut on.
         raw["calibration"] = {"n_buckets": 0, "winner": [], "spread": [], "total": []}
+    elif n_buckets is not None:
+        for kind in ("winner", "spread", "total"):
+            raw["calibration"][kind], raw["calibration"]["n_buckets"] = _rebands(
+                raw["calibration"][kind], n_buckets
+            )
     if calibrated:
         for kind in ("winner", "spread", "total"):
-            for bucket in raw["calibration"][kind]:
+            for bucket in raw["calibration"].get(kind) or []:
                 mid = round(bucket["lo"] + 0.05, 2)
                 bucket.update(n=40, mean_prob=mid, hit_rate=mid)
     return parse_feed(raw)
@@ -247,10 +377,16 @@ def _recorded_markets(sport="nfl"):
     return {series: [parse_sports_market(m) for m in markets] for series, markets in raw.items()}
 
 
-# 120 settled winner snapshots at 0.28, which is the band the recorded HOU@IND winner markets land in
-# (0.2954 home-oriented, on both sides of the same game). 60 of the 120 right, so the hub's record is
-# a real measurement rather than a flattering one, and enough to clear HUB_LEDGER_MIN_SETTLED.
-HUB_PAIRS = [(0.28, True)] * 60 + [(0.28, False)] * 60
+# The home-oriented probability the recorded HOU@IND markets land on, per kind: winner 0.2954 (both
+# sides of the game), spread 0.3637 (HOU3), total 0.5125 (46). 120 settled snapshots at each, 60 of
+# the 120 right, so each kind's record is a real measurement rather than a flattering one, and each
+# clears HUB_LEDGER_MIN_SETTLED on its OWN evidence -- which is the whole point of the corrected
+# ruling, since a kind cannot borrow another's count.
+HUB_LEDGER = {
+    "winner": [(0.2954, True)] * 60 + [(0.2954, False)] * 60,
+    "spread": [(0.3637, True)] * 60 + [(0.3637, False)] * 60,
+    "total": [(0.5125, True)] * 60 + [(0.5125, False)] * 60,
+}
 
 
 def _scan(feed, **kwargs):
@@ -271,16 +407,73 @@ def test_a_scan_with_no_hub_ledger_still_uses_the_predictors_calibration():
 
 
 def test_the_hub_ledger_takes_over_the_scan_once_it_has_enough():
-    result = _scan(_recorded_feed(), hub_pairs=HUB_PAIRS)
+    result = _scan(_recorded_feed(), hub_pairs=HUB_LEDGER)
 
     assert {row["calibration_source"] for row in result.edges} == {"hub_ledger"}
     graded = _graded_winner_rows(result)
     assert len(graded) == 2, "the recorded HOU@IND winner markets, on both sides of one game"
     for row in graded:
-        # 60/60 at 0.28: the band the edge is admitted on is the hub's own record.
+        # 60/60 at 0.2954: the band the edge is admitted on is the hub's own record.
         assert row["calibration_bucket"]["hit_rate"] == pytest.approx(0.5)
-        assert row["calibration_bucket"]["mean_prob"] == pytest.approx(0.28)
+        assert row["calibration_bucket"]["mean_prob"] == pytest.approx(0.2954)
         assert row["candidate"] is True, row["reject_reasons"]
+
+
+def test_the_hub_ledger_judges_every_kind_on_its_own_settled_record():
+    """The corrected ruling, end to end. The ledger speaks for all three kinds, so a spread edge and a
+    total edge are each judged on the hub's settled SPREAD and TOTAL bands -- and the bands are found.
+
+    Under the overturned winner-only version of this file, every row below was
+    `calibration_insufficient` for the whole of the hub's authority: `calibration.get("spread")` and
+    `calibration.get("total")` had no key at all, because the mapping only published `winner`. That is
+    not a narrower record, it is the product losing every spread and total edge on the day the
+    threshold is crossed -- the outcome the corrected ruling exists to prevent, and why this asserts a
+    FOUND BAND rather than just a source label.
+
+    Total is asserted on the band rather than on admission: the recorded total market whose home
+    probability lands on the hub's total band (KXNFLTOTAL-26SEP27HOUIND-46) fails liquidity on its own
+    merits, which is a different gate and is not what this test is about.
+
+    The kind names are written out rather than imported from `hub_calibration.KINDS`: a test that
+    loops over the constant it is supposed to be checking agrees with the constant, so shrinking
+    `KINDS` to `("winner",)` would quietly skip the spread and total assertions instead of failing
+    them. (It did, until this was written that way -- see the mutation table in the report.)
+    """
+    result = _scan(_recorded_feed(), hub_pairs=HUB_LEDGER)
+
+    for kind in ("winner", "spread", "total"):
+        rows = [row for row in result.edges if row["kind"] == kind]
+        assert rows, f"the recorded feed has {kind} markets; this test needs one"
+        graded = [row for row in rows
+                  if row["calibration_source"] == "hub_ledger" and row["calibration_bucket"]["n"] == 120]
+        assert graded, (
+            f"no {kind} edge was judged on the hub's own {kind} bands: "
+            f"{[(r['market_ticker'], r['calibration_bucket'], r['reject_reasons']) for r in rows]}"
+        )
+        for row in graded:
+            assert "calibration_insufficient" not in row["reject_reasons"], row["market_ticker"]
+            assert row["calibration_bucket"]["orientation"] == "raw"
+    # And the switch is not cosmetic for the kinds either: a spread edge is ADMITTED on the hub's
+    # spread record, where the winner-only version rejected it out of hand.
+    assert [row for row in result.edges if row["kind"] == "spread" and row["candidate"]]
+
+
+def test_a_kind_the_hub_has_not_settled_keeps_the_predictor_in_charge():
+    """The other half of the corrected ruling, and the reason the per-kind count is not optional. A
+    sport with no settled spread rows must not have its spread edges judged against the winner model's
+    300 rows: the hub has no spread record to offer, so the published one stays in force.
+
+    This is the failure an aggregate count invites. With `n` summed across kinds, 300 winner rows would
+    switch every spread and total edge in the sport over to a record that has never seen one."""
+    winner_only = {"winner": [(0.2954, True)] * 150 + [(0.2954, False)] * 150}
+    result = _scan(_recorded_feed(), hub_pairs=winner_only)
+    graded = [row for row in result.edges if row["kind"] in ("spread", "total")]
+
+    assert graded, "the recorded feed has spread and total markets; this test needs one"
+    for row in graded:
+        assert row["calibration_source"] == "predictor", row["market_ticker"]
+        assert row["calibration_bucket"]["n"] == 40, "the predictor's published band, not the hub's"
+        assert "calibration_insufficient" not in row["reject_reasons"], row["market_ticker"]
 
 
 def test_a_game_the_hub_has_never_settled_is_rejected_on_the_hubs_record():
@@ -290,7 +483,7 @@ def test_a_game_the_hub_has_never_settled_is_rejected_on_the_hubs_record():
     record of what the hub itself priced and graded -- but it is a real narrowing of the board rather
     than a relabelling, so it is pinned here rather than left to be discovered."""
     predicted = _scan(_recorded_feed())
-    switched = _scan(_recorded_feed(), hub_pairs=HUB_PAIRS)
+    switched = _scan(_recorded_feed(), hub_pairs=HUB_LEDGER)
 
     ungraded = [row for row in switched.edges
                 if row["kind"] == "winner" and row["calibration_bucket"]["n"] == 0]
@@ -307,16 +500,24 @@ def test_a_game_the_hub_has_never_settled_is_rejected_on_the_hubs_record():
     assert len([r for r in switched.edges if r["candidate"]]) < len([r for r in predicted.edges if r["candidate"]])
 
 
-def test_the_hubs_buckets_are_cut_on_the_number_of_buckets_the_feed_published():
+def test_the_hubs_bands_are_cut_on_the_number_of_buckets_the_feed_published():
     """The predictor's `n_buckets` is moving from 10 to 4, and this is why that number is read rather
     than assumed. A hub bucket set cut on different edges is not a replacement for the predictor's
     record, it is a different measurement wearing its name.
 
     Two halves, because neither earns the name alone: at 10 the band is 0.1 wide and a hardcoded 4
     fails it, and at 4 the band is 0.25 wide and a hardcoded 10 fails it.
+
+    The 4-band feed is a REAL 4-band feed -- four published bands, re-cut on quarter edges -- not a
+    ten-band feed with the scalar overwritten, which is the input the first version of this test used
+    and which cannot tell a read from a hardcode.
     """
     for published, width in ((10, 0.1), (4, 0.25)):
-        result = _scan(_recorded_feed(n_buckets=published), hub_pairs=HUB_PAIRS)
+        feed = _recorded_feed(n_buckets=published)
+        assert feed.n_buckets == published
+        for bands in feed.calibration.values():
+            assert len(bands) == published, f"the feed must publish {published} bands per kind"
+        result = _scan(feed, hub_pairs=HUB_LEDGER)
         bucket = _graded_winner_rows(result)[0]["calibration_bucket"]
 
         assert bucket["hi"] - bucket["lo"] == pytest.approx(width), (
@@ -325,25 +526,21 @@ def test_the_hubs_buckets_are_cut_on_the_number_of_buckets_the_feed_published():
         assert bucket["n"] == 120, "and the same settled pairs must land in the band the edge is in"
 
 
-def test_a_kind_the_hubs_ledger_does_not_cover_is_not_borrowed_from_the_winner_bucket():
-    """Winner rows only, and this is the consequence. A spread edge under hub authority finds no
-    bucket and is rejected as `calibration_insufficient` -- a reason this codebase already knows how
-    to read -- rather than being admitted against the winner model's record."""
-    result = _scan(_recorded_feed(), hub_pairs=HUB_PAIRS)
-    spread = [row for row in result.edges if row["kind"] != "winner"]
+def test_the_hub_records_that_its_bands_are_not_home_oriented():
+    """The orientation limitation, pinned where it is claimed: in the data. A stored edge row is what
+    a future reader meets, and a `mean_prob` with no caveat is a number somebody will trust."""
+    result = _scan(_recorded_feed(), hub_pairs=HUB_LEDGER)
+    hub_rows = [row for row in result.edges if row["calibration_source"] == "hub_ledger"]
 
-    assert spread, "the recorded feed has spread and total markets; this test needs one"
-    for row in spread:
-        assert row["calibration_source"] == "hub_ledger"
-        assert row["calibration_bucket"] is None
-        assert "calibration_insufficient" in row["reject_reasons"]
-        assert row["candidate"] is False
+    assert hub_rows
+    for row in hub_rows:
+        assert row["calibration_bucket"]["orientation"] == HUB_ORIENTATION
 
 
 def test_a_feed_that_published_no_bands_leaves_the_predictor_in_charge():
     """Nothing to cut against is not a reason to invent a cut. With 120 settled pairs in hand the scan
     still uses the published record, which is the behaviour before this change."""
-    result = _scan(_recorded_feed(bands=False), hub_pairs=HUB_PAIRS)
+    result = _scan(_recorded_feed(bands=False), hub_pairs=HUB_LEDGER)
 
     assert result.edges
     assert {row["calibration_source"] for row in result.edges} == {"predictor"}
@@ -365,70 +562,179 @@ class TestTheFeedsBucketCount:
 
         assert parse_feed(raw).n_buckets == 10
 
+    def test_a_feed_with_no_calibration_key_publishes_no_count(self):
+        """An ABSENT calibration, which is what the test's name says. Distinct input from the one
+        below: a feed that published the key with no bands under it."""
+        assert _recorded_feed(calibration=False).n_buckets == 0
+
     def test_a_feed_with_no_calibration_publishes_no_count(self):
+        """The key present, every band list empty. Same answer, and both are pinned because the
+        difference is the difference between "the predictor sent nothing" and "the predictor sent a
+        calibration with no history in it"."""
         assert _recorded_feed(bands=False).n_buckets == 0
 
 
-# ── reading the ledger, winner rows only ───────────────────────────────────────────────────────
+# ── the fact pack: which record the reviewer is being handed ─────────────────────────────────
+
+
+def _fact_pack_for(result, market_ticker):
+    return next(req.fact_pack for req in result.review_requests
+                if req.market_ticker == market_ticker)
+
+
+def test_the_fact_pack_does_not_misattribute_the_hubs_record_to_the_predictor():
+    """The reviewer is the component this whole design defers the calibration judgement to, so
+    handing it the hub's `mean_prob`/`hit_rate` under a key reading `predictor_calibration_in_bucket`
+    is the exact failure the inversion exists to avoid: the numbers are right and the label is wrong,
+    which is worse than a wrong number because nothing downstream knows to distrust it.
+
+    The reviewer is given the fact pack verbatim as JSON, so the key IS the attribution."""
+    result = _scan(_recorded_feed(), hub_pairs=HUB_LEDGER)
+    ticker = _graded_winner_rows(result)[0]["market_ticker"]
+    pack = _fact_pack_for(result, ticker)
+
+    assert pack["calibration_source"] == "hub_ledger"
+    assert pack["calibration_in_bucket"]["n"] == 120
+    assert "predictor_calibration_in_bucket" not in pack, (
+        "the old key still names the predictor whatever produced the band"
+    )
+    assert "predictor_calibration_in_bucket" not in json.dumps(pack)
+
+
+def test_the_fact_pack_names_the_predictor_when_the_predictor_is_the_record():
+    """The other side: renaming the key must not lose the source. Both cases carry it."""
+    result = _scan(_recorded_feed())
+    pack = _fact_pack_for(result, next(row["market_ticker"] for row in result.edges if row["candidate"]))
+
+    assert pack["calibration_source"] == "predictor"
+    assert "calibration_in_bucket" in pack
+    assert "predictor_calibration_in_bucket" not in pack
+
+
+# ── the ledger read: per kind, per engine, paged ─────────────────────────────────────────────
 
 
 class _Query:
     """A PostgREST-shaped builder that records what it was asked for, in the style of
-    test_sports_scan.py's `unrecorded` fake."""
+    test_sports_scan.py's `unrecorded` fake, and that CAPS a response the way PostgREST does."""
 
-    def __init__(self, rows, asked):
-        self.rows, self.asked = rows, asked
+    def __init__(self, supa):
+        self.supa = supa
 
     def select(self, *columns):
-        self.asked["select"] = [c.strip() for c in ",".join(columns).split(",")]
+        self.supa.asked["select"] = [c.strip() for c in ",".join(columns).split(",")]
         return self
 
     def in_(self, column, values):
-        self.asked["engine"] = (column, sorted(values))
+        self.supa.asked["engine"] = (column, sorted(values))
         return self
 
     def eq(self, column, value):
-        self.asked["eq"] = (column, value)
+        self.supa.asked["eq"] = (column, value)
+        return self
+
+    def order(self, column):
+        self.supa.asked.setdefault("order", []).append(column)
+        return self
+
+    def range(self, lo, hi):
+        self.supa.ranges.append((lo, hi))
         return self
 
     def execute(self):
-        return type("R", (), {"data": self.rows})()
+        rows = self.supa.rows
+        if self.supa.ranges:
+            lo, hi = self.supa.ranges[-1]
+            # PostgREST `Range: lo-hi` is INCLUSIVE of hi, and a paged read with no `.order()` is a
+            # bug here: without a stable order two pages can repeat a row and skip another.
+            if not self.supa.asked.get("order"):
+                raise AssertionError("the ledger was paged with .range() and no .order()")
+            rows = rows[lo:hi + 1]
+        return type("R", (), {"data": rows[:self.supa.cap]})()
 
 
 class _Supa:
-    def __init__(self, rows, asked):
-        self.rows, self.asked = rows, asked
+    def __init__(self, rows, cap=1000):
+        self.rows, self.cap = rows, cap
+        self.asked: dict = {}
+        self.ranges: list = []
 
     def table(self, name):
         self.asked["table"] = name
-        return _Query(self.rows, self.asked)
+        return _Query(self)
 
 
-def _ledger(rows):
-    asked: dict = {}
-    return scan_mod._hub_settled_pairs(_Supa(rows, asked)), asked
+def _ledger(rows, cap=1000):
+    supa = _Supa(rows, cap=cap)
+    return scan_mod._hub_settled_ledger(supa), supa
 
 
-def test_the_ledger_read_takes_winner_rows_and_leaves_the_rest_behind():
+def _row(engine, prob, result, kind=None, **extra):
+    payload = dict(extra)
+    if kind is not None:
+        payload["kind"] = kind
+    return {"engine": engine, "our_prob": prob, "result": result, "raw_payload": payload,
+            "id": extra.get("id", 0)}
+
+
+def test_the_ledger_read_files_every_kind_under_its_own_name():
+    """Kind is `raw_payload.kind`, and `sports/scan.py` writes it -- the hub is the only writer of
+    that field, so reading it is not a guess. A row naming a kind is filed under it; a row naming none
+    is filed as a winner, which is what the scan has always written for a winner market.
+
+    The spread and total rows are the point. Delete the kind read and they land in `winner`, every
+    winner band is contaminated with another kind's history, and this test fails -- which is what
+    makes the corrected ruling covered rather than merely implemented.
+    """
     rows = [
-        {"engine": "sports_nfl", "our_prob": 0.65, "result": "yes", "raw_payload": {"kind": "winner"}},
+        _row("sports_nfl", 0.65, "yes", "winner"),
+        _row("sports_nfl", 0.62, "no", "winner"),
         # No kind at all: what the scan has always written for a winner market, so it is a winner.
-        {"engine": "sports_cfb", "our_prob": 0.40, "result": "no", "raw_payload": {}},
-        {"engine": "sports_nfl", "our_prob": 0.30, "result": "no", "raw_payload": {"kind": "spread"}},
-        {"engine": "sports_nfl", "our_prob": 0.30, "result": "no", "raw_payload": {"kind": "total"}},
+        _row("sports_cfb", 0.40, "no"),
+        _row("sports_nfl", 0.30, "no", "spread"),
+        _row("sports_nfl", 0.30, "yes", "spread"),
+        _row("sports_cfb", 0.72, "yes", "total"),
         # Not settled, or not a graded binary: no win/loss signal to learn from.
-        {"engine": "sports_nfl", "our_prob": 0.55, "result": None, "raw_payload": {"kind": "winner"}},
-        {"engine": "sports_nfl", "our_prob": None, "result": "yes", "raw_payload": {"kind": "winner"}},
+        _row("sports_nfl", 0.55, None, "winner"),
+        _row("sports_nfl", None, "yes", "winner"),
+        # A kind nothing in this codebase writes. Not guessed into another kind's bands.
+        _row("sports_nfl", 0.51, "yes", "moneyline"),
     ]
-    pairs, asked = _ledger(rows)
+    ledger, supa = _ledger(rows)
 
-    assert pairs == [(0.65, True), (0.40, False)]
-    assert asked["table"] == "predictions"
-    assert asked["eq"] == ("status", "SETTLED")
-    assert asked["engine"] == ("engine", ["sports_cfb", "sports_nfl"])
+    assert ledger == {
+        "sports_nfl": {"winner": [(0.65, True), (0.62, False)],
+                       "spread": [(0.30, False), (0.30, True)]},
+        "sports_cfb": {"winner": [(0.40, False)], "total": [(0.72, True)]},
+    }
+    assert supa.asked["table"] == "predictions"
+    assert supa.asked["eq"] == ("status", "SETTLED")
+    assert supa.asked["engine"] == ("engine", ["sports_cfb", "sports_nfl"])
     # Without raw_payload in the select there is no kind to honour, and the filter would be reading
     # a kind it never looked at.
-    assert "raw_payload" in asked["select"]
+    assert "raw_payload" in supa.asked["select"]
+
+
+def test_the_ledger_read_pages_the_whole_table_in_a_stable_order():
+    """Nothing in this repo deletes sports `predictions` rows, so the table grows monotonically and
+    crosses PostgREST's 1000-row cap within a season. A single `.execute()` past that point does not
+    fail -- it silently returns whatever 1000 rows the plan produced, and the gate that is supposed to
+    BE the authority decides on them. That is a wrong answer with no error attached.
+
+    The order is load-bearing for the same reason: without ORDER BY, page 1 and page 2 can repeat a
+    row and skip another. `id` is the only column here that is unique and immutable. The fake below
+    raises rather than paging unordered, so this test cannot pass by accident.
+    """
+    rows = [_row("sports_nfl", 0.10 + i / 2000, "yes" if i % 2 else "no", "winner", id=i)
+            for i in range(1250)]
+    ledger, supa = _ledger(rows)
+
+    assert supa.ranges == [(0, 999), (1000, 1999)], "one 1000-row page, then the remainder"
+    assert set(supa.asked["order"]) == {"id"}, "every page ordered, on the one immutable column"
+    assert len(supa.asked["order"]) == len(supa.ranges)
+    pairs = ledger["sports_nfl"]["winner"]
+    assert len(pairs) == 1250, f"a 1250-row ledger was read as {len(pairs)} rows"
+    assert pairs[0] == (0.10, False) and pairs[-1] == (0.10 + 1249 / 2000, True)
 
 
 def test_a_ledger_read_that_fails_leaves_the_predictors_calibration_in_charge():
@@ -438,15 +744,120 @@ def test_a_ledger_read_that_fails_leaves_the_predictors_calibration_in_charge():
         def table(self, _name):
             raise RuntimeError("postgrest 500")
 
-    assert scan_mod._hub_settled_pairs(Broken()) == []
+    assert scan_mod._hub_settled_ledger(Broken()) == {}
+
+
+def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_truncated_record():
+    """A partial ledger is worse than none: it is a real measurement with rows silently missing, and
+    the hub would be in charge of bands that do not say how thin they are. So a failure on page two
+    discards page one too."""
+    class Flaky:
+        def __init__(self, rows):
+            self.rows, self.calls = rows, 0
+
+        def table(self, _name):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("postgrest 500 on the second page")
+            return _Query(_Supa(self.rows))
+
+    rows = [_row("sports_nfl", 0.5, "yes", "winner", id=i) for i in range(1200)]
+    flaky = Flaky(rows)
+
+    assert scan_mod._hub_settled_ledger(flaky) == {}
+
+
+# ── one ledger per sport, all the way through `run_sports_scan` ───────────────────────────────
+
+
+class _Kalshi:
+    def __init__(self, markets):
+        self.markets = markets
+
+    def open_markets(self, series):
+        return self.markets.get(series, [])
+
+
+# The CFB fixture's games are only in the 1-72h window at this time: its first game kicked off on
+# 2026-09-25T20:00, and at NOW it is 32h past. The two-sport tests need CFB to produce edges at all,
+# so they use their own clock rather than the NFL one.
+BOTH_NOW = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
+
+
+def _both_sports(ledger):
+    """Run both sports' recorded feeds and markets through the orchestrator with one shared ledger."""
+    return scan_mod.run_sports_scan(
+        BOTH_NOW, _Kalshi({**_recorded_markets("nfl"), **_recorded_markets("cfb")}),
+        fetch=lambda url, **_kw: _recorded_feed("cfb" if url.startswith("https://cfb-") else "nfl"),
+        hub_ledger=ledger, sports=("nfl", "cfb"),
+    )
+
+
+def _band_counts(run, sport):
+    return {row["calibration_bucket"]["n"] for row in run.per_sport[sport]["edges"]
+            if row["calibration_bucket"] is not None}
+
+
+def test_each_scan_is_handed_only_its_own_sports_pairs(monkeypatch):
+    """The plumbing, stated directly. Two sports, two ledgers, and each `scan_sport` must get its own --
+    the same numbers in a shared ledger would be right while the attribution is wrong, and the numbers
+    only disagree because the two recorded feeds happen to have different probabilities."""
+    seen: dict = {}
+    real = scan_mod.scan_sport
+
+    def spy(cfg, markets, feed, now, **kwargs):
+        seen[cfg.sport] = kwargs.get("hub_pairs")
+        return real(cfg, markets, feed, now, **kwargs)
+
+    monkeypatch.setattr(scan_mod, "scan_sport", spy)
+    ledger = {"sports_nfl": {"winner": [(0.29, True)] * 3},
+              "sports_cfb": {"winner": [(0.74, True)] * 4, "spread": [(0.5, True)] * 5}}
+    _both_sports(ledger)
+
+    assert seen["nfl"] == {"winner": [(0.29, True)] * 3}
+    assert seen["cfb"] == {"winner": [(0.74, True)] * 4, "spread": [(0.5, True)] * 5}
+    assert seen["nfl"] is not seen["cfb"]
+
+
+def test_a_sports_ledger_never_reaches_the_other_sports_scan():
+    """NFL and CFB are different models with different records, so one shared ledger would put NFL's
+    rows into CFB's bands and the reverse. The two ledgers are sized differently on purpose (300 and
+    700) and filed at the same probability, because the recorded feeds' probabilities are disjoint --
+    without a deliberate collision a contaminated band is invisible.
+
+    Correct: NFL's winner band holds 300 and CFB's holds 700. Shared: both hold 1000."""
+    ledger = {"sports_nfl": {"winner": [(0.2954, True)] * 150 + [(0.2954, False)] * 150},
+              "sports_cfb": {"winner": [(0.2954, True)] * 350 + [(0.2954, False)] * 350}}
+    run = _both_sports(ledger)
+    nfl, cfb = _band_counts(run, "nfl"), _band_counts(run, "cfb")
+
+    # 0.2954 is inside NFL's HOU@IND winner band and inside CFB's Temple winner band, so each sport
+    # reads a band the other sport's rows would also have landed in.
+    assert 300 in nfl and 700 in cfb, f"each sport must read its own count: nfl={nfl} cfb={cfb}"
+    assert 700 not in nfl, "NFL's bands hold CFB rows"
+    assert 300 not in cfb, "CFB's bands hold NFL rows"
+    assert 1000 not in nfl | cfb, "one shared ledger: both bands hold both sports' rows"
+
+
+def test_a_sport_with_no_settled_rows_of_its_own_keeps_the_predictor_in_charge():
+    """The other half, and the one a shared ledger would have got wrong in the dangerous direction:
+    CFB has 300 settled winner rows and NFL has none, so a shared ledger would put the hub in charge
+    of NFL's winner edges on CFB's history alone. 0.2633 is the home-oriented probability of the
+    recorded CFB winner markets (`home_oriented` flips the away-team market, so both sides of the
+    Temple/Army game read 0.2633), so CFB really is switched over rather than merely labelled."""
+    ledger = {"sports_cfb": {"winner": [(0.2633, True)] * 150 + [(0.2633, False)] * 150}}
+    run = _both_sports(ledger)
+
+    assert {row["calibration_source"] for row in run.per_sport["nfl"]["edges"]} == {"predictor"}
+    assert {row["calibration_source"] for row in run.per_sport["cfb"]["edges"]} == {"hub_ledger"}
+    assert 300 in _band_counts(run, "cfb")
 
 
 def test_the_cron_path_actually_hands_the_ledger_to_the_scan(monkeypatch):
     """The last link in the chain, and the one most easily left disconnected: the read above proves
     the query, but nothing else would notice if the cron path stopped passing the result on, and the
     feature would simply never switch over with every test still green."""
-    rows = [{"engine": "sports_nfl", "our_prob": 0.28, "result": "yes", "raw_payload": {"kind": "winner"}},
-            {"engine": "sports_nfl", "our_prob": 0.28, "result": "no", "raw_payload": {"kind": "winner"}}]
+    rows = [_row("sports_nfl", 0.28, "yes", "winner"), _row("sports_nfl", 0.28, "no", "winner")]
     monkeypatch.setattr(scan_mod, "SportsKalshi", lambda **_kw: "kalshi")
     monkeypatch.setattr(scan_mod, "SupabaseReviewStore", lambda _supa: "store")
     monkeypatch.setattr(scan_mod, "OpenRouterReviewer", lambda *_a, **_kw: None)
@@ -458,6 +869,6 @@ def test_the_cron_path_actually_hands_the_ledger_to_the_scan(monkeypatch):
         return scan_mod.SportsRun([], [], {}, {})
 
     monkeypatch.setattr(scan_mod, "run_sports_scan", fake_scan)
-    scan_mod.run_sports_for_cron(NOW, _Supa(rows, {}))
+    scan_mod.run_sports_for_cron(NOW, _Supa(rows))
 
-    assert seen["hub_pairs"] == [(0.28, True), (0.28, False)]
+    assert seen["hub_ledger"] == {"sports_nfl": {"winner": [(0.28, True), (0.28, False)]}}

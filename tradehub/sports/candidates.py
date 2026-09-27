@@ -43,6 +43,7 @@ def choose_calibration(
     predictor_calibration: Mapping[str, list[dict[str, Any]]] | None,
     hub_calibration: Mapping[str, list[dict[str, Any]]] | None,
     params: Mapping[str, float],
+    kind: str,
 ) -> tuple[Mapping[str, list[dict[str, Any]]], str]:
     """Which calibration the candidate filter should judge against, and which one it used.
 
@@ -54,24 +55,37 @@ def choose_calibration(
     would be deferring to nothing -- which reads downstream as `calibration_insufficient`, i.e. as bad
     luck rather than as an absent measurement.
 
+    `kind` is REQUIRED, and it counts only that kind's buckets. The threshold is about settled
+    evidence for the thing being judged, and the thing being judged is a band of ONE kind. Summing
+    `n` across every kind is safe only while the hub published one kind, which was true under the
+    superseded winner-only ruling and is false now that all three are published: CFB's live ledger is
+    42 winner / 33 spread / 32 total, an aggregate of 107 that would hand the hub authority on a
+    WINNER bucket holding 42 settled rows -- 42% of the 100 this threshold is asking for. A kind
+    borrows no other kind's evidence, so the count has to be per kind. Made required rather than
+    defaulted for the same reason: a default would be a silent wrong answer at a call site that
+    forgot, and the two sources of "enough settled" are exactly the thing that must not be guessed.
+
     `params` is accepted and deliberately unread today. The threshold is the named constant above; a
     config key nobody has ruled on is not a reason to read one.
 
     Returns the mapping and its source, so the row can record which gate passed.
     """
     hub_total = 0
-    for buckets in (hub_calibration or {}).values():
-        for bucket in buckets or []:
-            n = bucket.get("n")
-            if isinstance(n, (int, float)):
-                hub_total += int(n)
+    for bucket in (hub_calibration or {}).get(kind) or []:
+        n = bucket.get("n")
+        if isinstance(n, (int, float)):
+            hub_total += int(n)
 
     if hub_total >= HUB_LEDGER_MIN_SETTLED and hub_calibration:
         return hub_calibration, "hub_ledger"
     if predictor_calibration:
         return predictor_calibration, "predictor"
     if hub_calibration:
-        # No predictor payload at all must not leave the filter with nothing to judge against.
+        # No predictor payload at all must not leave the filter with nothing to judge against. Note
+        # this is reachable with a hub ledger BELOW the threshold, and with a hub ledger that has no
+        # bands for `kind` at all -- both read downstream as "no bucket", i.e. `calibration_insufficient`,
+        # which is the honest answer for an absent measurement. What this branch must never do is
+        # invent a band: it hands over exactly the mapping it was given.
         return hub_calibration, "hub_ledger"
     return {}, "none"
 
@@ -84,7 +98,9 @@ def check_candidate(
     # The inversion. `calibration` stays the predictor's published record and `hub_calibration` is
     # keyword-only and defaulted, so every existing caller and test behaves exactly as it did before
     # this parameter existed -- which is the point of the gate failing toward the published record.
-    calibration, calibration_source = choose_calibration(calibration, hub_calibration, params)
+    # `kind` is already this function's first positional argument, so the per-kind count needs no
+    # new parameter here and this signature is unchanged from the pre-inversion one plus that keyword.
+    calibration, calibration_source = choose_calibration(calibration, hub_calibration, params, kind)
     reasons: list[str] = []
     q = sm.quote
     if q.yes_bid is None or q.yes_ask is None or q.yes_ask - q.yes_bid > params["max_quote_spread"] + 1e-9:

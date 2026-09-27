@@ -14,7 +14,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from tradehub.edges import EdgeSuggestion, evaluate_edge
 from tradehub.markets import kalshi_event_url
@@ -25,7 +25,7 @@ from tradehub.sports.deadline import (
     REVIEW_STOP_MARGIN_SECONDS, remaining_seconds, should_review,
 )
 from tradehub.sports.feed import Feed, FeedUnavailable, fetch_feed
-from tradehub.sports.hub_calibration import settled_buckets
+from tradehub.sports.hub_calibration import KINDS, settled_buckets
 from tradehub.sports.kalshi import SportsKalshi, SportsMarket
 from tradehub.sports.mapping import MatchedGame, load_aliases, match_games
 from tradehub.sports.pricing import price_market
@@ -36,6 +36,11 @@ from tradehub.sports.reviewer import (
 
 SPORTS = ("nfl", "cfb")
 LEDGER_CHUNK = 100
+# PostgREST's default max rows per response, so a read that has to see more pages with .range().
+# Same number and same reason as `POSTGREST_CAP` in api/main.py and `PAGE_SIZE` in
+# settlement.py / track_record.py; not imported from the API module because that module is a FastAPI
+# app and the sports scan has no business importing one.
+LEDGER_PAGE = 1000
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +73,17 @@ def _fact_pack(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s
                       "model_version": g.model_version, "snapshotted_at": g.snapshotted_at.isoformat(),
                       "snapshot_age_hours": round((now - g.snapshotted_at).total_seconds() / 3600, 1)},
         "net_edge_pct_after_fees": round(s.net_edge_pct, 2),
-        "predictor_calibration_in_bucket": check.bucket,
+        # The band this edge was judged on, named for what it is and paired with its source.
+        #
+        # This key used to read `predictor_calibration_in_bucket`, which is a lie the moment the hub
+        # is the authority: the reviewer's fact pack would then carry the HUB's mean_prob/hit_rate
+        # under a key saying predictor. The reviewer is the component this whole design defers the
+        # calibration judgement to, so misattributing the record to it is the one failure this
+        # inversion exists to avoid -- the numbers are right and the label is wrong, which is worse
+        # than a wrong number because nothing downstream knows to distrust it. The stored edge row
+        # (`_edge_row`) already carried `calibration_source`; this brings the fact pack in line.
+        "calibration_in_bucket": check.bucket,
+        "calibration_source": check.calibration_source,
     }
 
 
@@ -173,9 +188,15 @@ def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s:
 
 
 def _hub_calibration(
-    feed: Feed, pairs: list[tuple[float, bool]] | None,
+    feed: Feed, pairs_by_kind: Mapping[str, list[tuple[float, bool]]] | None,
 ) -> dict[str, list[dict[str, Any]]] | None:
-    """The hub's settled pairs as calibration buckets, or `None` to leave the predictor's in force.
+    """The hub's settled pairs as calibration bands, one band set per kind, or `None`.
+
+    `pairs_by_kind` is one sport's ledger, already keyed by `raw_payload.kind`, so each kind is
+    bucketed only on its own evidence -- which is what `choose_calibration`'s per-kind count assumes.
+    All three kinds are published even when a sport has settled nothing in one of them: an empty
+    band set would read as "this kind has no record at all", whereas `n: 0` bands read as "nothing
+    settled in this band", and those two are different facts.
 
     The bucket COUNT comes off the feed (`Feed.n_buckets`), never from a literal in this file. It is
     the predictor's setting and the 2026-09-27 ruling moves it from 10 to 4 in NFL_Predictor and
@@ -187,18 +208,22 @@ def _hub_calibration(
     `None` means "no hub record to offer", which is the behaviour before this change: the published
     calibration stays in charge. Inventing a count would be a measurement nobody made.
     """
-    if not pairs:
+    if not pairs_by_kind:
         return None
-    n_buckets = getattr(feed, "n_buckets", 0)
+    n_buckets = feed.n_buckets
     if not n_buckets:
         log.warning("sports scan: the feed published no n_buckets, so the hub's settled ledger is "
                     "not used and the predictor's calibration stays in force")
         return None
-    return settled_buckets(pairs, n_buckets=n_buckets)
+    return {
+        kind: settled_buckets(pairs_by_kind.get(kind) or [], n_buckets, kinds=(kind,))[kind]
+        for kind in KINDS
+    }
 
 
 def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]], feed: Feed,
-               now: datetime, *, hub_pairs: list[tuple[float, bool]] | None = None) -> SportScan:
+               now: datetime, *,
+               hub_pairs: Mapping[str, list[tuple[float, bool]]] | None = None) -> SportScan:
     aliases = load_aliases(cfg.sport)
     hub_calibration = _hub_calibration(feed, hub_pairs)
     bucket_cents = load_reviewer_config().price_bucket_cents
@@ -308,7 +333,8 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
                     reviewer: OpenRouterReviewer | None = None, budget: int = 0,
                     sports: tuple[str, ...] = SPORTS,
                     deadline: float | None = None,
-                    hub_pairs: list[tuple[float, bool]] | None = None) -> SportsRun:
+                    hub_ledger: Mapping[str, Mapping[str, list[tuple[float, bool]]]] | None = None
+                    ) -> SportsRun:
     predictions: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     requests: list[ReviewRequest] = []
@@ -349,7 +375,11 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
             reports[sport] = {"kalshi_error": "; ".join(f"{s}: {e}" for s, e in series_errors.items())}
             per_sport[sport] = {"feed_ok": False, "edges": []}
             continue
-        result = scan_sport(cfg, markets, feed, now, hub_pairs=hub_pairs)
+        # Only this sport's own ledger, keyed by engine upstream. NFL and CFB are different models
+        # with different records, so a shared one would hand a sport a calibration built from the
+        # other sport's settled history -- including enough of it to cross the threshold.
+        result = scan_sport(cfg, markets, feed, now,
+                            hub_pairs=(hub_ledger or {}).get(SPORTS_ENGINES.get(sport, "")))
         predictions += result.predictions
         edges += result.edges
         requests += result.review_requests
@@ -474,44 +504,66 @@ def prune_sports_if_healthy(
     return errors
 
 
-def _hub_settled_pairs(supa) -> list[tuple[float, bool]]:
-    """The hub's own settled sports record, as `(our_prob, hit)` pairs.
+def _hub_settled_ledger(supa) -> dict[str, dict[str, list[tuple[float, bool]]]]:
+    """The hub's own settled sports record: `engine -> kind -> [(our_prob, hit), ...]`.
 
     Read here, by the cron entry point, because `run_sports_scan` has no database access: it takes
     kalshi, fetch, store and reviewer, and no supa. The scan is given the answer rather than a way to
     look it up, which is also what keeps it testable without a database.
 
-    WINNER ROWS ONLY (ruled 2026-09-27), and the reason is attribution rather than convenience. The
-    kind lives in `raw_payload`, so `raw_payload` has to be selected for it to be honoured at all; a
-    row that names a kind is read as that kind and a row that names none is read as a winner, which is
-    what the scan has always written for a winner market. Everything else is dropped rather than
-    flattened into one bucket set under three kind names: a wrong kind attribution is worse than an
-    absent one, because an absent kind produces `calibration_insufficient` (a reason this codebase
-    already knows how to read) while a wrong one quietly judges a spread edge against the winner
-    model's record.
+    Three things about the shape, each of which was a real hole in the first version:
 
-    `n_buckets` is deliberately NOT decided here. Those are the predictor's bucket edges, and the feed
-    is the authority on them, so the pairs cross into the scan and are bucketed on `Feed.n_buckets`.
+    **BY KIND.** A row's kind is `raw_payload.kind`, and that is a fact the hub's own scan wrote
+    (`build_prediction_row(... raw_payload={"kind": kind ...})` above), not an inference. A row that
+    names a kind is filed under it; a row that names none is filed as a winner, which is what the
+    scan has always written for a winner market. So the ledger speaks for all three kinds, and
+    publishing only some of them is not a narrowing of the record -- it is every spread and total
+    edge becoming `calibration_insufficient` the day the hub crosses the threshold. An earlier ruling
+    said winner-only, on the premise that a wrong kind attribution is worse than an absent one; the
+    premise was false, because the hub is the only writer of this field.
+
+    **BY ENGINE.** One ledger shared across both sports would put NFL's rows into CFB's bands and the
+    reverse. They are different models with different records (NFL 0 settled, CFB ~61), so a sport
+    that reached the threshold would be handing out a calibration built from another sport's history.
+    Keyed by engine so `run_sports_scan` can give each `scan_sport` only its own sport's pairs.
+
+    **PAGED, ORDERED, ON `id`.** A single `.execute()` returns at most PostgREST's 1000-row cap, and
+    nothing in this repo deletes sports `predictions` rows, so the table grows monotonically and
+    crosses 1000 within a season. Past that, the component that is supposed to BE the authority would
+    be deciding on whatever 1000 rows the query plan happened to return -- a silent wrong answer, not
+    a visible failure. The `.order("id")` is not decoration either: without it, page 1 and page 2 can
+    overlap or skip rows. `id` is the only column on this table that is unique and immutable.
 
     A failed read returns nothing rather than raising: this is a new failure mode on the sports path
     and it must not be able to cost a scan that works perfectly well on the published calibration.
     """
-    try:
-        rows = supa.table("predictions").select("engine,our_prob,result,raw_payload") \
-            .in_("engine", sorted(SPORTS_ENGINES.values())).eq("status", "SETTLED").execute().data or []
-    except Exception:
-        log.exception("sports scan: hub settled-ledger read failed; using the predictor's calibration")
-        return []
-    pairs: list[tuple[float, bool]] = []
-    for row in rows:
-        prob, result = row.get("our_prob"), row.get("result")
-        if not isinstance(prob, (int, float)) or result not in ("yes", "no"):
-            continue
-        # Absent or null kind is a winner row: that is what the scan writes for a winner market.
-        if ((row.get("raw_payload") or {}).get("kind") or "winner") != "winner":
-            continue
-        pairs.append((float(prob), result == "yes"))
-    return pairs
+    ledger: dict[str, dict[str, list[tuple[float, bool]]]] = {}
+    start = 0
+    while True:
+        try:
+            page = (
+                supa.table("predictions").select("engine,our_prob,result,raw_payload")
+                .in_("engine", sorted(SPORTS_ENGINES.values())).eq("status", "SETTLED")
+                .order("id").range(start, start + LEDGER_PAGE - 1).execute().data or []
+            )
+        except Exception:
+            log.exception("sports scan: hub settled-ledger read failed; using the predictor's calibration")
+            return {}
+        for row in page:
+            prob, result = row.get("our_prob"), row.get("result")
+            if not isinstance(prob, (int, float)) or result not in ("yes", "no"):
+                continue
+            # Absent or null kind is a winner row: that is what the scan writes for a winner market.
+            kind = (row.get("raw_payload") or {}).get("kind") or "winner"
+            if kind not in KINDS:
+                continue
+            engine = row.get("engine")
+            if not engine:
+                continue
+            ledger.setdefault(engine, {}).setdefault(kind, []).append((float(prob), result == "yes"))
+        if len(page) < LEDGER_PAGE:
+            return ledger
+        start += LEDGER_PAGE
 
 
 def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -> SportsRun:
@@ -522,7 +574,7 @@ def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -
     # series and must not be able to overrun the hourly timer and overlap the next run.
     run = run_sports_scan(now, SportsKalshi(deadline=deadline), store=SupabaseReviewStore(supa), reviewer=reviewer,
                           budget=cfg.daily_budget, deadline=deadline,
-                          hub_pairs=_hub_settled_pairs(supa))
+                          hub_ledger=_hub_settled_ledger(supa))
     return SportsRun(unrecorded(supa, run.predictions), run.edges, run.reports, run.per_sport)
 
 
