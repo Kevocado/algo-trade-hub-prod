@@ -262,8 +262,13 @@ class SportsRun:
     predictions: list[dict[str, Any]]
     edges: list[dict[str, Any]]
     reports: dict[str, Any]
-    # sport -> {feed_ok, edges}. The write_ok flag is filled in by the caller, which is the only
-    # place that knows whether the upsert landed.
+    # sport -> {feed_ok, edges, series_ok, too_far} on the path that actually scanned, and only
+    # {feed_ok, edges} on the three early exits in `run_sports_scan` (deadline, feed 404, every
+    # series failed), which have no scan result to count. So read these with .get().
+    # `too_far` is games the far bound dropped before pricing; nothing consumes it yet, it is here
+    # so the run state can tell "priced then rejected" from "never priced" (see SportScan.too_far).
+    # The write_ok flag is filled in by the caller, which is the only place that knows whether the
+    # upsert landed.
     per_sport: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 

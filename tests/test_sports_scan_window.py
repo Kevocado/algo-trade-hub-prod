@@ -1,6 +1,6 @@
 """The scan must not price a game it can never trade.
 
-`scan.py:121` filtered only `start_utc <= now` -- games already under way -- with no upper bound. So
+`scan.py:183` filtered only `start_utc <= now` -- games already under way -- with no upper bound. So
 the scan priced every upcoming game, stored it, and `check_candidate` then rejected it for
 `starts_too_late`. CFB week 5 sits 120-168h out against a 72h window, which is why 86 of the 100 live
 rows carried `starts_too_late`: they were dead on arrival by construction.
@@ -15,12 +15,6 @@ from tradehub.sports.mapping import MatchedGame, MatchReport
 from tradehub.sports.scan import scan_sport
 
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
-
-PARAMS = {
-    "max_quote_spread": 0.04, "min_resting_size": 100, "min_volume": 1000,
-    "min_hours_to_start": 1, "max_hours_to_start": 72,
-    "calibration_max_dev": 0.10, "calibration_min_n": 20,
-}
 
 
 class _Game:
@@ -56,13 +50,26 @@ class _SportMarket:
         self.volume = 5000.0
 
 
-def _cfg():
+def _cfg(**params):
+    """A SportConfig built fresh on every call, so the window itself can be varied.
+
+    This was a module-level PARAMS dict handed to every EngineConfig by reference: an override
+    applied in one test would have mutated the dict every later test in the session read. A factory
+    also does the thing the boundary test needs and a constant cannot -- vary the bound and watch
+    the edge move with it.
+    """
     from tradehub.engine_config import EngineConfig
     from tradehub.sports.config import SportConfig
+    p = {
+        "max_quote_spread": 0.04, "min_resting_size": 100, "min_volume": 1000,
+        "min_hours_to_start": 1, "max_hours_to_start": 72,
+        "calibration_max_dev": 0.10, "calibration_min_n": 20,
+    }
+    p.update(params)
     return SportConfig(
         sport="cfb", engine="sports_cfb", base_url="http://x", site_url="http://y",
         series={"winner": "KXNCAAFGAME"}, series_titles={"KXNCAAFGAME": "NCAAF"},
-        edge=EngineConfig(min_edge_pct=4.0, prefer_maker=True, params=PARAMS),
+        edge=EngineConfig(min_edge_pct=4.0, prefer_maker=True, params=p),
     )
 
 
@@ -74,7 +81,7 @@ def _feed():
     return _Feed()
 
 
-def _scan(hours_out, monkeypatch):
+def _scan(hours_out, monkeypatch, **params):
     game = _Game(NOW + timedelta(hours=hours_out))
     sm = _SportMarket(_Market(), _Quote())
     report = MatchReport(matched=[MatchedGame(
@@ -84,7 +91,7 @@ def _scan(hours_out, monkeypatch):
     # globals, so a permanent assignment leaks this fake into every later test in the session. The
     # real load_aliases is left alone, since scan_sport reads aliases.version off it for the report.
     monkeypatch.setattr(scan_mod, "match_games", lambda *a, **k: report)
-    return scan_sport(_cfg(), {}, _feed(), NOW)
+    return scan_sport(_cfg(**params), {}, _feed(), NOW)
 
 
 def test_a_game_beyond_the_window_is_never_priced(monkeypatch):
@@ -108,9 +115,23 @@ def test_a_game_inside_the_window_is_still_priced(monkeypatch):
 
 
 def test_the_boundary_is_the_configured_one_not_a_hardcoded_number(monkeypatch):
-    """71h in, 73h out. A hardcoded 72 would pass today and drift the day min/max change."""
+    """The edge is where the config puts it, and it moves when the config moves.
+
+    Two halves, because on its own neither half earns the name. The 71h/73h pair pins today's 72h
+    setting and is a real boundary check -- it would catch a hardcoded 48 -- but a hardcoded 72
+    sails straight through it, which is exactly the drift this test exists to rule out. So the
+    window itself is varied: at max_hours_to_start=48 the same 49h game is out and the same 47h game
+    is in. 72 written into the source instead of read from cfg fails the 49h line; 48 fails the
+    71h line. Only reading the config survives both.
+    """
     assert _scan(hours_out=71, monkeypatch=monkeypatch).too_far == 0
     assert _scan(hours_out=73, monkeypatch=monkeypatch).too_far == 1
+
+    narrow = {"max_hours_to_start": 48}
+    assert _scan(hours_out=47, monkeypatch=monkeypatch, **narrow).too_far == 0
+    assert _scan(hours_out=49, monkeypatch=monkeypatch, **narrow).too_far == 1, (
+        "a 49h game is outside a 48h window, so the bound is not being read from cfg"
+    )
 
 
 def test_an_already_started_game_is_still_counted_as_started_not_too_far(monkeypatch):
