@@ -14,11 +14,15 @@ misread. They remain in `backtest_runs` and remain reproducible from the CLI.
 import pytest
 
 from tradehub.scoreboard import (
+    SOURCE_ENGINE,
+    SOURCE_GATE,
+    SOURCE_UNKNOWN,
     brier_ratio,
     current_runs,
     is_experiment_version,
     required_settled,
     settled_distance,
+    stated_settled_bar,
 )
 from tradehub.sports.scorecard import MIN_SETTLED
 from tradehub.track_record import MIN_CONTRACTS, check_promotion_gate
@@ -281,23 +285,58 @@ class TestGateDistance:
 
     def test_a_reason_that_is_not_a_string_is_skipped_rather_than_crashing(self):
         assert required_settled([None, 7, NEEDS_50_MONTHLY], None) == 50
+        assert stated_settled_bar([None, 7, NEEDS_50_MONTHLY]) == 50
+
+    def test_a_stated_bar_of_zero_is_silence_rather_than_a_bar(self):
+        # Same rule as a floor of zero: a bar of 0 is not a bar, so it must not be read as one
+        # met at zero, and must not shadow the floor either.
+        assert stated_settled_bar(["only 0 settled contracts, need 0 (monthly)"]) is None
+        assert required_settled(["only 0 settled contracts, need 0 (monthly)"], 100) == 100
+
+    def test_the_stated_bar_never_falls_back_to_a_floor(self):
+        """This is the whole distinction between the two bars: `stated_settled_bar` returning
+        None means 'the gate named no bar', which is a fact about the engine, and must not be
+        laundered into the reviewer's floor by the same helper that reports a flat number."""
+        assert stated_settled_bar([BRIER_REASON]) is None
+        assert required_settled([BRIER_REASON], MIN_SETTLED) == MIN_SETTLED
 
     def test_distance_reports_what_is_still_needed(self):
-        assert settled_distance(42, 200) == {"n_settled": 42, "required": 200, "remaining": 158,
-                                             "met": False, "pct": 21.0}
+        assert settled_distance(42, 200) == {"n_settled": 42, "required": 200,
+                                             "required_source": "gate", "remaining": 158,
+                                             "met": False, "pct": 21.0,
+                                             "floor": None, "floor_remaining": None,
+                                             "floor_met": None, "floor_pct": None}
 
     def test_a_met_gate_says_so(self):
-        assert settled_distance(120, 100) == {"n_settled": 120, "required": 100, "remaining": 0,
-                                              "met": True, "pct": 100.0}
+        assert settled_distance(120, 100) == {"n_settled": 120, "required": 100,
+                                              "required_source": "gate", "remaining": 0,
+                                              "met": True, "pct": 100.0,
+                                              "floor": None, "floor_remaining": None,
+                                              "floor_met": None, "floor_pct": None}
 
     def test_a_run_well_past_the_bar_does_not_render_over_a_hundred_percent(self):
-        assert settled_distance(672, 200) == {"n_settled": 672, "required": 200, "remaining": 0,
-                                              "met": True, "pct": 100.0}
+        assert settled_distance(672, 200)["pct"] == 100.0
+        assert settled_distance(672, 200)["met"] is True
+        assert settled_distance(672, 200)["remaining"] == 0
 
     def test_an_unknown_requirement_yields_no_distance(self):
-        assert settled_distance(42, None) is None
+        assert settled_distance(42, None) is None, "a gate-sourced verdict needs a bar to judge"
         assert settled_distance(None, 200) is None
         assert settled_distance(42, 0) is None, "a bar of zero is no bar, not a met one"
+        assert settled_distance(42, -5) is None
+
+    def test_an_unrecognised_source_yields_no_distance_rather_than_a_guess(self):
+        assert settled_distance(42, 200, required_source="floor") is None
+        assert settled_distance(42, 200, required_source="") is None
+
+    def test_a_bar_attributed_to_the_wrong_source_is_refused(self):
+        """The one combination that must never render: a number filed as the engine's own bar
+        when it is really somebody else's. A caller that disagrees with itself gets no number,
+        not a correction this module has no basis to make."""
+        assert settled_distance(70, 100, required_source="engine") is None
+        assert settled_distance(70, 50, required_source="unknown") is None
+        # ...and the coherent spelling of the same fact is accepted:
+        assert settled_distance(70, None, required_source="engine")["met"] is True
 
 
 class TestGateWording:
@@ -336,24 +375,193 @@ class TestGateWording:
 
 class TestSettledFloor:
     """`MIN_SETTLED` is imported, never written out: it is the reviewer's number in
-    `tradehub/sports/scorecard.py`, and a second copy here is a second place to be wrong."""
+    `tradehub/sports/scorecard.py`, and a second copy here is a second place to be wrong.
+
+    The floor is reported on its own fields and is never the bar `met` is judged against --
+    TestTwoBars covers that half. What is pinned here is that it is always present."""
 
     def test_a_run_that_owes_nothing_still_reports_the_products_own_floor(self):
         runs = [_run("weather", version="weather-v1", reasons=[BRIER_REASON], n_settled=672)]
 
         distance = current_runs(runs)[0]["settled_distance"]
 
-        assert distance == {"n_settled": 672, "required": MIN_SETTLED, "remaining": 0,
-                            "met": True, "pct": 100.0}
+        assert distance["floor"] == MIN_SETTLED
+        assert distance["floor_met"] is True
+        assert distance["floor_remaining"] == 0
+        assert distance["floor_pct"] == 100.0
 
     def test_a_run_short_of_the_gates_own_bar_reports_that_bar_not_the_floor(self):
         runs = [_run("cpi_nowcast", version="cpi-v1", reasons=[NEEDS_200_DAILY], n_settled=42)]
 
-        assert current_runs(runs)[0]["settled_distance"]["required"] == 200
+        distance = current_runs(runs)[0]["settled_distance"]
+
+        assert distance["required"] == 200
+        assert distance["required_source"] == SOURCE_GATE
+        assert distance["floor"] == MIN_SETTLED, "the floor is still reported, separately"
 
     def test_the_floor_is_the_live_constant(self):
         assert MIN_SETTLED == 100
         assert required_settled([BRIER_REASON], MIN_SETTLED) == MIN_SETTLED
+
+
+class TestTwoBars:
+    """The defect this class exists for: a RIGHT NUMBER UNDER THE WRONG LABEL.
+
+    A monthly-cadence engine's own bar is 50 (`MIN_CONTRACTS`). At 70 settled it has met that
+    bar, and the single-bar shape reported it as 70/100, met=False -- a verdict against the
+    reviewer's floor dressed as the bar the engine owed. Every case below is built from the
+    LIVE `check_promotion_gate`, so the premise (that the gate is silent at 70) is measured
+    rather than assumed.
+    """
+
+    @staticmethod
+    def _monthly_cleared_run():
+        """A monthly engine holding 70 settled: past its own 50 bar, short of the 100 floor."""
+        return _run(
+            "cpi_nowcast", version="cpi-v1", n_settled=70,
+            reasons=_gate_reasons(cadence="monthly",
+                                  summary={"n_settled": 70, "brier_ours": 0.2,
+                                           "brier_market": 0.1},
+                                  simulated_pnl_after_fees=-1.0),
+        )
+
+    def test_the_premise_the_whole_shape_rests_on_is_true_of_the_live_gate(self):
+        """`check_promotion_gate` names a settled bar only when n_settled < min_contracts, so a
+        gate that ran and named none is positive evidence the engine cleared its own bar. If this
+        stops holding, `SOURCE_ENGINE` becomes a guess and the shape should be rebuilt."""
+        for cadence, bar in MIN_CONTRACTS.items():
+            short = _gate_reasons(cadence=cadence,
+                                  summary={"n_settled": bar - 1, "brier_ours": 0.2,
+                                           "brier_market": 0.1})
+            cleared = _gate_reasons(cadence=cadence,
+                                    summary={"n_settled": bar, "brier_ours": 0.2,
+                                             "brier_market": 0.1})
+            assert stated_settled_bar(short) == bar, (cadence, short)
+            assert stated_settled_bar(cleared) is None, (cadence, cleared)
+
+        # The case the ruling is about, with the numbers spelled out:
+        assert MIN_CONTRACTS["monthly"] == 50
+        assert 70 >= MIN_CONTRACTS["monthly"], "70 settled clears a 50 bar"
+
+    def test_a_reader_can_tell_which_bar_the_verdict_was_made_against(self):
+        """Requirement 1. No prose: `required_source` names the bar, and each case puts its own
+        number under the field that belongs to it."""
+        cleared = current_runs([self._monthly_cleared_run()])[0]["settled_distance"]
+        short = current_runs([
+            _run("cpi_nowcast", version="cpi-v1", n_settled=42,
+                 reasons=_gate_reasons(cadence="daily",
+                                       summary={"n_settled": 42, "brier_ours": 0.2,
+                                                "brier_market": 0.1}))
+        ])[0]["settled_distance"]
+
+        # The engine that met its own gate: the verdict is against its own bar, which is not
+        # stated anywhere, and the 100 is visibly filed as the floor.
+        assert cleared["required_source"] == SOURCE_ENGINE
+        assert cleared["required"] is None
+        assert cleared["floor"] == MIN_SETTLED
+
+        # The engine short of its own gate: the verdict is against the gate's own number, and
+        # the floor is again visibly the floor.
+        assert short["required_source"] == SOURCE_GATE
+        assert short["required"] == MIN_CONTRACTS["daily"]
+        assert short["floor"] == MIN_SETTLED
+
+        assert {cleared["required_source"], short["required_source"]} == {SOURCE_GATE, SOURCE_ENGINE}
+
+    def test_an_engine_that_met_its_own_gate_is_not_reported_as_failing_a_number(self):
+        """Requirement 2. This is the exact row the single-bar shape got wrong: 70 settled, its
+        own bar 50, met -- rendered as 70/100, met=False, need 30 more."""
+        row = current_runs([self._monthly_cleared_run()])[0]
+
+        assert row["settled_distance"]["met"] is True
+        assert row["settled_distance"]["remaining"] == 0
+        assert row["settled_distance"]["required"] is None, "no bar was ever named to fail"
+
+        # The number that would have produced met=False is still here -- as a floor, on its own
+        # fields, where it cannot be read as the bar the engine owed.
+        assert row["settled_distance"]["floor"] == MIN_SETTLED
+        assert row["settled_distance"]["floor_met"] is False
+        assert row["settled_distance"]["floor_remaining"] == 30
+        assert row["settled_distance"]["floor_pct"] == 70.0
+
+        # And the row still says what is actually blocking it, which was never the settled count.
+        assert any("Brier" in r for r in row["gate_reasons"])
+        assert not any("settled contracts" in r for r in row["gate_reasons"])
+
+    def test_the_reviewers_floor_still_appears_even_when_the_gate_states_its_own_bar(self):
+        """Requirement 3. The floor is reported on every row, gate-stated or not: "distance to
+        the gate" is half the approval, and the reviewer is the component that will make the
+        keep-or-drop call. Suppressing it behind a stated bar would lose that."""
+        runs = [_run("cpi_nowcast", version="cpi-v1", n_settled=42,
+                     reasons=_gate_reasons(cadence="daily",
+                                           summary={"n_settled": 42, "brier_ours": 0.2,
+                                                    "brier_market": 0.1}))]
+
+        distance = current_runs(runs)[0]["settled_distance"]
+
+        assert distance["required"] == 200 and distance["met"] is False
+        assert distance["pct"] == 21.0, "42 of the gate's own 200"
+        assert distance["floor"] == MIN_SETTLED
+        assert distance["floor_remaining"] == 58
+        assert distance["floor_met"] is False
+        assert distance["floor_pct"] == 42.0, "42 of the reviewer's 100 -- a different bar"
+
+    def test_every_row_carries_both_bars_and_a_source(self):
+        """The shape holds for all three states, so no engine can render with one bar and no
+        attribution -- which is the state the single-bar version had no way to express."""
+        runs = [
+            self._monthly_cleared_run(),                                     # met its own gate
+            _run("cpi_nowcast", version="cpi-core-v1", n_settled=42, mode="maker",
+                 reasons=_gate_reasons(cadence="daily",
+                                       summary={"n_settled": 42, "brier_ours": 0.2,
+                                                "brier_market": 0.1})),      # short of its own
+            _run("gas", version="gas-v1", n_settled=672, reasons=[]),        # promoted, silent
+        ]
+
+        rows = {r["engine_version"]: r["settled_distance"] for r in current_runs(runs)}
+
+        assert len(rows) == 3
+        assert rows["cpi-v1"]["required_source"] == SOURCE_ENGINE
+        assert rows["cpi-core-v1"]["required_source"] == SOURCE_GATE
+        assert rows["gas-v1"]["required_source"] == SOURCE_ENGINE, "promoted with no complaints"
+        for distance in rows.values():
+            assert distance["floor"] == MIN_SETTLED
+            assert distance["n_settled"] is not None
+
+    def test_a_row_with_no_evidence_the_gate_ever_ran_claims_nothing(self):
+        """Fail closed. `gate_reasons` is jsonb NOT NULL DEFAULT '[]' on a real row, so this is
+        defensive -- but reading an absent gate as a met one is the one claim in this cell that
+        would have no evidence behind it."""
+        run = _run("labor_nowcast", version="labor-v1", n_settled=70, reasons=[])
+        del run["gate_reasons"]
+
+        distance = current_runs([run])[0]["settled_distance"]
+
+        assert distance["required_source"] == SOURCE_UNKNOWN
+        assert distance["met"] is None, "silence is not a pass"
+        assert distance["required"] is None
+        assert distance["floor"] == MIN_SETTLED, "the floor is still the reviewer's to read"
+
+    def test_a_promoted_row_counts_as_evidence_the_gate_ran(self):
+        """An all-clear is an empty list, not an absent one: the gate ran and found nothing
+        outstanding, which is exactly the case where the engine met its own bar."""
+        run = _run("gas", version="gas-v1", n_settled=672, reasons=[])
+        run["gate_status"] = "PROMOTED"
+
+        assert current_runs([run])[0]["settled_distance"]["required_source"] == SOURCE_ENGINE
+
+    def test_a_stated_bar_the_run_has_already_met_is_reported_as_met_against_the_gate(self):
+        """A stale row whose reasons name a bar the run went on to clear. The verdict still gets
+        a bar to be against, and it is still the gate's -- so the row is self-consistent rather
+        than quietly re-interpreted."""
+        run = _run("cpi_nowcast", version="cpi-v1", n_settled=250, reasons=[NEEDS_200_DAILY])
+
+        distance = current_runs([run])[0]["settled_distance"]
+
+        assert distance["required_source"] == SOURCE_GATE
+        assert distance["required"] == 200
+        assert distance["met"] is True
+        assert distance["pct"] == 100.0
 
 
 class TestBacktestRunsProvenance:

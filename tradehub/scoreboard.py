@@ -11,6 +11,14 @@ engine, and this page exists to answer whether to trust an engine. Presenting th
 engine. Experiments are therefore excluded rather than footnoted: a footnote is
 something a reader skips, an absent row is something they cannot misread. The runs
 stay in `backtest_runs` and stay reproducible from the CLI.
+
+The second rule: TWO bars, never one. The gate states its own settled requirement, and it
+differs by cadence (200 daily, 50 monthly, `MIN_CONTRACTS`); the reviewer has a separate, flat
+evidence floor (`MIN_SETTLED`). A monthly engine holding 70 settled contracts has met its own 50
+bar, so reporting it as 70/100 with met=False is a verdict against a number that was never its
+bar. So `settled_distance` carries both bars and `required_source` says which one the verdict is
+made against. The floor is reported on every row, on its own fields, because the reviewer is the
+component that will eventually make the keep-or-drop call.
 """
 
 from __future__ import annotations
@@ -43,6 +51,22 @@ EXPERIMENT_VERSION = re.compile(r"-lead")
 # "need" followed by a number).
 _REQUIRED_IN_REASON = re.compile(r"need\s+(\d+)\b", re.IGNORECASE)
 
+# Which bar `settled_distance`'s verdict is against, reported as `required_source` so a reader
+# never has to infer it from the number alone.
+#
+# There are two bars and they are not the same bar. The gate states its own requirement, which
+# differs by cadence (200 daily, 50 monthly -- `MIN_CONTRACTS`). The reviewer's settled-evidence
+# floor is a flat `MIN_SETTLED`. The defect these three names exist to prevent is a RIGHT NUMBER
+# UNDER THE WRONG LABEL: a monthly engine holding 70 settled contracts has met its own 50 bar,
+# and reporting that as 70/100 -- unmet -- is a verdict against a number that was never its bar.
+#
+#   SOURCE_GATE     the gate named a bar, so the engine is short of it and that bar is authoritative
+#   SOURCE_ENGINE   the gate ran and named none, so the engine has met its own (unstateable) bar
+#   SOURCE_UNKNOWN  nothing in the row shows the gate ran, so nothing is claimed
+SOURCE_GATE = "gate"
+SOURCE_ENGINE = "engine"
+SOURCE_UNKNOWN = "unknown"
+
 
 def is_experiment_version(engine_version: Any) -> bool:
     """True for anything that is not plainly the production version.
@@ -70,50 +94,126 @@ def brier_ratio(brier_ours: Any, brier_market: Any) -> float | None:
     return round(float(brier_ours) / float(brier_market), 4)
 
 
-def required_settled(gate_reasons: Iterable[Any] | None, min_settled: int | None) -> int | None:
-    """The settled count this engine's gate requires, or `None` if it does not say.
+def stated_settled_bar(gate_reasons: Iterable[Any] | None) -> int | None:
+    """The settled count the gate names in its own reasons, or `None` if it names none.
 
-    The gate already states its own requirement in `gate_reasons`, so it is read
-    from there rather than hardcoded per engine -- the bars genuinely differ (200
-    for a daily engine, 50 for a monthly one, `MIN_CONTRACTS`), and duplicating
-    them here would be a second place to get wrong.
+    This is the primitive behind the two bars, and it deliberately does NOT fall back to a
+    floor: "the gate named 50" and "the gate named nothing" are different facts about the
+    engine, and collapsing them is what made a cleared monthly engine render as failing.
 
-    `min_settled` is the floor to fall back on when the gate states no bar; it is
-    a floor, never a ceiling, so a stated bar always wins. `None` is returned when
-    there is nothing to compare against -- never 0, which would render as "0 of 0"
-    and so read as having met the gate.
+    A bar of zero is not a bar -- the same rule `required_settled` applies to a floor of zero --
+    so a "need 0" reading counts as silence rather than as a bar met at zero.
     """
     for reason in gate_reasons or []:
         if not isinstance(reason, str):
             continue
         match = _REQUIRED_IN_REASON.search(reason)
-        if match:
+        if match and int(match.group(1)) > 0:
             return int(match.group(1))
+    return None
+
+
+def required_settled(gate_reasons: Iterable[Any] | None, min_settled: int | None) -> int | None:
+    """The settled count to fall back on: the gate's own bar if it stated one, else `min_settled`.
+
+    Kept as the flat answer for callers that only want a number to compare against. Callers
+    that care WHICH bar they are comparing against -- the scoreboard row does -- must use
+    `stated_settled_bar`, because this function's answer cannot say where it came from.
+
+    `min_settled` is a floor, never a ceiling, so a stated bar always wins. `None` is returned
+    when there is nothing to compare against -- never 0, which would render as "0 of 0" and so
+    read as having met the gate.
+    """
+    stated = stated_settled_bar(gate_reasons)
+    if stated is not None:
+        return stated
     if isinstance(min_settled, int) and min_settled > 0:
         return min_settled
     return None
 
 
-def settled_distance(n_settled: Any, required: int | None) -> dict[str, Any] | None:
-    """How much settled evidence is still needed, or `None` if the bar is unknown.
+def settled_distance(
+    n_settled: Any,
+    required: int | None = None,
+    *,
+    required_source: str = SOURCE_GATE,
+    floor: int | None = None,
+) -> dict[str, Any] | None:
+    """Both bars, and which one the verdict is against.
 
-    `pct` is capped at 100 and floored at 0: a run past the bar is "met", not
-    "312% of the way to a gate it cleared", and a nonsense count cannot render as
-    a negative fraction of a bar.
+    `required` is the bar `met` is a verdict ON, and `required_source` says where that bar came
+    from, so the number and its attribution cannot be read apart:
+
+    - `SOURCE_GATE`: the gate named a bar in its reasons. That bar is authoritative, and
+      `met`/`remaining`/`pct` are measured against it.
+    - `SOURCE_ENGINE`: the gate ran and named no bar, so the engine has met its own bar
+      (`check_promotion_gate` names a bar only when `n_settled < min_contracts`,
+      `tradehub/track_record.py:143`). The bar is unstateable from a `backtest_runs` row --
+      `cadence` is not a column -- so `required` is `None` and `met` is `True`. That is the
+      whole point: a monthly engine holding 70 settled has cleared its 50 bar, and reporting
+      it as 70/100 would be a verdict against a number that was never its bar.
+    - `SOURCE_UNKNOWN`: nothing in the row shows the gate ran, so `met` stays `None`. Silence
+      is not a pass, which is the same fail-closed direction as the `SHADOW` default on the row.
+
+    `floor` is `MIN_SETTLED`, the reviewer's own settled-evidence bar, reported on its own
+    `floor_*` fields and reported ALWAYS -- including when the gate states its own bar, because
+    "distance to the gate" is half the approval and the reviewer is the component that will
+    eventually make the keep-or-drop call. It is never the bar `met` is judged against.
+
+    `None` rather than a guess: an unreadable count, a non-positive bar, an unrecognised
+    `required_source`, or a `required` that disagrees with its own `required_source` all yield
+    `None` instead of a number nobody downstream can attribute.
+
+    `pct` is capped at 100 and floored at 0: a run past a bar is "met", not "312% of the way to
+    a gate it cleared", and a nonsense count cannot render as a negative fraction of a bar.
     """
-    if required is None or not isinstance(n_settled, (int, float)):
+    if not isinstance(n_settled, (int, float)) or required_source not in (
+        SOURCE_GATE, SOURCE_ENGINE, SOURCE_UNKNOWN
+    ):
         return None
-    required = int(required)
-    if required <= 0:
+    count = int(n_settled)
+
+    # A `required` is only ever believed when it is attributed to the gate. A bar filed under
+    # any other source is the mislabel this shape exists to prevent, so it is refused rather
+    # than rendered -- and the caller's disagreement is not silently corrected either.
+    if required_source == SOURCE_GATE:
+        if not isinstance(required, (int, float)) or int(required) <= 0:
+            return None
+        bar: int | None = int(required)
+    elif required is not None:
         return None
-    met = int(n_settled) >= required
-    return {
-        "n_settled": int(n_settled),
-        "required": required,
-        "remaining": max(0, required - int(n_settled)),
-        "met": met,
-        "pct": min(100.0, max(0.0, round(100.0 * int(n_settled) / required, 1))),
+    else:
+        bar = None
+
+    floor_bar = int(floor) if isinstance(floor, (int, float)) and int(floor) > 0 else None
+
+    out: dict[str, Any] = {
+        "n_settled": count,
+        "required": bar,
+        "required_source": required_source,
+        "remaining": None,
+        "met": None,
+        "pct": None,
+        "floor": floor_bar,
+        "floor_remaining": None,
+        "floor_met": None,
+        "floor_pct": None,
     }
+
+    if bar is not None:
+        out["remaining"] = max(0, bar - count)
+        out["met"] = count >= bar
+        out["pct"] = min(100.0, max(0.0, round(100.0 * count / bar, 1)))
+    elif required_source == SOURCE_ENGINE:
+        out["remaining"] = 0
+        out["met"] = True
+
+    if floor_bar is not None:
+        out["floor_remaining"] = max(0, floor_bar - count)
+        out["floor_met"] = count >= floor_bar
+        out["floor_pct"] = min(100.0, max(0.0, round(100.0 * count / floor_bar, 1)))
+
+    return out
 
 
 def _recency(run: Mapping[str, Any]) -> tuple[int, float, str]:
@@ -166,7 +266,25 @@ def current_runs(runs: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     for (engine, mode), run in sorted(best.items()):
-        reasons = run.get("gate_reasons") or []
+        raw_reasons = run.get("gate_reasons")
+        reasons = raw_reasons or []
+        status = run.get("gate_status") or "SHADOW"
+
+        # Which bar the settled verdict is against. `check_promotion_gate` names a bar only
+        # when n_settled < min_contracts (tradehub/track_record.py:143), so a gate that ran and
+        # named no bar is positive evidence the engine met its own -- measured against the live
+        # gate in tests::TestTwoBars::test_the_gate_names_a_bar_only_when_the_engine_is_short.
+        # Silence is only that evidence if the gate demonstrably ran, hence the two branches.
+        stated = stated_settled_bar(reasons)
+        if stated is not None:
+            required, required_source = stated, SOURCE_GATE
+        elif isinstance(raw_reasons, list) or status == "PROMOTED":
+            required, required_source = None, SOURCE_ENGINE
+        else:
+            # No reasons at all and not promoted: nothing here shows the gate ran, so this claims
+            # nothing rather than reading absence of a complaint as a pass.
+            required, required_source = None, SOURCE_UNKNOWN
+
         out.append({
             "engine": engine,
             "engine_version": run.get("engine_version"),
@@ -182,18 +300,16 @@ def current_runs(runs: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
             "brier_ratio": brier_ratio(run.get("brier_ours"), run.get("brier_market")),
             "pnl_after_fees": run.get("pnl_after_fees"),
             "max_drawdown": run.get("max_drawdown"),
-            "gate_status": run.get("gate_status") or "SHADOW",
+            "gate_status": status,
             "gate_reasons": reasons,
+            # `MIN_SETTLED` is the reviewer's floor, imported and never written out. It rides
+            # along on its own fields whether or not the gate states a bar, and is never the
+            # bar `met` is judged against -- see `settled_distance`.
             "settled_distance": settled_distance(
-                # The gate's own bar when it states one; the product's settled-evidence floor
-                # when it does not. `MIN_SETTLED` is imported, never written out.
-                #
-                # Known and accepted: a monthly-cadence engine (bar 50, `MIN_CONTRACTS`) holding
-                # 50-99 settled contracts has already met its own bar, so the gate states nothing
-                # and this reports it against the 100 floor. The row's own `gate_reasons` carries
-                # what is actually blocking it, so the row is not silently wrong -- but the settled
-                # cell reads stricter than the gate. Flagged in task-1-report.md for a ruling.
-                run.get("n_settled"), required_settled(reasons, MIN_SETTLED)
+                run.get("n_settled"),
+                required,
+                required_source=required_source,
+                floor=MIN_SETTLED,
             ),
         })
     return out
