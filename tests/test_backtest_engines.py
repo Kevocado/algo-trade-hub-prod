@@ -361,11 +361,12 @@ def test_gas_cli_sizes_rbob_from_backtest_start(monkeypatch):
         rbob_calls.append({"start": start, "end": end})
         return []
 
-    def fake_gas_decisions(markets, aaa, rbob, *, roll_dates):
+    def fake_gas_decisions(markets, aaa, rbob, *, roll_dates, decision_lead=None):
         captured["markets"] = markets
         captured["aaa"] = aaa
         captured["rbob"] = rbob
         captured["roll_dates"] = roll_dates
+        captured["decision_lead"] = decision_lead
         return []
 
     monkeypatch.setattr(backtest_engines, "rbob_closes", fake_rbob_closes)
