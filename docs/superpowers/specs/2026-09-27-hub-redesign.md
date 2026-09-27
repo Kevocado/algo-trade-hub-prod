@@ -93,9 +93,43 @@ them. So:
   nothing to stamp. Blanking the placeholder in the UI (PR #20) remains correct, but the *cause* is
   that no predictor publishes a version, and no amount of hub-side work fixes that.
 - **The sigma ranking in §4 has no input.** `sigma` is null on every game, so `edge_pct / sigma` is
-  undefined across the board. This is a **predictor-side prerequisite**, and it must be a task in the
-  plan rather than an assumption the hub works around. Ranking on raw edge is the honest fallback
-  until then — which is what the hub does today.
+  undefined across the board. Ranking on raw edge is the honest fallback until this is fixed — which
+  is what the hub does today.
+
+### The cause is a stale deployment, not missing code
+
+I expected this to be unimplemented work. It isn't. Tracing it back through the predictor:
+
+| Layer | File | Behaviour |
+| --- | --- | --- |
+| feed read | `tracking/store.py:352-358` | maps `predicted_margin`→`margin_mu`, `sigma`→`sigma`, `model_version` faithfully |
+| snapshot write | `tracking/store.py:149-150` | `game.get(...)`, so a missing key lands as NULL |
+| tick | `api/routes.py:685` | splats `**pred` from `_predict_game_from_models` |
+| predict | `api/routes.py:163-168` | sets all three from the model bundle: `models["sigma"]`, `models["total_sigma"]`, `models.get("model_version")` |
+| bundle | `models/manifest.py:157-159` | `model_version(manifest)`, `manifest["sigma"]`, `manifest["total_sigma"]` |
+| version fn | `models/manifest.py:140` | `f"{manifest['chosen_candidate']}@{manifest['trained_at']}"` — **always a non-empty string** |
+
+So the current code has no path to a null `model_version`, and `origin/main` (`2296af3`) carries all of
+it. **The deployed NFL and CFB images predate step 7a.** The argument is tight rather than inferred from
+one bad row:
+
+- If the deployed build had the sigma code and a valid manifest, `sigma` would be a float. It is null.
+- If it had the sigma code and a manifest *lacking* the key, `manifest["sigma"]` is bracket access, so
+  `load_models()` would raise `KeyError` and the feed would not serve 61 games at all. It does serve
+  them, with `p_home` populated.
+- Therefore the deployed build does not contain the sigma/version code — and `p_home` predates it,
+  which is why the older build still works.
+
+**So this is operational, not development: redeploy the predictor images, and retrain so the manifest
+carries `sigma`.** No new predictor code is needed. That is a much cheaper fix than approval item 4
+reads like, and it is the highest-leverage thing in this whole spec — until it lands, the
+`(engine, engine_version)` promotion gate can never accumulate a track record, because every row is
+keyed `feed:unknown`.
+
+I could not read the deployed image's commit from outside: there is no version or health endpoint
+(`/api/health`, `/health`, `/api/model-info`, `/api/manifest`, `/api/status` all 404). The conclusion
+rests on the code plus observed behaviour, so the operator should confirm it by redeploying and
+re-probing `/api/kalshi-feed` for a non-null `sigma`.
 
 Two structural facts fall out of the same probe, and they explain the rest of the audit:
 
@@ -201,9 +235,11 @@ not.
    fills the page with rows that can never pass.
 3. **The per-engine hypotheses in §5** — or replacements, particularly for CPI where I suspect the
    answer is "display, don't trade".
-4. **A predictor publishing `sigma` and `model_version`** (§3). This is new since the last round of
-   approvals and it gates the approved ranking: all three fields are null on 61/61 games today. My
-   recommendation is to treat it as a prerequisite task on the NFL or CFB predictor, not a hub change.
+4. **Redeploy the NFL and CFB predictor images, and retrain** (§3). This is new since the last round
+   of approvals and it gates the approved ranking: `sigma`, `margin_mu` and `model_version` are null
+   on 61/61 games, and the deployed images predate step 7a. **No new code** — `origin/main` already
+   has it. Cheapest high-leverage item here: until it lands, the promotion gate can never accumulate,
+   because every row is keyed `feed:unknown`.
 5. **The shadow scoreboard as a first-class page** (§6). It is the least impressive page and the most
    important one.
 Then: one plan per independent piece, each with bite-sized TDD tasks, point-in-time backtests before
