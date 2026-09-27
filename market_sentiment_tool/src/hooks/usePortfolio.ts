@@ -17,6 +17,26 @@ export interface PortfolioBook_ extends PortfolioBook {
   suggest_only: boolean;
 }
 
+/**
+ * The API's own `detail` is the actionable part.
+ *
+ * A missing ledger answers 503 with "table 'paper_trades' is not in the database. Apply
+ * market_sentiment_tool/supabase/migrations/20260416000011_war_room_tables.sql and redeploy." -- and
+ * this hook was throwing that away in favour of "Request failed with status 503", so the one message
+ * that says what to do never reached the reader. Falls back to the status line only when there is no
+ * detail worth showing.
+ */
+async function apiError(response: Response): Promise<Error> {
+  let detail = "";
+  try {
+    const body = await response.json();
+    if (body && typeof body.detail === "string") detail = body.detail;
+  } catch {
+    // A non-JSON error body is not worth reporting; the status line below is the fallback.
+  }
+  return new Error(detail || `Request failed with status ${response.status}`);
+}
+
 function fromSummary(body: Record<string, unknown>): PortfolioBook_ {
   const cents = body.total_pnl_cents;
   return {
@@ -56,7 +76,7 @@ export function usePortfolio() {
     async function load() {
       try {
         const response = await fetch(buildApiUrl("/api/pnl_summary"));
-        if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
+        if (!response.ok) throw await apiError(response);
         const body = await response.json();
         if (!cancelled) {
           setPortfolio(fromSummary(body));
@@ -96,7 +116,7 @@ export function usePortfolioMetrics() {
     async function load() {
       try {
         const response = await fetch(buildApiUrl("/api/pnl_summary"));
-        if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
+        if (!response.ok) throw await apiError(response);
         const body = await response.json();
         if (!cancelled) setMetrics(fromSummary(body));
       } catch {
