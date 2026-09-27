@@ -119,11 +119,12 @@ def build_gas_decisions(
     rbob: list[Observation],
     *,
     roll_dates: list[date] | None = None,
+    decision_lead: timedelta = GAS_DECISION_LEAD,
 ) -> list[Decision]:
     rbob_sorted = sorted(rbob, key=lambda o: o.published_at)
     decisions = []
     for market in markets:
-        decided_at = market.close_time - GAS_DECISION_LEAD
+        decided_at = market.close_time - decision_lead
         known = [o for o in aaa if o.published_at <= decided_at]
         if not known:
             continue
@@ -231,6 +232,15 @@ def main(argv: list[str] | None = None) -> int:
         default=90,
         help="days of history before --start used for weather calibration and RBOB loading",
     )
+    parser.add_argument(
+        "--gas-lead-hours", type=float, default=GAS_DECISION_LEAD.total_seconds() / 3600.0,
+        help=(
+            "gas: hours before close at which to decide. Defaults to the production 2h. The redesign "
+            "hypothesis is that the market has already priced the AAA print by then, so the question "
+            "is exhausted at that lead rather than the model being merely miscalibrated -- which only "
+            "a worse Brier at an EARLIER lead can distinguish from the reverse."
+        ),
+    )
     parser.add_argument("--lead-days", type=int, default=0,
                         help="cpi_nowcast: decide this many days before release morning (default 0)")
     args = parser.parse_args(argv)
@@ -295,7 +305,10 @@ def main(argv: list[str] | None = None) -> int:
         train_from = args.start - timedelta(days=args.train_days)
         rbob = rbob_closes(start=train_from, end=args.end)
         roll_dates = front_month_roll_dates(train_from, args.end)
-        decisions = build_gas_decisions(markets, aaa, rbob, roll_dates=roll_dates)
+        decisions = build_gas_decisions(
+            markets, aaa, rbob, roll_dates=roll_dates,
+            decision_lead=timedelta(hours=args.gas_lead_hours),
+        )
         version = GAS_ENGINE_VERSION
     histories = _histories(
         client,
@@ -327,6 +340,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     if args.engine == "cpi_nowcast":
         config["lead_days"] = args.lead_days
+    if args.engine == "gas":
+        config["decision_lead_hours"] = args.gas_lead_hours
     row = build_backtest_run_row(
         result,
         engine_version=version,
@@ -352,7 +367,8 @@ def main(argv: list[str] | None = None) -> int:
                     "gate_reasons",
                 )
             }
-            | {"n_unquoted": getattr(result, "n_unquoted", 0)},
+            | {"n_unquoted": getattr(result, "n_unquoted", 0)}
+            | ({"decision_lead_hours": args.gas_lead_hours} if args.engine == "gas" else {}),
             default=str,
             indent=2,
         )
