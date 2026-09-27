@@ -20,10 +20,10 @@ What is settled so far, for scale: NFL has **0** settled contracts in every buck
 That number is here to keep the fix honest -- aligning the thresholds does NOT open the gate, because
 42 < 100 either way. It makes the target coherent and reachable rather than unreachable.
 
-`n_buckets` is chosen by the predictor, not the hub, so the coupling is real and worth pinning: if a
-predictor changes its bucket count, this test's arithmetic changes with it, which is the point. The
-value below was read from both live feeds on 2026-09-27 and is the one thing here that is not derived
-from this repository.
+Ruled 2026-09-27: `n_buckets` becomes 4 and the per-bucket `calibration_off` test is dropped in
+favour of the reviewer. Those two halves have to arrive together — see the module note in
+`PREDICTOR_N_BUCKETS` and the rationale in `candidates.py`. The test is no longer an xfail: it was
+`xfail(strict=True)` against the old `10 x 20 = 200`, and the ruling makes it pass for real.
 
 The coherence test is `xfail(strict=True)`: it fails today by design, and when someone fixes the
 thresholds it will XPASS, which under `strict` is itself a failure telling them to delete this marker.
@@ -37,8 +37,15 @@ from tradehub.sports.scorecard import MIN_SETTLED
 
 ENGINES_YAML = "tradehub/config/engines.yaml"
 
-# Read from `/api/kalshi-feed` on both predictors, 2026-09-27. The hub does not choose this.
-PREDICTOR_N_BUCKETS = 10
+# RULED 2026-09-27: 4 buckets x min_n 20 = 80, under the reviewer's 100.
+#
+# The live feeds reported 10 as of 2026-09-27, which is what made the gate incoherent: 10 x 20 = 200
+# against a reviewer bar of 100, so admitting an edge needed twice the evidence of judging one.
+# `n_buckets` is the PREDICTOR's setting, so the change to 4 lands in NFL_Predictor and CFB_Predictor
+# -- two other repos, and it is OUTSTANDING as of this commit. This constant is the ruled value, not a
+# live reading, so the test states the invariant the ruling intends; the deployed feeds still emit 10
+# until those PRs merge, which is why the docstring says so rather than leaving it implied.
+PREDICTOR_N_BUCKETS = 4
 
 
 def _sport_params(sport: str) -> dict:
@@ -57,18 +64,11 @@ def test_every_sport_reports_the_calibration_min_n_it_gates_on(sport):
 
 
 @pytest.mark.parametrize("sport", ["sports_nfl", "sports_cfb"])
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known contradiction, found 2026-09-27: 10 predictor buckets x calibration_min_n 20 = 200 "
-        "settled required, against the reviewer's MIN_SETTLED of 100. Fixing the thresholds makes this "
-        "XPASS, which under strict=True is a failure telling the fixer to delete this marker."
-    ),
-)
 def test_the_gate_needs_no_more_evidence_than_the_reviewer_does(sport):
     """The invariant: admitting an edge must not require more settled contracts than judging one.
 
-    xfail(strict=True) -- see the module docstring. Delete this marker when it passes.
+    Ruled 2026-09-27: 4 buckets x min_n 20 = 80, which is under the reviewer's 100. This test was
+    `xfail(strict=True)` against the old 10 x 20 = 200 and is now a real assertion.
     """
     params = _sport_params(sport)
     implied_required = PREDICTOR_N_BUCKETS * params["calibration_min_n"]
@@ -88,5 +88,8 @@ def test_the_current_gate_arithmetic_is_what_this_file_claims(sport):
     params = _sport_params(sport)
 
     assert params["calibration_min_n"] == 20
-    assert PREDICTOR_N_BUCKETS * params["calibration_min_n"] == 200
+    assert PREDICTOR_N_BUCKETS * params["calibration_min_n"] == 80, (
+        "4 buckets x 20 is the ruled setting; 200 was the old 10 x 20 that put admission above the "
+        "reviewer's bar"
+    )
     assert MIN_SETTLED == 100
