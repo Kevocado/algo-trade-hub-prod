@@ -110,7 +110,22 @@ I expected this to be unimplemented work. It isn't. Tracing it back through the 
 | version fn | `models/manifest.py:140` | `f"{manifest['chosen_candidate']}@{manifest['trained_at']}"` — **always a non-empty string** |
 
 So the current code has no path to a null `model_version`, and `origin/main` (`2296af3`) carries all of
-it. **The deployed NFL and CFB images predate step 7a.** The argument is tight rather than inferred from
+it. The chain above is NFL's, cited because I traced it there first; **CFB is identical link for
+link**, which matters because all 100 rows in the original audit were CFB:
+
+| Layer | NFL (`2296af3`) | CFB (`695290e`) |
+| --- | --- | --- |
+| version fn | `models/manifest.py:140` | `models/manifest.py:141` |
+| bundle | `models/manifest.py:157-159` | `models/manifest.py:159-161` |
+| manifest written | `models/manifest.py:118-119` | `models/manifest.py:127-128` |
+| snapshot write | `tracking/store.py:149-150` | `tracking/store.py:147-148` |
+| feed read | `tracking/store.py:352-358` | `tracking/store.py:348` |
+
+CFB's `model_version()` is the same `f"{manifest['chosen_candidate']}@{manifest['trained_at']}"`, so it
+likewise cannot return null. Both feeds return null on all three fields, so the deployment gap is
+symmetric and **both** images need redeploying — not just the one that first exposed it.
+
+**The deployed NFL and CFB images predate step 7a.** The argument is tight rather than inferred from
 one bad row:
 
 - If the deployed build had the sigma code and a valid manifest, `sigma` would be a float. It is null.
