@@ -346,6 +346,27 @@ Every page's empty state names the reason and the next step. An empty page that 
 the filter yet, and here is exactly what would" is a product; a page that silently renders nothing is
 not.
 
+### What the design tooling does *not* find
+
+`impeccable detect` over the whole frontend (`market_sentiment_tool/src`) returns **three findings, all
+cosmetic**: Inter at `index.css:1` and `:73` as an overused face, and `border-l-4` on the Daily PnL card
+at `Home.tsx:113`.
+
+Worth stating because it should change what the redesign spends money on. Every one of those is a
+finish-level detail, and **none of them is why the product is hard to use.** What actually made it
+hard to use was found by reading the live pages, and none of it is on that list:
+
+- a spread artifact rendered as a `+59.3 pp` opportunity next to an unrelated mid (§3)
+- a `LIVE BALANCE $0.00` that was a claim rather than a measurement
+- four of five routes never leaving a loading string
+- a data table with no `<thead>`, so its columns were unnamed to a screen reader
+- "No active positions detected in Kalshi account", naming an account that does not exist
+
+Those are truthfulness and information-architecture failures, not craft failures, and a pattern matcher
+cannot see any of them — it matches strings, not claims. So the redesign budget belongs in §6's page
+purposes and in the labelling work, **not** in swapping the typeface or thinning a border. Treating the
+detector's three warnings as a to-do list would be the wrong lesson to draw from a clean scan.
+
 ## 7. What I need approved
 
 1. **The inversion, plus a threshold correction it does not subsume** (§3). Approving the inversion
