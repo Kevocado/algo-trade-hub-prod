@@ -48,6 +48,15 @@ class Feed:
     games: list[FeedGame]
     calibration: dict[str, list[dict[str, Any]]]
     rejected: list[dict[str, str]] = field(default_factory=list)
+    # How many bands the predictor cut its own calibration into, read off the payload. Zero means the
+    # feed published no calibration at all, which is a different fact from one that published an
+    # empty one.
+    #
+    # Read rather than assumed, because it is the predictor's setting and it is moving: the
+    # 2026-09-27 ruling makes it 4, from 10, in NFL_Predictor and CFB_Predictor. Anything standing in
+    # for the published record has to be cut on the SAME edges, so the count has to come from the
+    # payload -- a hub-side copy of the number is a number that silently disagrees.
+    n_buckets: int = 0
 
 
 def _utc(value: str) -> datetime:
@@ -90,12 +99,19 @@ def parse_feed(raw: dict[str, Any]) -> Feed:
                 season=row.get("season"), week=row.get("week"),
             ))
     calibration = raw.get("calibration") or {}
+    buckets = {k: calibration.get(k) or [] for k in ("winner", "spread", "total")}
+    # The published count, and if the field is absent then the number of buckets actually published
+    # -- the same fact, read a different way, rather than a default that might not match the edges.
+    n_buckets = calibration.get("n_buckets")
+    if not isinstance(n_buckets, int) or n_buckets <= 0:
+        n_buckets = max((len(v) for v in buckets.values()), default=0)
     return Feed(
         sport=sport,
         generated_at=_utc(raw["generated_at"]),
         games=games,
-        calibration={k: calibration.get(k) or [] for k in ("winner", "spread", "total")},
+        calibration=buckets,
         rejected=rejected,
+        n_buckets=n_buckets,
     )
 
 

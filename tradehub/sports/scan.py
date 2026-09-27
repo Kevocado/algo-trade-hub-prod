@@ -25,6 +25,7 @@ from tradehub.sports.deadline import (
     REVIEW_STOP_MARGIN_SECONDS, remaining_seconds, should_review,
 )
 from tradehub.sports.feed import Feed, FeedUnavailable, fetch_feed
+from tradehub.sports.hub_calibration import settled_buckets
 from tradehub.sports.kalshi import SportsKalshi, SportsMarket
 from tradehub.sports.mapping import MatchedGame, load_aliases, match_games
 from tradehub.sports.pricing import price_market
@@ -163,13 +164,43 @@ def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s:
         "candidate": check.ok,
         "reject_reasons": list(check.reasons),
         "calibration_bucket": check.bucket,
+        # Which record the admission decision was made against: the predictor's published
+        # calibration, or the hub's own settled ledger once it had enough (approved 2026-09-27).
+        "calibration_source": check.calibration_source,
         "tier": "unreviewed" if check.ok else "filtered",
         "review": None,
     }
 
 
-def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]], feed: Feed, now: datetime) -> SportScan:
+def _hub_calibration(
+    feed: Feed, pairs: list[tuple[float, bool]] | None,
+) -> dict[str, list[dict[str, Any]]] | None:
+    """The hub's settled pairs as calibration buckets, or `None` to leave the predictor's in force.
+
+    The bucket COUNT comes off the feed (`Feed.n_buckets`), never from a literal in this file. It is
+    the predictor's setting and the 2026-09-27 ruling moves it from 10 to 4 in NFL_Predictor and
+    CFB_Predictor; hub buckets cut on different edges are not a replacement for the published record,
+    they are a different measurement wearing its name. So the bucketing happens HERE, where the feed
+    is, and only the pairs are threaded in from the caller that has the database.
+
+    `None` when there is nothing to cut against (no pairs, or a feed that published no count at all).
+    `None` means "no hub record to offer", which is the behaviour before this change: the published
+    calibration stays in charge. Inventing a count would be a measurement nobody made.
+    """
+    if not pairs:
+        return None
+    n_buckets = getattr(feed, "n_buckets", 0)
+    if not n_buckets:
+        log.warning("sports scan: the feed published no n_buckets, so the hub's settled ledger is "
+                    "not used and the predictor's calibration stays in force")
+        return None
+    return settled_buckets(pairs, n_buckets=n_buckets)
+
+
+def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]], feed: Feed,
+               now: datetime, *, hub_pairs: list[tuple[float, bool]] | None = None) -> SportScan:
     aliases = load_aliases(cfg.sport)
+    hub_calibration = _hub_calibration(feed, hub_pairs)
     bucket_cents = load_reviewer_config().price_bucket_cents
     match = match_games(feed.games, markets_by_series, cfg.series, aliases)
     out = SportScan()
@@ -223,7 +254,8 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
                                   prefer_maker=cfg.edge.prefer_maker)
                 if s is None:
                     continue
-                check = check_candidate(kind, sm, mg, s, feed.calibration, cfg.edge.params, now)
+                check = check_candidate(kind, sm, mg, s, feed.calibration, cfg.edge.params, now,
+                                        hub_calibration=hub_calibration)
                 row = _edge_row(cfg, kind, sm, mg, s, check, now)
                 if check.ok:
                     bucket = price_bucket(s.entry_price, bucket_cents)
@@ -275,7 +307,8 @@ class SportsRun:
 def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch_feed, store=None,
                     reviewer: OpenRouterReviewer | None = None, budget: int = 0,
                     sports: tuple[str, ...] = SPORTS,
-                    deadline: float | None = None) -> SportsRun:
+                    deadline: float | None = None,
+                    hub_pairs: list[tuple[float, bool]] | None = None) -> SportsRun:
     predictions: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     requests: list[ReviewRequest] = []
@@ -316,7 +349,7 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
             reports[sport] = {"kalshi_error": "; ".join(f"{s}: {e}" for s, e in series_errors.items())}
             per_sport[sport] = {"feed_ok": False, "edges": []}
             continue
-        result = scan_sport(cfg, markets, feed, now)
+        result = scan_sport(cfg, markets, feed, now, hub_pairs=hub_pairs)
         predictions += result.predictions
         edges += result.edges
         requests += result.review_requests
@@ -441,6 +474,46 @@ def prune_sports_if_healthy(
     return errors
 
 
+def _hub_settled_pairs(supa) -> list[tuple[float, bool]]:
+    """The hub's own settled sports record, as `(our_prob, hit)` pairs.
+
+    Read here, by the cron entry point, because `run_sports_scan` has no database access: it takes
+    kalshi, fetch, store and reviewer, and no supa. The scan is given the answer rather than a way to
+    look it up, which is also what keeps it testable without a database.
+
+    WINNER ROWS ONLY (ruled 2026-09-27), and the reason is attribution rather than convenience. The
+    kind lives in `raw_payload`, so `raw_payload` has to be selected for it to be honoured at all; a
+    row that names a kind is read as that kind and a row that names none is read as a winner, which is
+    what the scan has always written for a winner market. Everything else is dropped rather than
+    flattened into one bucket set under three kind names: a wrong kind attribution is worse than an
+    absent one, because an absent kind produces `calibration_insufficient` (a reason this codebase
+    already knows how to read) while a wrong one quietly judges a spread edge against the winner
+    model's record.
+
+    `n_buckets` is deliberately NOT decided here. Those are the predictor's bucket edges, and the feed
+    is the authority on them, so the pairs cross into the scan and are bucketed on `Feed.n_buckets`.
+
+    A failed read returns nothing rather than raising: this is a new failure mode on the sports path
+    and it must not be able to cost a scan that works perfectly well on the published calibration.
+    """
+    try:
+        rows = supa.table("predictions").select("engine,our_prob,result,raw_payload") \
+            .in_("engine", sorted(SPORTS_ENGINES.values())).eq("status", "SETTLED").execute().data or []
+    except Exception:
+        log.exception("sports scan: hub settled-ledger read failed; using the predictor's calibration")
+        return []
+    pairs: list[tuple[float, bool]] = []
+    for row in rows:
+        prob, result = row.get("our_prob"), row.get("result")
+        if not isinstance(prob, (int, float)) or result not in ("yes", "no"):
+            continue
+        # Absent or null kind is a winner row: that is what the scan writes for a winner market.
+        if ((row.get("raw_payload") or {}).get("kind") or "winner") != "winner":
+            continue
+        pairs.append((float(prob), result == "yes"))
+    return pairs
+
+
 def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -> SportsRun:
     cfg = load_reviewer_config()
     key = os.getenv("OPENROUTER_API_KEY")
@@ -448,7 +521,8 @@ def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -
     # The scan's deadline, not a fresh budget: sports paginates the public markets API per
     # series and must not be able to overrun the hourly timer and overlap the next run.
     run = run_sports_scan(now, SportsKalshi(deadline=deadline), store=SupabaseReviewStore(supa), reviewer=reviewer,
-                          budget=cfg.daily_budget, deadline=deadline)
+                          budget=cfg.daily_budget, deadline=deadline,
+                          hub_pairs=_hub_settled_pairs(supa))
     return SportsRun(unrecorded(supa, run.predictions), run.edges, run.reports, run.per_sport)
 
 
