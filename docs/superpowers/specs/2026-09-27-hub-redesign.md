@@ -141,6 +141,49 @@ reads like, and it is the highest-leverage thing in this whole spec — until it
 `(engine, engine_version)` promotion gate can never accumulate a track record, because every row is
 keyed `feed:unknown`.
 
+### Why they are stale: neither predictor has a deploy path on `main`
+
+This is the part I had wrong, and it is worse than "the images need a push". On `origin/main`:
+
+| | NFL | CFB |
+| --- | --- | --- |
+| Azure deploy | `deploy-azure-nfl.yml`, **`workflow_dispatch` only** | same, manual |
+| VPS deploy | **absent from `main`** | **absent from `main`** |
+| Auto-deploy PR | **#6 open, unmerged** (`ci/vps-auto-deploy`) | **#6 open, unmerged** |
+
+The Azure workflow says so in its own trigger: *"Everything runs on the VPS now: this Azure deploy no
+longer fires on push or PR. Run it by hand from the Actions tab only if Azure is ever needed."* So
+Azure is frozen **by policy**. And the VPS deploy that would replace it lives in PR #6, unmerged — and
+it is well-built, triggering on merge to `main` with a paths filter that keeps scheduled data refreshes
+from redeploying the service, pinned by `tests/test_deploy_workflow.py`.
+
+**So neither predictor has a push-triggered deploy path on `main`, and both deployments are running
+pre-step-7a builds.** That is the same class of defect as the hub's five unbacked tables: a hole in the
+pipeline that lets staleness persist with nothing failing.
+
+The VPS is stale too, which the first probe missed. Counting non-null fields on both hosts:
+
+| Host | NFL games | CFB games | `sigma` | `model_version` |
+| --- | --- | --- | --- | --- |
+| Azure (configured in `engines.yaml`) | 1 | 60 | 0 | 0 |
+| VPS | 15 | 59 | 0 | 0 |
+
+The game counts differ (NFL 1 vs 15), so these are different builds at different commits — Azure is the
+staler of the two. **Pointing the hub at the VPS is necessary but not sufficient**; the VPS needs
+redeploying too.
+
+Three ordered steps, and the first is the one that stops this recurring:
+
+1. **Merge predictor PR #6 on both repos** so a merge to `main` reaches the VPS. Without it, every
+   future predictor fix silently stays in `main` — which is exactly what happened to step 7a.
+2. **Redeploy both predictors and retrain**, so the manifest carries `sigma`.
+3. **Point `engines.yaml` at the VPS** (`nfl.` / `cfb.40-160-91-131.sslip.io`) instead of the Azure
+   hosts that are frozen by policy. This is the standing misconfiguration: the hub is wired to a
+   deployment that by design never receives updates.
+
+I parked #6 earlier in this session on the note that the auto-deploy was not wanted yet. That decision
+is now implicated in a live data defect, so I am re-surfacing it rather than leaving it parked.
+
 I could not read the deployed image's commit from outside: there is no version or health endpoint
 (`/api/health`, `/health`, `/api/model-info`, `/api/manifest`, `/api/status` all 404). The conclusion
 rests on the code plus observed behaviour, so the operator should confirm it by redeploying and
@@ -250,11 +293,14 @@ not.
    fills the page with rows that can never pass.
 3. **The per-engine hypotheses in §5** — or replacements, particularly for CPI where I suspect the
    answer is "display, don't trade".
-4. **Redeploy the NFL and CFB predictor images, and retrain** (§3). This is new since the last round
-   of approvals and it gates the approved ranking: `sigma`, `margin_mu` and `model_version` are null
-   on 61/61 games, and the deployed images predate step 7a. **No new code** — `origin/main` already
-   has it. Cheapest high-leverage item here: until it lands, the promotion gate can never accumulate,
-   because every row is keyed `feed:unknown`.
+4. **Un-park and merge predictor PR #6 (both repos), then redeploy and retrain** (§3). This is new
+   since the last round of approvals and it gates the approved ranking. `sigma`, `margin_mu` and
+   `model_version` are null on every game from both hosts, because **neither predictor has a
+   push-triggered deploy path on `main`** — Azure is `workflow_dispatch`-only by policy, and the VPS
+   deploy is unmerged in #6. **No new code**; `origin/main` already has it. Step 1 is the one that stops
+   this recurring: without a deploy path, every future predictor fix stays in `main` unnoticed, which
+   is precisely what happened to step 7a. I parked #6 earlier this session; that is now implicated and I
+   am re-surfacing it.
 5. **The shadow scoreboard as a first-class page** (§6). It is the least impressive page and the most
    important one.
 Then: one plan per independent piece, each with bite-sized TDD tasks, point-in-time backtests before
