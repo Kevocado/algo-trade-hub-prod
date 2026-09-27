@@ -309,22 +309,84 @@ precision this ranking exists to express.
 No promise any of these wins. Each is a hypothesis with a falsifiable test, and a negative result is
 a real result that gets reported.
 
+**OUTCOME: REFUTED.** No lead where the model beats the market (4.29x at the production 2h, 2.16x at 12h), and past ~12h Kalshi has not priced the contract at all, so there is nothing to beat. The untested remainder — intraday AAA — needs a feed that does not exist; AAA is a weekly EIA publication. **Retire as an edge engine; present as a display engine.**
+
 - **Gas — decide earlier, or use intraday AAA.** The diagnosis is in the numbers: at 2 h the market
   Brier is 0.0268, so the question is exhausted. Test: re-run the same point-in-time backtest with
   the decision at the previous evening's close, and separately with an intraday AAA feed. Whichever
   beats 0.0268 survives. If neither does, gas has no edge at any lead and the product should say so
   rather than keep scanning it.
+**OUTCOME: REFUTED, provably.** Replacing every prediction with its own bucket's observed rate removes all calibration error and gives 0.12294 against the market's 0.09713 — perfect calibration buys 0.0013 of a 0.0271 gap. The residual is discrimination, not confidence. Also: the only statistically significant miss is 80–90 (z=2.93) and it is *under*confident, so the original diagnosis had both the wrong bucket and the wrong direction. **Present as a display engine** unless someone has a discrimination hypothesis.
+
 - **Weather — sigma at the traded lead.** The 60–70% bucket is off by 12–21pp, which is a
   *calibration* failure, not a discrimination failure: the model ranks fine and states its confidence
   too tightly. Test: recalibrate sigma per bucket per lead time against the same point-in-time
   sample. The bar is the market's 0.0971–0.1124, not zero.
+**OUTCOME: REFUTED.** The market's Brier at 5 days out (0.0710) is barely worse than at 25 minutes (0.0677). CPI contracts are priced about as accurately a week ahead as in the last half hour, so the market is not pricing off the nowcast at all and there is nothing for a nowcast model to exploit. Ratio 1.33–1.43x at every lead, negative P&L at every lead. **The most salvageable of the losers, but still a display engine, not an edge engine.** The direct regression on nowcast publication *timestamp* is still the cleaner test and was not run.
+
 - **CPI — what signal could beat the market.** Cleveland Fed nowcasts are published; the question is
   whether the market has already priced them. Test: regress the market's own price on the nowcast
   publication timestamp and see whether anything remains after it. If nothing does, CPI is a
   *display* engine, not an edge engine.
+**OUTCOME: BLOCKED, not skipped.** `alfred.stlouisfed.org` is unreachable from the development machine and no local vintage cache exists; the keyed path needs `FRED_API_KEY`. No claim is made. This is the closest gap of the four and therefore the only one where the shortfall may be real rather than structural. Run it on the VPS, and check the **oracle bound first** — if perfectly calibrating the model still leaves it worse than 0.1659, the calibration half is refuted the same way weather's was.
+
 - **Labor — same shape, plus the ladder.** 0.1792 vs 0.1659 is close, which suggests the signal is
   most of the way there and the loss is in the tail. Test: per-bucket calibration plus a look at
   whether the 2003/2020-style revisions dominate the error.
+
+### 5a. What the three refutations mean together
+
+Each failed for a **different** reason, which is the useful part:
+
+| engine | why it loses |
+| --- | --- |
+| gas | the market's information is **exhausted** at the moment we decide (Brier 0.0268 at 2h) |
+| CPI | the market is **equally good at every moment** we could decide (0.0677 at 25min, 0.0710 at 5d) |
+| weather | the residual is **discrimination**, not confidence — no calibration work reaches it |
+
+So there is **no single systematic failure to fix across these engines**, and each would have cost real
+effort to "improve" toward a target the evidence says is not there. Two consequences for the plan:
+
+1. **The per-engine model work in §5 should not be planned as specified.** It needs a discrimination
+   hypothesis per engine (better features, a different target), not a confidence one.
+2. **The product's honest position is display, not edge, for these three** — and §1 already says the
+   product states what the model believes, how sure it is, and how far it is from good enough. These
+   refutations are evidence for that framing rather than a setback to it.
+
+### 5b. The gate defect the refutations exposed
+
+The weather analysis produced a fix I then had to retract. `check_candidate` runs two tests off one
+parameter, and the second is not meaningful at the first one's sample size:
+
+| bucket n | SD of observed rate | 10pp is | P(false trip on a calibrated engine) |
+| --- | --- | --- | --- |
+| 20 | 11.2pp | 0.89 SD | **37.1%** |
+| 23 | 10.4pp | 0.96 SD | **33.7%** |
+| 100 | 5.0pp | 2.00 SD | 4.6% |
+
+At `calibration_min_n: 20` with `calibration_max_dev: 10pp`, a **perfectly calibrated** engine trips
+`calibration_off` about **37% of the time**. Weather's z=1.42 on n=23 is that expected behaviour, not bad
+luck.
+
+And the two tests want opposite things from the same parameter: admission wants a *small* `min_n` (the
+aggregate `n_buckets × min_n` must stay ≤ 100, so at 10 buckets `min_n ≤ 10`), while the calibration
+test wants `min_n ≥ 97` for its own 10pp comparison to mean anything. **No value satisfies both**, and
+widening the buckets does not help — reaching 97 per bucket at 4 buckets needs ~390 settled, nearly four
+times the reviewer's bar.
+
+This also revises §7's threshold recommendation: **`4 buckets × min_n 20 = 80` fixes the aggregate but
+makes this worse**, because it keeps `min_n` at 20 and leaves the calibration test a ~34% coin flip. It
+is the right fix for the arithmetic and the wrong fix for this, and they cannot both be had.
+
+All three thresholds point at the same number — reviewer's `MIN_SETTLED` 100, coherent candidate
+aggregate ≤ 100, `min_n ≥ 97` for a 10pp test at ≤5% false positives. **100 is what the design keeps
+arriving at**; the settings that disagree are 20 and 200.
+
+**Recommendation, for approval with item 1: drop the per-bucket `calibration_off` test and let the
+reviewer make the call.** The candidate gate keeps what it can do honestly — tradeable, window open,
+some settled history — and the reviewer's scorecard is the thing built to judge keep-or-drop, already
+gated at n ≥ 100 and made a first-class page by §6. Duplicating a noisier version of that judgement
+inside the admission filter is what produces the 37% coin flip.
 
 Every backtest is point-in-time: features known before decision time, ALFRED/FRED vintages, Kalshi
 history tiers. No lookahead. The numbers go in the report whether they improve or not.
