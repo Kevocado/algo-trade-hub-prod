@@ -75,11 +75,36 @@ it for `starts_too_late`. CFB week 5 is 2–3 October, roughly 120–144h out, s
 dead on arrival by construction**: the work was done, the rows were stored, and the page rendered
 them as rejects. That is a waste of scan work and the direct cause of the wall of rejections.
 
-The other supporting fix stands, and is real:
+### A second correction: the feed does not ship the fields this design assumed
 
-- `engine_version` is the placeholder `feed:unknown`, and the promotion gate is keyed on
-  `(engine, engine_version)` — so settled contracts can never accumulate against a real version. The
-  predictors' `model_version` now reaches the feed; the scan must stamp it rather than defaulting.
+I wrote that "the predictors' `model_version` now reaches the feed". **It does not.** Probing
+`/api/kalshi-feed` on both predictors at 2026-09-27T02:36Z:
+
+| Feed | games | `p_home` | `sigma` | `margin_mu` | `model_version` |
+| --- | --- | --- | --- | --- | --- |
+| NFL | 1 | 1 | **0** | **0** | **0** |
+| CFB | 60 | 60 | **0** | **0** | **0** |
+
+**61 of 61 games have `sigma`, `margin_mu` and `model_version` null.** `p_home` is populated on all of
+them. So:
+
+- **`feed:unknown` is not a hub bug.** `scan.py:83` stamps
+  `f"feed:{mg.game.model_version or 'unknown'}"` — it faithfully reports an upstream null. The scan has
+  nothing to stamp. Blanking the placeholder in the UI (PR #20) remains correct, but the *cause* is
+  that no predictor publishes a version, and no amount of hub-side work fixes that.
+- **The sigma ranking in §4 has no input.** `sigma` is null on every game, so `edge_pct / sigma` is
+  undefined across the board. This is a **predictor-side prerequisite**, and it must be a task in the
+  plan rather than an assumption the hub works around. Ranking on raw edge is the honest fallback
+  until then — which is what the hub does today.
+
+Two structural facts fall out of the same probe, and they explain the rest of the audit:
+
+- **The NFL feed publishes 1 game.** NFL week 3 opens 2026-09-28 and only PHI @ CHI qualifies. The
+  available-now NFL list can hold at most one row, and that row still fails `calibration_insufficient`
+  until n≥20 have settled. NFL is empty by construction, not by filter accident.
+- **CFB publishes 60 games, mostly starting 10-02/10-03** — 120–168h out, against a 72h hub window.
+  This is the direct confirmation of the scan-bound diagnosis above: the feed publishes games the hub
+  should never price, and the hub prices all of them.
 
 ## 4. Sports: "available now", heavily filtered
 
@@ -104,8 +129,9 @@ Admission requires **all** of:
 Shadow-labelled, never hidden. Rejected rows summarised **by reason** behind a toggle — "86 too far
 out, 73 wide quote" — never as 50 rows of detail.
 
-**Rank by edge ÷ sigma (approved).** The feed ships `margin_mu` with `sigma`, so two +10pp edges are
-not the same claim:
+**Rank by edge ÷ sigma (approved) — but blocked on the predictor publishing `sigma`.** This is the
+design the ranking should converge on, because when a feed *does* ship `margin_mu` with `sigma`, two
++10pp edges stop being the same claim:
 
 | | our | market | edge | sigma | edge ÷ sigma |
 | --- | --- | --- | --- | --- | --- |
@@ -115,6 +141,12 @@ not the same claim:
 Ranking on raw edge puts the vague one first. Sigma is floored so a degenerate distribution cannot
 divide by ~0, and the score is capped so one absurd ratio cannot own the top. The raw edge stays
 visible: sigma adjusts rank, it never hides the number.
+
+**Today `sigma` is null on 61/61 games** (§3), so this cannot ship before a predictor publishes it.
+The sequence is: predictor publishes `sigma` and `model_version` → hub ranks on `edge/sigma` with the
+floor and cap → raw edge stays alongside. Until step one lands, ranking is on raw edge and the page
+says which of the two it is using. Silently substituting a constant sigma would manufacture the
+precision this ranking exists to express.
 
 **Price from the distribution.** Show a fair price against the market price, not a bare "+23pp".
 
@@ -169,9 +201,11 @@ not.
    fills the page with rows that can never pass.
 3. **The per-engine hypotheses in §5** — or replacements, particularly for CPI where I suspect the
    answer is "display, don't trade".
-4. **The shadow scoreboard as a first-class page** (§6). It is the least impressive page and the most
+4. **A predictor publishing `sigma` and `model_version`** (§3). This is new since the last round of
+   approvals and it gates the approved ranking: all three fields are null on 61/61 games today. My
+   recommendation is to treat it as a prerequisite task on the NFL or CFB predictor, not a hub change.
+5. **The shadow scoreboard as a first-class page** (§6). It is the least impressive page and the most
    important one.
-
 Then: one plan per independent piece, each with bite-sized TDD tasks, point-in-time backtests before
 and after, and exact commands.
 
