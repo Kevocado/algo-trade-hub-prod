@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Mapping
 
 from tradehub.edges import EdgeSuggestion
+from tradehub.sports.kinds import KINDS
 from tradehub.sports.kalshi import SportsMarket
 from tradehub.sports.mapping import MatchedGame
 from tradehub.sports.pricing import home_oriented
@@ -39,6 +40,27 @@ def bucket_for(buckets: list[dict[str, Any]], prob: float) -> dict[str, Any] | N
 HUB_LEDGER_MIN_SETTLED = 100
 
 
+def _publishes_bands(calibration: Mapping[str, list[dict[str, Any]]] | None) -> bool:
+    """Whether this is a record, or an empty shell shaped like one.
+
+    `parse_feed` returns `{k: calibration.get(k) or [] for k in KINDS}` -- three keys, always -- so a
+    truthiness test on the mapping is true for a predictor that published no calibration at all.
+    Read directly:
+
+        parse_feed({"calibration": {}}).calibration  ->  {'winner': [], 'spread': [], 'total': []}
+        bool(that)                                    ->  True
+
+    and `choose_calibration` labelled that `predictor`, which downstream reads as *the predictor's
+    record rejected this* when the predictor published nothing at all. The same attribution defect
+    this module already fixed once, in the reviewer's fact pack. So the test is per bucket, where
+    "did the predictor send any bands" is the question that was actually being asked.
+
+    `bool(calibration)` first, so a `None` -- the shape `check_candidate`'s default and
+    `choose_calibration`'s own callers pass for "no record" -- is not a mapping to ask about.
+    """
+    return bool(calibration) and any(calibration.get(kind) for kind in KINDS)
+
+
 def choose_calibration(
     predictor_calibration: Mapping[str, list[dict[str, Any]]] | None,
     hub_calibration: Mapping[str, list[dict[str, Any]]] | None,
@@ -68,6 +90,15 @@ def choose_calibration(
     `params` is accepted and deliberately unread today. The threshold is the named constant above; a
     config key nobody has ruled on is not a reason to read one.
 
+    "Did the predictor publish a record" is asked per BUCKET (`_publishes_bands`), not of the
+    mapping. `parse_feed` hands back three keys whatever the payload held, so a truthiness test on
+    the mapping labelled a predictor that published nothing as the record that rejected the edge --
+    see that helper. The hub's side below is deliberately not asked the same way, and the asymmetry
+    is the attribution rather than an oversight: that branch is only reached once the hub ledger read
+    COMPLETED, so a band set of `n: 0` really is the hub's own record saying it has settled nothing
+    of that kind. "The hub read and holds nothing" and "the hub never read" are different facts and
+    the flag on the ledger already tells them apart.
+
     Returns the mapping and its source, so the row can record which gate passed.
     """
     hub_total = 0
@@ -78,7 +109,7 @@ def choose_calibration(
 
     if hub_total >= HUB_LEDGER_MIN_SETTLED and hub_calibration:
         return hub_calibration, "hub_ledger"
-    if predictor_calibration:
+    if _publishes_bands(predictor_calibration):
         return predictor_calibration, "predictor"
     if hub_calibration:
         # No predictor payload at all must not leave the filter with nothing to judge against. Note
@@ -86,6 +117,10 @@ def choose_calibration(
         # bands for `kind` at all -- both read downstream as "no bucket", i.e. `calibration_insufficient`,
         # which is the honest answer for an absent measurement. What this branch must never do is
         # invent a band: it hands over exactly the mapping it was given.
+        #
+        # Mapping truthiness, NOT `_publishes_bands`, and the docstring says why: reaching here means
+        # the hub's read completed, so empty bands are a measurement rather than an absence. Do not
+        # "tidy" the two branches into one predicate.
         return hub_calibration, "hub_ledger"
     return {}, "none"
 

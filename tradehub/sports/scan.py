@@ -79,6 +79,14 @@ def edge_sigma_score(edge_pct: Any, sigma: Any) -> float | None:
     with us, or we are on the wrong side -- and a negative SIGMA is not. One is scored, one is
     refused, and the tests name each after which it is.)
 
+    And, stated plainly because it is the one argument on this branch that rests on a state nothing
+    can reach: a negative `edge_pct` cannot arrive here. `evaluate_edge` only returns a suggestion
+    when `edge > 0`, and the write path stores `round(float(abs(edge_pct)), 4)`
+    (`core/supabase_client.py`), so a row that reaches `_sports_rank` carries a positive edge twice
+    over. The refusal is kept anyway -- it costs one token, it is the conservative direction, and a
+    future caller that scores a row without going through `evaluate_edge` gets a refusal rather than
+    a sign flip -- but the argument above is about a hypothetical, and this is the note that says so.
+
     `bool` is excluded on both sides, because it is an `int` subclass in Python and `float(True)` is
     1.0: a JSON `true` in the edge position would score 1.0 / sigma, and in the sigma position it
     would be a sigma of 1.0 -- a full-width, perfectly confident forecast, published by a bug.
@@ -388,6 +396,10 @@ class HubLedger:
     difference -- both produce a band with `n: 0` -- so the difference has to be carried as data,
     not as a log line nobody reads. It rides all the way to `per_sport[sport]["unrecognised_kinds"]`.
 
+    `pairs_by_engine` rides to `per_sport[sport]["settled_by_kind"]` as per-kind counts rather than
+    as bands, and for the same reason: `HUB_LEDGER_MIN_SETTLED` is a per-kind count, so the report
+    owes a reader the number that threshold is measured in, not only the bands it is cut into.
+
     The third is the same argument one level up, and it is the reason this is a field rather than a
     sentinel value. A failed read has to leave the record empty or the hub would calibrate on a
     fraction of a page, so the failure path returns the two empty mappings -- and an EMPTY tally is
@@ -404,6 +416,17 @@ class HubLedger:
     read_failed: bool = False
 
 
+def _ledger_measured(ledger: HubLedger | None) -> bool:
+    """Whether the ledger below was actually read, which every diagnostic here has to know first.
+
+    One predicate rather than one copy of the test per key: `None` and `read_failed` mean the same
+    thing to every reader of the run summary, which is that the question was not asked. Split the
+    rule and the two keys can come to disagree about it, which is the collision the `None` sentinel
+    was introduced to end.
+    """
+    return ledger is not None and not ledger.read_failed
+
+
 def _unrecognised_for(hub_ledger: HubLedger | None, sport: str) -> dict[str, int] | None:
     """One sport's share of the tally, as its own dict (never the ledger's, so a reader that edits
     the report cannot edit the measurement). `{}` when the read completed and there was nothing this
@@ -418,10 +441,33 @@ def _unrecognised_for(hub_ledger: HubLedger | None, sport: str) -> dict[str, int
     the board still changes materially on such a run because the hub's calibration went out of use
     for both sports.
     """
-    if hub_ledger is None or hub_ledger.read_failed:
+    if not _ledger_measured(hub_ledger):
         return None
     engine = SPORTS_ENGINES.get(sport, "")
     return dict(hub_ledger.unrecognised_by_engine.get(engine, {}))
+
+
+def _settled_by_kind_for(hub_ledger: HubLedger | None, sport: str) -> dict[str, int] | None:
+    """How many settled rows of each kind the hub's own record holds for this sport, or `None`.
+
+    The same shape as `unrecognised_kinds` on purpose -- `kind -> count`, kinds that hold nothing
+    absent, `{}` for a real read that found nothing, `None` for a read that did not happen -- so a
+    reader learns one convention rather than two. A kind absent from it has no hub record; a kind
+    with a number has that many settled rows of its own.
+
+    Which is the whole point. `HUB_LEDGER_MIN_SETTLED` is counted PER KIND (`choose_calibration`
+    sums only the kind it is judging), so the number that matters is the largest count here, and it
+    has to be read off the report: a per-kind `n` inside a band cannot answer "how far short of 100
+    is this kind" without also knowing how many bands the feed cut, and the aggregate across kinds
+    clears the threshold long before any single kind does -- CFB's live ledger is 42 / 33 / 32, an
+    aggregate of 107 that would hand the hub authority on a winner bucket holding 42. A reader
+    watching the four-bucket flip land has exactly one number to watch, and this is it.
+    """
+    if not _ledger_measured(hub_ledger):
+        return None
+    engine = SPORTS_ENGINES.get(sport, "")
+    pairs = hub_ledger.pairs_by_engine.get(engine) or {}
+    return {kind: len(rows) for kind, rows in sorted(pairs.items()) if rows}
 
 
 @dataclass
@@ -429,18 +475,19 @@ class SportsRun:
     predictions: list[dict[str, Any]]
     edges: list[dict[str, Any]]
     reports: dict[str, Any]
-    # sport -> {feed_ok, edges, series_ok, too_far, unrecognised_kinds} on the path that actually
-    # scanned, and {feed_ok, edges, unrecognised_kinds} on the three early exits in
-    # `run_sports_scan` (deadline, feed 404, every series failed), which have no scan result to
-    # count. So read these with .get().
+    # sport -> {feed_ok, edges, series_ok, too_far, unrecognised_kinds, settled_by_kind} on the path
+    # that actually scanned, and {feed_ok, edges, unrecognised_kinds, settled_by_kind} on the three
+    # early exits in `run_sports_scan` (deadline, feed 404, every series failed), which have no scan
+    # result to count. So read these with .get().
     # `too_far` is games the far bound dropped before pricing. It is the difference between "priced
     # and rejected" and "never priced", which is the first question anybody asks of an empty board
     # (see SportScan.too_far). It reaches a reader through `sports_run_summary`, not from here.
-    # `unrecognised_kinds` is on EVERY path, including the early exits, because it is learned when
-    # the ledger is read -- which happens before any of them -- and is not a fact about the scan. A
-    # key that only appears on the runs that scanned is a key a reader has to wonder about on the
-    # runs where it is missing. It is `None`, not `{}`, on a run whose ledger read failed or was
-    # never handed in: see `_unrecognised_for` and `sports_run_summary`.
+    # `unrecognised_kinds` and `settled_by_kind` are on EVERY path, including the early exits,
+    # because both are learned when the ledger is read -- which happens before any of them -- and
+    # neither is a fact about the scan. A key that only appears on the runs that scanned is a key a
+    # reader has to wonder about on the runs where it is missing. They are `None`, not `{}`, on a run
+    # whose ledger read failed or was never handed in: see `_unrecognised_for`,
+    # `_settled_by_kind_for` and `sports_run_summary`.
     # The write_ok flag is filled in by the caller, which is the only place that knows whether the
     # upsert landed.
     per_sport: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -452,13 +499,20 @@ class SportsRun:
 # sports summary and keeps `per_sport` only to decide pruning. That is the `feed:unknown` shape --
 # a real measurement, recorded, that no human could see. One list is the answer to "the next
 # diagnostic key will not be carried either".
-DIAGNOSTIC_KEYS = ("too_far", "unrecognised_kinds")
+#
+# This list answers the TRANSPORT half. The other half -- that a key added to `per_sport` is a key
+# added HERE, and not left behind in the dict nobody reads -- is
+# `test_a_sport_the_reports_never_mentioned_still_gets_its_facts`, which asserts this tuple is a
+# subset of what a real run writes. Both halves are needed: a name carried that nothing writes
+# publishes `None` forever, which is the reassuring-looking "not measured" on a measurement that is
+# in fact the one that did happen.
+DIAGNOSTIC_KEYS = ("too_far", "unrecognised_kinds", "settled_by_kind")
 
 
 def sports_run_summary(run: SportsRun) -> dict[str, Any]:
     """`run.reports` with the per-sport diagnostics folded in: the summary a human receives.
 
-    Two facts live only in `per_sport`, and each is the difference between two readings that look
+    Three facts live only in `per_sport`, and each is the difference between two readings that look
     identical otherwise:
 
     - `too_far` -- games the window's far bound dropped before pricing. Without it, a run that
@@ -466,18 +520,22 @@ def sports_run_summary(run: SportsRun) -> dict[str, Any]:
     - `unrecognised_kinds` -- settled rows naming a kind outside `sports.kinds.KINDS`, which the hub
       record cannot hold. Without it, a kind with no band is indistinguishable from a kind this
       deployment cannot read.
+    - `settled_by_kind` -- settled rows of each kind the hub record does hold, per kind. Without it
+      the reader has to open a band to learn how close a kind is to the threshold that decides
+      whether the hub is in charge of it at all, and the aggregate they would compute from the bands
+      crosses `HUB_LEDGER_MIN_SETTLED` before any single kind does.
 
-    Every sport in `per_sport` gets both, whether or not it scanned: a sport whose report entry has
-    to be synthesised is a sport whose diagnostics would otherwise be dropped by the join, and a
+    Every sport in `per_sport` gets all three, whether or not it scanned: a sport whose report entry
+    has to be synthesised is a sport whose diagnostics would otherwise be dropped by the join, and a
     silently dropped diagnostic is the shape this exists to remove.
 
-    Both keys share one sentinel, and it means exactly one thing: **`None` is "not measured"**, and
-    an empty value is a real measurement. So `too_far` is `None` on a sport that never scanned --
+    All three keys share one sentinel, and it means exactly one thing: **`None` is "not measured"**,
+    and an empty value is a real measurement. So `too_far` is `None` on a sport that never scanned --
     "not measured", which is not the claim `0` would be, that the window dropped nothing -- and
-    `unrecognised_kinds` is `None` on a run whose hub ledger could not be read, which is not the
-    claim `{}` would be, that the read completed and this sport has no settled row of a kind the
-    build cannot place. One summary, one sentinel, one meaning; a reader never sees a reassuring
-    value for a measurement that did not happen.
+    `unrecognised_kinds` / `settled_by_kind` are `None` on a run whose hub ledger could not be read,
+    which is not the claim `{}` would be, that the read completed and this sport has no settled row
+    of a kind the build cannot place and none of any kind it can. One summary, one sentinel, one
+    meaning; a reader never sees a reassuring value for a measurement that did not happen.
     """
     summary: dict[str, Any] = dict(run.reports)
     for sport, state in run.per_sport.items():
@@ -505,7 +563,8 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
         if remaining_seconds(effective_deadline) <= 0:
             reports[sport] = {"skipped": "scan deadline reached before this sport"}
             per_sport[sport] = {"feed_ok": False, "edges": [],
-                                "unrecognised_kinds": _unrecognised_for(hub_ledger, sport)}
+                                "unrecognised_kinds": _unrecognised_for(hub_ledger, sport),
+                                "settled_by_kind": _settled_by_kind_for(hub_ledger, sport)}
             continue
         cfg = load_sport_config(sport)
         try:
@@ -520,7 +579,8 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
             log.warning("sports feed unavailable sport=%s url=%s: %s", sport, cfg.base_url, exc)
             reports[sport] = {"feed_error": str(exc)}
             per_sport[sport] = {"feed_ok": False, "edges": [],
-                                "unrecognised_kinds": _unrecognised_for(hub_ledger, sport)}
+                                "unrecognised_kinds": _unrecognised_for(hub_ledger, sport),
+                                "settled_by_kind": _settled_by_kind_for(hub_ledger, sport)}
             continue
         # open_markets is a paginated public-API call per series; one series failing must not
         # cost the sport, and must certainly not be read as "this sport has no edges".
@@ -535,7 +595,8 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
         if series_errors and not markets:
             reports[sport] = {"kalshi_error": "; ".join(f"{s}: {e}" for s, e in series_errors.items())}
             per_sport[sport] = {"feed_ok": False, "edges": [],
-                                "unrecognised_kinds": _unrecognised_for(hub_ledger, sport)}
+                                "unrecognised_kinds": _unrecognised_for(hub_ledger, sport),
+                                "settled_by_kind": _settled_by_kind_for(hub_ledger, sport)}
             continue
         # Only this sport's own ledger, keyed by engine upstream. NFL and CFB are different models
         # with different records, so a shared one would hand a sport a calibration built from the
@@ -562,7 +623,13 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
                             # having them -- and not the same as a read that never completed, which
                             # is `None`. This path scanned, so `too_far` above is a real count while
                             # this may not be; the two keys are independent measurements.
-                            "unrecognised_kinds": _unrecognised_for(hub_ledger, sport)}
+                            "unrecognised_kinds": _unrecognised_for(hub_ledger, sport),
+                            # And the per-kind counts the threshold is actually judged on, same
+                            # sentinel and same shape. `HUB_LEDGER_MIN_SETTLED` is a per-kind count,
+                            # so a reader watching the hub take over has to be able to see the
+                            # largest of these approach it; the aggregate is a number that would have
+                            # crossed it already (CFB's live ledger sums to 107 while no kind does).
+                            "settled_by_kind": _settled_by_kind_for(hub_ledger, sport)}
     # Reviewing is the optional, slow part: stop when the scan budget is nearly gone. The edges
     # are already computed and are still written, just with tier=unreviewed. review_candidates
     # re-checks the same rule before every call, so a long candidate list cannot walk past it.
@@ -720,12 +787,17 @@ def _hub_settled_ledger(supa) -> HubLedger:
     counting it would report a gap against a sport it does not belong to. (Unreachable from the
     database -- the query filters `engine` to the two sports -- but a row is a row.)
 
-    **PAGED, ORDERED, ON `id`.** A single `.execute()` returns at most PostgREST's 1000-row cap, and
-    nothing in this repo deletes sports `predictions` rows, so the table grows monotonically and
-    crosses 1000 within a season. Past that, the component that is supposed to BE the authority would
-    be deciding on whatever 1000 rows the query plan happened to return -- a silent wrong answer, not
-    a visible failure. The `.order("id")` is not decoration either: without it, page 1 and page 2 can
-    overlap or skip rows. `id` is the only column on this table that is unique and immutable.
+    **PAGED, ORDERED, ON `id`.** A single `.execute()` returns at most PostgREST's 1000-row cap, so
+    past that point the component that is supposed to BE the authority would be deciding on whatever
+    1000 rows the query plan happened to return -- a silent wrong answer, not a visible failure. The
+    `.order("id")` is not decoration either: without it, page 1 and page 2 can overlap or skip rows.
+    `id` is the only column on this table that is unique and immutable. The cap is a long way off,
+    not a season away: the filter is `engine IN (sports_nfl, sports_cfb) AND status = SETTLED`, so
+    this read sees only settled SPORTS rows -- low hundreds a season at the outside, against NFL's
+    zero today and CFB's per-kind counts quoted in `candidates.choose_calibration` -- rather than a
+    `predictions` table anywhere near 1000 rows. The machinery is cheap and the failure it prevents
+    is the silent kind, so it stays; the urgency in the original note was several times out of
+    proportion to the volume, and a reader should not come away believing a wrong answer is imminent.
 
     A failed read returns nothing rather than raising: this is a new failure mode on the sports path
     and it must not be able to cost a scan that works perfectly well on the published calibration.

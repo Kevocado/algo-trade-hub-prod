@@ -76,6 +76,14 @@ PARAMS = {"max_quote_spread": 0.04, "min_resting_size": 100, "min_volume": 1000,
 PREDICTOR = {"winner": [{"lo": 0.6, "hi": 0.7, "n": 3, "mean_prob": 0.65, "hit_rate": 0.66}]}
 HUB = {"winner": [{"lo": 0.6, "hi": 0.7, "n": 120, "mean_prob": 0.65, "hit_rate": 0.70}]}
 
+# What `parse_feed` returns for a payload that published no calibration at all. NOT `{}`: the
+# comprehension is `{k: calibration.get(k) or [] for k in KINDS}`, so the mapping always has three
+# keys and is always truthy, and every test that hand-built `{}` to mean "no predictor" was testing
+# an input production cannot produce. That is what made the `return {}, "none"` branch unreachable,
+# and what let a feed with nothing to say be recorded as `calibration_source: "predictor"` -- the
+# predictor's own record rejecting the edge, when the predictor published no record at all.
+NO_PREDICTOR_RECORD = {kind: [] for kind in KINDS}
+
 
 def test_the_predictors_own_calibration_is_used_while_the_hub_has_too_little():
     calibration, source = choose_calibration(PREDICTOR, {"winner": []}, {}, "winner")
@@ -158,7 +166,7 @@ def test_the_count_is_per_kind_so_one_thin_kind_cannot_speak_for_another():
 def test_no_predictor_calibration_and_no_hub_falls_through_to_the_hub_rather_than_nothing():
     # A missing predictor payload must not leave the filter with no calibration at all, which would
     # read as "no bucket" and reject every edge for a reason that looks like bad luck.
-    calibration, source = choose_calibration({}, HUB, {}, "winner")
+    calibration, source = choose_calibration(NO_PREDICTOR_RECORD, HUB, {}, "winner")
 
     assert source == "hub_ledger"
     assert calibration is HUB
@@ -172,14 +180,68 @@ def test_a_thin_hub_with_no_predictor_at_all_reaches_the_fall_through_rather_tha
     5 settled is under the threshold, so this can only return the hub by falling through, and
     returning nothing would leave `check_candidate` with an empty calibration -- every edge rejected
     for "no bucket", which reads as bad luck rather than as an absent measurement.
+
+    The predictor side is the shape `parse_feed` really produces for an absent calibration, not the
+    `{}` this test used to hand-build. `{}` is falsy and skipped a branch; the real mapping is truthy
+    with three empty lists, so under mapping truthiness it was taken -- and the fall-through below
+    was dead code in production while this test passed against it.
     """
     thin = {"winner": [{"lo": 0.0, "hi": 1.0, "n": 5, "mean_prob": 0.65, "hit_rate": 0.6}]}
     assert sum(b["n"] for b in thin["winner"]) < HUB_LEDGER_MIN_SETTLED, "must not clear branch one"
 
-    calibration, source = choose_calibration({}, thin, {}, "winner")
+    calibration, source = choose_calibration(NO_PREDICTOR_RECORD, thin, {}, "winner")
 
     assert source == "hub_ledger"
     assert calibration is thin
+
+
+def test_a_predictor_that_published_no_bands_is_not_a_predictor_record():
+    """The attribution defect, at the branch. A feed that published NO calibration at all was
+    recorded on the edge row and in the reviewer's fact pack as `calibration_source: "predictor"` --
+    which reads downstream as *the predictor's record rejected this* -- because the test was
+    `if predictor_calibration:` on a mapping `parse_feed` always fills with three keys. Evaluated
+    directly, which is the only way to see it:
+
+        parse_feed({"calibration": {}}).calibration -> {'winner': [], 'spread': [], 'total': []}
+        bool(that)                                 -> True
+        choose_calibration(that, None, ...)        -> ('predictor' mapping, 'predictor')
+
+    That is the same defect class this file already fixed once, in the fact pack's
+    `predictor_calibration_in_bucket`: the numbers right, the label wrong, and nothing downstream
+    knows to distrust it. The test is per bucket now -- did the predictor send any bands -- because
+    that is the question the branch was written to ask.
+
+    And it makes the `return {}, "none"` branch reachable in production, which it was not before:
+    `parse_feed` never produced a falsy mapping, so the branch was only ever reached by a caller
+    that passed `None`. A feed with nothing to say is exactly the case it exists for.
+    """
+    assert bool(NO_PREDICTOR_RECORD) is True, (
+        "the dict-truthiness this replaced was true here, which is the whole finding"
+    )
+    calibration, source = choose_calibration(NO_PREDICTOR_RECORD, None, {}, "winner")
+
+    assert source == "none", "the predictor published nothing, so it rejected nothing"
+    assert calibration == {}
+    # And the label it used to be given, so the fix is visibly about the attribution: a hub ledger
+    # with a single band is a record, and a band set of `n: 0` is the hub's own record saying it has
+    # settled nothing -- so the hub side keeps mapping truthiness and this is not a tidy-up of one
+    # branch into another. `n: 0` on the predictor's side is not a record at all.
+    unearned = {"winner": [{"lo": 0.0, "hi": 1.0, "n": 0, "mean_prob": None, "hit_rate": None}]}
+    assert choose_calibration(NO_PREDICTOR_RECORD, unearned, {}, "winner") == (unearned, "hub_ledger")
+
+
+def test_a_predictor_that_published_bands_for_another_kind_only_is_still_a_record():
+    """The other side of the line, so the fix cannot be over-applied into "any empty band means no
+    record". A predictor that published history for the spread bands and none for the winner bands
+    HAS published a record, and a winner edge it rejects is rejected by a record rather than by
+    nothing. Which is the whole difference between the two branches."""
+    winner_only = {"winner": [], "spread": [{"lo": 0.0, "hi": 1.0, "n": 40, "mean_prob": 0.5,
+                                             "hit_rate": 0.5}], "total": []}
+
+    calibration, source = choose_calibration(winner_only, None, {}, "winner")
+
+    assert source == "predictor"
+    assert calibration is winner_only
 
 
 def test_with_neither_source_the_filter_is_told_so_rather_than_left_guessing():
@@ -572,13 +634,36 @@ def test_the_hub_records_that_its_bands_are_not_home_oriented():
         assert row["calibration_bucket"]["orientation"] == HUB_ORIENTATION
 
 
-def test_a_feed_that_published_no_bands_leaves_the_predictor_in_charge():
+def test_a_feed_that_published_no_bands_leaves_nobody_in_charge():
     """Nothing to cut against is not a reason to invent a cut. With 120 settled pairs in hand the scan
-    still uses the published record, which is the behaviour before this change."""
+    still refuses the hub's bands, which is the behaviour before the inversion.
+
+    And the source is `none` rather than `predictor`, which is the correction this test had to
+    absorb. It used to read `== {"predictor"}` and passed, because `feed.calibration` is a dict of
+    three keys whatever the payload held, so `if predictor_calibration:` was true for a predictor
+    that had published no bands at all -- and a row labelled `calibration_source: "predictor"`
+    tells every reader below that the predictor's own record rejected the edge, when the predictor
+    had no record. Same shape as the fact pack's `predictor_calibration_in_bucket`, one module over.
+
+    `none` is the branch that says so, and it is now REACHABLE in production: `_hub_calibration`
+    returns `None` when the feed published no `n_buckets`, so the hub offers nothing, and the
+    predictor published nothing, and `{}` is the only honest thing left. The board is unchanged
+    either way -- every edge is rejected for `calibration_insufficient`, which is the gate failing
+    closed -- so this is a change to the ATTRIBUTION and not to the gate.
+    """
     result = _scan(_recorded_feed(bands=False), hub_pairs=HUB_LEDGER)
 
     assert result.edges
-    assert {row["calibration_source"] for row in result.edges} == {"predictor"}
+    assert {row["calibration_source"] for row in result.edges} == {"none"}
+    assert all("calibration_insufficient" in row["reject_reasons"] for row in result.edges)
+    assert all(row["calibration_bucket"] is None for row in result.edges)
+
+    # And the other absent-calibration input, a payload with no `calibration` key at all, reaches the
+    # same branch rather than a second way of saying `predictor`. Two inputs, one answer: "the
+    # predictor sent nothing" is one fact, and `parse_feed` already normalises both shapes to the
+    # same three empty lists, so the filter must not tell them apart either.
+    absent = _scan(_recorded_feed(calibration=False), hub_pairs=HUB_LEDGER)
+    assert {row["calibration_source"] for row in absent.edges} == {"none"}
 
 
 class TestTheFeedsBucketCount:
@@ -969,11 +1054,73 @@ def test_the_ledger_read_files_every_kind_under_its_own_name():
     assert "raw_payload" in supa.asked["select"]
 
 
+def test_the_kinds_the_scan_writes_come_back_out_of_the_ledger_under_those_names():
+    """The loop, closed. The two halves of the kind contract were pinned separately and never
+    together: the reader asserts that a row naming a kind is filed under it, and the producer is
+    asserted -- for ONE of the three kinds -- in `test_sports_scan.py`, on a hand-built row. Nothing
+    connected the two, so the guarantee "the kind on a settled row is the kind of the market it was
+    written for" rested entirely on review noticing both.
+
+    The failure that leaves open is specific and entirely silent. `scan.py` writes
+    `raw_payload={"kind": kind, ...}` for every market, and `_hub_settled_ledger` reads
+    `(row.get("raw_payload") or {}).get("kind") or "winner"`. A producer that stopped writing `kind`
+    for SPREAD and TOTAL -- a copy-paste, a payload key renamed for two of three branches -- would
+    file every one of those rows as a winner. Not as an error, and not as a gap:
+    `unrecognised_kinds` would be `{}`, because "winner" IS in `sports.kinds.KINDS`. The whole
+    corrected ruling -- every kind judged on its own settled record, no kind borrowing another's
+    count -- would be silently undone, and no test in the suite would notice. That is the
+    overturned winner-only ruling returning through the producer instead of through the reader.
+
+    So this takes the rows the scan ACTUALLY wrote -- not a hand-built row naming a kind -- and
+    reads them back with the production reader. The expectation is derived from those same rows, so
+    the two halves cannot drift: a row written with no kind at all is counted under `None` and fails
+    the first assertion by name, rather than being quietly read back as the winner it will be filed
+    as.
+    """
+    result = _scan(_recorded_feed())
+
+    written: dict[str | None, int] = {}
+    for row in result.predictions:
+        kind = (row["raw_payload"] or {}).get("kind")
+        written[kind] = written.get(kind, 0) + 1
+    assert set(written) == set(KINDS), (
+        f"the scan wrote kinds {sorted(str(k) for k in written)}; the recorded feed has markets for "
+        f"all three, and a row written with no kind is filed as a winner by the reader"
+    )
+    assert all(count for count in written.values()), written
+
+    # Settled. The read keys on `result` and `our_prob`; a prediction row carries both as the scan
+    # wrote them, so this is the same shape the database hands back.
+    settled, _supa = _ledger([{**row, "result": "yes"} for row in result.predictions])
+    filed = {kind: len(pairs) for kind, pairs in settled.pairs_by_engine["sports_nfl"].items()}
+
+    assert filed == written, (
+        f"the scan wrote {written} and the ledger filed {filed}: a kind the reader cannot read back "
+        f"is a kind whose evidence is in the wrong bands"
+    )
+    # The silent half, pinned so it is a fact and not a hope: the fallback means a lost kind shows
+    # up as a FILING, never as a build gap, so the run report cannot be the thing that catches it.
+    assert settled.unrecognised_by_engine == {}, (
+        "a row that lost its kind is filed as a winner rather than reported, so `unrecognised_kinds` "
+        "stays empty and cannot be the guard here"
+    )
+    # And the bands the ledger then cuts are per kind, so the mixed record would also have inflated
+    # the winner counts the hub's own threshold is judged on.
+    bands = scan_mod._hub_calibration(_recorded_feed(), settled.pairs_by_engine["sports_nfl"])
+    assert set(bands) == set(KINDS)
+    assert sum(band["n"] for bands_of in bands.values() for band in bands_of) == sum(written.values())
+
+
 def test_the_ledger_read_pages_the_whole_table_in_a_stable_order():
-    """Nothing in this repo deletes sports `predictions` rows, so the table grows monotonically and
-    crosses PostgREST's 1000-row cap within a season. A single `.execute()` past that point does not
-    fail -- it silently returns whatever 1000 rows the plan produced, and the gate that is supposed to
-    BE the authority decides on them. That is a wrong answer with no error attached.
+    """A single `.execute()` past PostgREST's 1000-row cap does not fail -- it silently returns
+    whatever 1000 rows the plan produced, and the gate that is supposed to BE the authority decides
+    on them. That is a wrong answer with no error attached.
+
+    The cap is a long way from this read's own volume: the query filters the two sports engines and
+    `status = SETTLED`, so it sees low hundreds of rows a season and not a `predictions` table near
+    1000. The machinery is cheap and the failure is silent, so it stays -- but the test is here
+    because the day the cap is crossed the answer is wrong, not loud, and nothing else here would
+    notice.
 
     The order is load-bearing for the same reason: without ORDER BY, page 1 and page 2 can repeat a
     row and skip another. `id` is the only column here that is unique and immutable. The fake below
@@ -1502,6 +1649,128 @@ def test_the_diagnostics_survive_for_a_sport_that_never_scanned(monkeypatch, cap
     assert printed["nfl"]["unrecognised_kinds"] == {}, printed["nfl"]
 
 
+# `settled_by_kind`: how many settled rows the hub's own record holds, per kind.
+#
+# The threshold `choose_calibration` applies is PER KIND -- it sums only the kind it is judging, and
+# the reason it does is right there in `test_the_hubs_own_settled_rows_do_not_count_towards_another_
+# kinds_bands`: CFB's live ledger is 42 / 33 / 32, which sums to 107 and clears 100 while no single
+# kind does. So the number that decides whether the hub is in charge of an edge is the largest count
+# in this dict, and until this round it was not published anywhere: a reader had to open a band to
+# find an `n` and then know how many bands the feed cut to make it comparable to 100. That is the
+# diagnostic the four-bucket flip needs on the day it lands, and its absence is why the coherence
+# gap in `tests/test_gate_threshold_coherence.py` could sit there unremarked -- both thresholds are
+# the same number and only one of them is visible in the run report.
+
+
+def test_the_run_report_counts_the_settled_rows_the_hub_holds_of_each_kind():
+    """The values, from a real read of real rows, and per sport rather than pooled.
+
+    NFL has winner and spread rows, CFB has total only, and one kind nothing in this build writes.
+    So all four of the readings a reader needs are here at once, and none of them is inferable from
+    another: CFB's one kind is present with its count, NFL's absent kind is absent, the unreadable
+    kind is named by the other key, and each sport's numbers are its own."""
+    ledger, _supa = _ledger([_row("sports_nfl", 0.65, "yes", "winner"),
+                             _row("sports_nfl", 0.64, "no", "winner"),
+                             _row("sports_nfl", 0.30, "yes", "spread"),
+                             _row("sports_nfl", 0.51, "yes", "moneyline"),
+                             _row("sports_cfb", 0.72, "yes", "total"),
+                             _row("sports_cfb", 0.73, "yes", "total")])
+    run = _both_sports(ledger)
+
+    assert run.per_sport["nfl"]["settled_by_kind"] == {"winner": 2, "spread": 1}, run.per_sport["nfl"]
+    assert run.per_sport["cfb"]["settled_by_kind"] == {"total": 2}, run.per_sport["cfb"]
+    # The two halves of the ledger's story, side by side, which is the pairing that makes either
+    # readable: a kind with no rows the hub can use, and a kind whose rows this build cannot place.
+    assert run.per_sport["nfl"]["unrecognised_kinds"] == {"moneyline": 1}, run.per_sport["nfl"]
+    # A separate object per sport, for the same reason `_unrecognised_for` copies: a consumer that
+    # edits one sport's report must not be able to edit another's, or the measurement's.
+    assert (run.per_sport["nfl"]["settled_by_kind"]
+            is not run.per_sport["cfb"]["settled_by_kind"])
+    assert (run.per_sport["nfl"]["settled_by_kind"]
+            is not ledger.pairs_by_engine["sports_nfl"])
+    # And the count is the ROWS, not the bands and not the total, because 100 is a row count. The
+    # `_hub_calibration` cut publishes a band per `n_buckets` for every kind whether or not anything
+    # settled, so the band count is a property of the feed and cannot be the measurement.
+    published = scan_mod._hub_calibration(_recorded_feed(), ledger.pairs_by_engine["sports_nfl"])
+    assert sum(band["n"] for bands in published.values() for band in bands) == 3
+    assert run.per_sport["nfl"]["settled_by_kind"] == {"winner": 2, "spread": 1}
+
+
+def test_a_kind_with_nothing_settled_is_absent_from_the_tally_rather_than_zero():
+    """The shape is `unrecognised_kinds`'s, deliberately, so a reader learns one convention: a kind
+    that is not in the dict has no hub record, and `{}` is a real measurement of a read that
+    completed and found no settled row of any kind. `{"winner": 0}` would be the same information
+    with a second thing to learn, and it would also invite summing the values to compare with a
+    threshold -- a sum over a dict that omits its zeroes is not the number the threshold is measured
+    in.
+
+    The other reason not to enumerate: a `{"winner": .., "spread": .., "total": ..}` shape would be a
+    second copy of `sports.kinds.KINDS` in this module, and a second copy of that triple is the exact
+    defect `kinds.py` exists to end."""
+    ledger, _supa = _ledger([_row("sports_nfl", 0.65, "yes", "winner")])
+    run = _both_sports(ledger)
+
+    assert run.per_sport["nfl"]["settled_by_kind"] == {"winner": 1}, run.per_sport["nfl"]
+    assert "spread" not in run.per_sport["nfl"]["settled_by_kind"]
+    # A sport with nothing settled at all: the read happened and found nothing, so `{}` and not
+    # `None`. Without this the `{}` above would be satisfied by a key that is simply never empty.
+    assert run.per_sport["cfb"]["settled_by_kind"] == {}, run.per_sport["cfb"]
+    assert run.per_sport["cfb"]["unrecognised_kinds"] == {}, run.per_sport["cfb"]
+
+
+def test_the_per_kind_tally_shows_the_how_far_short_of_the_threshold_each_kind_is(monkeypatch, capsys):
+    """Why this key exists, as a fact about the data rather than a claim in a comment: the number
+    that decides whether the hub is in charge is the LARGEST per-kind count, and the aggregate a
+    reader could compute from the bands crosses the threshold first. Here the read is EARNED -- the
+    rows exist -- and the gap is stated, so the run says out loud what the gate is doing.
+
+    This is the diagnostic the four-bucket flip would have been read through. Admitting an edge
+    through the hub needs every bucket to clear `calibration_min_n`, so a wider band makes admission
+    STRICTER, not looser, and a run that says "107 settled" while every kind is far short of 100 is
+    exactly the run an operator has to be able to see through."""
+    rows = ([_row("sports_cfb", 0.60 + i / 100, "yes" if i % 2 else "no", "winner") for i in range(42)]
+            + [_row("sports_cfb", 0.30 + i / 100, "yes" if i % 2 else "no", "spread") for i in range(33)]
+            + [_row("sports_cfb", 0.50 + i / 100, "yes" if i % 2 else "no", "total") for i in range(32)])
+    ledger, _supa = _ledger(rows)
+    run = scan_mod.run_sports_scan(
+        NOW - timedelta(days=3), _Kalshi(_recorded_markets("cfb")),
+        fetch=lambda url, **_kw: _recorded_feed("cfb"), hub_ledger=ledger, sports=("cfb",),
+    )
+    counts = run.per_sport["cfb"]["settled_by_kind"]
+
+    # CFB's real numbers, so the test is about the shape that motivated the key.
+    assert counts == {"winner": 42, "spread": 33, "total": 32}, counts
+    assert sum(counts.values()) >= HUB_LEDGER_MIN_SETTLED, (
+        "this test only bites while the aggregate clears the threshold the gate does NOT use"
+    )
+    assert max(counts.values()) < HUB_LEDGER_MIN_SETTLED, (
+        "and while no single kind does, which is why the per-kind count is the one that matters"
+    )
+    # The consequence, through the gate: the predictor stays in charge, and the run report says why
+    # in numbers rather than leaving it to be inferred.
+    assert {row["calibration_source"] for row in run.per_sport["cfb"]["edges"]} == {"predictor"}
+    printed = _cron_summary_for(monkeypatch, capsys, run)
+    assert printed["cfb"]["settled_by_kind"] == {"winner": 42, "spread": 33, "total": 32}, printed["cfb"]
+
+
+def test_the_per_kind_tally_reaches_a_sport_that_never_scanned():
+    """Learned when the ledger is read, which is before any of the four paths in `run_sports_scan`
+    -- so it is a fact about the run and not about a scan, and it belongs on the early exits for the
+    same reason `unrecognised_kinds` does. A sport whose feed is down is exactly the sport whose
+    settled record somebody opens the report to ask about."""
+    def no_feed(_url, **_kw):
+        raise feed_mod.FeedUnavailable("404")
+
+    run = scan_mod.run_sports_scan(
+        BOTH_NOW, _Kalshi({**_recorded_markets("nfl"), **_recorded_markets("cfb")}), fetch=no_feed,
+        hub_ledger=_hub({"sports_cfb": {"winner": [(0.7, True)] * 2}}), sports=("nfl", "cfb"),
+    )
+
+    assert run.per_sport["cfb"]["feed_ok"] is False, "the sport really did not scan"
+    assert run.per_sport["cfb"]["settled_by_kind"] == {"winner": 2}, run.per_sport["cfb"]
+    assert run.per_sport["nfl"]["settled_by_kind"] == {}, run.per_sport["nfl"]
+
+
 def test_a_sport_the_reports_never_mentioned_still_gets_its_facts():
     """The projection walks `per_sport`, not `reports`, and this is the case that says why.
 
@@ -1511,15 +1780,73 @@ def test_a_sport_the_reports_never_mentioned_still_gets_its_facts():
     written the obvious way would drop a sport's diagnostics the first time a path forgot to write a
     report for it, and a dropped diagnostic is invisible in the one surface that exists.
 
-    Hand-built, so the shape really is "a sport with state and no report" rather than whatever the
-    orchestrator happens to produce today.
-    """
-    run = scan_mod.SportsRun([], [], {}, {"cfb": {"feed_ok": False, "edges": [],
-                                                   "too_far": None,
-                                                   "unrecognised_kinds": {"moneyline": 2}}})
-    summary = scan_mod.sports_run_summary(run)
+    Two halves, and they fail for different reasons, which is why the hand-built one comes first and
+    is parameterised off the list rather than repeating it:
 
-    assert summary == {"cfb": {"too_far": None, "unrecognised_kinds": {"moneyline": 2}}}, summary
+    - the projection: a sport with state and no report gets exactly the diagnostics, with the values
+      it was handed. Hand-built, so the shape really is that rather than whatever the orchestrator
+      happens to produce today. Its keys come off the list, with the values set afterwards, so this
+      half cannot go stale when a key is added -- and so a name in the list that nothing writes is
+      reported by the contract half below, as the defect it is, rather than as a KeyError here.
+      An assertion that has to be edited by hand is an assertion that will be edited wrongly or not
+      at all, and this file is about hand-maintained invariants.
+    - the CONTRACT: every key the list names is a key some path actually writes. See below.
+
+    Ordering matters for the failure report. If a name in the list is written nowhere, the
+    hand-built half fails first with a diff that reads like a fixture problem, and the actual defect
+    -- a diagnostic that will be published as `None` forever -- is in the noise.
+    """
+    state = {"feed_ok": False, "edges": [], **{key: None for key in scan_mod.DIAGNOSTIC_KEYS}}
+    state.update(unrecognised_kinds={"moneyline": 2}, settled_by_kind={"winner": 3})
+    summary = scan_mod.sports_run_summary(scan_mod.SportsRun([], [], {}, {"cfb": state}))
+
+    assert summary == {"cfb": {key: state[key] for key in scan_mod.DIAGNOSTIC_KEYS}}, summary
+    # The keys it DID hand in and the keys the summary carries are the same set, so the projection
+    # is reading the list rather than a second list of its own -- which is the drift this file keeps
+    # finding, one level down.
+    assert set(summary["cfb"]) == set(state) - {"feed_ok", "edges"}, summary["cfb"]
+
+    # The contract half, and the half that was missing. `DIAGNOSTIC_KEYS` answers "how does a key
+    # added to `per_sport` reach a reader", and it says nothing about the reverse: that the key it
+    # names is a key `per_sport` actually writes. Its own docstring calls itself the answer to "the
+    # next diagnostic key will not be carried either", and adding a third diagnostic to `per_sport`
+    # without touching the list passed every test in the suite -- which is the same gap this list was
+    # built to close, reintroduced in the list itself. A name carried that nothing writes publishes
+    # `None` forever, and `None` is this summary's word for "not measured", so the reader is told a
+    # measurement was not taken on a run that took it.
+    #
+    # REAL runs, not the hand-built entry above: a hand-built dict only proves the test author
+    # updated their own fixture. These two cover the path that scanned and one of the three that did
+    # not, and the union is taken over every entry of both -- the four paths write different subsets
+    # (`too_far` exists only on the path that scanned), so a per-sport check would either fail on a
+    # sport that never scanned or quietly check the one path a new key was added to.
+    def no_feed(_url, **_kw):
+        raise feed_mod.FeedUnavailable("404")
+
+    scanned = _both_sports(_hub({"sports_cfb": {"winner": [(0.72, True)] * 3, "spread": [(0.5, True)]}}))
+    unscanned = scan_mod.run_sports_scan(
+        BOTH_NOW, _Kalshi({**_recorded_markets("nfl"), **_recorded_markets("cfb")}), fetch=no_feed,
+        hub_ledger=_hub({"sports_cfb": {"winner": [(0.72, True)] * 3}}), sports=("nfl", "cfb"),
+    )
+    # Every entry of both runs, not a merge of them: the two runs use the same sport names, so a
+    # `{**a, **b}` would keep only the second run's entries and quietly check one run's paths.
+    states = [*scanned.per_sport.values(), *unscanned.per_sport.values()]
+    written = {key for state in states for key in state}
+
+    # The two runs really do cover the two kinds of path, so the union below is not one path twice.
+    assert len(states) == 4, states
+    assert any(s.get("series_ok") for s in states), "no path that scanned"
+    assert any(s.get("too_far") is not None for s in states), "no path that scanned"
+    assert any(s.get("too_far") is None for s in states), "no path that did not"
+    assert set(scan_mod.DIAGNOSTIC_KEYS) <= written, (
+        f"DIAGNOSTIC_KEYS names {sorted(set(scan_mod.DIAGNOSTIC_KEYS) - written)}, which no path of "
+        f"`run_sports_scan` writes. The list is how a diagnostic reaches the printed summary, so a "
+        f"name nothing writes is published as None forever -- and None is this summary's word for "
+        f"'not measured'."
+    )
+    # The converse is NOT asserted and must not be: `feed_ok`, `edges` and `series_ok` are read by
+    # the prune path rather than carried to a reader, and a summary that grew all of them would be a
+    # summary nobody reads.
 
 
 # ── one sentinel, one meaning: `None` is "not measured" ─────────────────────────────────────────
@@ -1617,9 +1944,14 @@ def test_a_failed_ledger_read_publishes_not_measured_where_a_clean_one_publishes
     # So the same summary carries one key measured and one not, and `None` is the shared word for
     # "not measured" -- the same word `too_far` uses for a sport that never scanned.
     assert printed_failed["cfb"]["too_far"] is not None
+    # The third key shares the sentinel, and is not measured on this run either: the read that
+    # failed is the same read both of the ledger's keys are computed from, so there is no input one
+    # of them could have been measured from.
+    assert printed_failed["cfb"]["settled_by_kind"] is None, printed_failed["cfb"]
+    assert printed_clean["cfb"]["settled_by_kind"] == {"winner": 1, "spread": 1}, printed_clean["cfb"]
     assert scan_mod.sports_run_summary(scan_mod.SportsRun(
-        [], [], {}, {"cfb": {"too_far": None, "unrecognised_kinds": None}}
-    ))["cfb"] == {"too_far": None, "unrecognised_kinds": None}
+        [], [], {}, {"cfb": {"too_far": None, "unrecognised_kinds": None, "settled_by_kind": None}}
+    ))["cfb"] == {"too_far": None, "unrecognised_kinds": None, "settled_by_kind": None}
 
 
 def test_a_run_given_no_ledger_at_all_does_not_claim_the_read_found_nothing():
@@ -1639,8 +1971,42 @@ def test_a_run_given_no_ledger_at_all_does_not_claim_the_read_found_nothing():
     )
 
     assert run.per_sport["cfb"]["unrecognised_kinds"] is None, run.per_sport["cfb"]
+    # The same for the third diagnostic, for the same reason and by the same predicate: `{}` here
+    # would be the most reassuring wrong number on the run, because a reader seeing an empty per-kind
+    # tally concludes nothing of that kind has settled, which is a statement about the sport's record
+    # rather than about the fact that nobody asked.
+    assert run.per_sport["cfb"]["settled_by_kind"] is None, run.per_sport["cfb"]
     # The scan is unaffected, as on a failed read: the predictor's calibration stays in charge.
     assert run.reports["cfb"]["markets_priced"] == 2, run.reports["cfb"]
     # And the dry run's own print carries NEITHER key, which is the settled ruling and the reason
     # the absence of a ledger cannot mislead anyone there today.
     assert scan_mod.sports_run_summary(run)["cfb"]["unrecognised_kinds"] is None
+    assert scan_mod.sports_run_summary(run)["cfb"]["settled_by_kind"] is None
+
+
+def test_the_two_ledger_diagnostics_never_disagree_about_whether_the_read_happened():
+    """One predicate, one answer. `_unrecognised_for` and `_settled_by_kind_for` both reduce to
+    `_ledger_measured`, and this is the test that says why they have to: they are two views of ONE
+    read, computed from one `HubLedger`, so there is no input on which one could be measured and the
+    other not. A copy of the `None` test written into one of them later would be invisible -- each
+    key's own test would still pass -- and the run summary would then say "this sport has settled
+    nothing" and "nobody looked" on the same line, which is the collision this sentinel exists to
+    end, arriving in the other direction.
+
+    `too_far` is in the same summary with the same sentinel and a third meaning ("this sport never
+    scanned"), and it is deliberately NOT checked here: it is learned from the scan rather than from
+    the read, so a scanned sport has one and a sport that did not has the other. `None` still means
+    one thing across all three -- not measured -- which is the only property they share.
+    """
+    measured, _supa = _ledger([_row("sports_cfb", 0.72, "yes", "winner")])
+    for ledger in (measured, scan_mod._hub_settled_ledger(_DeadSupabase()), None):
+        run = _cfb_run_with(ledger)
+        state = run.per_sport["cfb"]
+        # All three inputs, all three outcomes: a real ledger, a failed read, and none at all.
+        assert (state["unrecognised_kinds"] is None) == (state["settled_by_kind"] is None), (
+            f"the two ledger diagnostics disagree about whether the read happened: {state}"
+        )
+    # And the measured one is a measurement rather than an absence, so the agreement above is not the
+    # agreement of two `None`s.
+    assert run.per_sport["cfb"]["settled_by_kind"] is None, "the last ledger handed in was None"
+    assert _cfb_run_with(measured).per_sport["cfb"]["settled_by_kind"] == {"winner": 1}

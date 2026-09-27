@@ -195,11 +195,12 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
         {"edge_type": "SPORTS", "engine": "sports_nfl", "market_ticker": "T1", "gate_status": "SHADOW"}
     ]
     # The printed sports summary is `run.reports` with the per-sport diagnostics folded in -- the
-    # keys are the run's own (`too_far`, `unrecognised_kinds`) and this hand-built `per_sport`
-    # carries neither, so both read as `None`: "not measured", which is the truth about a run with
-    # no scan behind it, and not the `0` that would claim the window dropped nothing.
+    # keys are the run's own (`DIAGNOSTIC_KEYS`, and this hand-built `per_sport` carries none of
+    # them), so all read as `None`: "not measured", which is the truth about a run with no scan
+    # behind it, and not the `0` that would claim the window dropped nothing. Named by reading the
+    # list rather than written out, so this cannot go stale when a key is added to it.
     assert json.loads(capsys.readouterr().out)["sports"] == {
-        "nfl": {"matched": 1, "too_far": None, "unrecognised_kinds": None}
+        "nfl": {"matched": 1, **{key: None for key in sports_scan.DIAGNOSTIC_KEYS}}
     }
 
 
