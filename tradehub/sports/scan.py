@@ -45,6 +45,38 @@ LEDGER_PAGE = 1000
 
 log = logging.getLogger(__name__)
 
+# Ranking by edge / sigma needs a floor, because a distribution this tight makes the ratio enormous
+# and one absurd score would own the top of the board, and a cap for the same reason at the other
+# end. 0.5pp is well below any calibrated forecast's real sigma, so the floor only ever catches a
+# degenerate distribution rather than a confident one.
+sigma_floor = 0.005
+SIGMA_SCORE_CAP = 20.0
+
+
+def edge_sigma_score(edge_pct: Any, sigma: Any) -> float | None:
+    """How many sigmas wide the disagreement is, or `None` when there is nothing to score.
+
+    `None` is returned for a MISSING sigma, and that is the load-bearing decision. Flooring a missing
+    sigma yields 0.10 / 0.005 = 20.0, which is the cap -- the highest score this feature can produce.
+    A row whose confidence is unknown would then rank at the top of its tier, which is the opposite
+    of conservative and precisely the failure the feature exists to prevent. So absent sigma yields
+    no score, and `_sports_rank` falls back to the raw edge.
+
+    The floor is for a *published* sigma of zero or less, which is a real value that would otherwise
+    divide by zero. Present-but-degenerate and absent are different facts and get different handling.
+
+    The sign is kept, so a negative edge scores negative. `abs()` here would score a -0.10 edge at a
+    tight sigma as +6.7, and the caller negates the score to sort descending, which would put a row
+    whose edge points the wrong way at the top of its tier. The edge's direction is the one thing
+    about it that is not a matter of taste.
+    """
+    if not isinstance(edge_pct, (int, float)) or isinstance(edge_pct, bool):
+        return None
+    if not isinstance(sigma, (int, float)) or isinstance(sigma, bool):
+        return None
+    denominator = max(float(sigma), sigma_floor)
+    return min(round(float(edge_pct) / denominator, 4), SIGMA_SCORE_CAP)
+
 
 @dataclass
 class SportScan:

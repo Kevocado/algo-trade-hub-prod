@@ -67,6 +67,13 @@ export interface SportsEdgesResponse {
   candidate_count: number;
   limit: number;
   offset: number;
+  /**
+   * Which ranking the response used: `edge_sigma` when the feed supplied a real sigma, else
+   * `raw_edge`. `sigma` is null on every game as of 2026-09-27, so this is `raw_edge` in practice --
+   * and the page says which, because claiming to rank by confidence while ranking by raw edge is
+   * worse than never claiming it.
+   */
+  ranking: "edge_sigma" | "raw_edge";
   reviewer_scorecard: {
     n_settled: number;
     min_settled: number;

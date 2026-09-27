@@ -28,7 +28,7 @@ from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
 from tradehub.gate_status import latest_gate_statuses
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
-from tradehub.sports.scan import edge_row
+from tradehub.sports.scan import edge_row, edge_sigma_score
 from tradehub.sports.scorecard import reviewer_scorecard
 
 log = logging.getLogger(__name__)
@@ -377,6 +377,11 @@ def get_sports_edges(
         # Whole-set candidate count. A client cannot derive it from one page, and deriving it is
         # what made the "everything was rejected" banner wrong on every page after the first.
         "candidate_count": candidate_count,
+        # Which ranking produced the order above, over the WHOLE filtered set rather than this page:
+        # a sigma on page 3 is a sigma the sort used, and a page-local count would report `raw_edge`
+        # while rows were being scored. The page states it, because claiming a confidence ranking it
+        # is not applying is worse than never claiming one.
+        "ranking": _ranking_mode(candidates),
         "reviewer_scorecard": reviewer_scorecard(reviews, results),
     }
 
@@ -386,10 +391,20 @@ def _tier_of(row: dict) -> str | None:
 
 
 def _sports_rank(row: dict) -> tuple[int, int, float]:
-    """Sort key: top_pick, then any other candidate, then the rest; edge_pct descending.
+    """Sort key: top_pick, then any other candidate, then the rest; then the confidence score.
 
     A `filtered` row is one the candidate filter rejected, so it ranks below every candidate
-    regardless of its edge — a large gap the filter already refused should not lead the board.
+    regardless of its edge — a large gap the filter already refused should not lead the board. That
+    grouping is the outer key and the confidence score only ever orders rows WITHIN it.
+
+    Within a tier, the sort is on `edge_sigma_score` when the feed published a sigma, because two
+    equal edges at different confidences are not equal claims. The score is capped, floored and
+    `None` when there is no sigma, and the fallback is the raw edge: NOT 0.0, which would sort the
+    row last in its tier and read as "the least interesting pick here" — a claim, made by a
+    fallback, about a row whose confidence is merely unknown.
+
+    The stored column is `edge_pct` (this runs before `edge_row`); the same number is published to
+    clients as `rank_edge_pct`, which is why the fallback is that number.
     """
     tier = _tier_of(row)
     if tier == "top_pick":
@@ -398,7 +413,29 @@ def _sports_rank(row: dict) -> tuple[int, int, float]:
         group = 1
     else:
         group = 2
-    return group, _TIER_ORDER.get(tier, 9), -float(row.get("edge_pct") or 0)
+    score = edge_sigma_score(row.get("edge_pct"), (row.get("raw_payload") or {}).get("sigma"))
+    if score is None:
+        score = float(row.get("edge_pct") or 0)
+    return group, _TIER_ORDER.get(tier, 9), -score
+
+
+def _ranking_mode(rows: list[dict]) -> str:
+    """Which ranking the response actually used, so the page can say so.
+
+    `sigma` is null on 61/61 games today, so this returns `raw_edge` in practice. Reporting the mode
+    rather than implying sigma always applies is the whole point: a page that claims to rank by
+    confidence while ranking by raw edge is worse than one that never claimed it.
+
+    `edge_sigma` means the score was in play for at least one row — which is exactly the condition
+    under which the sort stopped being a pure raw-edge sort. A *published* sigma of zero counts,
+    because it was floored and scored like any other value and the sort did use it; a page reporting
+    `raw_edge` there would be describing a sort that did not happen. An empty set reports
+    `raw_edge`: nothing was ranked, so the answer that claims the least is the honest one.
+    """
+    for row in rows:
+        if edge_sigma_score(row.get("edge_pct"), (row.get("raw_payload") or {}).get("sigma")) is not None:
+            return "edge_sigma"
+    return "raw_edge"
 
 
 def _is_upcoming(row: dict, now: datetime) -> bool:
