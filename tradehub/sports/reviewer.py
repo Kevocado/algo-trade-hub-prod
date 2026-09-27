@@ -110,8 +110,36 @@ def price_bucket(entry_price: float, cents: int) -> int:
     return int(round(entry_price * 100)) // cents
 
 
-def cache_key(sport: str, game_id: str, market_ticker: str, side: str, bucket: int) -> str:
-    return f"{sport}:{game_id}:{market_ticker}:{side}:{bucket}"
+def cache_key(sport: str, game_id: str, market_ticker: str, side: str, bucket: int,
+              calibration_source: str) -> str:
+    """What a cached verdict is filed under, and the whole of what a verdict is allowed to be reused
+    for. So it has to name every input the reasoning depended on.
+
+    `calibration_source` is in it because of the inversion (approved 2026-09-27). Before it, the
+    source never changed -- the predictor's published calibration was the only record there was --
+    so a key naming sport/game/market/side/bucket was complete. Now the same market is judged on the
+    hub's own settled ledger the day the hub has `HUB_LEDGER_MIN_SETTLED` rows of that kind, and on
+    the predictor's the day before. One key, two records: `SupabaseReviewStore.cached` would hand
+    back a verdict reasoned over the *other* calibration band, at the other hit rate, and the edge
+    would be tiered on a record it was never reviewed against. Numbers right, attribution wrong, and
+    nothing downstream knows to distrust it -- the same shape as the paged ledger read, and the task
+    that introduced the condition carries the fix.
+
+    Required rather than defaulted, for the reason `choose_calibration`'s `kind` is: a default of
+    `"predictor"` is a call site that quietly reproduces the pre-fix key, which is the collision.
+
+    **The band's own values are deliberately NOT in this key, and that is a decision, not an
+    oversight.** They drift: every snapshot that settles moves `mean_prob` and `hit_rate`, and it has
+    done so for the predictor's own calibration for the whole life of this table. Keying on them
+    would mean re-reviewing a market every time a band moved, which is most of the time, so the
+    cache would stop being a cache and the daily budget (`cfg.daily_budget`, via
+    `load_reviewer_config()`) would buy nothing. The source is different in kind from the values: it
+    is a fact about WHICH record was judged, not a fact about how well it did, and it changes at most
+    once per market and only on the day the hub crosses the threshold. So the key names the record
+    and the values are allowed to be the day they were read. If that trade is ever revisited, it is
+    revisited deliberately, and the band values -- not the source -- are the thing to argue about.
+    """
+    return f"{sport}:{game_id}:{market_ticker}:{side}:{bucket}:{calibration_source}"
 
 
 class OpenRouterReviewer:

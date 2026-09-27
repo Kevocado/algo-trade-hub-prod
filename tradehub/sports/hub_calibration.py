@@ -19,16 +19,13 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Sequence
 
-# The kinds the predictor's feed publishes, and therefore the kinds the hub has to be able to answer
-# for. `parse_feed` reads exactly these three, and `check_candidate` looks the calibration up by the
-# kind it is filtering -- so publishing fewer than all three does not narrow the record, it makes
-# every spread and total edge `calibration_insufficient` the day the inversion fires.
-#
-# This was `("winner",)` on a superseded ruling whose premise was "kind cannot be read off a settled
-# row". The premise is false: `sports/scan.py` writes `"kind": kind` into the sports `predictions`
-# row's own `raw_payload`, so the kind is a fact the hub itself recorded, and the hub's scan is the
-# only thing that can have written it. A kind the hub cannot read is a kind the hub never wrote.
-KINDS: tuple[str, ...] = ("winner", "spread", "total")
+# The kind list is NOT written here. It lives in `sports/kinds.py` and is imported, because
+# `feed.parse_feed` reads the predictor's payload against the same list and `sports/scan.py` FILTERS
+# settled rows against it -- a second copy of the triple was not two views of one list, it was a
+# filter whose exclusions were silent. See that module for the whole story. The import binds the
+# name in this module, so `hub_calibration.KINDS is kinds.KINDS`: the same object, not a copy, and
+# `settled_buckets`'s default below cannot drift away from what the feed client read.
+from tradehub.sports.kinds import KINDS
 
 # The source of these probabilities is NOT normalised to the orientation `check_candidate` looks up.
 #
@@ -63,7 +60,9 @@ def settled_buckets(
     `kinds` names which band sets to publish, not which pairs go in them -- the pairs are one kind's
     pairs, and the caller has already bucketed by `raw_payload.kind` before getting here (see KINDS).
     Publishing a kind the caller has no pairs for is deliberate: it yields `n: 0` bands, which read as
-    "nothing settled in this band" rather than as "this kind has no record at all".
+    "nothing settled in this band" rather than as "this kind has no record at all". A kind that is
+    not in KINDS at all is a different thing again, and the caller is the one that has to report it:
+    this module cannot see a kind it was never offered.
 
     Every band also carries `orientation: HUB_ORIENTATION`. See that constant: the bands are cut on
     raw side-oriented probabilities and anything reading them has to know that.

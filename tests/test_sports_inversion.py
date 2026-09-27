@@ -25,9 +25,22 @@ Three things this file also pins, because each was a live hole rather than a dec
 - **`n_buckets` is read off the feed, not assumed here**, and the hub's bands carry
   `orientation: "raw"` so the fact that they are cut on un-normalised side-oriented probabilities
   travels in the data rather than living in a docstring someone has to go looking for.
+
+And three more, from the second fix round, each the same shape of hole found one increment later:
+
+- **A failed page-two read throws page one away.** The fake reaches page two and the test says so;
+  a fake that failed on page one proved nothing, because nothing had accumulated to lose.
+- **One list of kinds, and the rows it cannot hold are reported.** The triple was written twice --
+  `hub_calibration.KINDS` and an inlined copy in `parse_feed` -- and `scan.py` FILTERS settled rows
+  down to it, so a second copy is not a second view of the list, it is a filter whose exclusions
+  were silent. A fourth kind would have deleted every settled row of itself with nothing logged.
+- **The review cache key names the calibration source.** The same market is judged on the
+  predictor's record until the hub has enough settled rows of its kind and on the hub's own record
+  from then on; one key for both would serve a cached verdict reasoned over the other band.
 """
 import inspect
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,13 +49,16 @@ import pytest
 
 from tradehub.edges import EdgeSuggestion, Quote
 from tradehub.markets import parse_market
+from tradehub.sports import feed as feed_mod
+from tradehub.sports import hub_calibration as hub_calibration_mod
+from tradehub.sports import kinds as kinds_mod
 from tradehub.sports import scan as scan_mod
 from tradehub.sports.candidates import HUB_LEDGER_MIN_SETTLED, check_candidate, choose_calibration
 from tradehub.sports.feed import FeedGame, parse_feed
 from tradehub.sports.hub_calibration import HUB_ORIENTATION, KINDS, settled_buckets
 from tradehub.sports.kalshi import SportsMarket
 from tradehub.sports.mapping import MatchedGame
-from tradehub.sports.reviewer import SYSTEM_PROMPT
+from tradehub.sports.reviewer import SYSTEM_PROMPT, MemoryReviewStore, Review, cache_key
 from tradehub.sports.scorecard import MIN_SETTLED
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sports"
@@ -220,14 +236,25 @@ class TestSettledBuckets:
         assert settled_buckets([(1.0, True)], n_buckets=10)["winner"][9]["n"] == 1
 
     def test_every_kind_the_feed_publishes_is_published(self):
-        """All three, and the kind list is the feed's, not this module's invention: `parse_feed`
-        reads exactly winner/spread/total and `check_candidate` looks the calibration up by kind, so
-        publishing fewer is not a narrower record -- it is every spread and total edge becoming
-        `calibration_insufficient` the day the hub crosses the threshold."""
+        """All three, against the DECLARED list rather than this module's own default argument.
+
+        The old version of this test compared `settled_buckets`'s output to `KINDS`, which is the
+        value it was called with as its default -- so it agreed with whatever the default was and
+        proved nothing about any other site. The list that matters is the one `parse_feed` reads the
+        payload against and `scan.py` filters settled rows by, and that is `sports.kinds.KINDS`:
+        publishing fewer is not a narrower record, it is every spread and total edge becoming
+        `calibration_insufficient` the day the hub crosses the threshold, plus every settled row of
+        an unpublished kind deleted with nothing said.
+        """
         buckets = settled_buckets([(0.65, True)] * 3, n_buckets=10)
 
-        assert KINDS == ("winner", "spread", "total")
-        assert set(buckets) == set(KINDS)
+        assert set(buckets) == set(kinds_mod.KINDS)
+
+    def test_the_band_count_defaults_to_the_declared_list_and_not_a_copy_of_it(self):
+        """`is`, not `==`. A fourth kind added to the declared list has to reach the publisher; a
+        re-typed copy of the list in the signature would pass an equality check and keep the two
+        apart, which is the drift this whole section exists to prevent."""
+        assert inspect.signature(settled_buckets).parameters["kinds"].default is kinds_mod.KINDS
 
     def test_every_band_says_its_probabilities_are_not_home_oriented(self):
         """The limitation travels in the data. `our_prob` on a settled row is the probability for
@@ -739,6 +766,88 @@ def test_every_field_the_prompt_points_the_reviewer_at_is_in_the_fact_pack():
     )
 
 
+# ── the review cache: a verdict is only reusable for the record it was reasoned over ───────────
+#
+# The reviewer is the one component the whole design defers the calibration judgement to, and
+# `SupabaseReviewStore` serves it the last `status='ok'` verdict filed under a key. So the key has
+# to name every input the reasoning depended on. It named five: sport, game, market, side, price
+# bucket -- which was complete while the predictor's published calibration was the only record there
+# was. The inversion makes the source flip from `predictor` to `hub_ledger` the day the hub has
+# `HUB_LEDGER_MIN_SETTLED` rows of that kind, so one key can now mean two different records and the
+# store will hand back a verdict reasoned over the other band, at the other hit rate, and the edge
+# will be tiered on a record nobody reviewed it against.
+
+
+def _requests_by_ticker(result):
+    return {req.market_ticker: req for req in result.review_requests}
+
+
+def test_the_review_cache_key_changes_when_the_calibration_source_does():
+    """The same market, the same side, the same price bucket, judged on a different record. Both
+    halves matter: the keys must differ, and they must differ ONLY in the source -- otherwise a key
+    that varied incidentally while still colliding on the real difference would satisfy the first
+    half while the collision stood."""
+    before = _requests_by_ticker(_scan(_recorded_feed()))
+    after = _requests_by_ticker(_scan(_recorded_feed(), hub_pairs=HUB_LEDGER))
+
+    shared = sorted(set(before) & set(after))
+    assert shared, (
+        "a market has to be a candidate under both records for this to mean anything; the recorded "
+        "feed's HOU@IND winner markets are, one on the published bands and one on the hub's"
+    )
+    for ticker in shared:
+        predictor, hub = before[ticker], after[ticker]
+        assert predictor.fact_pack["calibration_source"] == "predictor", ticker
+        assert hub.fact_pack["calibration_source"] == "hub_ledger", ticker
+        assert predictor.key != hub.key, (
+            f"{ticker} is filed under one cache key for two different calibration records: "
+            f"{predictor.key!r} vs {hub.key!r}"
+        )
+        assert predictor.key.rsplit(":", 1)[0] == hub.key.rsplit(":", 1)[0], (
+            f"{ticker}: the only difference may be the source, but {predictor.key!r} and "
+            f"{hub.key!r} differ in more than that"
+        )
+        assert hub.key.endswith(":hub_ledger"), hub.key
+
+
+def test_two_markets_differing_only_in_calibration_source_do_not_share_a_cache_key():
+    """The unit, and the reason the parameter is required rather than defaulted: a default of
+    `"predictor"` is a call site that quietly rebuilds the colliding key, which is the defect."""
+    predictor = cache_key("nfl", "2026_03_HOU_IND", "KXNFLGAME-26SEP27HOUIND-IND", "yes", 5, "predictor")
+    hub = cache_key("nfl", "2026_03_HOU_IND", "KXNFLGAME-26SEP27HOUIND-IND", "yes", 5, "hub_ledger")
+
+    assert predictor != hub
+    assert predictor.startswith("nfl:2026_03_HOU_IND:KXNFLGAME-26SEP27HOUIND-IND:yes:5:")
+    assert predictor.endswith(":predictor") and hub.endswith(":hub_ledger")
+    # Every other field is unchanged in both, so the source is demonstrably the only difference.
+    assert predictor.rsplit(":", 1)[0] == hub.rsplit(":", 1)[0]
+    # And the third source, the one `choose_calibration` returns when there is no record at all, is
+    # a different key too -- otherwise "no record" would read as "the predictor's record".
+    assert len({predictor, hub, cache_key("nfl", "2026_03_HOU_IND", "KXNFLGAME-26SEP27HOUIND-IND",
+                                          "yes", 5, "none")}) == 3
+
+
+def test_a_verdict_reasoned_over_the_predictor_is_not_served_for_the_hubs_record():
+    """The consequence, through the store that serves it, rather than the string alone. A market
+    reviewed on the published calibration and then re-scanned with the hub in charge asks the
+    reviewer the same question about a different band; handing back the old verdict would tier the
+    edge on a record the reviewer never saw, and the edge row's own `calibration_source` would
+    disagree with the band behind the tier."""
+    before = _requests_by_ticker(_scan(_recorded_feed()))
+    after = _requests_by_ticker(_scan(_recorded_feed(), hub_pairs=HUB_LEDGER))
+    ticker = sorted(set(before) & set(after))[0]
+    cached, current = before[ticker], after[ticker]
+    store = MemoryReviewStore()
+    store.save(cached, Review(status="ok", explainable=True, drivers=("margin",), red_flags=(),
+                              model="m"))
+
+    assert store.cached(cached.key) is not None, "the verdict is still reusable for its own record"
+    assert store.cached(current.key) is None, (
+        f"the store served a verdict reasoned over {cached.fact_pack['calibration_source']}'s band "
+        f"for an edge judged on {current.fact_pack['calibration_source']}'s"
+    )
+
+
 # ── the ledger read: per kind, per engine, paged ─────────────────────────────────────────────
 
 
@@ -878,21 +987,171 @@ def test_a_ledger_read_that_fails_leaves_the_predictors_calibration_in_charge():
 def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_truncated_record():
     """A partial ledger is worse than none: it is a real measurement with rows silently missing, and
     the hub would be in charge of bands that do not say how thin they are. So a failure on page two
-    discards page one too."""
+    discards page one too.
+
+    "Mid-paging" is the whole claim, so the fake has to be there. The first version of this test
+    raised on its first call while claiming to fail on the second: nothing had been accumulated, page
+    one was never read, and `== {}` then held whether the implementation threw the partial away or
+    returned it. `return ledger` on the failure path left the whole 831-test suite green.
+    """
     class Flaky:
+        """Serves page one -- a FULL page, or the loop stops and never reaches the failure -- and
+        then dies. `served` keeps the first page's fake so the test can see what it asked for."""
+
         def __init__(self, rows):
-            self.rows, self.calls = rows, 0
+            self.rows, self.calls, self.served = rows, 0, []
 
         def table(self, _name):
             self.calls += 1
-            if self.calls == 1:
-                raise RuntimeError("postgrest 500 on the second page")
-            return _Query(_Supa(self.rows))
+            supa = _Supa(self.rows)
+            self.served.append(supa)
+            if self.calls > 1:
+                raise RuntimeError(f"postgrest 500 on page {self.calls}")
+            return _Query(supa)
 
-    rows = [_row("sports_nfl", 0.5, "yes", "winner", id=i) for i in range(1200)]
+    rows = [_row("sports_nfl", 0.5, "yes", "winner", id=i) for i in range(scan_mod.LEDGER_PAGE + 200)]
     flaky = Flaky(rows)
 
-    assert scan_mod._hub_settled_ledger(flaky) == {}
+    assert len(rows) > scan_mod.LEDGER_PAGE, (
+        "page one has to be FULL: a short page ends the read and the failure is never reached"
+    )
+    ledger = scan_mod._hub_settled_ledger(flaky)
+
+    # It demonstrably got to page two. Without these the assertion below proves nothing, because a
+    # read that failed on page one would also read as {} and for the wrong reason.
+    assert flaky.calls == 2, f"the read must fail on page two; it made {flaky.calls} call(s)"
+    assert flaky.served[0].ranges == [(0, scan_mod.LEDGER_PAGE - 1)], "page one was paged and full"
+
+    # And page one was not empty, so `{}` below is a claim about discarding a partial record rather
+    # than a claim that there was nothing to discard.
+    healthy, _supa = _ledger(rows)
+    assert len(healthy["sports_nfl"]["winner"]) > scan_mod.LEDGER_PAGE, (
+        "the same read with nothing broken keeps page one's rows, so the flaky one had some to lose"
+    )
+    assert ledger == {}, (
+        f"a failure on page two must discard page one's {scan_mod.LEDGER_PAGE} rows too, not hand "
+        f"back a truncated record: {list(ledger)}"
+    )
+
+
+# ── one list of kinds, and what happens to a kind that is not on it ────────────────────────────
+#
+# The triple was written down twice -- `hub_calibration.KINDS` and an inlined copy inside
+# `parse_feed` -- and nothing tied the two together. It was not two views of one list, though. It was
+# a list and a FILTER: `scan._hub_settled_ledger` keeps only the kinds on it, so the inlined copy
+# decided which settled evidence the hub was allowed to have. Add a fourth kind to the predictors
+# and every settled row of that kind would have been deleted with nothing logged, while the feed's
+# own band list for the same kind was read and judged -- the record on one side, the evidence on the
+# other, and no word about the gap.
+#
+# So the list now lives in `tradehub/sports/kinds.py` and is imported by every site that has to
+# agree with it, and a kind outside it is reported rather than dropped. "Reported" is a log line at
+# both ends, and that is the mechanism that fits: `_hub_settled_ledger` runs once in the cron entry
+# point before any run report exists and its other surprise is already a log line, so counting into a
+# return value would have meant widening a mapping that `run_sports_scan` and four tests consume, to
+# carry a diagnostic. What the lines have to do is name the kind and the count, so that "this build
+# cannot read that kind" is distinguishable from "nothing of that kind has settled" -- two facts
+# every number downstream looks identical under.
+
+
+def test_the_feed_client_the_publisher_and_the_ledger_filter_share_one_list():
+    """`is`, not `==`. A fourth kind added to one of the two lists and not the other is exactly the
+    bug, and two tuples that happen to compare equal are two tuples that can be edited apart."""
+    assert kinds_mod.KINDS is feed_mod.KINDS is hub_calibration_mod.KINDS is scan_mod.KINDS
+
+
+def test_the_list_is_the_three_kinds_the_predictors_publish():
+    """The membership is the product's, so it is written out rather than read back: dropping a kind
+    or renaming one changes what the hub can calibrate and is not a refactor."""
+    assert KINDS == ("winner", "spread", "total")
+
+
+def test_parse_feed_reads_exactly_the_kinds_this_build_declares():
+    """`Feed.calibration`'s keys ARE the kinds `parse_feed` read, so the set it publishes is the
+    observable for a second copy of the list being inlined back into the function -- where an
+    identity check on the module attribute would go on passing while the payload and the code
+    disagreed. It is compared against the declared list, not against a literal written here, because
+    the claim is that the two are the same thing rather than that they are both three."""
+    raw = json.loads((FIXTURES / "nfl_kalshi_feed.json").read_text())
+
+    parsed = parse_feed(raw)
+
+    assert set(parsed.calibration) == set(kinds_mod.KINDS)
+    for kind in kinds_mod.KINDS:
+        assert parsed.calibration[kind] == raw["calibration"][kind], (
+            f"the payload's own {kind} bands are what the feed has to carry, not a default"
+        )
+
+
+def test_the_hub_publishes_a_band_set_for_every_declared_kind():
+    """The other end of the same tie. `_hub_calibration` is the one place that decides which kinds
+    the hub has a record for, so a copy of the list inlined into its comprehension shows up here as a
+    published key that is not, or is not, a declared kind."""
+    published = scan_mod._hub_calibration(_recorded_feed(), {"winner": [(0.5, True)]})
+
+    assert published is not None
+    assert set(published) == set(kinds_mod.KINDS)
+
+
+def test_a_feed_that_publishes_a_kind_this_build_cannot_read_says_so(caplog):
+    """The feed half of the report. A kind the payload published that this build does not know is
+    not read, and the cost of not reading it is that its edges are judged on no band at all -- which
+    reads downstream exactly like a predictor that published no history for them. The name has to
+    reach the log or nobody can tell the two apart."""
+    raw = json.loads((FIXTURES / "nfl_kalshi_feed.json").read_text())
+    raw["calibration"]["prop"] = [{"lo": 0.0, "hi": 1.0, "n": 40, "mean_prob": 0.5, "hit_rate": 0.5}]
+
+    with caplog.at_level(logging.WARNING, logger="tradehub.sports.feed"):
+        parsed = parse_feed(raw)
+
+    assert "prop" not in parsed.calibration, "an unread kind is not invented into the feed"
+    assert "does not recognise" in caplog.text
+    assert "prop" in caplog.text, caplog.text
+
+
+def test_a_feed_that_publishes_no_unknown_kind_says_nothing(caplog):
+    """The other half, and the reason the warning can be trusted. `n_buckets` is a scalar the
+    payload publishes next to the band lists and is not a kind, so a check that treated it as one
+    would warn on every single scan -- and a line that always fires is a line nobody reads."""
+    with caplog.at_level(logging.WARNING, logger="tradehub.sports.feed"):
+        parse_feed(json.loads((FIXTURES / "nfl_kalshi_feed.json").read_text()))
+
+    assert "recognise" not in caplog.text, caplog.text
+
+
+def test_settled_rows_of_a_kind_this_build_cannot_read_are_reported_not_dropped(caplog):
+    """The ledger half, and the rows are the reason it matters: these are real settled results with
+    a recorded hit, and keeping them out of the record is a deletion rather than a narrower view of
+    it. The behaviour is unchanged -- the rows are still not filed anywhere -- and what is new is
+    that the count is named, so "the hub has no record of this kind" can be read as the gap in the
+    build that it is instead of as an absence of evidence."""
+    rows = [_row("sports_nfl", 0.65, "yes", "winner"),
+            _row("sports_nfl", 0.51, "yes", "moneyline"),
+            _row("sports_nfl", 0.52, "no", "moneyline"),
+            _row("sports_cfb", 0.53, "yes", "prop")]
+
+    with caplog.at_level(logging.WARNING, logger="tradehub.sports.scan"):
+        ledger, _supa = _ledger(rows)
+
+    assert ledger == {"sports_nfl": {"winner": [(0.65, True)]}}
+    assert "does not recognise" in caplog.text
+    assert "moneyline=2" in caplog.text and "prop=1" in caplog.text, caplog.text
+    assert "3 row(s)" in caplog.text, "the total has to be in the line, not just the per-kind tally"
+    # And the line has to be about the BUILD, or a reader takes the missing kind for a fact about
+    # the market rather than a fact about this deployment.
+    assert "not a kind with nothing settled" in caplog.text
+
+
+def test_a_ledger_of_only_known_kinds_says_nothing_about_unrecognised_ones(caplog):
+    """The inverse guard, for the same reason: a warning that fires on a normal read is noise, and
+    noise is how the real one stops being read."""
+    rows = [_row("sports_nfl", 0.65, "yes", "winner"), _row("sports_nfl", 0.30, "no", "spread")]
+
+    with caplog.at_level(logging.WARNING, logger="tradehub.sports.scan"):
+        ledger, _supa = _ledger(rows)
+
+    assert ledger == {"sports_nfl": {"winner": [(0.65, True)], "spread": [(0.30, False)]}}
+    assert "does not recognise" not in caplog.text
 
 
 # ── one ledger per sport, all the way through `run_sports_scan` ───────────────────────────────

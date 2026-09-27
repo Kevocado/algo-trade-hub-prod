@@ -10,7 +10,7 @@ NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
 def _request(ticker="KXNFLGAME-26SEP27HOUIND-IND", price=0.27):
     bucket = price_bucket(price, 5)
     return ReviewRequest(
-        key=cache_key("nfl", "2026_03_HOU_IND", ticker, "yes", bucket), sport="nfl", game_id="2026_03_HOU_IND",
+        key=cache_key("nfl", "2026_03_HOU_IND", ticker, "yes", bucket, "predictor"), sport="nfl", game_id="2026_03_HOU_IND",
         market_ticker=ticker, side="yes", entry_price=price, price_bucket=bucket, our_prob=0.35, net_edge_pct=7.5,
         fact_pack={"sport": "nfl"},
     )

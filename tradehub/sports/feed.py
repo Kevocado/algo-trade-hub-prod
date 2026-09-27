@@ -11,12 +11,17 @@ from typing import Any, Callable
 import requests
 
 from tradehub.sports.deadline import remaining_seconds
+from tradehub.sports.kinds import KINDS, unrecognised
 
 log = logging.getLogger(__name__)
 
 FEED_PATH = "/api/kalshi-feed"
 TIMEOUT_SECONDS = 60.0
 RETRY_PAUSE_SECONDS = 2.0
+
+# The scalar the payload publishes alongside the per-kind band lists. Not a kind, so it is not
+# reported as one when the payload is checked for kinds this build does not recognise.
+_PUBLISHED_SCALARS = frozenset({"n_buckets"})
 
 
 class FeedUnavailable(RuntimeError):
@@ -99,7 +104,21 @@ def parse_feed(raw: dict[str, Any]) -> Feed:
                 season=row.get("season"), week=row.get("week"),
             ))
     calibration = raw.get("calibration") or {}
-    buckets = {k: calibration.get(k) or [] for k in ("winner", "spread", "total")}
+    # The kinds to read are `sports.kinds.KINDS`, the same object the hub's settled ledger is filtered
+    # against, so a fourth kind is added in one place rather than in a second copy here that nothing
+    # ties to the first. Reading the payload off an inlined triple is what let the two drift.
+    buckets = {k: calibration.get(k) or [] for k in KINDS}
+    # A kind the payload publishes that this build does not know is not read, and it must not be
+    # dropped without a word: its edges would be judged on no band, or on another kind's, and
+    # nothing downstream could tell that apart from a predictor that simply published no history for
+    # it. So say which kinds, and that saying so is the only trace of them.
+    extra = unrecognised(set(calibration) - _PUBLISHED_SCALARS)
+    if extra:
+        log.warning("sports feed %s: published calibration for %d kind(s) this build does not "
+                    "recognise (%s). They are not read, so edges of those kinds are judged on no "
+                    "band at all -- this is a build that does not know the kind, not a kind with "
+                    "nothing settled. Adding it to tradehub/sports/kinds.py is the fix.",
+                    sport, len(extra), ", ".join(extra))
     # The published count, and if the field is absent then the number of buckets actually published
     # -- the same fact, read a different way, rather than a default that might not match the edges.
     n_buckets = calibration.get("n_buckets")

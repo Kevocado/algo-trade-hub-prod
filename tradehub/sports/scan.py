@@ -25,8 +25,9 @@ from tradehub.sports.deadline import (
     REVIEW_STOP_MARGIN_SECONDS, remaining_seconds, should_review,
 )
 from tradehub.sports.feed import Feed, FeedUnavailable, fetch_feed
-from tradehub.sports.hub_calibration import KINDS, settled_buckets
+from tradehub.sports.hub_calibration import settled_buckets
 from tradehub.sports.kalshi import SportsKalshi, SportsMarket
+from tradehub.sports.kinds import KINDS
 from tradehub.sports.mapping import MatchedGame, load_aliases, match_games
 from tradehub.sports.pricing import price_market
 from tradehub.sports.reviewer import (
@@ -285,7 +286,12 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
                 if check.ok:
                     bucket = price_bucket(s.entry_price, bucket_cents)
                     req = ReviewRequest(
-                        key=cache_key(cfg.sport, mg.game.game_id, sm.market.ticker, s.side, bucket),
+                        # The source is part of the key because the band this edge was judged on
+                        # came from it: the same market is judged on the predictor's published
+                        # calibration until the hub has enough settled rows of its kind, and on the
+                        # hub's own record from then on. See `reviewer.cache_key`.
+                        key=cache_key(cfg.sport, mg.game.game_id, sm.market.ticker, s.side, bucket,
+                                      check.calibration_source),
                         sport=cfg.sport, game_id=mg.game.game_id, market_ticker=sm.market.ticker, side=s.side,
                         entry_price=s.entry_price, price_bucket=bucket, our_prob=s.our_prob,
                         net_edge_pct=s.net_edge_pct, fact_pack=_fact_pack(cfg, kind, sm, mg, s, check, now),
@@ -522,6 +528,12 @@ def _hub_settled_ledger(supa) -> dict[str, dict[str, list[tuple[float, bool]]]]:
     said winner-only, on the premise that a wrong kind attribution is worse than an absent one; the
     premise was false, because the hub is the only writer of this field.
 
+    The kinds come from `sports.kinds.KINDS` -- the same object `parse_feed` reads the payload
+    against -- because this filter is what makes an omission here a deletion of evidence rather than
+    a narrower view of it. A row of a kind outside KINDS is counted and reported below rather than
+    `continue`d: "this build cannot read that kind" and "nothing of that kind has settled" are
+    different facts and every number downstream looks identical under both.
+
     **BY ENGINE.** One ledger shared across both sports would put NFL's rows into CFB's bands and the
     reverse. They are different models with different records (NFL 0 settled, CFB ~61), so a sport
     that reached the threshold would be handing out a calibration built from another sport's history.
@@ -536,8 +548,11 @@ def _hub_settled_ledger(supa) -> dict[str, dict[str, list[tuple[float, bool]]]]:
 
     A failed read returns nothing rather than raising: this is a new failure mode on the sports path
     and it must not be able to cost a scan that works perfectly well on the published calibration.
+    A failed read also discards the unrecognised-kind tally, because it is reporting on a ledger that
+    was never complete and the `log.exception` above is the whole story.
     """
     ledger: dict[str, dict[str, list[tuple[float, bool]]]] = {}
+    unknown: dict[str, int] = {}
     start = 0
     while True:
         try:
@@ -556,12 +571,28 @@ def _hub_settled_ledger(supa) -> dict[str, dict[str, list[tuple[float, bool]]]]:
             # Absent or null kind is a winner row: that is what the scan writes for a winner market.
             kind = (row.get("raw_payload") or {}).get("kind") or "winner"
             if kind not in KINDS:
+                # Counted, not dropped in silence. The rows are real settled evidence this build
+                # cannot place, and the only difference between "nothing of that kind has settled"
+                # and "this build does not know that kind" would otherwise be a number nobody can
+                # see. A warning is the channel this function has: it runs once in the cron entry
+                # point, before any run report exists, and its other surprise is already a log line.
+                unknown[kind] = unknown.get(kind, 0) + 1
                 continue
             engine = row.get("engine")
             if not engine:
                 continue
             ledger.setdefault(engine, {}).setdefault(kind, []).append((float(prob), result == "yes"))
         if len(page) < LEDGER_PAGE:
+            if unknown:
+                log.warning(
+                    "sports scan: the hub's settled ledger is missing %d row(s) of %d kind(s) this "
+                    "build does not recognise (%s). Those rows are NOT in the ledger, so those "
+                    "kinds stay on the predictor's published calibration, or on no record at all -- "
+                    "a build that does not know the kind, not a kind with nothing settled. Adding "
+                    "it to tradehub/sports/kinds.py is the fix.",
+                    sum(unknown.values()), len(unknown),
+                    ", ".join(f"{kind}={n}" for kind, n in sorted(unknown.items())),
+                )
             return ledger
         start += LEDGER_PAGE
 
