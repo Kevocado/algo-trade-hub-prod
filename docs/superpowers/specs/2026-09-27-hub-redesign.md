@@ -471,3 +471,71 @@ and after, and exact commands.
 - The `sig:` and lifespan of the two predictor VPS auto-deploy PRs (NFL#6, CFB#6) is parked.
 - NBA, PL and F1 predictors have no Kalshi adapter, so "one ranked list across predictors" is
   NFL + CFB only until those are built.
+
+---
+
+## 9. Approvals — recorded 2026-09-27
+
+Kevin, on [#21](https://github.com/Kevocado/algo-trade-hub-prod/pull/21):
+
+| # | item | ruling |
+| --- | --- | --- |
+| 1 | **Inversion** (§3) | **APPROVED.** Picks qualify on the publishing predictor's own published calibration first, then switch to the hub's settled ledger once it has enough. |
+| 2 | **Window** (§3, §4) | **APPROVED.** Keep `max_hours_to_start: 72` and **bound the scan by it**. Games outside 1–72h are never priced. |
+| 3 | **CPI** (§5) | **DISPLAY ONLY.** Show the nowcast against the market for context; not an edge engine. **Gas:** incorporate [#24](https://github.com/Kevocado/algo-trade-hub-prod/pull/24)'s refutation and pick a different test. **Labor and weather:** follow the per-engine hypotheses in §5. |
+| 4 | **Shadow scoreboard** (§6) | **APPROVED**, first-class page. Each engine's Brier against the market, **and its distance to the gate**. |
+
+The "distance to the gate" phrasing is a better specification than the one I wrote: it puts the
+reviewer's 100-settled threshold on the same screen as the count, so `42 of 100` is legible rather
+than implied.
+
+### Two things this approval did not settle, which need a ruling
+
+**a. The gate thresholds are still open.** Approval item 1 in §7 covered the inversion; the *arithmetic*
+that made the inversion insufficient — `10 buckets × min_n 20 = 200` against 42 settled and a reviewer
+bar of `MIN_SETTLED = 100` — was added afterwards, as was §5b's finding that the per-bucket
+`calibration_off` test has a **~37% false-positive rate on a correctly calibrated engine** and cannot
+coexist with any threshold that also admits edges. Both are in this document (§3, §5b) but neither is
+ruled on. My recommendations stand: `4 buckets × min_n 20 = 80` for the arithmetic, and **drop the
+per-bucket `calibration_off` test** in favour of the reviewer, which already judges keep-or-drop at
+n ≥ 100. Note these two cannot both be fully satisfied — §5b sets out why.
+
+**b. "Weather follows the per-engine hypothesis" conflicts with §5a.** The weather hypothesis in §5 is
+a *calibration* one — recalibrate sigma per bucket per lead — and §5a refutes it with an oracle bound:
+perfectly calibrating the model moves its Brier from 0.12420 to 0.12294 against a market at 0.09713,
+so calibration can close about 5% of a gap that is really a **discrimination** failure. A weather plan
+cannot be written as "sigma recalibration" without spending real effort on something §5a proves will
+not work.
+
+So the weather item in the plan list needs one of:
+
+- **a discrimination hypothesis** — better features, a different target, a different model class. If
+  nobody has one, weather follows gas and CPI into **display-only**, and that is a legitimate outcome
+  rather than a failure.
+- **or it is dropped** from this round and revisited when someone has the hypothesis.
+
+I recommend deciding this before the weather plan is written, not during it.
+
+### Plan list, with the above applied
+
+Kevin asked for one plan per independent piece. Mapping that onto what is now decided:
+
+| plan | status |
+| --- | --- |
+| sports ranking + window + inversion | **ready to plan** — approvals 1 and 2 settle it. Blocked on the `n_buckets` decision in (a), since that is the predictor's to choose. |
+| shadow scoreboard page | **ready to plan** — approval 4, and §5b's finding makes the "distance to the gate" half more valuable, not less. |
+| CPI display mode | **ready to plan** — approval 3. Smallest of the five. |
+| gas: pick a different test | **ready to plan** — approval 3 plus #24's numbers. The test is not "decide earlier" again; it needs a discrimination hypothesis too. |
+| labor tail | **ready to plan**, with the caveat that it is **blocked on ALFRED access** and the first thing to do is the oracle bound, since a calibration-shaped fix would be the same mistake as weather's. |
+| weather sigma recalibration | **blocked on (b)** — the hypothesis as written is refuted. |
+
+### Carried-forward item, now actionable
+
+§8's first bullet: `config/engines.yaml` still holds **4** `azurecontainerapps` predictor host
+references. The VPS already sets `SPORTS_*_BASE_URL` / `SPORTS_*_SITE_URL`, and
+`sports/config.py:54-55` prefers the environment and falls back to the YAML only when a variable is
+unset — so in production the YAML is never read. Kevin's instruction is to move those defaults to the
+VPS URLs anyway, which is right: the fallback should not be a deployment that is frozen by policy
+(`workflow_dispatch` only). The Azure cutover is ~2026-10-27, so this removes a stale default rather
+than pre-empting anything.
+
