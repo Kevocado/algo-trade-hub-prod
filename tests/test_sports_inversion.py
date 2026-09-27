@@ -28,6 +28,7 @@ Three things this file also pins, because each was a live hole rather than a dec
 """
 import inspect
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from tradehub.sports.feed import FeedGame, parse_feed
 from tradehub.sports.hub_calibration import HUB_ORIENTATION, KINDS, settled_buckets
 from tradehub.sports.kalshi import SportsMarket
 from tradehub.sports.mapping import MatchedGame
+from tradehub.sports.reviewer import SYSTEM_PROMPT
 from tradehub.sports.scorecard import MIN_SETTLED
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sports"
@@ -609,6 +611,132 @@ def test_the_fact_pack_names_the_predictor_when_the_predictor_is_the_record():
     assert pack["calibration_source"] == "predictor"
     assert "calibration_in_bucket" in pack
     assert "predictor_calibration_in_bucket" not in pack
+
+
+# ── the prompt the reviewer reads that pack with ───────────────────────────────────────────
+#
+# The fact pack is only half of the attribution. `reviewer.SYSTEM_PROMPT` is the other half, and it
+# is the half the reviewer REASONS OVER: it is the instruction, and the pack is the evidence. A pack
+# that says `calibration_source: hub_ledger` under a prompt that calls the record the predictor's is
+# a reviewer judging a record it has been told is the wrong one.
+#
+# These three pin the property rather than the wording, because the wording is a product decision
+# that will be rewritten again and the misattribution is not. Each test locates the clause it cares
+# about by what it talks ABOUT (calibration, point distribution) and then constrains only the
+# attribution, so the prose can be reworded freely. An exact-string assertion would be satisfied by
+# one rewrite and broken by the next, which is the opposite of what a guard is for.
+
+
+def _clauses(prompt):
+    """The prompt split into clauses -- a sentence end, or a top-level comma -- lowercased.
+
+    A clause is the unit of attribution: every claim the prompt makes about WHOSE something is lives
+    inside exactly one of these, and none of them span a boundary. Splitting on punctuation rather
+    than on phrases is what makes the tests below robust -- a rewrite of any clause's words leaves the
+    clause boundaries alone, so a rewording is free and a re-attribution is not.
+
+    Two details the prompt's own shape forces. Commas inside brackets do not split, or the red-flag
+    list runs a clause through the middle of itself and swallows the rest of the prompt with it. And a
+    period only ends a clause when whitespace follows it, so a decimal inside a number does not
+    become a boundary.
+    """
+    parts, current, depth = [], [], 0
+    for index, char in enumerate(prompt):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        boundary = depth == 0 and (char == "," or (char == "." and prompt[index + 1:index + 2] in ("", " ")))
+        if boundary:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current))
+    return [part.strip().lower() for part in parts if part.strip()]
+
+
+def _calibration_clauses(prompt):
+    """Only the clauses that talk about calibration."""
+    return [clause for clause in _clauses(prompt) if "calibrat" in clause]
+
+
+def test_the_system_prompt_never_says_the_calibration_is_the_predictors():
+    """The ruling, as a property: no clause that talks about calibration may name the predictor.
+
+    Checked per clause rather than as "the string 'calibrated the predictor' is absent", because the
+    failure is an ATTRIBUTION and attributions move around inside sentences. A future rewrite that
+    said "how well calibrated the model has been" or "the calibration of this band" passes; a rewrite
+    that reintroduces the predictor -- in any phrasing -- does not.
+    """
+    calibration_clauses = _calibration_clauses(SYSTEM_PROMPT)
+
+    assert calibration_clauses, (
+        "the prompt has to say something about calibration: the fact pack publishes a band and a "
+        "source, and a prompt that never mentions them is not a neutral prompt, it is a blind one"
+    )
+    for clause in calibration_clauses:
+        assert "predictor" not in clause, (
+            f"the prompt attributes the calibration to the predictor: {clause!r}. Under the "
+            f"inversion that record is the hub's own settled ledger whenever "
+            f"`calibration_source` says `hub_ledger`, so the reviewer would be judging a record it "
+            f"has been told is the wrong one."
+        )
+
+
+def test_the_system_prompt_names_the_field_that_says_which_record_it_is():
+    """Source-neutral is not the same as source-oblivious. A prompt that dropped the subject without
+    naming the replacement would tell the reviewer to judge a band and not tell it whose it is."""
+    calibration_clauses = _calibration_clauses(SYSTEM_PROMPT)
+
+    assert any("calibration_source" in clause for clause in calibration_clauses), (
+        f"the prompt must point the reviewer at the field that names the record: {calibration_clauses}"
+    )
+
+
+def test_the_system_prompt_still_calls_the_probability_and_distribution_the_predictors():
+    """The half that must NOT move, pinned so the fix cannot be over-applied.
+
+    The pre-game probability and the point distribution genuinely are the predictor's whichever
+    record the calibration came from -- that is a fact about the pack, not an attribution, and it was
+    never wrong. A test that only asserted the negative above would pass just as happily if someone
+    had deleted every mention of the predictor from the whole prompt, which would be a second,
+    different bug: the reviewer told to judge a gap it has not been told who computed.
+    """
+    distribution_clauses = [c for c in _clauses(SYSTEM_PROMPT) if "distribution" in c]
+
+    assert distribution_clauses, "the prompt has to tell the reviewer what the point distribution is"
+    for clause in distribution_clauses:
+        assert "predictor" in clause, (
+            f"the point distribution is the predictor's whichever calibration source is in force, so "
+            f"the prompt should still say so: {clause!r}"
+        )
+
+
+def test_every_field_the_prompt_points_the_reviewer_at_is_in_the_fact_pack():
+    """The prompt and the pack are written in different modules and are read in different messages,
+    so they can drift apart silently -- and a prompt naming a field the pack does not carry is the
+    same class of failure as the one this round fixed: the reviewer is told to read something and
+    either finds the wrong thing or finds nothing.
+
+    Rather than assert the prompt contains one hardcoded field name, this reads the calibration clause
+    and checks every snake_case token in it against the pack the scan actually sends, so naming
+    `calibration_source` is a fact about the data and not a fact about the prose. Checked for the
+    HUB-sourced pack, because that is the case where the attribution is live and the one the
+    predictor-sourced case gets right for free.
+    """
+    result = _scan(_recorded_feed(), hub_pairs=HUB_LEDGER)
+    pack = _fact_pack_for(result, _graded_winner_rows(result)[0]["market_ticker"])
+    pointed_at = {
+        token for clause in _calibration_clauses(SYSTEM_PROMPT) for token in re.findall(r"[a-z_]+", clause)
+        if "_" in token
+    }
+
+    assert pointed_at, "the calibration clause names no field, so there is nothing to check"
+    assert pointed_at <= set(pack), (
+        f"the prompt points at {sorted(pointed_at - set(pack))}, which the fact pack does not "
+        f"publish. It publishes {sorted(pack)}."
+    )
 
 
 # ── the ledger read: per kind, per engine, paged ─────────────────────────────────────────────

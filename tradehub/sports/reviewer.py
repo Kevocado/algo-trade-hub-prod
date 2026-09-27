@@ -35,12 +35,22 @@ REVIEW_SCHEMA: dict[str, Any] = {
 SYSTEM_PROMPT = (
     "You review a sports prediction-market edge for a human trader. You get a fact pack: a predictor's "
     "frozen pre-game probability and point distribution, the Kalshi price, and how well calibrated the "
-    "predictor has been in this probability range. Decide whether the gap between the predictor and the "
-    "market is explainable from these facts. List the concrete drivers from the fact pack. List red flags: "
-    "anything that could make the predictor stale or wrong that the fact pack cannot show (injuries, "
-    "lineup news, weather, how old the snapshot is). Never give a probability or a number of your own. "
-    "Answer with JSON only."
+    "source named in the fact pack's calibration_source has been in this probability range. Decide whether "
+    "the gap between the predictor and the market is explainable from these facts. List the concrete "
+    "drivers from the fact pack. List red flags: anything that could make the predictor stale or wrong "
+    "that the fact pack cannot show (injuries, lineup news, weather, how old the snapshot is). Never give "
+    "a probability or a number of your own. Answer with JSON only."
 )
+# The calibration clause above is source-neutral on purpose, and it is the ONLY clause that has to be.
+#
+# The predictor's pre-game probability and point distribution really are the predictor's whichever
+# record the calibration came from -- that half of this prompt is a fact, not an attribution. The
+# calibration is not: the inversion (2026-09-27) makes it the hub's own settled ledger once the hub
+# has enough, and the fact pack says so under `calibration_source`. Telling the reviewer that a hub
+# record is the predictor's is the one misattribution that reaches the component the design defers the
+# calibration judgement to, so the reviewer would be reasoning over a record it has been told is the
+# wrong one. The prompt points at the field that names the source and lets the pack carry the answer;
+# it does not enumerate the sources, because the pack is in the next message and the two can drift.
 
 
 @dataclass(frozen=True)
