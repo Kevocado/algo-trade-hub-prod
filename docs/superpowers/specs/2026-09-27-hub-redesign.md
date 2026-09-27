@@ -309,7 +309,27 @@ precision this ranking exists to express.
 No promise any of these wins. Each is a hypothesis with a falsifiable test, and a negative result is
 a real result that gets reported.
 
-**OUTCOME: REFUTED.** No lead where the model beats the market (4.29x at the production 2h, 2.16x at 12h), and past ~12h Kalshi has not priced the contract at all, so there is nothing to beat. The untested remainder — intraday AAA — needs a feed that does not exist; AAA is a weekly EIA publication. **Retire as an edge engine; present as a display engine.**
+**OUTCOME: REFUTED, twice over.** No lead where the model beats the market (4.29x at the production 2h, 2.16x at 12h), and past ~12h Kalshi has not priced the contract at all, so there is nothing to beat. The untested remainder — intraday AAA — needs a feed that does not exist; AAA is a weekly EIA publication. **Retire as an edge engine; present as a display engine.**
+
+**And the oracle bound closes the remaining question** (2026-09-27, at review's request for "a different test"). "Decide earlier" is refuted; the follow-up is whether *anything* is a lever. Replacing every prediction with its own bucket's observed rate removes all calibration error and leaves only resolution — the best Brier any calibration work could ever reach:
+
+| bucket | n | predicted | observed | miss (pp) | z |
+| --- | --- | --- | --- | --- | --- |
+| 50-60 | 189 | 0.5513 | 0.5291 | −2.2 | −0.61 |
+| 60-70 | 199 | 0.6525 | 0.6432 | −0.9 | −0.27 |
+| 70-80 | 227 | 0.7528 | 0.7577 | +0.5 | +0.17 |
+| 80-90 | 306 | 0.8536 | 0.8268 | −2.7 | −1.24 |
+| 90-100 | 1061 | 0.9722 | 0.9500 | −2.2 | **−3.32** |
+
+```
+gas Brier, actual                           = 0.11480
+gas Brier if PERFECTLY calibrated (oracle)  = 0.11536
+market Brier                                = 0.02676
+```
+
+**Gas is already well calibrated** — every bucket within 3pp, and the only significant miss is 2.2pp *under*confidence on n=1061. So perfect calibration would make it very slightly **worse** (0.11480 → 0.11536) and closes **−0.6%** of the gap. Calibration is not a lever for gas at all; the entire 4.29x is discrimination.
+
+That is a stronger result than weather's, where calibration was at least a small lever, and it points the same way. The model is confidently and correctly calibrated and still four times worse than a market that prices the print almost exactly. "Retire as an edge engine" now rests on evidence rather than on having run out of ideas, and any future gas work needs a **discrimination** hypothesis, not another confidence experiment.
 
 - **Gas — decide earlier, or use intraday AAA.** The diagnosis is in the numbers: at 2 h the market
   Brier is 0.0268, so the question is exhausted. Test: re-run the same point-in-time backtest with
@@ -340,7 +360,7 @@ Each failed for a **different** reason, which is the useful part:
 
 | engine | why it loses |
 | --- | --- |
-| gas | the market's information is **exhausted** at the moment we decide (Brier 0.0268 at 2h) |
+| gas | the market's information is **exhausted** at the moment we decide (Brier 0.0268 at 2h). Calibration is additionally a **non-lever**: already within 3pp in every bucket, and perfect calibration would close **−0.6%** of the gap. |
 | CPI | the market is **equally good at every moment** we could decide (0.0677 at 25min, 0.0710 at 5d) |
 | weather | the residual is **discrimination**, not confidence — no calibration work reaches it |
 
