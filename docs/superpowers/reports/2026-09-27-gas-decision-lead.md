@@ -289,3 +289,85 @@ same way, and the revision-tail question becomes the only one worth pursuing.
 `backtest_labor.py` imports the same `run_backtest` as the other engines, so `result.cal_buckets` is
 available there too — it is simply not printed, exactly as with weather.
 
+---
+
+# The calibration test fires on noise, by construction — and it conflicts with the admission gate
+
+The weather analysis produced a fix I then had to take back. I wrote that the thin-bucket rejection was
+"actionable now, needs no model work". On checking the arithmetic, it does not: it is the *same* class of
+threshold incoherence as the 200-vs-42 finding, and fixing it naively makes things worse.
+
+## The false-positive rate
+
+`check_candidate` applies two different tests off one parameter, and the second is not meaningful at the
+first one's sample size:
+
+1. `bucket["n"] < calibration_min_n` → `calibration_insufficient` (admission)
+2. `abs(mean_prob - hit_rate) > calibration_max_dev` → `calibration_off` (quality)
+
+With `calibration_min_n: 20` and `calibration_max_dev: 10pp`, the widest a correctly-calibrated bucket
+can be tripped by pure chance:
+
+| bucket n | SD of the observed rate | 10pp is | P(false trip) |
+| --- | --- | --- | --- |
+| 20 | 11.2pp | 0.89 SD | **37.1%** |
+| 23 | 10.4pp | 0.96 SD | **33.7%** |
+| 30 | 9.1pp | 1.10 SD | 27.3% |
+| 50 | 7.1pp | 1.41 SD | 15.7% |
+| 100 | 5.0pp | 2.00 SD | 4.6% |
+| 200 | 3.5pp | 2.83 SD | 0.5% |
+
+**A perfectly calibrated engine trips `calibration_off` about 37% of the time at n=20.** Weather's
+z = 1.42 on n = 23 is that expected behaviour, not bad luck. The check is a coin flip wearing a
+threshold.
+
+For the test to fire on fewer than 5% of well-calibrated buckets it needs **n ≥ 97**.
+
+## The conflict, which is the actual finding
+
+So the two tests want opposite things from the same parameter:
+
+- **Admission** wants a *small* `calibration_min_n`, because the aggregate requirement is
+  `n_buckets × min_n` and it must stay ≤ the reviewer's 100. At 10 buckets that means `min_n ≤ 10`.
+- **The calibration test** wants `min_n ≥ 97` for its own 10pp comparison to mean anything.
+
+**There is no value of `calibration_min_n` that satisfies both at 10 buckets.** Widening the buckets
+does not rescue it either: at 4 buckets and 100 settled, each bucket holds ~25, still far short of 97.
+Reaching 97 per bucket at 4 buckets needs roughly **390 settled**, which is nearly four times the
+reviewer's own bar.
+
+This also revises my own earlier recommendation. **`4 buckets × min_n 20 = 80` fixes the aggregate but
+makes this worse**, not better: it keeps `min_n` at 20, so the calibration test stays a ~34% coin flip.
+I presented it as the fix for the gate arithmetic, which it is — but I had not checked what the same
+parameter does to the *other* test, and it is worth being explicit that the two cannot both be had.
+
+## All three thresholds want the same number
+
+| setting | value | what it implies |
+| --- | --- | --- |
+| reviewer's `MIN_SETTLED` | **100** | when the product is willing to judge an engine |
+| candidate aggregate, coherent | **≤ 100** | `n_buckets × min_n` |
+| `min_n` for a 10pp test at ≤5% false positives | **≥ 97** | when the calibration check means anything |
+
+**100 is the number the design keeps arriving at.** The two settings that disagree with it are 20 and
+200 — and `min_n: 20` is simultaneously too small to test calibration and, multiplied by 10 buckets,
+too large to admit anything.
+
+## What follows
+
+**Recommendation: drop the per-bucket `calibration_off` test and let the reviewer make the call.**
+
+- The candidate gate then does what it can do honestly: is this tradeable, is the window open, and is
+  there *any* settled history in the bucket. That is testable at small n.
+- The reviewer's scorecard is the thing designed to judge keep-or-drop, it already requires
+  `n_settled ≥ 100`, and §6 of the redesign makes it a first-class page. Duplicating a noisier version
+  of that judgement inside the admission filter is what produces the 37% coin flip.
+- This is the same conclusion the weather oracle reached from the other side: the per-bucket test was
+  never going to be the thing that separates a good engine from a bad one, because it is measuring a
+  quantity too noisy at the sample sizes available.
+
+I am **not** implementing this. It is a threshold decision, it changes which edges are candidates, and
+it belongs with approval item 1 on #21 rather than arriving as a drive-by. What I would not do is leave
+it described as "actionable immediately" in a PR comment, because it is not — it is the same
+incoherence as the 200-vs-42 finding, viewed from the other side.
+
