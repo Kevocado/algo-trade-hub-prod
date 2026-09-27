@@ -127,23 +127,31 @@ CREATE TABLE IF NOT EXISTS paper_trades (
 CREATE INDEX IF NOT EXISTS idx_paper_trades_status
     ON paper_trades(status);
 
--- ── RLS: owner-only writes, consistent with the other tables in this schema ───
+-- ── RLS: backend-only, so RLS on and NO client policy ─────────────────────────
+-- The project rule is that clients are read-only at most, and these five tables are written by
+-- `tradehub/core/supabase_client.py` and read by the API -- both service role, which bypasses RLS.
+-- The War Room used to read `kalshi_portfolio` with the anon key, but it now goes through the API
+-- (PR #20), so no client grant is needed on any of these.
+--
+-- This originally created `<table>_owner_all FOR ALL TO authenticated USING (auth.uid() IS NOT
+-- NULL)`. That is a client WRITE grant, not a read one: `auth.uid() IS NOT NULL` is true for any
+-- signed-in user, so every authenticated client could insert, update and delete all five tables.
+-- Found in review on 2026-09-27.
+--
+-- No policy is created instead, which matches `news_embeddings` in 20260416000010: enabling RLS
+-- with no client policy leaves the service role as the only thing that can touch the table.
+--
+-- The DROP lines are what make that true on a database where the old policy was already applied --
+-- re-running removes the write grant rather than merely declining to add another.
+
 ALTER TABLE live_opportunities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_signals      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE trade_history      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE scanner_runs       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE paper_trades       ENABLE ROW LEVEL SECURITY;
 
-DO $$
-DECLARE
-    t TEXT;
-BEGIN
-    FOREACH t IN ARRAY ARRAY['live_opportunities', 'paper_signals', 'trade_history',
-                             'scanner_runs', 'paper_trades']
-    LOOP
-        EXECUTE format('DROP POLICY IF EXISTS %I ON %I', t || '_owner_all', t);
-        EXECUTE format(
-            'CREATE POLICY %I ON %I FOR ALL TO authenticated USING (auth.uid() IS NOT NULL) '
-            'WITH CHECK (auth.uid() IS NOT NULL)', t || '_owner_all', t);
-    END LOOP;
-END $$;
+DROP POLICY IF EXISTS "live_opportunities_owner_all" ON live_opportunities;
+DROP POLICY IF EXISTS "paper_signals_owner_all"      ON paper_signals;
+DROP POLICY IF EXISTS "trade_history_owner_all"      ON trade_history;
+DROP POLICY IF EXISTS "scanner_runs_owner_all"       ON scanner_runs;
+DROP POLICY IF EXISTS "paper_trades_owner_all"       ON paper_trades;
