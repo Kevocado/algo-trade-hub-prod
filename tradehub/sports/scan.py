@@ -45,6 +45,11 @@ class SportScan:
     edges: list[dict[str, Any]] = field(default_factory=list)
     review_requests: list[ReviewRequest] = field(default_factory=list)
     report: dict[str, Any] = field(default_factory=dict)
+    # Games dropped for being past the far end of the window, kept separate from `games_started` in
+    # the report. A field rather than a report key because `run_sports_scan` reads it when it builds
+    # the per-sport state: "priced and then rejected" and "never priced" are different failures and
+    # the run summary has to be able to tell them apart.
+    too_far: int = 0
 
 
 def _fact_pack(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s: EdgeSuggestion,
@@ -178,6 +183,19 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
         if mg.game.start_utc <= now:
             started += 1
             continue
+        # The far bound, from the SAME params the candidate filter uses.
+        #
+        # There was no upper bound here, so the scan priced every upcoming game, stored it, and
+        # `check_candidate` then rejected it for `starts_too_late`. CFB week 5 sits 120-168h out
+        # against this 72h window, which is why 86 of the 100 live rows carried that reason: they
+        # were dead on arrival by construction. Bounding here means the work is never done.
+        #
+        # Read from cfg rather than hardcoded, so changing min_hours_to_start / max_hours_to_start
+        # moves this with it. tests/test_sports_scan_window.py pins the 71h/73h boundary so a future
+        # edit cannot drift it silently.
+        if (mg.game.start_utc - now).total_seconds() / 3600.0 > float(cfg.edge.params["max_hours_to_start"]):
+            out.too_far += 1
+            continue
         for kind, markets in mg.markets.items():
             for sm in markets:
                 # One market the pricer or the candidate filter chokes on must not cost the
@@ -301,7 +319,8 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
         if series_errors:
             report["series_errors"] = series_errors
         reports[sport] = report
-        per_sport[sport] = {"feed_ok": True, "edges": result.edges, "series_ok": not series_errors}
+        per_sport[sport] = {"feed_ok": True, "edges": result.edges, "series_ok": not series_errors,
+                            "too_far": result.too_far}
     # Reviewing is the optional, slow part: stop when the scan budget is nearly gone. The edges
     # are already computed and are still written, just with tier=unreviewed. review_candidates
     # re-checks the same rule before every call, so a long candidate list cannot walk past it.
