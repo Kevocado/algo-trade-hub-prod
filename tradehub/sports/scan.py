@@ -322,32 +322,57 @@ def apply_reviews(edges: list[dict[str, Any]], reviews: dict[str, Review]) -> No
 
 @dataclass
 class HubLedger:
-    """What the hub's own settled record says, and how much of it this build cannot read.
+    """What the hub's own settled record says, how much of it this build cannot read, and whether
+    the read happened at all.
 
-    Two fields because a reader needs both to tell two different failures apart, and neither is
-    visible from the other:
+    Three fields because a reader needs all three to tell three different failures apart, and none
+    is visible from another:
 
     - `pairs_by_engine` is the record the hub calibrates on: `engine -> kind -> [(our_prob, hit)]`.
     - `unrecognised_by_engine` counts the settled rows this build had to keep OUT of that record
       because they named a kind outside `sports.kinds.KINDS`, keyed the same way:
       `engine -> kind -> rows`.
+    - `read_failed` says the read did not complete, so nothing above was measured.
 
     Without the second, "this kind has no hub record" reads identically whether nothing of that kind
     has settled or this build cannot place that kind at all. Every number downstream is blind to the
     difference -- both produce a band with `n: 0` -- so the difference has to be carried as data,
     not as a log line nobody reads. It rides all the way to `per_sport[sport]["unrecognised_kinds"]`.
+
+    The third is the same argument one level up, and it is the reason this is a field rather than a
+    sentinel value. A failed read has to leave the record empty or the hub would calibrate on a
+    fraction of a page, so the failure path returns the two empty mappings -- and an EMPTY tally is
+    the positive answer to the question the tally answers: `{}` means "the read completed and this
+    sport has no settled row of a kind the build cannot read", which is exactly the claim a reader
+    is entitled to. So a failed read returning `HubLedger()` published that reassuring value for a
+    measurement nobody took, and the run summary was `{}` on a run whose calibration was off for
+    both sports. `read_failed` is what separates them, and it is defaulted FALSE so the bare
+    `HubLedger()` a healthy read with nothing to report compares equal to a hand-built one in a test
+    and means the same thing: the read happened.
     """
     pairs_by_engine: dict[str, dict[str, list[tuple[float, bool]]]] = field(default_factory=dict)
     unrecognised_by_engine: dict[str, dict[str, int]] = field(default_factory=dict)
+    read_failed: bool = False
 
 
-def _unrecognised_for(hub_ledger: HubLedger | None, sport: str) -> dict[str, int]:
+def _unrecognised_for(hub_ledger: HubLedger | None, sport: str) -> dict[str, int] | None:
     """One sport's share of the tally, as its own dict (never the ledger's, so a reader that edits
-    the report cannot edit the measurement). `{}` when there was nothing this build could not read,
-    which is a fact the report has to state rather than leave out: an absent key and an empty one
-    are different claims."""
+    the report cannot edit the measurement). `{}` when the read completed and there was nothing this
+    build could not read, which is a fact the report has to state rather than leave out: an absent
+    key and an empty one are different claims.
+
+    `None` when the measurement was not taken -- the read failed, or no ledger was handed in at all
+    (the dry run). One sentinel, one meaning, and the SAME one `too_far` uses for a sport that never
+    scanned, so a reader of the summary has a single thing to learn rather than a per-key code. `{}`
+    would be the reassuring answer here and it is the one answer a failed read is not entitled to:
+    `log.exception` in a channel nobody reads is the only other evidence the read did not happen, and
+    the board still changes materially on such a run because the hub's calibration went out of use
+    for both sports.
+    """
+    if hub_ledger is None or hub_ledger.read_failed:
+        return None
     engine = SPORTS_ENGINES.get(sport, "")
-    return dict((hub_ledger.unrecognised_by_engine if hub_ledger else {}).get(engine, {}))
+    return dict(hub_ledger.unrecognised_by_engine.get(engine, {}))
 
 
 @dataclass
@@ -365,7 +390,8 @@ class SportsRun:
     # `unrecognised_kinds` is on EVERY path, including the early exits, because it is learned when
     # the ledger is read -- which happens before any of them -- and is not a fact about the scan. A
     # key that only appears on the runs that scanned is a key a reader has to wonder about on the
-    # runs where it is missing.
+    # runs where it is missing. It is `None`, not `{}`, on a run whose ledger read failed or was
+    # never handed in: see `_unrecognised_for` and `sports_run_summary`.
     # The write_ok flag is filled in by the caller, which is the only place that knows whether the
     # upsert landed.
     per_sport: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -394,9 +420,15 @@ def sports_run_summary(run: SportsRun) -> dict[str, Any]:
 
     Every sport in `per_sport` gets both, whether or not it scanned: a sport whose report entry has
     to be synthesised is a sport whose diagnostics would otherwise be dropped by the join, and a
-    silently dropped diagnostic is the shape this exists to remove. A sport that never scanned has
-    no count to give, so `too_far` is `None` there -- "not measured", which is not the claim `0`
-    would be.
+    silently dropped diagnostic is the shape this exists to remove.
+
+    Both keys share one sentinel, and it means exactly one thing: **`None` is "not measured"**, and
+    an empty value is a real measurement. So `too_far` is `None` on a sport that never scanned --
+    "not measured", which is not the claim `0` would be, that the window dropped nothing -- and
+    `unrecognised_kinds` is `None` on a run whose hub ledger could not be read, which is not the
+    claim `{}` would be, that the read completed and this sport has no settled row of a kind the
+    build cannot place. One summary, one sentinel, one meaning; a reader never sees a reassuring
+    value for a measurement that did not happen.
     """
     summary: dict[str, Any] = dict(run.reports)
     for sport, state in run.per_sport.items():
@@ -478,7 +510,9 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
                             # rather than only in a log. `{}` is a real answer: this sport has no
                             # settled row of a kind the build cannot read, which is not the same as
                             # having no such rows' worth of bands and not the same as another sport
-                            # having them.
+                            # having them -- and not the same as a read that never completed, which
+                            # is `None`. This path scanned, so `too_far` above is a real count while
+                            # this may not be; the two keys are independent measurements.
                             "unrecognised_kinds": _unrecognised_for(hub_ledger, sport)}
     # Reviewing is the optional, slow part: stop when the scan budget is nearly gone. The edges
     # are already computed and are still written, just with tier=unreviewed. review_candidates
@@ -647,8 +681,9 @@ def _hub_settled_ledger(supa) -> HubLedger:
     A failed read returns nothing rather than raising: this is a new failure mode on the sports path
     and it must not be able to cost a scan that works perfectly well on the published calibration.
     A failed read also discards the unrecognised-kind tally, because a count taken from a ledger
-    that was never complete is a count nobody can trust, and the `log.exception` above is the whole
-    story for that run.
+    that was never complete is a count nobody can trust -- and it returns `read_failed=True` so the
+    run report says "not measured" rather than "measured, nothing found". The `log.exception` is the
+    immediate half of that report; the flag is the half the summary can carry.
     """
     pairs: dict[str, dict[str, list[tuple[float, bool]]]] = {}
     unknown: dict[str, dict[str, int]] = {}
@@ -662,7 +697,11 @@ def _hub_settled_ledger(supa) -> HubLedger:
             )
         except Exception:
             log.exception("sports scan: hub settled-ledger read failed; using the predictor's calibration")
-            return HubLedger()
+            # Empty, because a partial ledger is not a record -- but SAYING it is empty. The two
+            # mappings are the failure's cause and the flag is its report: without it a failed read
+            # publishes `unrecognised_kinds: {}`, which is the reassuring answer to a question this
+            # run never asked, and `log.exception` above is the only other witness.
+            return HubLedger(read_failed=True)
         for row in page:
             prob, result = row.get("our_prob"), row.get("result")
             if not isinstance(prob, (int, float)) or result not in ("yes", "no"):

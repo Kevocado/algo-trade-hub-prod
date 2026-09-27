@@ -37,6 +37,12 @@ And three more, from the second fix round, each the same shape of hole found one
 - **The review cache key names the calibration source.** The same market is judged on the
   predictor's record until the hub has enough settled rows of its kind and on the hub's own record
   from then on; one key for both would serve a cached verdict reasoned over the other band.
+- **`None` is "not measured", for both diagnostic keys, and nothing else is.** `unrecognised_kinds`
+  chose `{}` deliberately -- an empty tally is the POSITIVE answer -- and the failed read was
+  returning a bare `HubLedger()`, so a run that read nothing published the reassuring value for a
+  question it never asked. One sentinel with one meaning, shared with `too_far`'s "this sport never
+  scanned", is what stops that: a reader must never see a value that reads as a completed
+  measurement for a measurement that did not happen.
 """
 import inspect
 import json
@@ -992,9 +998,17 @@ def test_a_ledger_read_that_fails_leaves_the_predictors_calibration_in_charge():
         def table(self, _name):
             raise RuntimeError("postgrest 500")
 
+    ledger = scan_mod._hub_settled_ledger(Broken())
+
     # An empty ledger, not a `{}`-shaped one that happens to compare equal: the tally is empty too,
-    # because a count taken from a read that failed is not a count.
-    assert scan_mod._hub_settled_ledger(Broken()) == scan_mod.HubLedger()
+    # because a count taken from a read that failed is not a count. What it is NOT allowed to be is
+    # indistinguishable from a healthy read that found nothing, so the expected value carries
+    # `read_failed=True` and a bare `HubLedger()` -- the positive answer, "the read completed and
+    # there is nothing" -- would fail this line.
+    assert ledger == scan_mod.HubLedger(read_failed=True), ledger
+    assert ledger != scan_mod.HubLedger(), (
+        "a failed read must not be the same value as a completed one"
+    )
 
 
 def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_truncated_record():
@@ -1048,7 +1062,7 @@ def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_trun
     assert healthy.unrecognised_by_engine == {"sports_nfl": {"moneyline": 1}}, (
         "the healthy read has a tally to lose too, or the next assertion is vacuous"
     )
-    assert ledger == scan_mod.HubLedger(), (
+    assert ledger == scan_mod.HubLedger(read_failed=True), (
         f"a failure on page two must discard page one's {scan_mod.LEDGER_PAGE} rows and its tally "
         f"too, not hand back a truncated record: {list(ledger.pairs_by_engine)} / "
         f"{ledger.unrecognised_by_engine}"
@@ -1506,3 +1520,127 @@ def test_a_sport_the_reports_never_mentioned_still_gets_its_facts():
     summary = scan_mod.sports_run_summary(run)
 
     assert summary == {"cfb": {"too_far": None, "unrecognised_kinds": {"moneyline": 2}}}, summary
+
+
+# ── one sentinel, one meaning: `None` is "not measured" ─────────────────────────────────────────
+#
+# `unrecognised_kinds` chose `{}` deliberately: an empty tally is the POSITIVE answer, "the read
+# completed and this sport has no settled row of a kind this build cannot place", and a reader has
+# to be able to see that the distinction from "nothing of that kind has settled" is being made on
+# purpose. But `_hub_settled_ledger` returned a bare `HubLedger()` when the read FAILED -- empty
+# mappings, because a partial record must not calibrate anything -- and so a failed read published
+# the reassuring value for a measurement nobody took:
+#
+#     FAILED READ  -> {}
+#     CLEAN READ   -> {}
+#     GAPPED       -> {"moneyline": 2}
+#
+# Any Supabase error on any page gets there, the read has no retry, and on such a run the hub's
+# calibration goes out of use for both sports so the board changes materially. `log.exception` was
+# the only flag, in the channel an earlier round established nobody reads. That is the same false
+# claim, at the same place, that `0` would have made for `too_far` on a feed-404 run and that this
+# round already refused for the same reason.
+#
+# So both keys now share ONE sentinel with ONE meaning. `None` is "not measured"; an empty value is
+# a real measurement. A reader never sees a value that reads as a completed measurement for a
+# measurement that did not happen.
+
+
+def _cfb_run_with(ledger, days_early: int = 3):
+    """The same real CFB scan `_cfb_run_three_days_early` runs, but with the ledger supplied rather
+    than read -- so two runs differ in exactly one input and the comparison is about that input."""
+    return scan_mod.run_sports_scan(
+        NOW - timedelta(days=days_early), _Kalshi(_recorded_markets("cfb")),
+        fetch=lambda url, **_kw: _recorded_feed("cfb"), hub_ledger=ledger, sports=("cfb",),
+    )
+
+
+class _DeadSupabase:
+    """Every call fails, which is what any Supabase outage on any page looks like from in here."""
+
+    def table(self, _name):
+        raise RuntimeError("postgrest 500")
+
+
+def test_a_failed_ledger_read_publishes_not_measured_where_a_clean_one_publishes_a_count(
+        monkeypatch, capsys):
+    """The property, on the surface a reader reads, for the case that produced it.
+
+    Two runs of the same real CFB scan, differing in one input: the ledger. One is read from a
+    database that answers, the other from one that does not. The assertion that matters is that the
+    two summaries DIFFER, and that the failed one is not a value a reader would take as a completed
+    measurement.
+    """
+    clean, _supa = _ledger([_row("sports_cfb", 0.72, "yes", "winner"),
+                            _row("sports_cfb", 0.51, "no", "spread")])
+    failed = scan_mod._hub_settled_ledger(_DeadSupabase())
+    printed_clean = _cron_summary_for(monkeypatch, capsys, _cfb_run_with(clean))
+    printed_failed = _cron_summary_for(monkeypatch, capsys, _cfb_run_with(failed))
+
+    # The claim, first and on the reader's own bytes, so a regression is reported as the regression
+    # rather than as its own setup. `None`, so the summary says the question was not asked on that
+    # run; under the pre-fix code this is the line that fails, printing the `{}` it published.
+    assert printed_failed["cfb"]["unrecognised_kinds"] is None, printed_failed["cfb"]
+    # And the two runs are not interchangeable to a reader.
+    assert (printed_failed["cfb"]["unrecognised_kinds"]
+            != printed_clean["cfb"]["unrecognised_kinds"]), (
+        "a failed read published the same value as a completed one, so nothing tells them apart"
+    )
+
+    # The guards that make those two claims mean something, after the claims.
+    #
+    # The control is a real read of rows that exist, so its `{}` is EARNED -- "read it, this sport
+    # has no settled row of a kind the build cannot place" -- and not the same nothing the failed
+    # read publishes. Without this the difference asserted above could be a difference between "no
+    # rows" and "no rows", which is what the bug was.
+    assert clean.pairs_by_engine["sports_cfb"]["winner"], (
+        "the control read real settled rows, so its empty tally is a measurement and not an absence"
+    )
+    assert clean.unrecognised_by_engine == {}, "the control has no build gap, by construction"
+    assert failed.read_failed is True and clean.read_failed is False
+
+    # The positive answer is untouched. A fix that made the key always `None` would pass the two
+    # assertions above and destroy the diagnostic.
+    assert printed_clean["cfb"]["unrecognised_kinds"] == {}, printed_clean["cfb"]
+
+    # The other half of the finding: a failed read must not cost the scan either. Both runs price
+    # the same two markets, so the fix is the diagnostic and not the board.
+    assert printed_failed["cfb"]["markets_priced"] == printed_clean["cfb"]["markets_priced"] == 2, (
+        f"{printed_failed['cfb']} vs {printed_clean['cfb']}"
+    )
+    # And `too_far` is a real count in BOTH runs, identically. The two keys are independent
+    # measurements: one of them failing to be measured does not make the other one, and `None` is
+    # not simply what this projection always emits.
+    assert printed_failed["cfb"]["too_far"] == printed_clean["cfb"]["too_far"] == 1, (
+        f"{printed_failed['cfb']} vs {printed_clean['cfb']}"
+    )
+    # So the same summary carries one key measured and one not, and `None` is the shared word for
+    # "not measured" -- the same word `too_far` uses for a sport that never scanned.
+    assert printed_failed["cfb"]["too_far"] is not None
+    assert scan_mod.sports_run_summary(scan_mod.SportsRun(
+        [], [], {}, {"cfb": {"too_far": None, "unrecognised_kinds": None}}
+    ))["cfb"] == {"too_far": None, "unrecognised_kinds": None}
+
+
+def test_a_run_given_no_ledger_at_all_does_not_claim_the_read_found_nothing():
+    """The same collision, second input: no ledger handed in rather than a failed one.
+
+    `--dry-run` calls `run_sports_scan` with no `hub_ledger=` at all, so this is the shape the dry
+    run actually produces. Nothing prints the diagnostics on that path today -- `main()` prints
+    `run.reports` and neither key is in it -- so `{}` here is a false claim in the data structure
+    rather than in front of a reader. It is worth the same fix for two reasons: a `per_sport` entry
+    that says "no build gap" when nothing was read is the value the cron path would publish the day
+    a caller is wired up without a ledger, and a `_unrecognised_for` that checked only
+    `read_failed` would satisfy every other test here while leaving this input false.
+    """
+    run = scan_mod.run_sports_scan(
+        NOW - timedelta(days=3), _Kalshi(_recorded_markets("cfb")),
+        fetch=lambda url, **_kw: _recorded_feed("cfb"), sports=("cfb",),
+    )
+
+    assert run.per_sport["cfb"]["unrecognised_kinds"] is None, run.per_sport["cfb"]
+    # The scan is unaffected, as on a failed read: the predictor's calibration stays in charge.
+    assert run.reports["cfb"]["markets_priced"] == 2, run.reports["cfb"]
+    # And the dry run's own print carries NEITHER key, which is the settled ruling and the reason
+    # the absence of a ledger cannot mislead anyone there today.
+    assert scan_mod.sports_run_summary(run)["cfb"]["unrecognised_kinds"] is None
