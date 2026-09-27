@@ -47,6 +47,21 @@ def check_candidate(
     bucket = bucket_for(calibration.get(kind) or [], home_oriented(kind, sm, mg, edge.our_prob))
     if bucket is None or bucket["n"] < params["calibration_min_n"] or bucket["mean_prob"] is None:
         reasons.append("calibration_insufficient")
-    elif abs(bucket["mean_prob"] - bucket["hit_rate"]) > params["calibration_max_dev"]:
-        reasons.append("calibration_off")
+    # No per-bucket calibration test here, and that is deliberate (ruled 2026-09-27).
+    #
+    # This used to be: `elif abs(mean_prob - hit_rate) > calibration_max_dev` -> `calibration_off`.
+    # At calibration_min_n 20 and a 10pp threshold, a *correctly calibrated* bucket trips that about
+    # 37% of the time -- n=20 gives an 11.2pp standard error, so 10pp is 0.89 SD. It rejected weather
+    # on a bucket with n=23 and z=1.42, which is a coin flip wearing a threshold.
+    #
+    # It could not be tuned into shape either, because the two demands are mutually exclusive:
+    # admission wants a small min_n (the aggregate n_buckets x min_n must stay under the reviewer's
+    # 100) while a 10pp comparison needs n >= 97. At 10 buckets that asks for min_n <= 10 and
+    # min_n >= 97 at once.
+    #
+    # So the quality call belongs to the reviewer, which is built for it and already requires
+    # n_settled >= 100 (MIN_SETTLED in sports/scorecard.py). What is left here is what can honestly
+    # be tested at small n: is it tradeable, is the window open, and is there any settled history in
+    # this bucket at all. `calibration_insufficient` stays for exactly that reason -- n < min_n is an
+    # absence, not a noisy comparison.
     return CandidateCheck(ok=not reasons, reasons=tuple(reasons), bucket=bucket)
