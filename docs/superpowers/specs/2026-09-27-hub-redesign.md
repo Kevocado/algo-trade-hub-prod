@@ -509,32 +509,52 @@ The "distance to the gate" phrasing is a better specification than the one I wro
 reviewer's 100-settled threshold on the same screen as the count, so `42 of 100` is legible rather
 than implied.
 
-### Two things this approval did not settle, which need a ruling
+### The two open gaps — RULED 2026-09-27
 
-**a. The gate thresholds are still open.** Approval item 1 in §7 covered the inversion; the *arithmetic*
-that made the inversion insufficient — `10 buckets × min_n 20 = 200` against 42 settled and a reviewer
-bar of `MIN_SETTLED = 100` — was added afterwards, as was §5b's finding that the per-bucket
-`calibration_off` test has a **~37% false-positive rate on a correctly calibrated engine** and cannot
-coexist with any threshold that also admits edges. Both are in this document (§3, §5b) but neither is
-ruled on. My recommendations stand: `4 buckets × min_n 20 = 80` for the arithmetic, and **drop the
-per-bucket `calibration_off` test** in favour of the reviewer, which already judges keep-or-drop at
-n ≥ 100. Note these two cannot both be fully satisfied — §5b sets out why.
+**(a) GATE — RULED.** `4 buckets × min_n 20` (≈80 settled), and **drop the per-bucket
+`calibration_off` test** in favour of the reviewer's keep-or-drop at n ≥ 100.
 
-**b. "Weather follows the per-engine hypothesis" conflicts with §5a.** The weather hypothesis in §5 is
-a *calibration* one — recalibrate sigma per bucket per lead — and §5a refutes it with an oracle bound:
-perfectly calibrating the model moves its Brier from 0.12420 to 0.12294 against a market at 0.09713,
-so calibration can close about 5% of a gap that is really a **discrimination** failure. A weather plan
-cannot be written as "sigma recalibration" without spending real effort on something §5a proves will
-not work.
+This is the coherent pair §5b pointed at. 4 × 20 = 80 sits under the reviewer's 100, so the candidate
+gate can no longer be stricter than the judge; and removing the per-bucket test is what makes that
+possible, because §5b showed the two demands are mutually exclusive — a `min_n` low enough to admit
+edges cannot support a 10pp deviation test (that needs n ≥ 97), and a `min_n` high enough for the
+deviation test admits nothing. The resolution is not a number but a division of labour: the candidate
+filter keeps what it can honestly test at small n (tradeable, inside the window, some settled history),
+and the reviewer — which is built to judge keep-or-drop and already requires n ≥ 100 — makes the
+quality call.
 
-So the weather item in the plan list needs one of:
+**Consequences, tracked so they are not lost:**
 
-- **a discrimination hypothesis** — better features, a different target, a different model class. If
-  nobody has one, weather follows gas and CPI into **display-only**, and that is a legitimate outcome
-  rather than a failure.
-- **or it is dropped** from this round and revisited when someone has the hypothesis.
+- `n_buckets: 10 → 4` is the **predictor's** setting, so it lands in `NFL_Predictor` and
+  `CFB_Predictor`, not here. Two changes, two repos.
+- `check_candidate` loses its `calibration_off` branch (`tradehub/sports/candidates.py:50-51`).
+  `calibration_insufficient` **stays**: admitting an edge still needs a bucket, and a bucket with
+  n < 20 is not a measurement.
+- [#22](https://github.com/Kevocado/algo-trade-hub-prod/pull/22)'s coherence test is `xfail(strict=True)`
+  and was written to fail under the old thresholds. Under the new ones it **passes**, and
+  `strict=True` turns that XPASS into a failure — so the xfail marker must be removed in the same
+  change, or CI goes red on a correct implementation.
+- `tests/test_gate_threshold_coherence.py`'s third test pins `calibration_min_n == 20` and the implied
+  200. The `min_n == 20` assertion stays true; the implied-200 assertion is about the old aggregate and
+  must be restated in terms of the new one.
 
-I recommend deciding this before the weather plan is written, not during it.
+**(b) WEATHER — RULED: TRY NEW FEATURES.** Look for a **discrimination** hypothesis — better
+features, a different target, a different model class — prove it with a point-in-time backtest, and
+report honestly. If nothing beats the market, weather becomes display-only in a later round.
+
+The right ruling given §5a and the gas oracle bound. The evidence says the *confidence* side is already
+right — weather's calibration work could close ~5% of its gap and gas's −0.6% — so more of it cannot
+work, and the residual is discrimination: the model ranks worse than the market, not merely less
+confidently. A discrimination hypothesis is a genuinely different class of work, and the only avenue
+the evidence leaves open.
+
+Two things to carry into it, so this does not become another confidence experiment in disguise:
+
+- **The oracle bound is the acceptance test, not the raw Brier alone.** A change that improves the Brier
+  while leaving the oracle bound unchanged has improved calibration, not discrimination, and will not
+  close the gap.
+- **Report the oracle bound either way.** A negative result is a real result, and gas and CPI have each
+  already produced one.
 
 ### Plan list, with the above applied
 
@@ -545,9 +565,9 @@ Kevin asked for one plan per independent piece. Mapping that onto what is now de
 | sports ranking + window + inversion | **ready to plan** — approvals 1 and 2 settle it. Blocked on the `n_buckets` decision in (a), since that is the predictor's to choose. |
 | shadow scoreboard page | **ready to plan** — approval 4, and §5b's finding makes the "distance to the gate" half more valuable, not less. |
 | CPI display mode | **ready to plan** — approval 3. Smallest of the five. |
-| gas: pick a different test | **ready to plan** — approval 3 plus #24's numbers. The test is not "decide earlier" again; it needs a discrimination hypothesis too. |
-| labor tail | **ready to plan**, with the caveat that it is **blocked on ALFRED access** and the first thing to do is the oracle bound, since a calibration-shaped fix would be the same mistake as weather's. |
-| weather sigma recalibration | **blocked on (b)** — the hypothesis as written is refuted. |
+| gas: pick a different test | **DONE — no plan written.** The different test has been run: the oracle bound shows calibration is a non-lever (−0.6% of the gap), so the whole 4.29x is discrimination. Gas is display-only. |
+| labor tail | **unblocked** — `FRED_API_KEY` is live on the VPS and the keyed path is merged (#15/#18), so the oracle bound can be run. First step is the bound itself, not a fix. |
+| weather: discrimination hypothesis | **ready**, per ruling (b). New features, a different target or model class, proved by a point-in-time backtest with the oracle bound as the acceptance test. |
 
 ### Carried-forward item, now actionable
 
