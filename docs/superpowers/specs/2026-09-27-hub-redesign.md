@@ -169,6 +169,40 @@ reads like, and it is the highest-leverage thing in this whole spec — until it
 `(engine, engine_version)` promotion gate can never accumulate a track record, because every row is
 keyed `feed:unknown`.
 
+### Which threshold actually admits anything
+
+The arithmetic above says 200 is unreachable in a reasonable time and incoherent with the reviewer's
+100. It does not say which alternative works, so I scaled CFB's real per-bucket settled distribution
+to a future total and measured the share of edges each setting would admit (bucket mass is the proxy
+for where edges land):
+
+| setting | required | vs reviewer | admits at 100 settled (winner / spread / total) |
+| --- | --- | --- | --- |
+| **10 × 20 (current)** | 200 | **incoherent** | **0% / 46% / 66%** |
+| 10 × 10 | 100 | coherent | 64% / 73% / 84% |
+| 5 × 20 | 100 | coherent | 64% / 82% / 84% |
+| **4 × 20** | **80** | **coherent** | **95% / 82% / 97%** |
+
+**`4 buckets × min_n 20 = 80` is the setting I recommend.** It is the only one that both respects the
+reviewer's bar and admits most of the edge mass at 100 settled. At the current 10 × 20 the winner gate
+admits **nothing at all** at 100 settled, and only 64% even at 200.
+
+Two caveats, because this is a projection and not a measurement:
+
+- It scales the **observed** distribution — 42 (winner) / 33 (spread) / 32 (total) settled — and assumes
+  that distribution's *shape* holds as the sample grows. If settled games concentrate differently
+  later, these percentages move.
+- Some buckets are **empty** (`spread` has two, `total` has three, at n = 0). Those are **inert, not
+  blocking**: a bucket is only consulted when an edge's own probability falls inside it, and the model
+  does not predict those price ranges, so no edge is ever rejected by one. The binding constraint is
+  the thinnest *edge-bearing* bucket — winner's 0.3–0.4 at n = 3, which needs roughly 280 settled to
+  reach 20. Still ~2.8× the reviewer's bar, which is the same conclusion from the other direction.
+
+So the honest summary is not "lower the threshold and the gate opens". It is: **at 10 × 20 the gate is
+both incoherent with the reviewer's own bar and, on the real distribution, admits nothing for winner
+markets at 100 settled.** 4 × 20 is the smallest change that fixes the incoherence and actually opens
+the gate within a season.
+
 ### Why they are stale: neither predictor has a deploy path on `main`
 
 This is the part I had wrong, and it is worse than "the images need a push". On `origin/main`:
@@ -319,7 +353,13 @@ not.
    `n < 20` check. The blocker is arithmetic — `10 buckets × min_n 20 = 200` required, against 42 settled
    (CFB) and 0 (NFL), while the reviewer's own bar is `MIN_SETTLED = 100`. Two parts: keep the inversion
    (predictor's calibration first, hub's settled ledger second) **and** align the candidate gate with the
-   reviewer — my recommendation is 5 buckets × min_n 20 = 100, or 10 buckets × min_n 10. The gate stays
+   reviewer — my recommendation was 5 buckets × min_n 20 = 100, or 10 buckets × min_n 10.
+
+   **Refined by measuring the real distribution: `4 buckets × min_n 20 = 80`** (§3). It is the only
+   setting both coherent with the reviewer's bar and admitting most edge mass at 100 settled — 95% /
+   82% / 97% for winner / spread / total, against **0%** / 46% / 66% for today's 10 × 20, which admits
+   nothing at all for winner markets at 100 settled. This one needs a predictor-side change too, since
+   `n_buckets` is the predictor's. The gate stays
    shut until CFB passes ~100 settled either way, and I would rather the page say that than imply
    otherwise.
 2. **The window decision, re-put because the original approval rested on a false premise** (§3). My
