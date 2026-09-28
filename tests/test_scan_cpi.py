@@ -55,8 +55,11 @@ def test_scan_cpi_predicts_headline_and_core_with_their_versions():
     assert headline["nowcast"] == pytest.approx(0.359180537639179)
     assert headline["sigma"] == pytest.approx(0.15) and headline["n_train"] == 1
     assert by_ticker["KXCPI-26AUG-T0.3"]["our_prob"] == pytest.approx(0.5244, abs=1e-4)  # P(N(0.3592, 0.15) > 0.35)
-    assert edges and all(e["edge_type"] == "MACRO" for e in edges)
-    assert all(e["engine"] == "cpi_nowcast" and e["gate_status"] == "SHADOW" for e in edges)
+    # CPI writes no edges, deliberately: approved DISPLAY ONLY 2026-09-27 (spec 5a, section 9
+    # approval 3). The measurement above is unchanged and is the product; the `edges` row was the
+    # thing claiming an opportunity, and that claim is not supported. See tests/test_cpi_no_edges.py
+    # for the regression, which asserts on what the scan tried to write rather than on this return.
+    assert edges == [], f"CPI is display-only and must write no edges, got {len(edges)}"
 
 
 def test_scan_cpi_skips_months_without_a_nowcast_and_closed_markets():

@@ -37,8 +37,37 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: dummy-baseline-placeholder
         run: python -m pytest -q
 
+  # The `test` job above is `python -m pytest -q` and nothing else, so every test in
+  # market_sentiment_tool was never executed by this workflow -- on this branch or any other. The
+  # Dockerfile's `npm run build` is `vite build`, which does not typecheck and does not run tests,
+  # so a `tsc` break and a broken vitest file both shipped green. 128 frontend tests that never run
+  # are not tests. This job is what makes any future PR's frontend test claim mean something, and
+  # it runs on the same `paths:` triggers as the Python one.
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: market_sentiment_tool
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the Dockerfile's node:20-slim build stage, so the job tests the toolchain the
+          # image is actually built with.
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: market_sentiment_tool/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        # Separate from the tests on purpose. `vite build` transpiles without checking types, so
+        # without this a type error is invisible until someone reads the compiler output.
+        run: npm run typecheck
+      - name: Frontend tests
+        run: npx vitest run
+
   build:
-    needs: test
+    needs: [test, frontend]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
