@@ -4,6 +4,7 @@ import {
   DISPLAY_ONLY_ENGINES,
   DISPLAY_ONLY_REASON,
   displayOnlyReason,
+  enforceDisplayOnlyPartition,
   isDisplayOnlyEdge,
   isDisplayOnlyEngine,
   partitionDisplayOnly,
@@ -130,5 +131,45 @@ describe("partitionDisplayOnly", () => {
 
   it("is additive: a newly ruled engine needs one line, not a new filter", () => {
     expect(DISPLAY_ONLY_ENGINES).toContain("cpi_nowcast");
+  });
+});
+
+describe("enforceDisplayOnlyPartition", () => {
+  it("pulls a display-only row back out of the opportunity bucket", () => {
+    // The reader is the last line. `EdgeCard` prints `{edge_pct}% EDGE` for anything in `edges`, so
+    // a cpi_nowcast row that arrived there -- from a stub, a new caller, a hook regression -- would
+    // claim a 20% edge on an engine that has none.
+    const cpi = row("cpi_nowcast", { id: "leaked", edge_pct: 20.0 });
+    const result = enforceDisplayOnlyPartition([cpi, row("labor_nowcast")]);
+
+    expect(result.edges.map((e) => e.engine)).toEqual(["labor_nowcast"]);
+    expect(result.withheld.map((w) => w.edge.id)).toEqual(["leaked"]);
+    expect(result.withheld[0].reason).toBe(DISPLAY_ONLY_REASON.cpi_nowcast);
+  });
+
+  it("keeps the rows the read already withheld, rather than replacing them", () => {
+    const already = { edge: row("cpi_nowcast", { id: "held" }), engine: "cpi_nowcast" as const,
+      reason: DISPLAY_ONLY_REASON.cpi_nowcast };
+    const result = enforceDisplayOnlyPartition([row("weather")], [already]);
+
+    expect(result.edges).toHaveLength(1);
+    expect(result.withheld.map((w) => w.edge.id)).toEqual(["held"]);
+  });
+
+  it("conserves every row it is given, from either bucket", () => {
+    const already = { edge: row("cpi_nowcast", { id: "held" }), engine: "cpi_nowcast" as const,
+      reason: DISPLAY_ONLY_REASON.cpi_nowcast };
+    const opportunities = [row("cpi_nowcast", { id: "leaked" }), row("weather"), row("labor_nowcast")];
+    const result = enforceDisplayOnlyPartition(opportunities, [already]);
+
+    expect(result.edges.length + result.withheld.length).toBe(opportunities.length + 1);
+  });
+
+  it("is a no-op on a clean bucket", () => {
+    expect(enforceDisplayOnlyPartition([row("weather")])).toEqual({
+      edges: [row("weather")],
+      withheld: [],
+    });
+    expect(enforceDisplayOnlyPartition([])).toEqual({ edges: [], withheld: [] });
   });
 });

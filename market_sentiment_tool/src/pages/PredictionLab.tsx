@@ -6,6 +6,8 @@ import { useMarketEdges, KalshiEdge } from "@/hooks/useMarketEdges";
 import { Loader2, TrendingUp, Cloud, Globe, Trophy, Brain, ExternalLink, Zap, Activity } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { GateBadge } from "@/components/GateBadge";
+import WithheldEdgesNotice from "@/components/WithheldEdgesNotice";
+import { enforceDisplayOnlyPartition } from "@/lib/displayOnlyEngines";
 import { TIER_LABELS, isExecutableSportsEdge, rejectReasonLabel, sportsTierOf } from "@/lib/sportsEdges";
 
 const TIER_BADGE_CLASS: Record<string, string> = {
@@ -137,8 +139,15 @@ const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
 };
 
 export default function PredictionLab() {
-  const { edges, loading } = useMarketEdges();
+  const { edges: readEdges, withheld: readWithheld, loading } = useMarketEdges();
   const [activeTab, setActiveTab] = useState("all");
+
+  // The hook already withholds display-only rows, and that is where the standing rule lives. The
+  // same rule is applied again here because THIS is the last line before `EdgeCard`, which prints
+  // `{edge_pct}% EDGE` for anything in `edges`: a `cpi_nowcast` row that reached it would claim a
+  // 20.0% edge on an engine that has none. Anything display-only that arrives in the opportunity
+  // bucket -- from a stub, a new caller, a hook regression -- is pulled back and shown as withheld.
+  const { edges, withheld } = enforceDisplayOnlyPartition<KalshiEdge>(readEdges, readWithheld);
 
   if (loading) {
     return (
@@ -205,6 +214,12 @@ export default function PredictionLab() {
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Ruling 1's visible half. The hook withholds these rows and conserves them, but a row that is
+          read and not rendered is indistinguishable from there having been no rows -- so a MACRO tab
+          that merely got quieter would read as "the engine was retired". It was relabelled. Placed
+          under the board because that is where the quiet it explains shows up. */}
+      <WithheldEdgesNotice withheld={withheld} />
       
       {/* Risk Disclosure Section */}
       <div className="mt-16 p-6 rounded-2xl bg-slate-900/40 border border-slate-800/60 text-slate-500 text-[10px] uppercase tracking-widest font-bold leading-relaxed">

@@ -108,3 +108,24 @@ export function partitionDisplayOnly<T extends EngineTagged>(rows: T[]): Partiti
   }
   return { edges, withheld };
 }
+
+/**
+ * Re-apply the partition at the point of rendering, on top of whatever the read already did.
+ *
+ * `useMarketEdges` withholds display-only rows, and that is where the standing rule lives. This is
+ * deliberately the same rule applied a second time, and it exists because the reader is the last
+ * line: `EdgeCard` prints `{edge_pct}% EDGE` for anything in `edges`, so a `cpi_nowcast` row that
+ * reached it would claim a 20.0% edge on an engine that has none. Any row that shows up in the
+ * opportunity bucket is pulled back here and shown as withheld instead, whatever the reason it got
+ * there -- a stub, a new caller, a hook regression, a future refactor.
+ *
+ * `withheld` is merged rather than replaced, so a row the read already withheld is not lost when
+ * the opportunity bucket is re-partitioned.
+ */
+export function enforceDisplayOnlyPartition<T extends EngineTagged>(
+  opportunities: T[],
+  withheld: WithheldEdge<T>[] = [],
+): PartitionedEdges<T> {
+  const again = partitionDisplayOnly(opportunities);
+  return { edges: again.edges, withheld: [...again.withheld, ...withheld] };
+}

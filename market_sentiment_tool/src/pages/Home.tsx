@@ -5,7 +5,9 @@ import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { TrendingUp, Wallet, ArrowUpRight, Activity, Loader2, Brain } from "lucide-react";
 import { usePortfolio, usePortfolioMetrics } from "@/hooks/usePortfolio";
 import { moneyMetric } from "@/lib/portfolioTruth";
-import { useMarketEdges } from "@/hooks/useMarketEdges";
+import { useMarketEdges, type KalshiEdge } from "@/hooks/useMarketEdges";
+import { enforceDisplayOnlyPartition } from "@/lib/displayOnlyEngines";
+import WithheldEdgesNotice from "@/components/WithheldEdgesNotice";
 import { GateBadge } from "@/components/GateBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -20,7 +22,11 @@ const chartData = [
 export default function Home() {
   const { metrics, loading: mLoading } = usePortfolioMetrics();
   const { portfolio, positions: paperPositions, loading: pLoading } = usePortfolio();
-  const { edges, loading: eLoading } = useMarketEdges();
+  const { edges: readEdges, withheld: readWithheld, loading: eLoading } = useMarketEdges();
+  // Same rule as the Prediction Lab, same reason: this page renders `edge_pct` as a headline
+  // number, so a display-only row reaching `topEdges` would read as an opportunity. The hook
+  // withholds it; this is the reader being the last line as well.
+  const { edges, withheld } = enforceDisplayOnlyPartition<KalshiEdge>(readEdges, readWithheld);
 
   const loading = mLoading || pLoading || eLoading;
 
@@ -62,6 +68,11 @@ export default function Home() {
         <h1 className="text-4xl font-black tracking-tight text-white uppercase italic">War Room HQ</h1>
         <p className="text-slate-400 font-medium">Aggregating cross-engine alpha & real-time Kalshi telemetry.</p>
       </div>
+
+      {/* An engine that is no longer an edge engine is relabelled, not removed. Without this the War
+          Room's edge board simply gets quieter, which is indistinguishable from CPI never having
+          existed -- and CPI did exist, and was measured. */}
+      <WithheldEdgesNotice withheld={withheld} />
 
       {/* AI War Room Section */}
       {topEdges.length > 0 && (
