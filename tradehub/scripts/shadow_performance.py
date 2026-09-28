@@ -93,6 +93,33 @@ def _to_utc_timestamp(value: Any) -> pd.Timestamp:
     return timestamp.tz_convert("UTC")
 
 
+class MissingCredentialError(RuntimeError):
+    """A credential this module needs was not in the environment.
+
+    Its own class, and a `RuntimeError` so every existing `except RuntimeError` here -- the
+    scorecard collects errors as strings for the Telegram report, and nothing else catches them --
+    keeps catching it unchanged.
+
+    It exists because a missing credential is NOT a missing table, and the API could not tell them
+    apart. `build_shadow_timeline_response` used to re-raise `RuntimeError(str(errors[0]))`, which
+    flattens *every* failure -- missing table, missing credential, and a genuine bug in this file --
+    into one indistinguishable string, and `tradehub/api/main.py` then had a single `except` for
+    all of it. A type survives that; a substring of a message does not have to.
+
+    `service` and `variables` travel on the exception rather than only in its text so the API can
+    name the exact variables from structured data, and so adding a third credentialed service does
+    not mean editing a sentence.
+    """
+
+    def __init__(self, service: str, variables: tuple[str, ...]) -> None:
+        self.service = service
+        self.variables = variables
+        super().__init__(
+            f"Missing {service} credentials for shadow scorecard. "
+            f"Expected {' and '.join(variables)}. {_missing_env_detail()}"
+        )
+
+
 def _missing_env_detail() -> str:
     """Where env came from, for the error a missing credential produces.
 
@@ -112,10 +139,7 @@ def _alpaca_config() -> tuple[str, str, str]:
     api_key = os.getenv("ALPACA_API_KEY", "")
     secret_key = os.getenv("ALPACA_SECRET_KEY", "")
     if not api_key or not secret_key:
-        raise RuntimeError(
-            "Missing Alpaca API credentials for shadow scorecard. "
-            f"Expected ALPACA_API_KEY and ALPACA_SECRET_KEY. {_missing_env_detail()}"
-        )
+        raise MissingCredentialError("Alpaca API", ("ALPACA_API_KEY", "ALPACA_SECRET_KEY"))
     return api_base, api_key, secret_key
 
 
@@ -123,10 +147,7 @@ def _load_supabase_client():
     url = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
     key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     if not url or not key:
-        raise RuntimeError(
-            "Missing Supabase credentials for shadow scorecard. "
-            f"Expected SUPABASE_URL or VITE_SUPABASE_URL plus SUPABASE_SERVICE_ROLE_KEY. {_missing_env_detail()}"
-        )
+        raise MissingCredentialError("Supabase", ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"))
     return create_client(url, key)
 
 
@@ -389,11 +410,23 @@ def build_shadow_report(
     )
     current_hour = _current_hour_utc()
     errors: list[str] = []
+    # The same failures, as objects rather than strings. `errors` is what the Telegram report
+    # prints and it stays exactly that -- a list of strings, same order, same dedup. This list is
+    # what `build_shadow_timeline_response` re-raises, because re-raising `RuntimeError(str(...))`
+    # is what destroyed the distinction between a missing table, a missing credential and a bug:
+    # all three arrived at the API as one undifferentiated RuntimeError with no attributes left.
+    error_exceptions: list[Exception] = []
+
+    def _record(exc: Exception) -> None:
+        if str(exc) not in errors:
+            errors.append(str(exc))
+        error_exceptions.append(exc)
+
     rows: list[dict[str, Any]] = []
     try:
         rows = fetch_recent_signal_events(hours=hours, domain=normalized_domain)
     except RuntimeError as exc:
-        errors.append(str(exc))
+        _record(exc)
 
     consideration = _considered_signal_count(rows, thresholds)
 
@@ -402,15 +435,14 @@ def build_shadow_report(
         try:
             evaluated = evaluate_recent_signals(rows, thresholds=thresholds)
         except RuntimeError as exc:
-            errors.append(str(exc))
+            _record(exc)
 
     freshness: dict[str, dict[str, Any]] = {}
     for asset in ("BTC", "ETH"):
         try:
             freshness[asset] = _latest_bar_status(asset, current_hour=current_hour)
         except RuntimeError as exc:
-            if str(exc) not in errors:
-                errors.append(str(exc))
+            _record(exc)
             freshness[asset] = {"asset": asset, "latest_bar": None, "age_hours": None, "is_stale": None}
 
     if not evaluated:
@@ -425,6 +457,7 @@ def build_shadow_report(
             "consideration": consideration,
             "freshness": freshness,
             "errors": errors,
+            "error_exceptions": error_exceptions,
         }
 
     outcomes = np.array([item.realized_yes for item in evaluated], dtype=float)
@@ -456,6 +489,7 @@ def build_shadow_report(
         "consideration": consideration,
         "freshness": freshness,
         "errors": errors,
+        "error_exceptions": error_exceptions,
     }
 
 
@@ -503,6 +537,16 @@ def build_shadow_timeline_response(
         eth_no=eth_no,
     )
     if report.get("errors"):
+        # Re-raise the ORIGINAL exception, not `RuntimeError(str(errors[0]))`. The re-wrap is what
+        # made this endpoint undiagnosable: it took a `MissingCredentialError` carrying the exact
+        # variable names and turned it into a bare RuntimeError whose only content was a sentence,
+        # so the API's one `except RuntimeError` branch could only guess, guessed "missing table",
+        # and served a 500 that named neither the variables nor the fact that the table was fine.
+        # Anything that is not one of ours still becomes a RuntimeError, so a bare RuntimeError
+        # raised deeper in this file remains a bug rather than being mistaken for a deployment step.
+        first = (report.get("error_exceptions") or [None])[0]
+        if isinstance(first, Exception):
+            raise first
         raise RuntimeError(str(report["errors"][0]))
 
     thresholds = report["thresholds"]
