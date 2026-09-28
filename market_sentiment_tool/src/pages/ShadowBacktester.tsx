@@ -117,8 +117,12 @@ function NotTheScoreboard({ muted = false }: { muted?: boolean }) {
   return (
     <p className={`max-w-3xl leading-relaxed ${muted ? "text-xs text-slate-500" : "text-sm text-slate-300"}`}>
       {NOT_THE_SCOREBOARD}{" "}
-      <a href="/shadow-scoreboard" className="text-emerald-400 hover:underline">
-        Open the Shadow Scoreboard
+      {/* Points at the CANONICAL /scoreboard, not at the /shadow-scoreboard alias. A link on a
+          page is not a bookmark and is not a citation anyone will copy out, so there is no reason
+          to spend it on a redirect -- and if /shadow-scoreboard is ever dropped, this link keeps
+          working. */}
+      <a href="/scoreboard" className="text-emerald-400 hover:underline">
+        Open the Engine Scoreboard
       </a>
     </p>
   );

@@ -28,7 +28,7 @@ import {
  * each hold one piece, and the owner of the product reads the site and still cannot say what it is
  * for. This page is the one that says it: one row per engine, what that engine predicts, how it has
  * actually scored against its market, and what its status is. The full backtest detail behind
- * every number stays on `/shadow-scoreboard`; this is the page that makes the detail legible rather
+ * every number stays on `/scoreboard`; this is the page that makes the detail legible rather
  * than replacing it.
  *
  * Four things this page will not do, each because the alternative reads as something it is not.
@@ -47,7 +47,7 @@ import {
  *      market's Brier, which is not close, and a reader told otherwise cannot judge the engine.
  *   3. It will not collapse the two bars. The engine's own stated bar (200 daily, 50 monthly) and
  *      the reviewer's flat settled floor (100) are different bars and are drawn from the shared
- *      `settledBars()` through the same component `/shadow-scoreboard` uses. A monthly engine at 70
+ *      `settledBars()` through the same component `/scoreboard` uses. A monthly engine at 70
  *      settled has MET its own bar and is still short of the floor; reporting it as 70/100 is a
  *      verdict against a number that was never its bar.
  *   4. It will not compute a threshold, a ratio or a gate. "Is this engine ahead" is
@@ -56,7 +56,7 @@ import {
  *      the one thing it does decide — how a resolved fact is worded — lives in `@/lib/models` with
  *      its tests, because prose is what nobody re-reads when the number is what they look at.
  *
- * A separate page rather than a change to `/shadow-scoreboard`: that page's whole frame is "which run is
+ * A separate page rather than a change to `/scoreboard`: that page's whole frame is "which run is
  * this engine's record", and a reader who lands there without the claim has nothing to judge the
  * record against. This page is upstream of it, not a replacement for it.
  */
@@ -242,8 +242,8 @@ export default function Models() {
           never places an order, so every figure here is a measurement, not a balance. Every engine
           is listed — including the ones nothing has been measured on, which is a gap in the
           evidence and not a verdict on the engine. The{" "}
-          <a href="/shadow-scoreboard" className="text-emerald-400 hover:underline">
-            Shadow Scoreboard
+          <a href="/scoreboard" className="text-emerald-400 hover:underline">
+            Engine Scoreboard
           </a>{" "}
           has the full backtest detail behind each number.
         </p>

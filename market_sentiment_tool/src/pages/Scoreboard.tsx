@@ -47,12 +47,18 @@ import {
  * different claim, because it carries no run's numbers and therefore no record for a reader to
  * mistake for one.
  *
- * Renamed, rather than left at `/scoreboard`, on 2026-09-28. The owner went to `/shadow` looking
- * for this page and got a 503 from the crypto shadow-timeline backtester, which is a different
- * thing that happened to share a word. The name he used to approve this page was "the shadow
- * scoreboard", so the route, the nav label and the h1 now all say the same thing and
- * `/scoreboard` is a permanent redirect to here. `/shadow` keeps its own route and is NOT
- * redirected here — see the note in `App.tsx` for why swapping those two would be a second lie.
+ * The route is `/scoreboard` and the name is "Engine Scoreboard", and both of those were arrived at
+ * on 2026-09-28. The owner went to `/shadow` looking for this page and got a 503 from the crypto
+ * shadow-timeline backtester, which is a different thing that happened to share a word.
+ *
+ * The name is "Engine Scoreboard" rather than "Shadow Scoreboard" -- the name the owner's approval
+ * used -- because "shadow" already means two OTHER things in this product (the crypto timeline, and
+ * the not-promoted gate status that every unread engine carries) and this page is about neither.
+ * The approval string still works: `/shadow-scoreboard` is a permanent redirect to here, so the
+ * name people will type resolves without being the canonical name. An earlier revision of this
+ * branch made that string the route, which put the ambiguity somewhere expensive to change.
+ * `/shadow` keeps its own route and is NOT redirected here — see `App.tsx` for why swapping those
+ * two would be a second lie.
  *
  * Nothing here computes a threshold, a gate or a rounding policy -- all of that is
  * `tradehub/scoreboard.py` and rides in on the response. This file decides layout and nothing else.

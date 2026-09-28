@@ -63,15 +63,22 @@ export const NO_FIGURE = "no completed signal finished in this window";
  * Why this page is a different page from the engine scoreboard.
  *
  * The collision that sent the owner to the wrong page on 2026-09-28 was not
- * cosmetic: `/shadow` is the crypto shadow-timeline backtester and
- * `/shadow-scoreboard` is every engine's Brier against the market, and the two
- * share a word. This is the sentence the crypto page says to correct it, and it
+ * cosmetic: `/shadow` is the crypto shadow-timeline backtester and the engine
+ * scoreboard is every engine's Brier against the market, and the two were one
+ * word apart. This is the sentence the crypto page says to correct it, and it
  * lives here rather than in the page because prose is what nobody re-reads when
  * the chart is what they are looking at.
+ *
+ * The scoreboard's canonical route is `/scoreboard` and its name is "Engine
+ * Scoreboard". An earlier revision of this branch made `/shadow-scoreboard`
+ * canonical, which was wrong: "shadow" already means two other things in this
+ * product, so that route would have kept the ambiguity alive in the one place
+ * that is expensive to change. `/shadow-scoreboard` is a redirect now, so the
+ * string the owner approved the page under still works without being the name.
  */
 export const NOT_THE_SCOREBOARD =
   "This is the crypto shadow timeline, not the engine scoreboard. If you were " +
-  "looking for how each engine scored against the market, that is the Shadow Scoreboard.";
+  "looking for how each engine scored against the market, that is the Engine Scoreboard.";
 
 /**
  * The unavailable state, in the words a reader is actually looking at.

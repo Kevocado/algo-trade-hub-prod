@@ -28,7 +28,7 @@ import {
  *     are `tradehub/engine_catalogue.py`. The catalogue is authoritative about which engines there
  *     are; the scoreboard is authoritative about what was measured. Neither is re-derived here.
  *   - both settled bars are `settledBars()` in `@/lib/scoreboard`, and this page renders them with
- *     the same component `/shadow-scoreboard` uses.
+ *     the same component `/scoreboard` uses.
  *
  * So the two things this module does decide are the two things the server cannot: how a resolved
  * fact is worded, and the fail-safe presentation of a figure nobody measured. Every formatter and

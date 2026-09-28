@@ -65,15 +65,18 @@ const Sidebar = () => {
               because it is the frame the other pages sit inside. */}
           <Cpu className="w-5 h-5 text-indigo-400" /> Models
         </NavLink>
-        {/* "Shadow Scoreboard", not "Scoreboard" and not "Shadow". The owner's approval for this
-            page was literally called "the shadow scoreboard", so that is the string the next
-            person will look for, and a nav list is where a person looks. "/shadow" cannot take
-            the collision back: it is the crypto backtester's route and stays that way. */}
+        {/* "Engine Scoreboard", not "Shadow Scoreboard" and not "Shadow". The h1 has always said
+            "Engine scoreboard" and the page scores ENGINES against their markets, so the nav says
+            what is being scored. "Shadow" would name a word this product uses for two other
+            things (the crypto timeline at /shadow, and the not-promoted gate status), and a nav
+            entry that reads like a sibling of /shadow is what sent the owner to the wrong page on
+            2026-09-28. People who type "shadow scoreboard" still land here, via the redirect
+            below -- the name works without being the name. */}
         <NavLink
-          to="/shadow-scoreboard"
+          to="/scoreboard"
           className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
         >
-          <Scale className="w-5 h-5 text-rose-400" /> Shadow Scoreboard
+          <Scale className="w-5 h-5 text-rose-400" /> Engine Scoreboard
         </NavLink>
         <NavLink
           to="/sports"
@@ -140,17 +143,28 @@ function App() {
           {/* The crypto shadow-timeline backtester, which keeps the /shadow route it has always
               had. It is NOT the scoreboard and never becomes it: a redirect from here to the
               scoreboard would swap a crypto backtester for an engine scoreboard without saying so,
-              which is the same collision wearing a hat. The page now says what it is and links to
-              the scoreboard instead. */}
+              which is the same collision wearing a hat. The page says what it is and links to the
+              scoreboard instead. */}
           <Route path="/shadow" element={<ShadowBacktester />} />
           <Route path="/models" element={<Models />} />
-          <Route path="/shadow-scoreboard" element={<Scoreboard />} />
-          {/* /scoreboard -> /shadow-scoreboard, permanently. This one IS the same page under a new
-              name, so a redirect tells the truth: the reader lands on the identical component
-              reading the identical /api/scoreboard, and the address bar updates to the name the
-              nav and the h1 use. Nothing is swapped. The rename was free on 2026-09-28 because
-              the owner had bookmarked nothing; that stops being true the moment he does. */}
-          <Route path="/scoreboard" element={<Navigate to="/shadow-scoreboard" replace />} />
+          {/* The engine scoreboard, canonically at /scoreboard.
+              `/engines` was the other candidate and was rejected: /models already lists every
+              engine one row at a time, so /engines would have been a SECOND route that means "the
+              engines", differing only in depth. That is the same collision this branch exists to
+              close, one level down. `/scoreboard` names the artifact rather than its contents, so
+              it takes a new engine without the name going stale, and it already matches the
+              endpoint (/api/scoreboard) and the file (Scoreboard.tsx), so it costs no rename. */}
+          <Route path="/scoreboard" element={<Scoreboard />} />
+          {/* `/shadow-scoreboard` -> `/scoreboard`, permanently.
+              The owner's approval for this page was literally called "the shadow scoreboard", so
+              that string is a name people will type. A redirect makes the NAME work without making
+              it the NAME, which is the whole distinction: "shadow" already means two things in
+              this product -- the crypto timeline and the not-promoted gate status -- and the engine
+              scoreboard is about neither. An earlier revision of this branch made
+              /shadow-scoreboard canonical, which left the ambiguity in a route instead of a nav
+              label, where it is expensive to change. It is a redirect here and nothing else.
+              Same component, same /api/scoreboard read, address bar updated to the real path. */}
+          <Route path="/shadow-scoreboard" element={<Navigate to="/scoreboard" replace />} />
           <Route path="/sports" element={<SportsEdges />} />
           <Route path="/jobs" element={<JobsScorecard />} />
           <Route path="/cpi" element={<CpiDisplay />} />

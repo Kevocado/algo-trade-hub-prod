@@ -14,7 +14,29 @@ import type { ShadowPerformanceResponse } from "@/lib/shadowPerformance";
 vi.mock("@/lib/supabase", () => ({ supabase: {} }));
 
 /**
- * The `/shadow-scoreboard`, `/models` and `/shadow` routes are load-bearing, so they are pinned.
+ * A mount counter for the Scoreboard component, so a redirect loop is observable.
+ *
+ * A `Navigate` that points at itself renders the page over and over, and in jsdom that does not
+ * throw and does not fail an assertion -- it just never settles, which reads as a passing test with
+ * a slightly odd warning. Counting mounts turns "it settles" into something assertable: `<Navigate>`
+ * replaces itself in the tree, so a correct redirect renders Scoreboard exactly once, and a loop
+ * renders it many times.
+ *
+ * The mock wraps the real component rather than replacing it, so the heading this file asserts on
+ * is still the real page's, and `App.tsx`'s route table is still the only one in play.
+ */
+let scoreboardRenders = 0;
+vi.mock("@/pages/Scoreboard", async () => {
+  const actual = await vi.importActual<typeof import("@/pages/Scoreboard")>("@/pages/Scoreboard");
+  const Counting = (props: Record<string, unknown>) => {
+    scoreboardRenders += 1;
+    return <actual.default {...props} />;
+  };
+  return { ...actual, default: Counting };
+});
+
+/**
+ * The `/scoreboard`, `/models` and `/shadow` routes are load-bearing, so they are pinned.
  *
  * These pages are unreachability-sensitive. `/models` exists because the owner of the product
  * could not work out what the site was for, and a page nobody can reach does not answer that for
@@ -26,9 +48,9 @@ vi.mock("@/lib/supabase", () => ({ supabase: {} }));
  * suite renders `App`.
  *
  * The route table is NOT re-declared here. A `MemoryRouter` test would have to repeat `<Route
- * path="/shadow-scoreboard" element={<Scoreboard />} />` to render anything, and a duplicated route
- * table passes when the real one loses a route -- which is exactly the deletion this file exists
- * to catch. So the real `BrowserRouter` is used and the path is set on the history before render,
+ * path="/scoreboard" element={<Scoreboard />} />` to render anything, and a duplicated route table
+ * passes when the real one loses a route -- which is exactly the deletion this file exists to
+ * catch. So the real `BrowserRouter` is used and the path is set on the history before render,
  * which makes the only route table in play `App.tsx`'s own.
  */
 const EMPTY_BOARD: ModelsResponse = {
@@ -133,28 +155,22 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   window.history.pushState({}, "", "/");
+  // Reset the redirect-loop counter between tests. Without this, an earlier test's mount count
+  // would be carried into a later `toBe(1)` and the guard would stop guarding.
+  scoreboardRenders = 0;
 });
 
 describe("the sidebar link and the route agree", () => {
-  it("resolves /shadow-scoreboard to the engine scoreboard", async () => {
-    await renderAppAt("/shadow-scoreboard");
-
-    // The h1 is rendered only once the read resolves, so this is the page and not its loading shell.
-    expect(screen.getByRole("heading", { name: "Engine scoreboard", level: 1 })).toBeInTheDocument();
-    // And the link that gets a reader there is present, and points at that same path. The label
-    // matters as much as the href: the owner approved this page as "the shadow scoreboard", and a
-    // nav list reading "Scoreboard" is what made "Shadow" mean this page to him and sent him to
-    // /shadow instead.
-    const link = screen.getByRole("link", { name: /shadow scoreboard/i });
-    expect(link).toHaveAttribute("href", "/shadow-scoreboard");
-  });
-
-  it("still resolves the old /scoreboard path, to the same page", async () => {
-    // The permanent redirect. A rename with no redirect 404s every bookmark and every link the
-    // moment the owner makes one, and this is the cheap moment to add the redirect.
+  it("resolves /scoreboard to the engine scoreboard", async () => {
     await renderAppAt("/scoreboard");
 
+    // The h1 is rendered only once the read resolves, so this is the page and not its loading shell.
     expect(heading()).toBeInTheDocument();
+    // And the link that gets a reader there is present, and points at that same path.
+    expect(screen.getByRole("link", { name: /engine scoreboard/i })).toHaveAttribute(
+      "href",
+      "/scoreboard",
+    );
   });
 
   it("resolves /models to the models page", async () => {
@@ -184,7 +200,58 @@ describe("the sidebar link and the route agree", () => {
 
     expect(heading()).toBeNull();
     // The shell still renders, so the absence is the route's doing and not a crashed tree.
-    expect(screen.getByRole("link", { name: /shadow scoreboard/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /engine scoreboard/i })).toBeInTheDocument();
+  });
+});
+
+/**
+ * `/shadow-scoreboard` is a redirect, not a second route for the same component.
+ *
+ * This is the interesting failure in the whole change, and it is invisible from the page. A
+ * `Navigate` that points at its own path, or at a path that redirects back to it, produces a
+ * redirect loop: the router navigates forever and the reader sees a blank shell, while every other
+ * assertion in this file still passes because the sidebar renders. So three things are checked,
+ * and the middle one is the one that catches it:
+ *
+ *   1. The redirect LANDS ON THE CANONICAL COMPONENT -- the h1 is on screen. A redirect that
+ *      renders nothing would otherwise satisfy "the path changed" and pass.
+ *   2. The final path is `/scoreboard`. A loop does not settle here, and a redirect to some third
+ *      path would also fail.
+ *   3. The Scoreboard component is rendered ONCE. `<Navigate>` swaps itself out of the tree rather
+ *      than nesting, so a correct redirect never re-enters; a loop renders it over and over. The
+ *      spy is what makes that observable, because a loop in a jsdom test does not throw -- it just
+ *      stops settling.
+ *
+ * The spy is on the MODULE, not on a re-declared route. `App.tsx`'s own route table is still the
+ * only one in play; the mock replaces the component it points at, not the routing.
+ */
+describe("the /shadow-scoreboard redirect lands on the canonical route", () => {
+  it("renders the engine scoreboard itself, not a blank shell", async () => {
+    await renderAppAt("/shadow-scoreboard");
+
+    // The load-bearing assertion. A redirect to a path with no route, or to a route whose element
+    // is another redirect, renders nothing here and this fails.
+    expect(heading()).toBeInTheDocument();
+  });
+
+  it("settles on /scoreboard rather than re-entering itself", async () => {
+    await renderAppAt("/shadow-scoreboard");
+
+    expect(window.location.pathname).toBe("/scoreboard");
+    // And the loop guard: a self-referential Navigate would keep remounting this component.
+    expect(scoreboardRenders).toBe(1);
+  });
+
+  it("is a redirect and not a second route serving the same component", async () => {
+    // The duplication risk, pinned. Two `<Route>`s both pointing at `<Scoreboard />` would make
+    // both paths render the page, which is the ambiguity this rename exists to remove -- and it
+    // would be invisible to every other test here. What distinguishes them: at the alias the
+    // Scoreboard is NOT what the route table selected; the router swapped in a Navigate and then
+    // routed again. So exactly one Scoreboard render, and the path has moved on.
+    await renderAppAt("/shadow-scoreboard");
+
+    expect(scoreboardRenders).toBe(1);
+    expect(heading()).toBeInTheDocument();
   });
 });
 
@@ -226,9 +293,9 @@ describe("the two pages that share the word 'shadow'", () => {
     // has to be in this page's own header rather than only in the nav he has to go looking for.
     await renderAppAt("/shadow");
 
-    expect(screen.getByRole("link", { name: /open the shadow scoreboard/i })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /open the engine scoreboard/i })).toHaveAttribute(
       "href",
-      "/shadow-scoreboard",
+      "/scoreboard",
     );
   });
 

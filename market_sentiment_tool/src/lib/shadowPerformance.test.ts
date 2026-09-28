@@ -175,7 +175,11 @@ describe("the words a missing figure is given", () => {
   it("points the crypto page at the scoreboard by name, not by resemblance", () => {
     expect(NOT_THE_SCOREBOARD).toMatch(/crypto shadow timeline/i);
     expect(NOT_THE_SCOREBOARD).toMatch(/not the engine scoreboard/i);
-    expect(NOT_THE_SCOREBOARD).toMatch(/shadow scoreboard/i);
+    // "Engine Scoreboard", and NOT "Shadow Scoreboard". The sentence sends a reader to the
+    // page, so its name has to be that page's actual name -- and it must not reintroduce the word
+    // that caused the collision in the one place a reader is most likely to copy it from.
+    expect(NOT_THE_SCOREBOARD).toMatch(/Engine Scoreboard/);
+    expect(NOT_THE_SCOREBOARD).not.toMatch(/Shadow Scoreboard/);
   });
 });
 

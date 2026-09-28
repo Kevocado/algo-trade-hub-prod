@@ -135,10 +135,11 @@ describe("a read that failed with nothing to show", () => {
     // rename alone leaves him with nowhere to go.
     await renderPage(answerWith(503, { detail: MIGRATION_SENTENCE }));
 
-    // One link, and it is the right one. The header states the same sentence, so the count of 1
-    // also pins that the failed state does not render the disambiguation twice.
-    const link = screen.getByRole("link", { name: /Open the Shadow Scoreboard/i });
-    expect(link).toHaveAttribute("href", "/shadow-scoreboard");
+    // One link, and it is the right one: the CANONICAL /scoreboard, not the /shadow-scoreboard
+    // alias. The header states the same sentence, so the count of 1 also pins that the failed
+    // state does not render the disambiguation twice.
+    const link = screen.getByRole("link", { name: /Open the Engine Scoreboard/i });
+    expect(link).toHaveAttribute("href", "/scoreboard");
   });
 
   it("keeps a genuine fault distinguishable from a migration wait", async () => {
