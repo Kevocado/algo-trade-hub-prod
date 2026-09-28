@@ -12,9 +12,10 @@ import sys
 import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
+from tradehub.core.kalshi_feed import fetch_market
 from tradehub.data.cleveland_fed import fetch_nowcast_history
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.data.labor_inputs import load_labor_inputs, payroll_nowcasts
@@ -64,6 +65,10 @@ from tradehub.sports.scan import (
 log = logging.getLogger(__name__)
 SCAN_DEADLINE_SECONDS = 15 * 60
 CPI_SCAN_HOURS_ET = (8, 12, 16)  # 08:05 ET is the last run before the 08:25 ET release-day close
+# How many still-open cpi_nowcast rows `cpi_markets_not_open` may ask Kalshi about in one scan. A
+# bound on the request count, not a claim a reader ever sees, so it is a bare limit with no copy
+# attached: the only thing it can cost is one more hour of cleanup for the rows past it.
+CPI_LIVENESS_CHECK_LIMIT = 50
 _ET = ZoneInfo("America/New_York")
 
 
@@ -113,16 +118,90 @@ def apply_gate_statuses(edges: list[dict[str, Any]], statuses: dict[tuple[str, s
         row["gate_status"] = statuses.get((row["engine"], row.get("engine_version", "v0")), "SHADOW")
 
 
-def remove_closed_cpi_edges(client, now: datetime) -> None:
+def cpi_markets_not_open(client, now: datetime, fetch_market_fn) -> frozenset[str]:
+    """Tickers of the `cpi_nowcast` markets Kalshi no longer lists as open.
+
+    The second half of the retention claim, and the half `expires_at` cannot reach. A market
+    DELISTED or VOIDED before its close still carries a future `expires_at`, because `expires_at` is
+    the close we recorded when the row was written, and nothing rewrites it. So the closed-market
+    delete never fires for such a market and its row sits there describing a trade that can no
+    longer be placed -- on a page that says a row is kept only while its market is open
+    (`RETENTION_SENTENCE`, market_sentiment_tool/src/components/WithheldEdgesNotice.tsx). That
+    promise is true for every row that reaches the reader today; this is what keeps it that way for
+    the third state, the one the copy does not name.
+
+    Asks KALSHI rather than inferring from the row, and never the other way round. A row cannot
+    tell us its market is gone, and the tempting alternative -- delete anything not in today's open
+    list -- deletes for ever whenever a fetch half-fails, which is a silent delete by omission. So
+    this only ever reports a market Kalshi has positively said is not open:
+
+    * a 404 from `GET /markets/{ticker}` -- the market is not there any more, which is what a
+      delisting looks like from here;
+    * a market that resolves with a `status` other than `open`.
+
+    Everything else -- a 429, a timeout, a payload we cannot parse -- is NOT evidence, and leaves
+    the row alone. So the failure direction is the safe one: a Kalshi outage costs us the
+    cleanup for an hour and deletes nothing. The same reason the result is a plain `frozenset` and
+    not an exception: this is an input to lifecycle cleanup, not a scan step, and it must never turn
+    an hourly scan red.
+
+    Bounded by `CPI_LIVENESS_CHECK_LIMIT` and by `expires_at > now`, so the request count cannot
+    grow with the size of the table: the rows whose close has passed are already gone by the time
+    this runs, and the ones left are the ones still worth asking about.
+    """
+    try:
+        result = (
+            client.table("kalshi_edges").select("market_id")
+            .eq("engine", "cpi_nowcast")
+            .gt("expires_at", now.isoformat())
+            .limit(CPI_LIVENESS_CHECK_LIMIT)
+            .execute()
+        )
+    except Exception:
+        log.exception("scan could not read the live cpi_nowcast rows for a liveness check")
+        return frozenset()
+
+    not_open: set[str] = set()
+    for row in getattr(result, "data", None) or []:
+        ticker = (row or {}).get("market_id")
+        if not ticker:
+            continue
+        try:
+            market = fetch_market_fn(str(ticker))
+        except Exception as exc:  # noqa: BLE001 - any fetch failure is "we do not know"
+            if getattr(getattr(exc, "response", None), "status_code", None) == 404:
+                not_open.add(str(ticker))
+            continue
+        status = ((market or {}).get("market") or {}).get("status")
+        if isinstance(status, str) and status.strip().lower() != "open":
+            not_open.add(str(ticker))
+    return frozenset(not_open)
+
+
+def remove_closed_cpi_edges(client, now: datetime, *, not_open: Iterable[str] = ()) -> None:
     """Delete cpi_nowcast edges as soon as their market closes, on every hourly scan.
 
     One filtered DELETE rather than a SELECT followed by a DELETE per row: the predicate is
     entirely expressible in PostgREST, so the database does the comparison and the round trip
-    count does not grow with the number of closed markets.
+    count does not grow with the number of closed markets. Nothing here reads rows first, and
+    `not_open` arrives already computed -- `cpi_markets_not_open` is the only function that asks
+    Kalshi, and keeping it separate is what preserves the one-statement property below.
+
+    Two statements, because a market can stop being tradeable two ways and `expires_at` only knows
+    about one of them:
+
+    1. `expires_at <= now` -- the market closed. Unchanged, and still the common case.
+    2. `market_id IN not_open` -- Kalshi says the market is no longer open, and it was delisted or
+       voided BEFORE the close we recorded, so clause 1 will not fire for it until that date passes.
+       Until then the row describes a trade that can no longer be placed, which is exactly what the
+       reader-facing retention sentence promises it will not.
+
+    The second delete is skipped entirely when nothing is not-open, so the ordinary hourly scan
+    still issues one statement.
 
     This is also the BOUND on the retention claim the UI makes. No migration deletes the
-    historical cpi_nowcast rows, so they are all still there -- and a row whose market has closed
-    describes nothing anyone can act on, so it goes, and within the hour. A row is a record of
+    historical cpi_nowcast rows, so they are all still there -- and a row whose market is no longer
+    open describes nothing anyone can act on, so it goes, and within the hour. A row is a record of
     what the scan did while the market it measured was still open. The copy says exactly that much
     (`RETENTION_SENTENCE` in WithheldEdgesNotice.tsx) rather than the unbounded "the rows are not
     deleted", which this function makes false.
@@ -131,6 +210,12 @@ def remove_closed_cpi_edges(client, now: datetime) -> None:
         .eq("engine", "cpi_nowcast") \
         .lte("expires_at", now.isoformat()) \
         .execute()
+    tickers = sorted({str(t) for t in not_open if t})
+    if tickers:
+        client.table("kalshi_edges").delete() \
+            .eq("engine", "cpi_nowcast") \
+            .in_("market_id", tickers) \
+            .execute()
 
 
 def remove_closed_labor_edges(client, now: datetime) -> None:
@@ -164,11 +249,12 @@ def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
     The rows have to survive for that standing rule to mean anything -- a filter over rows that
     have already been deleted passes vacuously. What bounds that claim is the closed-market
     cleanup, and it is part of what the claim IS: `remove_closed_cpi_edges` deletes a cpi_nowcast
-    row on the first scan after its `expires_at`, so a row is kept while its market is open and is
-    gone within the hour after it closes. That is lifecycle cleanup of a market nobody can act on,
-    the same rule `remove_closed_labor_edges` applies, not hiding a losing engine. A row is a
-    record of what the scan did while the market it measured was still open; it is not a permanent
-    archive, and no copy on screen may say it is.
+    row on the first scan after its `expires_at`, or on the first scan after Kalshi reports the
+    market is no longer open (a delisting before that close), so a row is kept while its market is
+    open and is gone within the hour after it stops being open. That is lifecycle cleanup of a
+    market nobody can act on, the same rule `remove_closed_labor_edges` applies, not hiding a losing
+    engine. A row is a record of what the scan did while the market it measured was still open; it
+    is not a permanent archive, and no copy on screen may say it is.
     """
     for engine, produced in produced_by_engine.items():
         if engine not in {"weather", "gas", "labor_nowcast", "sports_nfl", "sports_cfb"}:
@@ -580,8 +666,13 @@ def main(
             log.exception("scan client initialization failed")
 
     if client is not None:
+        # Asked of Kalshi, not inferred from the row: a market delisted or voided before its close
+        # never satisfies `expires_at <= now`, so without this its row outlives the trade it
+        # described. `cpi_markets_not_open` swallows its own failures, so a Kalshi problem costs the
+        # cleanup for an hour and never turns the scan red.
+        not_open = cpi_markets_not_open(client, now, fetch_market)
         try:
-            remove_closed_cpi_edges(client, now)
+            remove_closed_cpi_edges(client, now, not_open=not_open)
         except Exception as exc:
             failures.append(f"cpi_nowcast.closed_cleanup: {type(exc).__name__}: {exc}")
             log.exception("scan closed CPI edge cleanup failed")

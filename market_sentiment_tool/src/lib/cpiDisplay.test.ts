@@ -1,17 +1,22 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CPI_CONTEXT_ROWS,
   NOT_RECORDED,
+  cpiComparableNote,
   cpiCoverageNote,
+  cpiEmptyNote,
   cpiGateNote,
   cpiHeadline,
   cpiRowNote,
   cpiTruncationNote,
   hoursText,
+  isComparableOnly,
   isDisplayOnly,
   nTrainText,
   nowcastMeasure,
   probMeasure,
+  readCount,
   sigmaText,
   stampText,
   statusText,
@@ -65,7 +70,9 @@ const payload = (extra: Partial<CpiDisplayResponse> = {}): CpiDisplayResponse =>
   total: 1,
   truncated: false,
   withheld_count: 0,
-  limit: 50,
+  read_count: 1,
+  comparable_only: false,
+  limit: CPI_CONTEXT_ROWS,
   offset: 0,
   ...extra,
 });
@@ -89,8 +96,9 @@ describe("figures", () => {
   });
 
   it("renders an absent figure as words, and never as a number", () => {
-    // The whole point. `useMarketEdges` still fabricates this zero with `?? 0` (filed, not fixed,
-    // at useMarketEdges.ts:47-49), and repeating it here would be the same defect one layer over.
+    // The whole point. `useMarketEdges` used to fabricate this same zero with `?? 0`, and repeating
+    // it here would be the same defect one layer over; that hook now returns null (see
+    // lib/edgeFigures.ts) and this page still renders an absence in words.
     for (const missing of [null, undefined, NaN, "0.4" as unknown as number]) {
       const m = probMeasure(missing);
       expect(m.value).toBeNull();
@@ -169,7 +177,9 @@ describe("obligation 2: the bounded read, and the rows withheld from the compari
   });
 
   it("says the list is not the whole set when it is not", () => {
-    const note = cpiTruncationNote(payload({ truncated: true, total: 200 }));
+    // `read_count` is the "rows were read" figure and is what the endpoint sends; on an unfiltered
+    // payload it is the same number as `total`, which is why this test is unchanged in shape.
+    const note = cpiTruncationNote(payload({ truncated: true, total: 200, read_count: 200 }));
     expect(note).toMatch(/truncated/i);
     expect(note).toMatch(/200/);
     expect(note).toMatch(/not the whole set/i);
@@ -189,13 +199,13 @@ describe("obligation 2: the bounded read, and the rows withheld from the compari
   });
 
   it("does not call a truncated total a count", () => {
-    const body = payload({ truncated: true, total: 200 });
+    const body = payload({ truncated: true, total: 200, read_count: 200 });
     expect(cpiCoverageNote(body)).toMatch(/at least 200 rows read/);
     expect(cpiCoverageNote(body)).not.toMatch(/^200 rows read/);
   });
 
   it("counts the page it is actually showing", () => {
-    expect(cpiCoverageNote(payload({ rows: [row(), row({ market_ticker: "b" })], total: 9 })))
+    expect(cpiCoverageNote(payload({ rows: [row(), row({ market_ticker: "b" })], total: 9, read_count: 9 })))
       .toMatch(/2 on this page/);
   });
 });
@@ -321,5 +331,121 @@ describe("suggestOnlyNote", () => {
   it("says nothing when the payload does not claim it", () => {
     expect(suggestOnlyNote(payload({ suggest_only: false }))).toBeNull();
     expect(suggestOnlyNote(null)).toBeNull();
+  });
+});
+
+/**
+ * The page stopped being a 50-row history on 2026-09-28, and the reason it could was that the
+ * FILTER MOVED TO THE ENDPOINT. These tests are about the copy that has to survive that: a short
+ * page is only honest if it still says what the short page left out.
+ *
+ * The failure being guarded is specific and was the reason for the change. With `comparable_only`
+ * on, the withheld rows are not merely un-compared, they are ABSENT. So nothing on screen would
+ * reveal that any were dropped: a 12-row list of comparable releases and a 12-row list picked at
+ * random from 200 would render identically. `withheld_count` is the only thing that tells them
+ * apart, which is why it is counted over the read and why the coverage note has to print it.
+ */
+describe("the comparable filter, and the disclosure that has to survive it", () => {
+  const comparablePayload = (extra: Partial<CpiDisplayResponse> = {}) =>
+    payload({
+      rows: [row({ market_ticker: "KXCPI-26SEP09-3.0" })],
+      total: 1,
+      read_count: 70,
+      withheld_count: 69,
+      comparable_only: true,
+      limit: CPI_CONTEXT_ROWS,
+      ...extra,
+    });
+
+  it("keeps saying what was withheld, even though none of it is on the page", () => {
+    // The obligation that matters more after the page got shorter, not less.
+    const note = cpiCoverageNote(comparablePayload());
+    expect(note).toMatch(/70 rows read/);
+    expect(note).toMatch(/1 of the 1 comparable on this page/);
+    expect(note).toMatch(/69 of the read have no market mid/);
+    expect(note).toMatch(/not listed/);
+  });
+
+  it("distinguishes the two withhold phrasings, so the page never says it is listing them", () => {
+    // Unfiltered: the row is on the page without a comparison. Filtered: it is not on the page.
+    // One string for both would be a lie in one of the two states.
+    expect(cpiCoverageNote(payload({ withheld_count: 4, total: 5, read_count: 5 }))).toMatch(
+      /4 of the read have no market mid, so they are listed without a comparison/,
+    );
+    expect(cpiCoverageNote(comparablePayload())).not.toMatch(/listed without a comparison/);
+  });
+
+  it("prints the number of rows READ, which is not `total` once the filter has run", () => {
+    // The reason `read_count` exists. `total` is 1 here; saying "1 row read" would be a different
+    // and much smaller number than the one that was read.
+    expect(readCount(comparablePayload())).toBe(70);
+    expect(cpiTruncationNote(comparablePayload({ truncated: true }))).toMatch(/70 rows were read/);
+  });
+
+  it("falls back to `total` for a payload that predates `read_count`", () => {
+    // A stale response must not make the page print a count it cannot support. `total` is the same
+    // number on an unfiltered payload, so nothing a reader can see changes.
+    const old = { ...payload({ total: 4 }), read_count: undefined } as unknown as CpiDisplayResponse;
+    expect(readCount(old)).toBe(4);
+    expect(cpiCoverageNote(old)).toMatch(/4 rows read/);
+  });
+
+  it("says the list is comparable-only, from the response's own flag", () => {
+    // Rendered from `comparable_only`, not from "the list happens to be short" -- a short list is
+    // not evidence of a filter, and a page that inferred one would be describing a window the
+    // response never said it had opened.
+    expect(isComparableOnly(comparablePayload())).toBe(true);
+    expect(cpiComparableNote(comparablePayload())).toMatch(/Comparable releases only, newest first/);
+    expect(cpiComparableNote(comparablePayload())).toMatch(new RegExp(`up to ${CPI_CONTEXT_ROWS} row`));
+    expect(cpiComparableNote(payload({ withheld_count: 3 }))).toBeNull();
+  });
+
+  it("does not claim the rows are 'the most recent comparable', which is only true at offset 0", () => {
+    // A sentence that is true of one page and false of the next is the window-misdescription the
+    // whole endpoint exists to prevent, and the cap is the response's own `limit`.
+    const note = cpiComparableNote(comparablePayload({ offset: 12 })) ?? "";
+    expect(note).not.toMatch(/most recent/i);
+    expect(note).toMatch(/newest first/);
+  });
+
+  it("marks the headline count as comparable, so '12 markets' is not read as the whole ledger", () => {
+    expect(cpiHeadline(comparablePayload()).value).toMatch(/^1 comparable market shown/);
+    expect(cpiHeadline(payload()).value).toMatch(/^1 market shown/);
+  });
+
+  it("does not say an empty comparable board is an empty ledger", () => {
+    // The green-and-wrong case this filter makes reachable: 70 rows read, none carrying a mid, and
+    // the old wording would have told a reader the ledger has no CPI markets in it.
+    const empty = comparablePayload({ rows: [], total: 0, read_count: 70, withheld_count: 70 });
+    const note = cpiEmptyNote(empty);
+    expect(note).toMatch(/70 CPI releases were read/);
+    expect(note).toMatch(/nothing to compare yet/);
+    expect(note).toMatch(/not an empty ledger/);
+    expect(note).not.toMatch(/No CPI markets in the ledger/);
+  });
+
+  it("still says the between-prints sentence when the ledger really is empty", () => {
+    const note = cpiEmptyNote(payload({ rows: [], total: 0, read_count: 0, withheld_count: 0 }));
+    expect(note).toMatch(/between prints is expected/i);
+  });
+
+  it("does not claim an empty board is empty when rows were read but none could be shown", () => {
+    const note = cpiEmptyNote(payload({ rows: [], total: 0, read_count: 12, withheld_count: 0 }));
+    expect(note).toMatch(/12 rows were read and none of them could be shown/);
+    expect(note).not.toMatch(/No CPI markets in the ledger/);
+  });
+});
+
+/**
+ * The row count is a product decision, so it is pinned as one: a low-teens number, with a floor
+ * under it. The complaint being answered was "we don't need to see everything that didn't make it",
+ * and a test that only asserted `rows.length` would have passed unchanged at 50 -- which is the
+ * defect restated as a test.
+ */
+describe("CPI_CONTEXT_ROWS", () => {
+  it("is a low-teens count, not the 50 the page used to ask for", () => {
+    expect(CPI_CONTEXT_ROWS).toBeLessThanOrEqual(15);
+    expect(CPI_CONTEXT_ROWS).toBeGreaterThanOrEqual(5);
+    expect(CPI_CONTEXT_ROWS).not.toBe(50);
   });
 });

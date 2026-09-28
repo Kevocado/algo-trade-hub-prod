@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 
 import CpiDisplay from "@/pages/CpiDisplay";
-import type { CpiDisplayResponse, CpiDisplayRow } from "@/lib/cpiDisplay";
+import { CPI_CONTEXT_ROWS, type CpiDisplayResponse, type CpiDisplayRow } from "@/lib/cpiDisplay";
 
 /**
  * The four obligations, as they land on the page.
@@ -61,7 +61,9 @@ const payload = (extra: Partial<CpiDisplayResponse> = {}): CpiDisplayResponse =>
   total: 1,
   truncated: false,
   withheld_count: 0,
-  limit: 50,
+  read_count: 1,
+  comparable_only: false,
+  limit: CPI_CONTEXT_ROWS,
   offset: 0,
   ...extra,
 });
@@ -74,6 +76,67 @@ function stubFetch(body: unknown, ok = true, status = 200) {
   });
   vi.stubGlobal("fetch", spy);
   return spy;
+}
+
+/**
+ * A stand-in for the endpoint that HONOURS `limit` and `comparable`, the two parameters the page
+ * requests.
+ *
+ * The point of driving the page through this rather than through a fixed response is that the
+ * rendered output then depends on WHAT THE PAGE ASKED FOR. A test that stubs one canned payload
+ * passes whether the page requests `?limit=12&comparable=true` or `?limit=50`, because the rows
+ * are handed to it either way -- so it cannot see the regression this change is about. Here, a page
+ * that stops asking for comparable rows gets the withheld ones back and renders them, and a page
+ * that stops asking for a short window gets 50 rows. Both fail below.
+ *
+ * It mirrors the server's rules -- filter, then window, then count the withheld over the whole read
+ * -- and `tests/test_cpi_display.py` pins the real endpoint to the same behaviour, so the two cannot
+ * quietly disagree about what `total` and `withheld_count` mean.
+ */
+function stubCpiEndpoint(rows: CpiDisplayRow[], extra: Partial<CpiDisplayResponse> = {}) {
+  const requested: { limit: number; offset: number; comparable: boolean }[] = [];
+  const spy = vi.fn().mockImplementation((url: string) => {
+    const query = new URL(String(url), "http://x").searchParams;
+    const limit = Number(query.get("limit") ?? 50);
+    const offset = Number(query.get("offset") ?? 0);
+    const comparable = query.get("comparable") === "true";
+    requested.push({ limit, offset, comparable });
+
+    const withheld = rows.filter((r) => r.comparable !== true);
+    const comparableRows = comparable ? rows.filter((r) => r.comparable === true) : rows;
+    const body: CpiDisplayResponse = {
+      as_of: "2026-09-27T13:00:00+00:00",
+      mode: "display",
+      engine: "cpi_nowcast",
+      suggest_only: true,
+      reason: "Not an edge engine. CPI is shown for context only.",
+      edge_pct: null,
+      gate_status: "SHADOW",
+      gate_checked: false,
+      gate_checked_reason: "No gate was consulted and none is expected.",
+      row_order: "as_of desc",
+      rows: comparableRows.slice(offset, offset + limit),
+      total: comparableRows.length,
+      truncated: false,
+      withheld_count: withheld.length,
+      read_count: rows.length,
+      comparable_only: comparable,
+      limit,
+      offset,
+      ...extra,
+    };
+    return Promise.resolve({ ok: true, status: 200, json: async () => body });
+  });
+  vi.stubGlobal("fetch", spy);
+  return { spy, requested };
+}
+
+/** The rows on screen, by the ticker in the first column. */
+function renderedTickers(): string[] {
+  return screen
+    .getAllByRole("row")
+    .slice(1) // the header row
+    .map((tr) => tr.querySelector("div")?.textContent ?? "");
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -152,7 +215,7 @@ describe("CpiDisplay", () => {
   });
 
   it("does not call a truncated total a count", async () => {
-    stubFetch(payload({ truncated: true, total: 200 }));
+    stubFetch(payload({ truncated: true, total: 200, read_count: 200 }));
     render(<CpiDisplay />);
     await screen.findByText(/^Truncated\./);
     expect(screen.getByText(/at least 200 rows read/)).toBeTruthy();
@@ -258,7 +321,7 @@ describe("CpiDisplay", () => {
 
   // ── the states a page can get wrong ────────────────────────────────────────
   it("renders an empty ledger as an empty board, and says an empty board is expected", async () => {
-    stubFetch(payload({ rows: [], total: 0, withheld_count: 0 }));
+    stubFetch(payload({ rows: [], total: 0, withheld_count: 0, read_count: 0 }));
     render(<CpiDisplay />);
     expect(await screen.findByText(/between prints is expected/i)).toBeTruthy();
   });
@@ -335,5 +398,112 @@ describe("CpiDisplay", () => {
     expect(screen.getByText(/training-set size not recorded/i)).toBeTruthy();
     expect(screen.queryByText(/fitted on/)).toBeNull();
     expect(screen.queryByText(/default, not fitted/)).toBeNull();
+  });
+});
+
+/**
+ * The page stopped being a 50-row history on 2026-09-28, and the filter that does it lives in the
+ * ENDPOINT, not here. That is the load-bearing decision in this change, so these tests are about
+ * the page's REQUEST and about what the request produces -- and they drive the page through a stub
+ * that honours `limit` and `comparable` rather than through one canned response, because a canned
+ * response renders the same rows whether the page asks for them or not and therefore cannot see
+ * this regression at all.
+ *
+ * The complaint: "we don't need to see everything that didn't make it". Measured on production, the
+ * endpoint returned 50 rows with 69 withheld across the read, and of the first three only one was
+ * comparable -- so most of the page was rows with nothing to set the nowcast against.
+ */
+describe("CpiDisplay — a short, recent, comparable view", () => {
+  /** A ledger shaped like production: mostly releases scanned before their first quote. */
+  const ledger = (comparable: number, withheld: number) => [
+    ...Array.from({ length: comparable }, (_, i) =>
+      row({ market_ticker: `CMP-${i}`, as_of: `2026-09-27T1${i % 10}:00:00+00:00` }),
+    ),
+    ...Array.from({ length: withheld }, (_, i) =>
+      row({
+        market_ticker: `WITHHELD-${i}`,
+        market_prob: null,
+        comparable: false,
+        withheld_reason: "No market mid was recorded for this release.",
+      }),
+    ),
+  ];
+
+  it("asks the endpoint for a low-teens window of comparable rows", async () => {
+    // The request IS the change. Asserting the rendered row count against a fixed payload would
+    // pass with the old `?limit=50` in place, which is why this asserts the parameters.
+    const { requested } = stubCpiEndpoint(ledger(20, 40));
+    render(<CpiDisplay />);
+    await waitFor(() => expect(requested).toHaveLength(1));
+
+    expect(requested[0].comparable).toBe(true);
+    expect(requested[0].limit).toBe(CPI_CONTEXT_ROWS);
+    expect(requested[0].offset).toBe(0);
+    expect(CPI_CONTEXT_ROWS).toBeLessThanOrEqual(15);
+  });
+
+  it("renders only comparable rows, and only as many as it asked for", async () => {
+    const { requested } = stubCpiEndpoint(ledger(20, 40));
+    const { container } = render(<CpiDisplay />);
+    await waitFor(() => expect(requested).toHaveLength(1));
+
+    const tickers = renderedTickers();
+    expect(tickers).toHaveLength(CPI_CONTEXT_ROWS);
+    expect(tickers.every((t) => t.startsWith("CMP-"))).toBe(true);
+    // Not one of the 40 rows that has nothing to compare, and not one of the 20 that does beyond
+    // the requested window. Both are "the page showed too much".
+    expect(container.textContent).not.toContain("WITHHELD-");
+  });
+
+  it("still states the withheld count, which is the only trace of the rows it did not show", async () => {
+    // The obligation that gets harder to keep the shorter the page gets: with the withheld rows
+    // absent from the table, a 12-row list of comparable releases and a 12-row list picked at random
+    // from 60 would look identical. This number is the difference.
+    const { requested } = stubCpiEndpoint(ledger(20, 40));
+    const { container } = render(<CpiDisplay />);
+    await waitFor(() => expect(requested).toHaveLength(1));
+
+    expect(container.textContent).toContain("60 rows read");
+    expect(container.textContent).toContain(`12 of the 20 comparable on this page`);
+    expect(container.textContent).toContain("40 of the read have no market mid");
+    expect(container.textContent).toContain("not listed");
+  });
+
+  it("does not pad up to the requested count when the ledger has fewer comparable rows", async () => {
+    // Three comparable releases in a 60-row ledger is the honest answer, and the count has to say
+    // so. A page that filled the rest of its window would be inventing rows.
+    const { requested } = stubCpiEndpoint(ledger(3, 57));
+    const { container } = render(<CpiDisplay />);
+    await waitFor(() => expect(requested).toHaveLength(1));
+
+    expect(renderedTickers()).toHaveLength(3);
+    expect(container.textContent).toContain("3 of the 3 comparable on this page");
+  });
+
+  it("says the list is comparable-only, so a short page explains itself", async () => {
+    const { requested } = stubCpiEndpoint(ledger(20, 40));
+    render(<CpiDisplay />);
+    await waitFor(() => expect(requested).toHaveLength(1));
+
+    expect(await screen.findByText(/Comparable releases only, newest first/)).toBeTruthy();
+  });
+
+  it("does not tell a reader an all-withheld ledger is an empty one", async () => {
+    const { requested } = stubCpiEndpoint(ledger(0, 60));
+    render(<CpiDisplay />);
+    await waitFor(() => expect(requested).toHaveLength(1));
+
+    expect(await screen.findByText(/none of them carries a market mid/i)).toBeTruthy();
+    expect(screen.queryByText(/No CPI markets in the ledger/i)).toBeNull();
+  });
+
+  it("still says the read was truncated when it was", async () => {
+    // Shortening the page must not cost the page its bounded-read disclosure.
+    const { requested } = stubCpiEndpoint(ledger(20, 40), { truncated: true, read_count: 200 });
+    render(<CpiDisplay />);
+    await waitFor(() => expect(requested).toHaveLength(1));
+
+    expect(await screen.findByText(/^Truncated\./)).toBeTruthy();
+    expect(screen.getByText(/not the whole set/i)).toBeTruthy();
   });
 });

@@ -3,7 +3,10 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 
 import { buildApiUrl } from "@/lib/api";
 import {
+  CPI_CONTEXT_ROWS,
+  cpiComparableNote,
   cpiCoverageNote,
+  cpiEmptyNote,
   cpiGateNote,
   cpiHeadline,
   cpiRowNote,
@@ -26,6 +29,15 @@ import {
  * above the table, in the gate line, and in every row -- because a model probability beside a market
  * price reads as an opportunity everywhere else in finance, and one heading does not overcome that.
  *
+ * The page asks for a SHORT, RECENT, COMPARABLE view: `limit=CPI_CONTEXT_ROWS&comparable=true`.
+ * That is a request, not a filter -- the filtering is done by the endpoint, because a rule that
+ * reorders or hides data is not allowed to live in a component, and a client-side filter would
+ * describe a window the response never described. See `CPI_CONTEXT_ROWS` for why the count is 12.
+ *
+ * The obligations below are unchanged by that, and one of them matters MORE because of it: the
+ * rows the page no longer shows are still counted, and a page that hides something is obliged to
+ * say what it hid. The read was shortened; the disclosure was not.
+ *
  * The four claims the endpoint makes about itself are rendered here, and each of them is a claim a
  * reader would otherwise have to assume:
  *
@@ -35,7 +47,8 @@ import {
  *     engine has not passed the promotion gate yet", which is exactly the pending reading.
  *   * the read was TRUNCATED, rather than quietly showing the newest 200 rows as if they were all
  *     of them;
- *   * the rows WITHHELD FROM THE COMPARISON, counted over the whole read, each with its reason;
+ *   * the rows WITHHELD FROM THE COMPARISON, counted over the whole read, each with its reason --
+ *     and counted whether or not they are on the page;
  *   * each row's ERROR MODEL PROVENANCE, so a probability produced from the engine's hardcoded
  *     fallback sigma is not sitting beside a fitted one looking identical; and
  *   * underneath all of it, a figure the scan did not record is rendered as words. Never as 0,
@@ -103,7 +116,11 @@ export default function CpiDisplay() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(buildApiUrl("/api/cpi-display?limit=50"))
+    // `comparable=true` is the whole point of the request, and it is asked for HERE rather than
+    // applied to the rows that come back. A component that filtered its own response would be
+    // deciding which rows exist, and `withheld_count` -- counted over the read -- would then be a
+    // number the page had rendered without ever having been shown the rows behind it.
+    fetch(buildApiUrl(`/api/cpi-display?limit=${CPI_CONTEXT_ROWS}&comparable=true`))
       .then(async (response) => {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload?.detail || `Request failed with status ${response.status}`);
@@ -158,6 +175,7 @@ export default function CpiDisplay() {
   const gate = cpiGateNote(data);
   const truncation = cpiTruncationNote(data);
   const suggestOnly = suggestOnlyNote(data);
+  const comparable = cpiComparableNote(data);
 
   return (
     <div className="p-8 space-y-8">
@@ -196,18 +214,22 @@ export default function CpiDisplay() {
         </div>
       )}
 
+      {comparable && (
+        <p className="rounded-lg border border-slate-800 bg-slate-900/40 p-3 text-xs text-slate-300">
+          {comparable}
+        </p>
+      )}
+
       <p className="text-xs text-slate-500">{cpiCoverageNote(data)}</p>
 
       {data.rows.length === 0 ? (
-        <p className="text-slate-400">
-          No CPI markets in the ledger right now. The nowcast is published on a schedule, so an empty
-          board between prints is expected rather than a fault.
-        </p>
+        <p className="text-slate-400">{cpiEmptyNote(data)}</p>
       ) : (
         <table className="w-full text-sm">
           <caption className="sr-only">
             CPI nowcast against the market, for context. This engine is not an edge engine and no
-            edge is shown; rows without a recorded market mid are not comparisons.
+            edge is shown. Only releases carrying a market mid are listed, and the count of those
+            that are not is given above the table.
           </caption>
           <thead>
             <tr className="border-b border-slate-800">

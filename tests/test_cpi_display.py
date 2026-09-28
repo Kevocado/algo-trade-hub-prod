@@ -605,3 +605,208 @@ def test_the_endpoint_is_registered_after_every_other_api_route(tmp_path):
 
     assert api_routes[-1] == "/api/cpi-display", api_routes
     assert paths.index(api_routes[-1]) < paths.index("")
+
+
+# ── the comparable filter: the page stopped showing rows with nothing to compare ───
+#
+# Measured on production on 2026-09-28: `GET /api/cpi-display` returned 50 rows with
+# `withheld_count: 69` across the read, and of the first three rows only one had `comparable: true`.
+# The page's job is the COMPARISON -- nowcast against the market -- so a release with no market mid
+# has nothing to set the nowcast against, and 50 rows of which two thirds are that is padding.
+#
+# The filter lives HERE rather than in the component, for two reasons that both come from the review
+# this endpoint was built under: no rule that filters or reorders data may live in TSX, and a
+# client-side filter would describe a window the response never described -- `total` would count rows
+# the response did not send. The page asks for it (see CPI_CONTEXT_ROWS in
+# market_sentiment_tool/src/lib/cpiDisplay.ts); these tests pin what asking gets it.
+
+def _mixed(n_comparable: int, n_withheld: int) -> list[dict]:
+    """A ledger shaped like production: a minority of releases carry a market mid."""
+    return [
+        _row(f"CMP-{i:03d}", our=0.55, market=0.52, nowcast=0.3, as_of=_stamp(i))
+        for i in range(n_comparable)
+    ] + [
+        _row(f"WITHHELD-{i:03d}", our=0.41, market=None, nowcast=0.3, as_of=_stamp(1000 + i))
+        for i in range(n_withheld)
+    ]
+
+
+def test_comparable_true_keeps_only_the_rows_that_carry_a_market_mid():
+    body = _get(_mixed(20, 40), limit=50, comparable=True)[0].json()
+
+    assert body["rows"], "precondition: there is something comparable to return"
+    assert all(r["comparable"] is True for r in body["rows"])
+    assert all(r["market_prob"] is not None for r in body["rows"])
+    assert not [r for r in body["rows"] if str(r["market_ticker"]).startswith("WITHHELD-")]
+
+
+def test_the_default_read_is_unchanged_so_the_whole_ledger_is_still_readable():
+    """Opt-in, not a policy change to the endpoint.
+
+    A reader that wants the history can still have it; the page is simply no longer the thing that
+    asks for 50 rows of it. This is what makes the filter a request rather than a clamp.
+    """
+    body = _get(_mixed(20, 40), limit=50)[0].json()
+
+    assert len(body["rows"]) == 50
+    assert [r for r in body["rows"] if not r["comparable"]], "an unfiltered read still carries them"
+    assert body["comparable_only"] is False
+
+
+def test_the_filter_is_echoed_so_a_short_page_can_say_why_it_is_short():
+    body = _get(_mixed(20, 40), limit=12, comparable=True)[0].json()
+
+    assert body["comparable_only"] is True
+    # Absent echo and a client cannot tell "this is all of them" from "this is the subset", and
+    # would then be rendering a window the response never said it had opened.
+    assert "comparable_only" in body
+
+
+def test_total_counts_what_the_response_describes_and_not_what_it_read():
+    """The claim about the data, and the reason `read_count` exists.
+
+    `total` was the number of rows read. Once rows are filtered out of the response, that number
+    would count rows the response did not include -- so it is the size of the comparable set, and
+    the read's own size travels separately.
+    """
+    body = _get(_mixed(20, 40), limit=12, comparable=True)[0].json()
+
+    assert body["total"] == 20, "20 comparable rows were read, and that is what `total` claims"
+    assert len(body["rows"]) == 12
+    assert body["read_count"] == 60, "60 rows were read; that is a different number from `total`"
+
+
+def test_read_count_is_the_sum_of_the_comparable_and_the_withheld_which_is_checkable():
+    """The one relation a reader can verify, and the one that makes the two counts add up.
+
+    Without it the page prints "N rows read" beside two counts that do not reconcile with it, and
+    nothing would catch the drift.
+    """
+    for comparable, limit in ((True, 12), (True, 200), (False, 50)):
+        body = _get(_mixed(20, 40), limit=limit, comparable=comparable)[0].json()
+        if comparable:
+            assert body["total"] + body["withheld_count"] == body["read_count"], body
+        else:
+            # Unfiltered, `total` IS the read: the withheld rows are in `rows`, not beside it.
+            assert body["total"] == body["read_count"], body
+
+
+def test_the_withheld_count_survives_the_filter_because_that_is_the_whole_point():
+    """A shorter page is not a licence to stop saying what it withheld.
+
+    This is the obligation the change puts most at risk: with the withheld rows absent from `rows`,
+    nothing in the payload but this number would reveal that any were dropped. A page that reported
+    `withheld_count: 0` alongside a comparable-only list would be claiming it read 20 rows when it
+    read 60.
+    """
+    body = _get(_mixed(20, 40), limit=12, comparable=True)[0].json()
+
+    assert body["withheld_count"] == 40
+    assert body["withheld_count"] > 0, "counting after the filter would have made this 0"
+    # Nothing left on the page could show it, which is why it is the payload's job.
+    assert not [r for r in body["rows"] if not r["comparable"]]
+
+
+def test_the_window_indexes_the_comparable_set_rather_than_the_raw_read():
+    """Page 2 has to reach the comparable row a reader would have scrolled to.
+
+    Filtering AFTER the window would make `offset` count withheld rows, so the first two pages
+    together would show half as many comparable rows as the first one alone -- and a reader paging
+    through would keep meeting the same rows.
+    """
+    ledger = _mixed(20, 40)
+    first = _get(ledger, limit=5, offset=0, comparable=True)[0].json()
+    second = _get(ledger, limit=5, offset=5, comparable=True)[0].json()
+
+    assert all(str(r["market_ticker"]).startswith("CMP-") for r in second["rows"])
+    overlap = {r["market_ticker"] for r in first["rows"]} & {r["market_ticker"] for r in second["rows"]}
+    assert not overlap, f"the two pages repeat rows: {sorted(overlap)}"
+
+
+def test_a_comparable_read_that_finds_nothing_says_so_rather_than_reporting_an_empty_ledger():
+    """The green-and-wrong case this filter makes reachable.
+
+    60 rows read, none of them carrying a market mid. `rows: []` with `total: 0` and
+    `withheld_count: 0` would render as "no CPI markets in the ledger right now", which is a
+    statement about the data and a false one. The numbers below are what the page's empty state
+    needs in order to tell the two apart.
+    """
+    body = _get(_mixed(0, 60), comparable=True)[0].json()
+
+    assert body["rows"] == []
+    assert body["total"] == 0
+    assert body["read_count"] == 60
+    assert body["withheld_count"] == 60
+
+
+def test_a_nonsense_comparable_value_is_rejected_rather_than_silently_reading_as_false():
+    """A typo in the query must not quietly turn the page back into the padded one.
+
+    `comparable=maybe` defaulting to false would be a 50-row page and a 200 OK, which is the padded
+    view with nothing on it saying so. Rejecting it puts the mistake where it can be seen; a
+    recognised spelling is still accepted, so a caller is not pushed towards quoting a number.
+    """
+    for bad in ("maybe", "", "2"):
+        assert _get([], comparable=bad)[0].status_code == 422, bad
+
+    body = _get(_mixed(3, 1), limit=12, comparable="true")[0].json()
+    assert body["comparable_only"] is True
+    assert all(r["comparable"] for r in body["rows"])
+    assert _get(_mixed(3, 1), limit=12, comparable="false")[0].json()["comparable_only"] is False
+
+
+def test_the_page_row_count_is_a_low_teens_number_the_endpoint_serves_exactly():
+    """The product decision, pinned across the two layers that have to agree on it.
+
+    The count lives in ONE place -- `CPI_CONTEXT_ROWS` in market_sentiment_tool/src/lib/cpiDisplay.ts,
+    which is what the page puts in its request URL -- and this reads it rather than keeping a second
+    copy here that could drift. The bounds below are the decision: a short, recent, comparable view
+    for context, and NOT the 50 this replaced.
+    """
+    import re
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "market_sentiment_tool" / "src" / "lib" / "cpiDisplay.ts"
+    ).read_text()
+    found = re.search(r"export const CPI_CONTEXT_ROWS = (\d+);", source)
+    assert found, "CPI_CONTEXT_ROWS is gone, so the page's row count is no longer stated anywhere"
+
+    count = int(found.group(1))
+    assert 5 <= count <= 15, (
+        f"the page asks for {count} comparable rows. The decision was a low-teens count: three to "
+        f"four CPI scan runs, enough to see the nowcast/market pair at more than one timestamp and "
+        f"short of a two-month history. 50 is what this replaced."
+    )
+
+    body = _get(_mixed(60, 140), limit=count, comparable=True)[0].json()
+    assert len(body["rows"]) == count
+    assert body["limit"] == count
+    assert all(r["comparable"] for r in body["rows"])
+
+
+def test_the_bounded_read_is_still_reported_when_the_page_filtered():
+    """`truncated` is an obligation of its own and the filter must not have cost it its meaning.
+
+    A filtered read can be truncated in exactly the same way an unfiltered one is: the ledger holds
+    more rows behind the bound. The page has to keep saying so rather than reading a short list as
+    the whole set.
+    """
+    scan = api_main.CPI_ROW_SCAN
+    rows = [
+        _row(f"CMP-{i:04d}", our=0.5, market=0.5, nowcast=0.3, as_of=_stamp(i))
+        for i in range(scan + 30)
+    ]
+    body = _get(rows, limit=12, comparable=True)[0].json()
+
+    assert body["truncated"] is True
+    assert body["total"] == scan
+    assert body["read_count"] == scan
+    assert body["withheld_count"] == 0
+
+
+def test_an_offset_past_the_bound_is_still_rejected_with_the_filter_on():
+    """The 422 is the shape that keeps "not measured" and "measured, nothing there" apart, and a
+    filtered read can no more return an empty window past the bound than an unfiltered one can."""
+    assert _get(_mixed(300, 30), offset=200, limit=50, comparable=True)[0].status_code == 422
