@@ -25,11 +25,11 @@ DATA: FREE - https://fred.stlouisfed.org/docs/api/api_key.html
 import fredapi
 import os
 from datetime import datetime
-from dotenv import load_dotenv
 
 from tradehub.core.kalshi_feed import get_economics_markets, get_kalshi_event_url
 
-load_dotenv()
+# No `load_dotenv()` at import time -- see `tradehub.core.env`. `MacroEngine`
+# reads FRED_API_KEY from the environment when it is constructed.
 
 
 class MacroEngine:

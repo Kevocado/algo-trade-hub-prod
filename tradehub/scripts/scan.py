@@ -573,8 +573,15 @@ def main(
     client=None,
     deadline: float | None = None,
 ) -> int:
+    from tradehub.core.env import load_local_env
     from tradehub.core.supabase_client import get_client, upsert_opportunities
     from tradehub.predictions import record_predictions
+
+    # Entry point: load the developer-local `.env` explicitly rather than at
+    # import time, so importing this module (the test suite does) cannot pull a
+    # local secrets file into `os.environ`. A no-op in production. See
+    # `tradehub.core.env`.
+    load_local_env()
 
     now = now or datetime.now(timezone.utc)
     deadline = time.monotonic() + SCAN_DEADLINE_SECONDS if deadline is None else float(deadline)

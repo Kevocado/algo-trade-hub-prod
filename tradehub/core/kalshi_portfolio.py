@@ -13,16 +13,17 @@ import requests
 import os
 import time
 import base64
+from pathlib import Path
+
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
-from dotenv import load_dotenv
-from pathlib import Path
 
 from tradehub.markets import quote_cents
 
-root_dir = Path(__file__).parent.parent
-load_dotenv(dotenv_path=root_dir / '.env', override=True)
-
+# No `load_dotenv()` at import time -- see `tradehub.core.env`. `root_dir` is
+# only a base path for locating the private key file; it no longer doubles as
+# the `.env` location.
+root_dir = Path(__file__).resolve().parent.parent
 KALSHI_API_BASE = os.getenv("KALSHI_API_BASE", "https://demo-api.kalshi.co").strip('"').strip("'")
 KALSHI_BASE_URL = f"{KALSHI_API_BASE}/trade-api/v2"
 

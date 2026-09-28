@@ -13,6 +13,7 @@ Then visit: http://localhost:8000/docs  (Swagger UI — auto-generated)
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
@@ -20,6 +21,7 @@ from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from tradehub.core.env import load_local_env
 from tradehub.api.schemas import (
     HealthResponse, Position, PnLSummary,
     Opportunity, NWSReading, ShadowPerformanceResponse,
@@ -102,12 +104,25 @@ def _table_fault(table: str, exc: Exception) -> HTTPException:
 
 
 # ── App ─────────────────────────────────────────────────────────────────────
+# The developer-local `.env` is loaded here, in the app's lifespan, and NOT at
+# import time. That placement is the whole point: a lifespan handler runs when
+# uvicorn actually boots the server, so `import tradehub.api.main` -- which the
+# test suite does, several times -- leaves `os.environ` alone. See
+# `tradehub.core.env` for why that matters. In production this is a no-op:
+# the container gets real variables from compose and ships no `.env`.
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    load_local_env()
+    yield
+
+
 app = FastAPI(
     title="Algo Trade Hub API",
     description="Thin API layer over the Kalshi prediction engine. Paper trading only until 200+ trade +EV proof.",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # ── CORS ─────────────────────────────────────────────────────────────────────

@@ -7,12 +7,6 @@ import threading
 import numpy as np
 from collections import deque
 from datetime import datetime, timezone
-from dotenv import load_dotenv
-from pathlib import Path
-
-# Load .env
-root_dir = Path(__file__).parent.parent.parent
-load_dotenv(dotenv_path=root_dir / '.env', override=True)
 
 
 class MicrostructureEngine:

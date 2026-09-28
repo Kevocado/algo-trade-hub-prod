@@ -18,9 +18,6 @@ from google import genai
 import os
 import json
 from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
 
 
 class AIValidator:

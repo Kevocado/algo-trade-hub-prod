@@ -1,12 +1,6 @@
 from google import genai
 import os
 import json
-from dotenv import load_dotenv
-from pathlib import Path
-
-# Load .env
-root_dir = Path(__file__).parent.parent
-load_dotenv(dotenv_path=root_dir / '.env', override=True)
 
 class NewsAnalyzer:
     """

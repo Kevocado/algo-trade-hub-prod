@@ -62,6 +62,90 @@ def _validate_env_syntax(path: Path) -> list[str]:
     return errors
 
 
+def load_env_values(module_file: str) -> EnvBootstrap:
+    """Parse the canonical `.env` for `module_file` WITHOUT touching `os.environ`.
+
+    Same discovery and syntax validation as `load_canonical_env`, but the result
+    is returned rather than installed into the process environment. This is what
+    library modules should use: reading a developer's local secrets file must not
+    be a side effect of `import`. A process that genuinely wants the values calls
+    `load_canonical_env` (or `export_canonical_env`) from its entrypoint.
+
+    Added because `orchestrator` and `mcp_server` used to call
+    `load_canonical_env` at module scope, which made importing either of them --
+    something the test suite does, and something `tradehub.scripts.*` did -- pull
+    a gitignored `.env` into `os.environ` for the whole session.
+    """
+    for source_label, candidate in env_candidates_for(module_file):
+        if not candidate.is_file():
+            continue
+        syntax_errors = _validate_env_syntax(candidate)
+        if syntax_errors:
+            return EnvBootstrap(
+                env_path=candidate,
+                source_label=source_label,
+                parsed_values={},
+                syntax_errors=syntax_errors,
+            )
+        parsed = {
+            key: str(value)
+            for key, value in (dotenv_values(candidate) or {}).items()
+            if key and value is not None
+        }
+        return EnvBootstrap(
+            env_path=candidate,
+            source_label=source_label,
+            parsed_values=parsed,
+            syntax_errors=[],
+        )
+
+    return EnvBootstrap(env_path=None, source_label="missing", parsed_values={}, syntax_errors=[])
+
+
+_VALUES_CACHE: dict[str, EnvBootstrap] = {}
+
+
+def _values_for(module_file: str) -> dict[str, str]:
+    key = str(Path(module_file).resolve())
+    if key not in _VALUES_CACHE:
+        _VALUES_CACHE[key] = load_env_values(module_file)
+    return _VALUES_CACHE[key].parsed_values
+
+
+def env(name: str, default: str = "", *, module_file: str) -> str:
+    """`os.getenv` with a non-mutating fallback to the canonical `.env`.
+
+    Precedence matches the previous `load_canonical_env(override=True)` behaviour
+    -- the file wins over a variable already in the environment -- so local
+    development sees exactly what it saw before. The difference is that nothing is
+    written to `os.environ`; the value is resolved per read and cached per file.
+
+    `os.environ` is still consulted first for any key the file does not define,
+    which is what keeps production (real variables, no `.env` in the image)
+    working unchanged.
+    """
+    values = _values_for(module_file)
+    if name in values:
+        return values[name]
+    return os.getenv(name, default)
+
+
+def env_flag(name: str, default: str = "false", *, module_file: str) -> bool:
+    return env(name, default, module_file=module_file).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def export_canonical_env(module_file: str) -> EnvBootstrap:
+    """Install the canonical `.env` into `os.environ`. Entrypoints only.
+
+    Deliberately explicit: a process that wants the developer's local values
+    installs them at start-up, and no library import ever does.
+    """
+    bootstrap = load_canonical_env(module_file)
+    for key, value in bootstrap.parsed_values.items():
+        os.environ[key] = value
+    return bootstrap
+
+
 def load_canonical_env(module_file: str) -> EnvBootstrap:
     for source_label, candidate in env_candidates_for(module_file):
         if not candidate.is_file():
