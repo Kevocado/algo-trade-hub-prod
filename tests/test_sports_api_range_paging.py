@@ -258,6 +258,40 @@ def test_within_tier_edges_descend_across_page_boundaries():
     assert edges == sorted(edges, reverse=True), "edges are not descending across the page boundary"
 
 
+def test_within_tier_scores_descend_across_page_boundaries():
+    """The same guarantee on the sort key that is actually in force when the feed publishes a sigma.
+
+    `test_within_tier_edges_descend_across_page_boundaries` above still passes unchanged, and that is
+    the point rather than an oversight: with no sigma published, the confidence score is `None` and
+    the fallback IS the raw edge, so the ordering the old key produced is the ordering the new key
+    produces. This is the case that key cannot express.
+
+    Every row carries the SAME edge on purpose. On raw edge alone the confident and the vague rows
+    are indistinguishable, so an ordering that puts them in confidence order can only have come from
+    the score -- and the 150/150 split is placed to straddle the page boundary, because a sort
+    applied per offset window would interleave the two blocks inside each page.
+    """
+    rows = []
+    for i in range(300):
+        row = _edge(i, tier="top_pick", edge_pct=0.10)
+        # 0.10/0.015 = 6.7 (confident) ahead of 0.10/0.15 = 0.7 (vague).
+        row["raw_payload"]["sigma"] = 0.015 if i < 150 else 0.15
+        rows.append(row)
+    client, _ = _client(rows)
+    body1 = client.get("/api/sports-edges", params={"limit": 100}).json()
+    body2 = client.get("/api/sports-edges", params={"limit": 100, "offset": 100}).json()
+    assert body1["ranking"] == "edge_sigma", "these rows have a sigma, so the score ranked them"
+    confident = {f"T{i:05d}" for i in range(150)}
+    ids = [e["market_id"] for e in body1["edges"] + body2["edges"]]
+    assert len(ids) == 200
+    assert all(i in confident for i in ids[:150]), (
+        f"a vague row outranked a confident one across the page boundary: {ids[:8]}..."
+    )
+    assert not any(i in confident for i in ids[150:]), (
+        f"a confident row was stranded below the page boundary: {ids[145:155]}"
+    )
+
+
 @pytest.mark.parametrize("table", ["sports_reviews", "predictions"])
 def test_review_and_settlement_reads_are_paged_too(table):
     # 1500 rows against a 1000-row cap: one full page, then a short second page that ends the

@@ -70,12 +70,26 @@ def test_started_games_are_reported_not_silently_dropped():
 
 
 def test_a_game_that_has_not_started_yet_is_not_skipped():
-    """The boundary: exactly-at-kickoff counts as started, one second earlier does not."""
+    """The started check's boundary: exactly-at-kickoff counts as started, one second earlier does not.
+
+    `min_hours_to_start` is opened to 0 for the first two calls, and that is the point rather than a
+    convenience. A game one second from kickoff is inside the near bound, so under the shipped config
+    the scan now drops it -- correctly, and for a different reason than the one under test. Leaving
+    the default in place would mean this test no longer probes `start_utc <= now` at all: it would
+    assert on the near bound's behaviour while claiming to pin the started check. With the near bound
+    out of the way exactly one thing varies, which is the only way a boundary assertion means
+    anything.
+    """
+    import dataclasses
+
     from tradehub.sports import scan as sports_scan
     from tradehub.sports.config import load_sport_config
 
     feed, markets = _feed("nfl"), _markets("nfl")
-    cfg = load_sport_config("nfl")
+    base = load_sport_config("nfl")
+    cfg = dataclasses.replace(
+        base, edge=dataclasses.replace(base.edge, params={**base.edge.params, "min_hours_to_start": 0})
+    )
     kickoff = datetime(2026, 9, 27, 17, 0, tzinfo=timezone.utc)
     at_start = sports_scan.scan_sport(cfg, markets, feed, kickoff)
     assert all(e.get("game_id") != STARTED_GAME for e in at_start.edges), (
@@ -87,6 +101,18 @@ def test_a_game_that_has_not_started_yet_is_not_skipped():
     assert [e for e in one_second_early.edges if e.get("game_id") == STARTED_GAME], (
         "a game one second before kickoff produced no edges"
     )
+    # And under the shipped config the same game is dropped for the OTHER reason, which is what pins
+    # the two exclusions as independent facts rather than one thing under two names.
+    near = sports_scan.scan_sport(base, markets, feed, kickoff - timedelta(seconds=1))
+    assert near.report["games_started"] == 0, near.report
+    assert [e for e in near.edges if e.get("game_id") == STARTED_GAME] == [], (
+        "a game 1s from kickoff produced an edge under the shipped window"
+    )
+    assert near.too_soon >= 1, (
+        f"a game 1s from kickoff is inside min_hours_to_start, so it belongs to the near bound: "
+        f"too_soon={near.too_soon} too_far={near.too_far}"
+    )
+    assert near.too_far == 0
 
 
 # ── the delete filters on the game start, not the market close ─────────────────

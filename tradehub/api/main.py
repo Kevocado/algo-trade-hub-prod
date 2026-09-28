@@ -28,7 +28,7 @@ from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
 from tradehub.gate_status import latest_gate_statuses
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
-from tradehub.sports.scan import edge_row
+from tradehub.sports.scan import edge_row, edge_sigma_score
 from tradehub.sports.scorecard import reviewer_scorecard
 
 log = logging.getLogger(__name__)
@@ -377,6 +377,11 @@ def get_sports_edges(
         # Whole-set candidate count. A client cannot derive it from one page, and deriving it is
         # what made the "everything was rejected" banner wrong on every page after the first.
         "candidate_count": candidate_count,
+        # Which ranking produced the order above, over the WHOLE filtered set rather than this page:
+        # a sigma on page 3 is a sigma the sort used, and a page-local count would report `raw_edge`
+        # while rows were being scored. The page states it, because claiming a confidence ranking it
+        # is not applying is worse than never claiming one.
+        "ranking": _ranking_mode(candidates),
         "reviewer_scorecard": reviewer_scorecard(reviews, results),
     }
 
@@ -386,10 +391,20 @@ def _tier_of(row: dict) -> str | None:
 
 
 def _sports_rank(row: dict) -> tuple[int, int, float]:
-    """Sort key: top_pick, then any other candidate, then the rest; edge_pct descending.
+    """Sort key: top_pick, then any other candidate, then the rest; then the confidence score.
 
     A `filtered` row is one the candidate filter rejected, so it ranks below every candidate
-    regardless of its edge — a large gap the filter already refused should not lead the board.
+    regardless of its edge — a large gap the filter already refused should not lead the board. That
+    grouping is the outer key and the confidence score only ever orders rows WITHIN it.
+
+    Within a tier, the sort is on `edge_sigma_score` when the feed published a sigma, because two
+    equal edges at different confidences are not equal claims. The score is capped, floored and
+    `None` when there is no sigma, and the fallback is the raw edge: NOT 0.0, which would sort the
+    row last in its tier and read as "the least interesting pick here" — a claim, made by a
+    fallback, about a row whose confidence is merely unknown.
+
+    The stored column is `edge_pct` (this runs before `edge_row`); the same number is published to
+    clients as `rank_edge_pct`, which is why the fallback is that number.
     """
     tier = _tier_of(row)
     if tier == "top_pick":
@@ -398,7 +413,59 @@ def _sports_rank(row: dict) -> tuple[int, int, float]:
         group = 1
     else:
         group = 2
-    return group, _TIER_ORDER.get(tier, 9), -float(row.get("edge_pct") or 0)
+    score = edge_sigma_score(row.get("edge_pct"), (row.get("raw_payload") or {}).get("sigma"))
+    if score is None:
+        # A partly-publishing feed compares INCOMMENSURABLE UNITS in this one key, deliberately, and
+        # the ordering it produces can INVERT the board -- not merely bias it toward the scored rows
+        # at equal edge, which is how this used to be described and which undersells it. A scored
+        # row's key is a z-score; an unscored row's is its edge in decimal. So the comparison is
+        # score-vs-edge, not score-vs-score, and those are not two numbers on one scale: a scored
+        # 2pp edge at sigma 0.001 scores 20.0 and outranks an unscored 40pp edge outright, and the
+        # row that leads its tier is the one the 20.0 cap invented. The cap is the tell -- a
+        # saturated score is a value the feature refused to measure precisely, and here it is
+        # out-measuring a real 40pp disagreement.
+        #
+        # Every one of those terms is reachable: `sigma_floor` is 0.005, and a predictor publishing
+        # a width of 0.1pp on a genuine edge produces exactly 20.0. So this is a latent inversion
+        # that fires on the first run where one sport publishes a sigma and another row does not --
+        # which is the same run on which the page's sentence starts claiming a confidence ranking.
+        #
+        # The alternative is inventing a sigma for the row that has none, which is the one thing
+        # this feature must never do -- a made-up sigma ranks confidently off nothing, and
+        # 0.10 / 0.005 is the cap. So the bias stands, it is recorded here rather than left to be
+        # discovered, and the page's sentence says it out loud ("...wherever the feed publishes one,
+        # and by raw edge for the rest"), because a reader comparing a 4pp z-scored row against a
+        # 4pp unscored one is owed the reason one of them led. The disclosed sentence is what makes
+        # this acceptable rather than a defect: the page does not claim a total order it cannot
+        # deliver, it names the fallback and the fact that the two are not on one scale.
+        score = float(row.get("edge_pct") or 0)
+    return group, _TIER_ORDER.get(tier, 9), -score
+
+
+def _ranking_mode(rows: list[dict]) -> str:
+    """Which ranking the response actually used, so the page can say so.
+
+    Reads the STORED row, not the served one, and that is not incidental: `sports.scan._edge_row` is
+    what writes `raw_payload["sigma"]` at all, and `edge_row` deliberately withholds sigma from the
+    payload the page receives. So this is the only place the number exists, and it is also the only
+    place the ranking can honestly be described from.
+
+    Reporting the mode rather than implying sigma always applies is the whole point: a page that
+    claims to rank by confidence while ranking by raw edge is worse than one that never claimed it.
+
+    `edge_sigma` means the score was in play for at least one row — which is exactly the condition
+    under which the sort stopped being a pure raw-edge sort. A *published* sigma of zero counts,
+    because it was floored and scored like any other value and the sort did use it; a page reporting
+    `raw_edge` there would be describing a sort that did not happen. A *negative* sigma does not
+    count, because the score is `None` for it: a corrupt value is handled exactly as an absent one
+    is, so it is never the thing that put a row on the board, and a page must not claim the sort used
+    confidence because one broken predictor published a negative width. An empty set reports
+    `raw_edge`: nothing was ranked, so the answer that claims the least is the honest one.
+    """
+    for row in rows:
+        if edge_sigma_score(row.get("edge_pct"), (row.get("raw_payload") or {}).get("sigma")) is not None:
+            return "edge_sigma"
+    return "raw_edge"
 
 
 def _is_upcoming(row: dict, now: datetime) -> bool:

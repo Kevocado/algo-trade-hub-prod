@@ -21,7 +21,7 @@ def _content(name):
 def _request(ticker="KXNFLGAME-26SEP27HOUIND-IND", price=0.27):
     bucket = price_bucket(price, 5)
     return ReviewRequest(
-        key=cache_key("nfl", "2026_03_HOU_IND", ticker, "yes", bucket), sport="nfl", game_id="2026_03_HOU_IND",
+        key=cache_key("nfl", "2026_03_HOU_IND", ticker, "yes", bucket, "predictor"), sport="nfl", game_id="2026_03_HOU_IND",
         market_ticker=ticker, side="yes", entry_price=price, price_bucket=bucket, our_prob=0.35, net_edge_pct=7.5,
         fact_pack={"sport": "nfl", "market": {"ticker": ticker}},
     )
@@ -56,7 +56,14 @@ def test_malformed_output_falls_back_to_unreviewed(content):
 
 def test_price_bucket_and_cache_key():
     assert price_bucket(0.27, 5) == 5 and price_bucket(0.30, 5) == 6 and price_bucket(0.994, 5) == 19
-    assert cache_key("nfl", "g", "T", "no", 5) == "nfl:g:T:no:5"
+    # The source is the last field: the key ends in the record the verdict was reasoned over, which
+    # is the field the inversion (2026-09-27) made capable of changing under a cached verdict. The
+    # three tests that pin it are named `test_the_review_cache_key_changes_...` in
+    # tests/test_sports_inversion.py; this line only pins the shape.
+    assert cache_key("nfl", "g", "T", "no", 5, "predictor") == "nfl:g:T:no:5:predictor"
+    assert cache_key("nfl", "g", "T", "no", 5, "hub_ledger") == "nfl:g:T:no:5:hub_ledger"
+    with pytest.raises(TypeError):
+        cache_key("nfl", "g", "T", "no", 5)  # the pre-inversion key, which must not still build
 
 
 class _Resp:
