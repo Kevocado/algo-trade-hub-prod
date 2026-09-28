@@ -131,11 +131,16 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           # Free space either side of the prune, so the next person reading a red `vps` job can see
           # the disk state in this log instead of SSHing in to measure it themselves.
+          # The guards below use GitHub's workflow-command syntax, which is a *double* colon on
+          # both sides of the keyword. With a single colon they are plain log text, so a prune
+          # failure would come out silent-but-nonfatal, the one combination nobody benefits from.
+          # tests/test_repo_layout.py pins the two-colon form on every guard and forbids the
+          # single-colon variant anywhere in this file.
           ssh deploy@${{ vars.VPS_HOST }} 'sh -s' <<'REMOTE'
-            df -h / || echo ":warning: could not read free space before prune"
-            docker image prune -a -f || echo ":warning: image prune failed; deploying anyway"
-            docker builder prune -f || echo ":warning: builder prune failed; deploying anyway"
-            df -h / || echo ":warning: could not read free space after prune"
+            df -h / || echo "::warning:: could not read free space before prune"
+            docker image prune -a -f || echo "::warning:: image prune failed; deploying anyway"
+            docker builder prune -f || echo "::warning:: builder prune failed; deploying anyway"
+            df -h / || echo "::warning:: could not read free space after prune"
           REMOTE
 
       - name: Deploy to VPS

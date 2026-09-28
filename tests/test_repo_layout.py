@@ -328,6 +328,44 @@ def test_deploy_prune_fails_soft_and_reports_free_space():
         assert f"{command} || echo" in run, f"{command} must be guarded so it fails soft: {run!r}"
 
 
+def test_deploy_prune_warnings_use_real_annotation_syntax():
+    """A guard that is not an annotation is silent-but-nonfatal, which helps nobody.
+
+    GitHub's workflow commands are a *double* colon on both sides of the keyword. The first
+    version of these guards used a single colon, which `echo` prints happily as ordinary log text:
+    no annotation, nothing in the run's checks UI, and a prune failure nobody sees. It shipped
+    through the fail-soft test, and through a report that claimed the double-colon form had been
+    verified, because the old assertion was `f"{command} || echo" in run` -- that measured that a
+    guard existed, not that the guard was an annotation. That is this repo's recurring failure
+    mode: a test that passes while measuring nothing.
+
+    So the positive side is checked per guard command rather than per file, and the negative side
+    forbids the single-colon variant outright. The naive `":warning:" not in text` cannot be used,
+    because that substring IS contained in the correct double-colon form; a negative lookbehind is
+    what actually distinguishes an annotation from log text.
+    """
+    import yaml
+
+    path = REPO / ".github/workflows/deploy-tradehub.yml"
+    text = path.read_text(encoding="utf-8")
+    steps = yaml.safe_load(text)["jobs"]["vps"]["steps"]
+    prunes = [s for s in steps if "docker image prune" in str(s.get("run", ""))]
+    assert prunes, f"the vps job no longer prunes anything; its steps are {[s.get('name') for s in steps]}"
+    run = prunes[0]["run"]
+
+    for command in ("docker image prune -a -f", "docker builder prune -f", "df -h /"):
+        assert command + ' || echo "::warning::' in run, (
+            f"every guard on {command!r} must emit a double-colon annotation; got {run!r}"
+        )
+    # Nothing anywhere in the file may use the single-colon form, which prints as plain log text.
+    # Over the whole file, so a regression cannot hide in a comment either.
+    defect = re.search(r"(?<!:):warning:", text)
+    assert defect is None, (
+        f"single-colon :warning: at offset {defect.start()} is plain log text, not an annotation; "
+        "GitHub's workflow commands need a double colon on both sides of the keyword"
+    )
+
+
 def test_ci_runs_the_frontend_suite_and_typechecker():
     """The workflow ran `python -m pytest -q` and nothing else, so all of market_sentiment_tool's
     tests never executed on any PR: 128 green tests that were not run. The Dockerfile's
