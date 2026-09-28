@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 
 import ShadowBacktester from "@/pages/ShadowBacktester";
 import { NO_FIGURE, type ShadowPerformanceResponse } from "@/lib/shadowPerformance";
@@ -28,11 +28,33 @@ import { NO_FIGURE, type ShadowPerformanceResponse } from "@/lib/shadowPerforman
  *    A dash is a figure; `NO_FIGURE` is not.
  */
 
-/** The sentence `tradehub/api/main.py:246` sends when the table has not been renamed. */
+/** The sentence `tradehub/api/main.py:_missing_table_message` sends when the table has not been renamed. */
 const MIGRATION_SENTENCE =
   "table 'signal_events' is not in the database. Apply " +
   "market_sentiment_tool/supabase/migrations/20260415090000_signal_events_unification.sql " +
   "and redeploy. The database still has crypto_signal_events under its old name.";
+
+/**
+ * The sentence the same handler sends for a MISSING CREDENTIAL, quoted from
+ * `tradehub/api/main.py:_missing_credential_message` with the real arguments
+ * (`sp.MissingCredentialError("Alpaca API", ("ALPACA_API_KEY", "ALPACA_SECRET_KEY"))`).
+ *
+ * This is the 424 PR #43 (`f856fb3`) added, and it is the read every reader will get once
+ * `20260415090000` is applied: `vps-stack/compose.yml` passes no `ALPACA_*` to the tradehub service,
+ * so the table becomes fine and the credential does not. Quoted rather than retyped so that a
+ * change to the server's wording shows up here as a failing test -- which is the point, because the
+ * page is not allowed a second copy of an instruction that names a file and two variables.
+ */
+const CREDENTIAL_SENTENCE =
+  "This service has no Alpaca API credentials, so the shadow timeline cannot be read. " +
+  "The database is fine -- this is not a migration. " +
+  "Set ALPACA_API_KEY and ALPACA_SECRET_KEY in the stack's .env file, beside " +
+  "vps-stack/compose.yml. Then add 'ALPACA_API_KEY: ${ALPACA_API_KEY:-}' and " +
+  "'ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}' to the tradehub service's environment: block, " +
+  "and redeploy.";
+
+/** What a real bug in the builder produces: a 500, and the one case no operator step closes. */
+const BUG_SENTENCE = "unsupported operand type(s) for +: 'int' and 'NoneType'";
 
 function emptyRead(over: Partial<ShadowPerformanceResponse> = {}): ShadowPerformanceResponse {
   return {
@@ -56,12 +78,26 @@ function emptyRead(over: Partial<ShadowPerformanceResponse> = {}): ShadowPerform
   };
 }
 
-function answerWith(status: number, body: unknown) {
+/**
+ * A failed read, as `fetch` really returns one.
+ *
+ * `headers` is a real part of what a failed read carries and was left out of this mock for a long
+ * time, which is precisely why `X-Error-Code` never reached the classifier: the test suite could not
+ * have noticed. `get` returns null for an absent header rather than throwing, which is also what the
+ * real `Headers.get` does, so a test that omits a header exercises the headerless fallback.
+ */
+function answerWith(status: number, body: unknown, headers: Record<string, string> = {}) {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: { get: (name: string) => headers[name] ?? null },
     json: async () => body,
-  } as Response;
+  } as unknown as Response;
+}
+
+/** The panel the failed read renders, found by its heading so a test never guesses at a selector. */
+function panelFor(heading: RegExp): HTMLElement {
+  return screen.getByRole("heading", { name: heading }).closest("div.rounded-xl") as HTMLElement;
 }
 
 async function renderPage(response: Response | Promise<Response>) {
@@ -117,8 +153,7 @@ describe("a read that failed with nothing to show", () => {
     // behind a loosening of the test.
     await renderPage(answerWith(503, { detail: MIGRATION_SENTENCE }));
 
-    const panel = screen.getByRole("heading", { name: /Waiting on a database migration/i })
-      .closest("div.rounded-xl") as HTMLElement;
+    const panel = panelFor(/Waiting on a database migration/i);
     expect(panel).not.toBeNull();
     expect((panel.textContent ?? "").match(/[0-9]+/g) ?? []).toEqual(["20260415090000"]);
   });
@@ -148,6 +183,230 @@ describe("a read that failed with nothing to show", () => {
     await renderPage(answerWith(500, { detail: "Upstream connect error" }));
 
     expect(screen.getByRole("heading", { name: /could not be read/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Waiting on a database migration/i)).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The half of PR #43 that was left undone: the frontend.
+ *
+ * The server now tells a missing table, a missing credential and a broken builder apart by status
+ * (503 / 424 / 500) and by `X-Error-Code`. This page did not, and so it told all three the same
+ * way: `shadowUnavailable` tested the `detail` for `supabase/migrations/`, and a 424 body has no
+ * path in it -- it says "this is not a migration" -- so the one state that is a person setting two
+ * environment variables rendered as a red "The shadow timeline could not be read". That is the
+ * undiagnosable outcome the 424 was introduced to end, and it survived the PR because the client
+ * was never changed.
+ *
+ * The obligations, in the order they matter:
+ *
+ *  1. 424 is an operator step. Amber, a heading that says what is waiting, and the server's
+ *     sentence naming both variables and where they go.
+ *  2. 503 is still a migration, byte for byte. There was already a test for it and there still is.
+ *  3. 500 is still a fault and still red. Three facts, three presentations; collapsing the third
+ *     into either of the first two would be the same defect in the other direction.
+ *  4. The classification reads the status and the header. Every test in the last block pairs a
+ *     status with prose arguing for the OTHER answer, so a component that went back to matching on
+ *     the message fails rather than passing quietly.
+ */
+describe("a 424: the table is fine and an environment variable is not set", () => {
+  const CREDENTIAL_HEADERS = { "X-Error-Code": "missing_credentials" };
+
+  it("renders the operator step, not the fault panel, and names both variables", async () => {
+    await renderPage(answerWith(424, { detail: CREDENTIAL_SENTENCE }, CREDENTIAL_HEADERS));
+
+    // The heading says what is being waited on, in the same voice as the migration one, because it
+    // is the same kind of fact: a person has a step to take on this deployment.
+    expect(
+      screen.getByRole("heading", { name: /Waiting on environment variables/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Only an operator can finish this/i)).toBeInTheDocument();
+
+    // Not the fault panel. Not by title, and not by colour: a red frame here is what told a reader
+    // the product was broken when the only thing wrong was two unset variables.
+    expect(screen.queryByText(/could not be read/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/API unavailable/i)).not.toBeInTheDocument();
+    const panel = panelFor(/Waiting on environment variables/i);
+    expect(panel.className).toMatch(/amber/);
+    expect(panel.className).not.toMatch(/rose/);
+
+    // What is missing and what to do. The two variables, the file to put them in, and the
+    // `environment:` block that has to name them too -- `compose.yml` will not pass them through
+    // otherwise, and an operator who sets the variables and redeploys would be back here again.
+    expect(screen.getByText(/ALPACA_API_KEY/)).toBeInTheDocument();
+    expect(screen.getByText(/ALPACA_SECRET_KEY/)).toBeInTheDocument();
+    expect(screen.getByText(/vps-stack\/compose\.yml/)).toBeInTheDocument();
+    expect(screen.getByText(/environment: block/)).toBeInTheDocument();
+  });
+
+  it("says this is not a migration, because applying one would fix nothing", async () => {
+    // The server's sentence carries it and so does this. An operator who has just applied
+    // 20260415090000 and is still seeing red needs to be told the next step is a different act, and
+    // "the database is fine" is the sentence that stops them applying the file they just applied.
+    await renderPage(answerWith(424, { detail: CREDENTIAL_SENTENCE }, CREDENTIAL_HEADERS));
+
+    expect(screen.getByText(/database is fine -- this is not a migration/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Waiting on a database migration/i)).not.toBeInTheDocument();
+  });
+
+  it("prints no figure and no figure-shaped zero, exactly as the migration panel does not", async () => {
+    await renderPage(answerWith(424, { detail: CREDENTIAL_SENTENCE }, CREDENTIAL_HEADERS));
+
+    for (const label of ["Considered Trades", "Hit Rate", "Brier Score", "Virtual PnL", "Dead Zone"]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+    // The blunt form. The server's instruction contains no digits, so "no digits anywhere on the
+    // panel" is exact and catches a `0.00h` freshness line or a stray `424` printed as a figure.
+    expect((panelFor(/Waiting on environment variables/i).textContent ?? "").match(/[0-9]+/g) ?? [])
+      .toEqual([]);
+  });
+
+  it("still tells a visitor who wanted the scoreboard where it is", async () => {
+    // The 503 panel links to /scoreboard and so does this one. The collision is about the page, not
+    // about why the read failed.
+    await renderPage(answerWith(424, { detail: CREDENTIAL_SENTENCE }, CREDENTIAL_HEADERS));
+
+    const link = screen.getByRole("link", { name: /Open the Engine Scoreboard/i });
+    expect(link).toHaveAttribute("href", "/scoreboard");
+  });
+
+  it("reads the status alone when the proxy drops the X-Error-Code header", async () => {
+    // A gateway that does not forward custom headers is an ordinary thing. The page must not depend
+    // on a header surviving the network to know that a 424 is a person setting variables.
+    await renderPage(answerWith(424, { detail: CREDENTIAL_SENTENCE }));
+
+    expect(
+      screen.getByRole("heading", { name: /Waiting on environment variables/i }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("the three failed reads, side by side", () => {
+  it("gives each status its own heading and its own frame, and collapses no two of them", async () => {
+    // All three rendered in one test on purpose. The failure mode here is a COLLAPSE -- two statuses
+    // sharing a presentation is exactly what made 503 and 424 indistinguishable before this change,
+    // and a test that checks them one at a time would pass on a classifier that had merged them.
+    const seen: { heading: string; frame: string; body: string }[] = [];
+
+    for (const [status, detail, code, heading] of [
+      [503, MIGRATION_SENTENCE, "missing_table", /Waiting on a database migration/i],
+      [424, CREDENTIAL_SENTENCE, "missing_credentials", /Waiting on environment variables/i],
+      [500, BUG_SENTENCE, "internal_error", /could not be read/i],
+    ] as const) {
+      await renderPage(answerWith(status, { detail }, { "X-Error-Code": code }));
+      const panel = panelFor(heading);
+      seen.push({
+        heading: screen.getByRole("heading", { name: heading }).textContent ?? "",
+        frame: panel.className,
+        body: panel.textContent ?? "",
+      });
+      cleanup();
+    }
+
+    // Three distinct headings, and no heading reused: the reader can tell which step they have.
+    expect(new Set(seen.map((panel) => panel.heading)).size).toBe(3);
+
+    // Two amber operator steps and one red fault, and the red one is the 500 alone. A 424 in red
+    // is the defect; a 500 in amber would be the same defect pointed the other way, because it
+    // would tell a reader an operator step exists for a bug in this code.
+    expect(seen[0].frame).toMatch(/amber/);
+    expect(seen[0].frame).not.toMatch(/rose/);
+    expect(seen[1].frame).toMatch(/amber/);
+    expect(seen[1].frame).not.toMatch(/rose/);
+    expect(seen[2].frame).toMatch(/rose/);
+    expect(seen[2].frame).not.toMatch(/amber/);
+
+    // Each panel carries its own server sentence and nobody else's. A 424 panel that quoted a
+    // migration path would send an operator to apply a file, and a 500 panel that quoted a
+    // variable name would send one to go and set it.
+    expect(seen[0].body).toContain("20260415090000_signal_events_unification.sql");
+    expect(seen[0].body).not.toContain("ALPACA");
+    expect(seen[1].body).toContain("ALPACA_API_KEY");
+    expect(seen[1].body).toContain("ALPACA_SECRET_KEY");
+    expect(seen[1].body).not.toContain(".sql");
+    expect(seen[2].body).toContain(BUG_SENTENCE);
+    expect(seen[2].body).not.toMatch(/ALPACA|\.sql/);
+  });
+
+  it("keeps the migration 503 rendering exactly as it did", async () => {
+    // Not "still renders a migration notice" but the same notice: the same heading, the same four
+    // sentences, and the server's sentence quoted verbatim. This state was correct before this
+    // change and had a test; the only way to be sure it survived is to assert all of it.
+    await renderPage(
+      answerWith(503, { detail: MIGRATION_SENTENCE }, { "X-Error-Code": "missing_table" }),
+    );
+
+    expect(screen.getByRole("heading", { name: /Waiting on a database migration/i })).toBeInTheDocument();
+    expect(screen.getByText(/Only an operator can finish this/i)).toBeInTheDocument();
+    expect(screen.getByText(MIGRATION_SENTENCE)).toBeInTheDocument();
+    expect(screen.queryByText(/could not be read/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps a 500 rendering as a fault, in red, and not as a step anyone can take", async () => {
+    await renderPage(answerWith(500, { detail: BUG_SENTENCE }, { "X-Error-Code": "internal_error" }));
+
+    expect(screen.getByRole("heading", { name: /could not be read/i })).toBeInTheDocument();
+    const panel = panelFor(/could not be read/i);
+    expect(panel.className).toMatch(/rose/);
+    expect(panel.className).not.toMatch(/amber/);
+    // The exception text and nothing that sends an operator off to apply a file or set a variable.
+    expect(panel.textContent).toContain(BUG_SENTENCE);
+    expect(panel.textContent).not.toMatch(/ALPACA/);
+    expect(panel.textContent).not.toMatch(/\.sql/);
+  });
+});
+
+/**
+ * The obligation that keeps PR #43 from being undone on the client: `detail` is OUTPUT.
+ *
+ * Every test here pairs a status with prose that argues for the OTHER classification. A neutral
+ * detail would pass under both a status-based classifier and a prose-based one, so these pairings
+ * are the whole test: a `ShadowBacktester` that went back to matching on the message text fails all
+ * of them. The mutation notes in the report are the proof these have been seen to fail.
+ */
+describe("the page classifies on the status, not on the message", () => {
+  it("calls a 424 an operator step when its detail names nothing but a dependency", async () => {
+    // A prose matcher finds no variable name here and reports a fault. The status says 424, and
+    // 424 on this endpoint means one thing.
+    await renderPage(
+      answerWith(424, { detail: "upstream dependency did not answer" }, { "X-Error-Code": "missing_credentials" }),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: /Waiting on environment variables/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a 500 a fault when its detail is the credential sentence word for word", async () => {
+    // The sharpest of these, and the exact defect PR #43 described: a 500 whose body says "Missing
+    // Alpaca API credentials" sent a reader to set environment variables when the code was broken.
+    // Same sentence, status 424 above renders an operator step and status 500 here renders a fault.
+    await renderPage(
+      answerWith(500, { detail: CREDENTIAL_SENTENCE }, { "X-Error-Code": "internal_error" }),
+    );
+
+    expect(screen.getByRole("heading", { name: /could not be read/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Waiting on environment variables/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps a 500 a fault when its detail is the migration sentence word for word", async () => {
+    await renderPage(answerWith(500, { detail: MIGRATION_SENTENCE }));
+
+    expect(screen.getByRole("heading", { name: /could not be read/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Waiting on a database migration/i)).not.toBeInTheDocument();
+  });
+
+  it("calls a 424 an operator step when its detail names a migration", async () => {
+    // The status beats the prose in the other direction as well. A 424 whose body happens to carry
+    // a migration path is still a credential problem, and "apply this file" is a step that will not
+    // fix it -- which is how an operator ends up applying migrations twice.
+    await renderPage(
+      answerWith(424, { detail: MIGRATION_SENTENCE }, { "X-Error-Code": "missing_credentials" }),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: /Waiting on environment variables/i }),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/Waiting on a database migration/i)).not.toBeInTheDocument();
   });
 });
