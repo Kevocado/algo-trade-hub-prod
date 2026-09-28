@@ -24,12 +24,12 @@ import {
  * What are the models, and what are they doing?
  *
  * The product had seven pages and none of them answered that. A War Room, a Prediction Lab, a
- * shadow backtester, a sports-edges page, a jobs scorecard, a CPI display and an engine scoreboard
+ * shadow backtester, a sports-edges page, a jobs scorecard, a CPI display and a shadow scoreboard
  * each hold one piece, and the owner of the product reads the site and still cannot say what it is
  * for. This page is the one that says it: one row per engine, what that engine predicts, how it has
  * actually scored against its market, and what its status is. The full backtest detail behind
- * every number stays on `/scoreboard`; this is the page that makes the detail legible rather than
- * replacing it.
+ * every number stays on `/scoreboard`; this is the page that makes the detail legible rather
+ * than replacing it.
  *
  * Four things this page will not do, each because the alternative reads as something it is not.
  *
@@ -243,7 +243,7 @@ export default function Models() {
           is listed — including the ones nothing has been measured on, which is a gap in the
           evidence and not a verdict on the engine. The{" "}
           <a href="/scoreboard" className="text-emerald-400 hover:underline">
-            Scoreboard
+            Engine Scoreboard
           </a>{" "}
           has the full backtest detail behind each number.
         </p>
