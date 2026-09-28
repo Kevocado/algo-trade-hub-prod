@@ -96,6 +96,48 @@ jobs:
     runs-on: ubuntu-latest
     concurrency: vps-deploy-tradehub
     steps:
+      # A green build with a red `vps` job used to mean "your code broke" when it meant "the disk is
+      # full". `b49879e` failed extracting a layer with `no space left on device` on a 99%-full 38G
+      # disk -- 611MB free, 35 images totalling 33.91GB -- and the *identical commit* deployed fine
+      # after a manual 7.26GB prune. Every merge to `main` pulls a fresh image and leaves the
+      # previous one behind, so nothing was ever reclaiming them.
+      #
+      # This runs BEFORE the pull below, because reclaiming space after the extract has already
+      # failed is worthless. It fails soft: `continue-on-error` plus a guard on each prune, so a
+      # cleanup step can never block the deploy it exists to unblock.
+      #
+      # It cannot take the live service down. `docker image prune -a` never removes an image a
+      # container references -- running or stopped -- so the current `tradehub` container keeps its
+      # own image, and at prune time the old container is still up. `-a` is required: the superseded
+      # per-SHA images are tagged rather than dangling, so a plain `docker image prune` reclaims
+      # none of them and the disk still creeps.
+      #
+      # NEVER let a prune here reach volumes, and never swap these for the broader `system prune`
+      # subcommand -- it reclaims volumes under its own volumes flag and much else besides. All
+      # three local volumes on this host are in use (`kalshi_portfolio` plus the bind-mounted
+      # caches), so a volume prune here is data loss on the machine the deploy depends on. These
+      # two spellings are kept out of this file entirely, comment included, so that
+      # tests/test_repo_layout.py can assert on the whole text and pin them out for good.
+      - name: Prune VPS Docker images
+        continue-on-error: true
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          # The SSH setup is repeated from the step below on purpose: each `run` block is its own
+          # shell, so there is nothing to inherit and no way to share it without hiding the commands.
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          # Free space either side of the prune, so the next person reading a red `vps` job can see
+          # the disk state in this log instead of SSHing in to measure it themselves.
+          ssh deploy@${{ vars.VPS_HOST }} 'sh -s' <<'REMOTE'
+            df -h / || echo ":warning: could not read free space before prune"
+            docker image prune -a -f || echo ":warning: image prune failed; deploying anyway"
+            docker builder prune -f || echo ":warning: builder prune failed; deploying anyway"
+            df -h / || echo ":warning: could not read free space after prune"
+          REMOTE
+
       - name: Deploy to VPS
         env:
           SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
