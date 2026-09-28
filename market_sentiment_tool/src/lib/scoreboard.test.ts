@@ -357,6 +357,35 @@ describe("summarise", () => {
     expect(counts).toContain("— engines");
   });
 
+  it("agrees the noun with the count, so a single row is not rendered '1 rows'", () => {
+    // The page's entire job is that numbers are RIGHT, and a count with the wrong noun is a number
+    // rendered wrong. `rows` predates the `runs_read` clause and read "1 rows" before it; the clause
+    // added a second instance of the same defect. Pinned at one because the other is the norm, and
+    // at the plural so the fix cannot be "delete the s".
+    const one = summarise(body({ rows_total: 1, runs_read: 1, engines: 1 })).counts;
+
+    expect(one).toContain("1 row ·");
+    expect(one).toContain("read 1 run ·");
+    expect(one).toContain("1 engine");
+    expect(one).not.toMatch(/1 rows|1 runs|1 engines/);
+
+    const many = summarise(body({ rows_total: 3, runs_read: 9, engines: 3 })).counts;
+    expect(many).toContain("3 rows ·");
+    expect(many).toContain("read 9 runs ·");
+    expect(many).toContain("3 engines");
+  });
+
+  it("pluralises each count on its own, not the board as a whole", () => {
+    // The realistic single-row board: one production run survives the reduction, and MORE runs
+    // were read than shown -- so 1 row / 3 runs / 1 engine. Reading every noun off one number would
+    // get two of the three wrong in both directions at once.
+    const counts = summarise(body({ rows_total: 1, runs_read: 3, engines: 1 })).counts;
+
+    expect(counts).toContain("1 row ·");
+    expect(counts).toContain("read 3 runs ·");
+    expect(counts).toContain("1 engine");
+  });
+
   it("never names an excluded version, because an experiment is absent rather than footnoted", () => {
     // The page's premise is which run is each engine's record, and the design ruling is that a
     // disagreeing experiment is ABSENT. Naming it here would put a second run on the page next to

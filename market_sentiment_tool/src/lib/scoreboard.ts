@@ -293,15 +293,22 @@ export function summarise(body: ScoreboardResponse): ScoreboardSummary {
     headline: body.headline,
     headlineKind: body.headline_kind,
     caveat: body.caveat,
+    // A count and its noun, inline at the two places a count is followed by a noun. "1 rows" is a
+    // number rendered wrong, and this is the page whose whole job is that numbers read right. NOT a
+    // pluralise() helper: that is more machinery than the defect, and a general one would be a
+    // function deciding wording for every future call site, which is the policy this module does
+    // not have. `=== 1` is false for the dash, for null and for every other count, so an unreadable
+    // one reads "— runs" rather than guessing a singular it cannot support.
     counts:
-      `${formatCount(body.rows_total)} rows · ` +
+      `${formatCount(body.rows_total)} ${body.rows_total === 1 ? "row" : "rows"} · ` +
       `${formatCount(body.rows_behind_market)} behind the market · ` +
       `${formatCount(body.rows_ahead_of_market)} ahead · ` +
       `${formatCount(body.rows_level_with_market)} level · ` +
       `${formatCount(body.rows_not_comparable)} not comparable · ` +
       // Read against shown, so a reduction is visible. Both are counts the response carried, and
       // both dash rather than print 0 if they are unreadable.
-      `read ${formatCount(body.runs_read)} runs · ${formatCount(body.engines)} engines`,
+      `read ${formatCount(body.runs_read)} ${body.runs_read === 1 ? "run" : "runs"} · ` +
+      `${formatCount(body.engines)} ${body.engines === 1 ? "engine" : "engines"}`,
     tone,
   };
 }

@@ -92,7 +92,10 @@ function mockScoreboard(handler: () => { ok: boolean; status: number; body?: unk
 async function renderWith(payload: ScoreboardResponse) {
   mockScoreboard(() => ({ ok: true, status: 200, body: payload }));
   const rendered = render(<Scoreboard />);
-  await waitFor(() => expect(screen.getByText(/rows ·/)).toBeInTheDocument());
+  // `rows?` because the counts line agrees its noun with the count, so it reads "1 row ·" on a
+  // one-row board and "3 rows ·" on a bigger one. A readiness wait pinned to the plural form is a
+  // test that fails on a correct change, which is what this was.
+  await waitFor(() => expect(screen.getByText(/rows? ·/)).toBeInTheDocument());
   return rendered;
 }
 
@@ -127,7 +130,7 @@ describe("obligation 1: the headline never travels without the count that qualif
       response({ rows_total: 3, rows_behind_market: 1, rows_not_comparable: 2, caveat: "2 of 3 rows" }),
     );
 
-    const summary = screen.getByText(/rows ·/);
+    const summary = screen.getByText(/rows? ·/);
     expect(summary).toHaveTextContent("1 behind the market");
     expect(summary).toHaveTextContent("2 not comparable");
   });
@@ -149,9 +152,12 @@ describe("obligation 4: the reader can see that the board is a reduction, not th
       }),
     );
 
-    const summary = screen.getByText(/rows ·/);
+    const summary = screen.getByText(/rows? ·/);
     expect(summary).toHaveTextContent("read 7 runs");
-    expect(summary).toHaveTextContent("1 engines");
+    // 7 runs against 1 engine, so this fixture is also the page's SINGULAR case, and the end
+    // anchor is what makes it an assertion about the noun: `toHaveTextContent("1 engine")` is a
+    // substring match and would have passed on "1 engines" too, which is the defect being pinned.
+    expect(summary).toHaveTextContent(/· 1 engine$/);
   });
 
   it("says so even when the headline block is the only thing on an empty board", async () => {
@@ -173,7 +179,7 @@ describe("obligation 4: the reader can see that the board is a reduction, not th
 
     render(<Scoreboard />);
 
-    const summary = await screen.findByText(/rows ·/);
+    const summary = await screen.findByText(/rows? ·/);
     expect(summary).toHaveTextContent("read 4 runs");
     expect(summary).toHaveTextContent("0 engines");
   });
