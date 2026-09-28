@@ -42,14 +42,29 @@ import { NOT_MEASURED } from "@/lib/edgeFigures";
  */
 
 /**
- * Whether an engine ran. The server's own two words, not a re-wording of them.
+ * Whether an engine ran. The server's own three words, not a re-wording of them.
+ *
+ * `quarantined` was added on 2026-09-28, when the two live sites were repaired. It is not a synonym
+ * for either neighbour and the distinction is the whole reason it exists:
+ *
+ *   ran             the engine ran, looked, and nothing qualified. A measurement, and the empty
+ *                   board is the finding.
+ *   quarantined     the engine RAN and computed real opportunities, and none of them were published,
+ *                   by ruling rather than by defect. Something was measured; it is visible on its own
+ *                   surface and it is marked.
+ *   could_not_run   the engine did not run at all. Nothing was measured.
+ *
+ * Collapsing `quarantined` into `ran` puts "the market was quiet" next to a board that was empty by
+ * decision. Collapsing it into `could_not_run` tells a reader the engine looked at nothing, when it
+ * measured 295 rows on 2026-09-28. Both are false, and the second is the original defect of this
+ * page wearing a different hat.
  *
  * Deliberately NOT `MarketVerdict`. Those are verdicts on a MEASUREMENT -- ahead, behind, level --
  * and an engine that never ran has no measurement to be ahead or behind on. Borrowing the
  * vocabulary would imply a comparison nobody made, which is the confusion this whole page is about.
- * `tests/test_engine_health.py` pins that the two sets stay disjoint.
+ * `tests/test_engine_health.py` pins that the sets stay disjoint.
  */
-export type EngineState = "ran" | "could_not_run";
+export type EngineState = "ran" | "quarantined" | "could_not_run";
 
 /** One ruled-against site: a class or function that reads a Kalshi quote field the API moved. */
 export interface StoppedSite {
@@ -73,6 +88,13 @@ export interface StoppedSite {
    * calls cannot be the reason a live board has nothing on it.
    */
   wired_to_a_scanner: boolean;
+  /**
+   * Whether the drift is still there. Travels for the same reason `wired_to_a_scanner` does: the
+   * ruling now holds both kinds, and a site with no disposition is indistinguishable from a live
+   * defect. A client that guessed would call a fixed engine broken -- this page's own defect,
+   * reintroduced one layer up, by a client this time.
+   */
+  disposition: "repaired_quarantined" | "unrepaired";
   reason: string;
 }
 
@@ -95,6 +117,16 @@ export interface EdgeTypeState {
    */
   opportunities_found: number | null;
   opportunities_found_reason: string | null;
+  /**
+   * Where this edge type's measurement lives, when it has one. `null` for the two states with
+   * nothing measured, so a reader is not sent to a ledger that deliberately has none of these rows.
+   *
+   * Present-and-null rather than absent, for the same reason as `opportunities_found`: a client that
+   * checks for the key gets `null` rather than `undefined`, and the difference between "there is no
+   * quarantine sink for this board" and "the server is an old bundle" is one a reader should not have
+   * to guess at.
+   */
+  quarantine_sink: string | null;
 }
 
 export interface EngineHealthResponse {
@@ -112,8 +144,21 @@ export interface EngineHealthResponse {
    * has to say so rather than showing a healthy-looking summary over a dead feed.
    */
   board_state: EngineState;
-  /** The wired reasons, joined, when the board is stopped. Null when it is not. */
+  /** The wired reasons, joined, when the board is stopped or quarantined. Null when it is not. */
   board_reason: string | null;
+  /**
+   * How many boards are quarantined. The server's count, for the same reason
+   * `edge_types_could_not_run` is: "is any of these quarantined" is a rule, and a rule in a
+   * component is a rule nothing can test.
+   */
+  edge_types_quarantined: number;
+  /**
+   * How many of the ruled-against sites are still drifting, and how many were repaired. Two numbers
+   * rather than one, because "3 sites" answers neither question a reader has: is anything broken,
+   * and what was fixed.
+   */
+  sites_repaired: number;
+  sites_unrepaired: number;
   /** The whole ruling, including sites that feed no board. Nothing here is truncated. */
   sites: StoppedSite[];
   sites_total: number;
@@ -130,7 +175,7 @@ export interface EngineHealthResponse {
  * a read that failed is not evidence of anything, so an empty board we could not classify is not
  * "no edge today", it is a board whose emptiness nobody has established.
  */
-export type EmptyBoardKind = "quiet" | "stopped" | "unchecked";
+export type EmptyBoardKind = "quiet" | "stopped" | "quarantined" | "unchecked";
 
 export interface EmptyBoard {
   kind: EmptyBoardKind;
@@ -140,6 +185,20 @@ export interface EmptyBoard {
 
 /** The word for a stopped engine, as a reader reads it. Not "could_not_run", which is our jargon. */
 export const STOPPED_WORD = "not running";
+
+/**
+ * The word for a quarantined engine, and the sentence that goes with it.
+ *
+ * NOT `STOPPED_WORD`. A quarantined engine runs; it measured 295 rows on 2026-09-28. Calling it "not
+ * running" is false, and a reader who believes it goes and tries to fix something that is already
+ * fixed. NOT "shadow" either, which would imply the trades are live but small, when nothing here is
+ * published at all.
+ *
+ * The headline is deliberately not "found N opportunities". It is the shape a reader needs when the
+ * board is empty BY DECISION and there is a measurement sitting elsewhere: something ran, and what
+ * it found is being shown on its own marked surface.
+ */
+export const QUARANTINED_WORD = "quarantined";
 
 /**
  * Why an empty tab is not yet a finding, when the ruling itself could not be read.
@@ -184,6 +243,18 @@ export function opportunitiesFoundReason(entry: EdgeTypeState | null | undefined
 }
 
 /**
+ * Whether a quarantined engine's measurement is on the other surface, and where.
+ *
+ * The figure is not on this page and must not be: it is in `kalshi_quarantine_edges` and it is 26
+ * independent opportunities, not 295 rows. Pointing at the sink rather than repeating the number
+ * keeps the one count of each fact on the one surface that can support it, which is the same
+ * division of labour as `edgeTypesText` reading the server's counts.
+ */
+export function quarantineSinkOf(entry: EdgeTypeState | null | undefined): string | null {
+  return entry?.quarantine_sink ?? null;
+}
+
+/**
  * The ruling's entry for one edge type, or null when the response did not carry it.
  *
  * A lookup by key, not a decision. The state is the server's; this only finds where it is, and says
@@ -219,6 +290,18 @@ export function stoppedEngineOf(
  * them would let one suppress the other. The board's error is handled where it already was, above
  * this, and only the ruling's arrives here.
  */
+/**
+ * Whether this edge type is quarantined, from the server's state. A lookup, not a decision.
+ *
+ * The point of it is that the empty board and the quarantine notice have to agree. A board can be
+ * empty because a quarantined engine's output is withheld, and the two surfaces say so in the same
+ * words; if either derived that for itself they would eventually disagree, and the reader would be
+ * left deciding which of two true-looking statements about one engine to believe.
+ */
+export function isQuarantined(health: EngineHealthResponse | null | undefined, edgeType: string): boolean {
+  return edgeTypeStateOf(health, edgeType)?.state === "quarantined";
+}
+
 export function emptyBoard(
   health: EngineHealthResponse | null | undefined,
   edgeType: string,
@@ -255,6 +338,19 @@ export function emptyBoard(
           "At least one engine that publishes to this board is stopped, and no reason travelled with the ruling.",
       };
     }
+    if (health.board_state === "quarantined") {
+      // The board is empty because its engines' output is being withheld, not because the market
+      // was quiet. Saying "no high-confidence edges detected" here would be the original defect of
+      // this page reached from the other direction: a confident finding about a search that ran and
+      // whose result was deliberately not published.
+      return {
+        kind: "quarantined",
+        headline: `${health.edge_types_quarantined} of ${health.edge_types_total} boards are ${QUARANTINED_WORD} — this board is empty by decision, not by a quiet market`,
+        body:
+          health.board_reason ??
+          "At least one engine that feeds this board is quarantined, and no reason travelled with the ruling.",
+      };
+    }
     return { kind: "quiet", headline: `No high-confidence edges detected in ${tabLabel}`, body: QUIET_REASON };
   }
   const entry = edgeTypeStateOf(health, edgeType);
@@ -279,6 +375,23 @@ export function emptyBoard(
         `An engine that publishes to the ${entry.label} board is stopped, and no reason travelled with the ruling.`,
     };
   }
+  if (entry.state === "quarantined") {
+    // The sentence must not contain the quiet claim in any form. This engine RAN and measured; its
+    // output is in kalshi_quarantine_edges and is shown on its own marked surface. "No
+    // high-confidence edges detected" beside a board that is empty because a decision was made is
+    // the one thing this branch exists to prevent.
+    //
+    // "empty by decision" is in the headline rather than only in the body because a reader scanning
+    // the tab sees the headline. The body is where the mechanism goes; the headline has to carry the
+    // finding on its own.
+    return {
+      kind: "quarantined",
+      headline: `${entry.label} is ${QUARANTINED_WORD} — this board is empty by decision, not by a quiet market`,
+      body:
+        entry.reason ??
+        `An engine that feeds the ${entry.label} board is quarantined, and no reason travelled with the ruling.`,
+    };
+  }
   return {
     kind: "quiet",
     headline: `No high-confidence edges detected in ${tabLabel}`,
@@ -300,6 +413,7 @@ export function edgeTypesText(health: EngineHealthResponse | null | undefined): 
   return (
     `${health.edge_types_total} ${plural(health.edge_types_total, "board", "boards")} · ` +
     `${health.edge_types_could_not_run} cannot run · ` +
+    `${health.edge_types_quarantined} ${QUARANTINED_WORD} · ` +
     `${health.edge_types_ran} ran`
   );
 }

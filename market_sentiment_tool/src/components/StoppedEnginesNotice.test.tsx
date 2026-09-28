@@ -32,13 +32,14 @@ function site(name: string, module: string, line: number, wired: boolean, why: s
     site: `${module}:${line}`,
     edge_type: "WEATHER" as const,
     wired_to_a_scanner: wired,
+    disposition: (wired ? "repaired_quarantined" : "unrepaired") as "repaired_quarantined" | "unrepaired",
     reason: why,
   };
 }
 
-const WEATHER_ENGINE = site("WeatherEngine", "tradehub/engines/weather_engine.py", 214, true, WEATHER_REASON);
+const WEATHER_ENGINE = site("WeatherEngine", "tradehub/engines/weather_engine.py", 220, true, WEATHER_REASON);
 const WEATHER_MAKER = site("WeatherMaker", "tradehub/engines/weather_maker.py", 258, false, "Not wired.");
-const MACRO_ENGINE = site("MacroEngine", "tradehub/engines/macro_engine.py", 453, true, MACRO_REASON);
+const MACRO_ENGINE = site("MacroEngine", "tradehub/engines/macro_engine.py", 459, true, MACRO_REASON);
 
 function health(over: Partial<EngineHealthResponse> = {}): EngineHealthResponse {
   return {
@@ -50,6 +51,7 @@ function health(over: Partial<EngineHealthResponse> = {}): EngineHealthResponse 
         state: "could_not_run",
         reason: WEATHER_REASON,
         stopped_sites: [WEATHER_ENGINE, WEATHER_MAKER],
+        quarantine_sink: null,
         opportunities_found: null,
         opportunities_found_reason: "No count, because nothing ran. Not a count of zero.",
       },
@@ -59,12 +61,14 @@ function health(over: Partial<EngineHealthResponse> = {}): EngineHealthResponse 
         state: "could_not_run",
         reason: MACRO_REASON,
         stopped_sites: [MACRO_ENGINE],
+        quarantine_sink: null,
         opportunities_found: null,
         opportunities_found_reason: "No count, because nothing ran. Not a count of zero.",
       },
     ],
     edge_types_total: 5,
     edge_types_could_not_run: 2,
+    edge_types_quarantined: 0,
     edge_types_ran: 3,
     board_state: "could_not_run",
     board_reason: WEATHER_REASON,
@@ -72,6 +76,8 @@ function health(over: Partial<EngineHealthResponse> = {}): EngineHealthResponse 
     sites_total: 0,
     sites_wired: 0,
     sites_unwired: 0,
+    sites_repaired: 0,
+    sites_unrepaired: 0,
     note: "An engine on this list did not run.",
     ...over,
   };
@@ -94,8 +100,8 @@ describe("a broken engine is named, with a reason", () => {
   it("gives the module and line, so the ruling can be checked rather than believed", () => {
     render(<StoppedEnginesNotice health={health()} />);
     const notice = screen.getByTestId("stopped-engines");
-    expect(notice.textContent).toContain("tradehub/engines/weather_engine.py:214");
-    expect(notice.textContent).toContain("tradehub/engines/macro_engine.py:453");
+    expect(notice.textContent).toContain("tradehub/engines/weather_engine.py:220");
+    expect(notice.textContent).toContain("tradehub/engines/macro_engine.py:459");
   });
 
   it("keeps the unwired engine visible AND says it is not a cause", () => {

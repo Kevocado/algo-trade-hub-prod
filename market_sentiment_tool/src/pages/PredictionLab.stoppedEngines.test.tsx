@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 
 import PredictionLab from "@/pages/PredictionLab";
-import type { EngineHealthResponse } from "@/lib/engineHealth";
+import type { EngineHealthResponse, EngineState } from "@/lib/engineHealth";
 
 /**
- * The Prediction Lab must be able to say an engine is broken, and this file is that test.
+ * The Prediction Lab must be able to say an engine is broken, quarantined, or quiet, and this file
+ * is that test.
  *
  * The defect, in one sentence: the WEATHER and MACRO tabs rendered "No high-confidence edges
  * detected in <tab>", which is a FINDING, for engines that had not looked at anything. Kalshi's API
@@ -14,13 +15,16 @@ import type { EngineHealthResponse } from "@/lib/engineHealth";
  * They raise nothing, because skipping an unpriceable market is the right move -- they fail CLOSED,
  * which is why the ledger is clean and why nobody noticed.
  *
- * So the board needed a third state, and these tests hold all three apart:
+ * The board then needed a third state, and it now needs a fourth. These tests hold all four apart:
  *
- *   stopped    the engine could not run. Says so, with the reason. Never says "nothing found".
- *   quiet      the engine ran and nothing qualified. Still says "no high-confidence edges", because
- *              that is the one case where the sentence is a measurement and not an absence.
- *   unchecked  the ruling could not be read. Says neither, because claiming either would be the
- *              defect moved up a layer.
+ *   stopped     the engine could not run. Says so, with the reason. Never says "nothing found".
+ *   quarantined the engine RAN, measured 295 rows on 2026-09-28, and had them withheld by ruling.
+ *               Says neither "not running" (false -- it runs) nor "nothing found" (false -- and the
+ *               original defect of this page reached from the other direction).
+ *   quiet       the engine ran and nothing qualified. Still says "no high-confidence edges", because
+ *               that is the one case where the sentence is a measurement and not an absence.
+ *   unchecked   the ruling could not be read. Says neither, because claiming either would be the
+ *               defect moved up a layer.
  *
  * The `it` that fails if the fix is undone is "never renders the quiet sentence for a stopped
  * engine" -- that is the mutation this file exists to catch, and the last describe block runs it.
@@ -39,58 +43,98 @@ const HOOKS = vi.hoisted(() => ({
 
 vi.mock("@/hooks/useMarketEdges", () => ({ useMarketEdges: () => HOOKS.edges }));
 vi.mock("@/hooks/useEngineHealth", () => ({ useEngineHealth: () => HOOKS.health }));
+// Stubbed separately from the ruling on purpose. Three reads, three questions: "I cannot see the
+// published rows", "I cannot tell whether an engine ran", "I cannot see what the withheld engines
+// measured". Merging any two of them would let one hide another, and the third shown as the first
+// would conclude there are no quarantined rows -- a count of zero reached through a different door.
+vi.mock("@/hooks/useQuarantine", () => ({ useQuarantine: () => QUARANTINE_STUB }));
 
 const WEATHER_REASON =
   "Not running. WeatherEngine prices every market against `yes_ask`, which Kalshi's API no longer sends.";
 
-function entry(edge_type: string, state: "ran" | "could_not_run", reason: string | null) {
+function entry(edge_type: string, state: EngineState, reason: string | null) {
   return {
     edge_type,
     label: edge_type[0] + edge_type.slice(1).toLowerCase(),
     state,
     reason,
-    stopped_sites: state === "could_not_run"
-      ? [{
+    stopped_sites: state === "ran"
+      ? []
+      : [{
           name: `${edge_type}Engine`,
           module: `tradehub/engines/${edge_type.toLowerCase()}_engine.py`,
-          site: `tradehub/engines/${edge_type.toLowerCase()}_engine.py:214`,
+          site: `tradehub/engines/${edge_type.toLowerCase()}_engine.py:220`,
           edge_type,
           wired_to_a_scanner: true,
+          disposition: state === "quarantined" ? "repaired_quarantined" : "unrepaired",
           reason: reason ?? "",
-        }]
-      : [],
+        } as const],
+    quarantine_sink: state === "quarantined" ? "kalshi_quarantine_edges" : null,
     opportunities_found: null,
     opportunities_found_reason:
       state === "could_not_run"
         ? "No count, because nothing ran. Not a count of zero."
-        : "Not counted here.",
+        : state === "quarantined"
+          ? "Counted elsewhere, and withheld here on purpose. See /api/quarantine."
+          : "Not counted here.",
   };
 }
 
-function health(stopped: string[]): EngineHealthResponse {
-  const entries = ["WEATHER", "MACRO", "SPORTS", "CRYPTO", "ENERGY"].map((t) =>
-    entry(t, stopped.includes(t) ? "could_not_run" : "ran", stopped.includes(t) ? WEATHER_REASON : null),
-  );
-  const reasons = entries.filter((e) => e.state === "could_not_run").map((e) => e.reason);
+/**
+ * Build a ruling. `stopped` and `quarantined` are separate lists because they are separate facts and
+ * this file is the test that they stay separate on the PAGE, not only in the payload.
+ */
+function health(stopped: string[] = [], quarantined: string[] = []): EngineHealthResponse {
+  const entries = ["WEATHER", "MACRO", "SPORTS", "CRYPTO", "ENERGY"].map((t) => {
+    const state: EngineState = stopped.includes(t)
+      ? "could_not_run"
+      : quarantined.includes(t)
+        ? "quarantined"
+        : "ran";
+    return entry(t, state, state === "ran" ? null : WEATHER_REASON);
+  });
+  const reasons = entries
+    .filter((e) => e.state !== "ran")
+    .map((e) => e.reason);
   return {
     as_of: "2026-09-28T00:00:00Z",
     edge_types: entries,
     edge_types_total: entries.length,
     edge_types_could_not_run: stopped.length,
-    edge_types_ran: entries.length - stopped.length,
-    board_state: stopped.length > 0 ? "could_not_run" : "ran",
+    edge_types_quarantined: quarantined.length,
+    edge_types_ran: entries.length - stopped.length - quarantined.length,
+    // A broken engine outranks a quarantined one for the whole board, on the same terms as the
+    // server: the unfiltered view cannot say "measured but withheld" without also saying what was
+    // not measured at all.
+    board_state: stopped.length > 0 ? "could_not_run" : quarantined.length > 0 ? "quarantined" : "ran",
     board_reason: reasons.length ? reasons.join(" ") : null,
     sites: [],
     sites_total: 0,
     sites_wired: 0,
     sites_unwired: 0,
-    note: "An engine on this list did not run.",
+    sites_repaired: quarantined.length,
+    sites_unrepaired: stopped.length,
+    note: "An engine on this list either did not run, or had its output quarantined.",
   };
 }
 
-function stub(over: { edges?: unknown[]; health?: EngineHealthResponse | null; healthError?: string | null } = {}) {
+const QUARANTINE_STUB = {
+  data: null as unknown,
+  loading: false,
+  error: null as string | null,
+};
+
+function stub(over: {
+  edges?: unknown[];
+  health?: EngineHealthResponse | null;
+  healthError?: string | null;
+  quarantine?: unknown;
+  quarantineError?: string | null;
+} = {}) {
   HOOKS.edges = { edges: over.edges ?? [], withheld: [], loading: false, error: null, truncated: false };
   HOOKS.health = { data: over.health === undefined ? health([]) : over.health, loading: false, error: over.healthError ?? null };
+  QUARANTINE_STUB.data = over.quarantine ?? null;
+  QUARANTINE_STUB.error = over.quarantineError ?? null;
 }
 
 /**
@@ -144,7 +188,7 @@ describe("a broken engine renders as broken, with a reason", () => {
     render(<PredictionLab />);
 
     const notice = screen.getByTestId("stopped-engines");
-    expect(notice.textContent).toContain("weather_engine.py:214");
+    expect(notice.textContent).toContain("weather_engine.py:220");
   });
 
   it("still renders the notice when the tab is NOT empty", () => {
@@ -251,6 +295,97 @@ describe("a missing figure is a word or a null, never 0", () => {
     render(<PredictionLab />);
 
     expect(screen.getByTestId("stopped-engines").textContent).toMatch(/nothing ran/i);
+  });
+});
+
+// ── the fourth state: ran, measured, withheld on purpose ───────────────────────────────────
+
+describe("a quarantined engine reads as neither stopped nor quiet", () => {
+  it("never prints the quiet sentence for a quarantined engine's tab", () => {
+    // The assertion that catches the ruling going straight from "not running" to "quiet" after the
+    // repair. The engine measured 295 rows on 2026-09-28 and had them withheld; saying "no
+    // high-confidence edges detected" is a confident finding about a scan whose result was never
+    // published, which is this page's original defect reached from the other direction.
+    stub({ health: health([], ["WEATHER", "MACRO"]) });
+    render(<PredictionLab />);
+    selectTab("WEATHER");
+
+    expect(screen.queryByText(/No high-confidence edges detected in weather/i)).toBeNull();
+    expect(screen.getByText(/Weather is quarantined/i)).toBeTruthy();
+  });
+
+  it("never claims the engine is not running, which is false", () => {
+    // A reader who believes it goes and tries to fix something that is already fixed.
+    stub({ health: health([], ["WEATHER"]) });
+    render(<PredictionLab />);
+    selectTab("WEATHER");
+
+    expect(screen.queryByText(/Weather is not running/i)).toBeNull();
+  });
+
+  it("says on the tab that the board is empty by decision, not by a quiet market", () => {
+    // In the HEADLINE, not only in the body. A reader scanning tabs sees the headline, and a finding
+    // that lives in the paragraph below it is a finding that gets missed.
+    stub({ health: health([], ["WEATHER"]) });
+    render(<PredictionLab />);
+    selectTab("WEATHER");
+
+    expect(screen.getByText(/empty by decision, not by a quiet market/i)).toBeTruthy();
+  });
+
+  it("says the same for the Macro tab", () => {
+    stub({ health: health([], ["MACRO"]) });
+    render(<PredictionLab />);
+    selectTab("MACRO");
+
+    expect(screen.queryByText(/No high-confidence edges detected in macro/i)).toBeNull();
+    expect(screen.getByText(/Macro is quarantined/i)).toBeTruthy();
+  });
+
+  it("renders a QUARANTINED notice, distinct from the stopped one", () => {
+    stub({ health: health([], ["WEATHER", "MACRO"]) });
+    render(<PredictionLab />);
+
+    // `stopped-engines` is the testid for a BROKEN engine. A quarantined board must not produce it,
+    // or the two states are the same state with a different border colour.
+    expect(screen.queryByTestId("stopped-engines")).toBeNull();
+    const notice = screen.getByTestId("quarantined-engines");
+    expect(notice.textContent).toContain("2 of 5 boards are quarantined");
+  });
+
+  it("still renders a stopped notice when one engine is broken and another quarantined", () => {
+    // Both, and the broken one wins the frame. A page with one quarantined board and one broken
+    // board is in the broken state, and colouring it amber would tell a reader the product is in
+    // better shape than it is.
+    stub({ health: health(["MACRO"], ["WEATHER"]) });
+    render(<PredictionLab />);
+
+    const notice = screen.getByTestId("stopped-engines");
+    expect(notice.textContent).toContain("1 of 5 boards are fed by an engine that is not running");
+    // The quarantined count is on its own line so a reader cannot read the stopped count as the
+    // whole story: "0 of 5 are not working" is the healthy-looking summary this panel exists to stop.
+    expect(notice.textContent).toContain("1 of 5 boards are quarantined");
+  });
+
+  it("points at the quarantine surface rather than repeating its numbers", () => {
+    stub({ health: health([], ["WEATHER"]) });
+    render(<PredictionLab />);
+
+    const notice = screen.getByTestId("quarantined-engines");
+    expect(notice.textContent).toContain("kalshi_quarantine_edges");
+    // A second, worse copy of the count on this panel: a bare row total would throw away the split
+    // that makes the number worth having, and would put two counts of one fact on two screens.
+    expect(notice.textContent).not.toMatch(/\b295\b/);
+  });
+
+  it("keeps a genuinely quiet tab quiet, with a quarantined board elsewhere", () => {
+    // The mirror, and the reason the quarantined tests are worth having: a label that fires on
+    // everything is a label nobody reads.
+    stub({ health: health([], ["WEATHER"]) });
+    render(<PredictionLab />);
+    selectTab("SPORTS");
+
+    expect(screen.getByText(/No high-confidence edges detected in sports/i)).toBeTruthy();
   });
 });
 

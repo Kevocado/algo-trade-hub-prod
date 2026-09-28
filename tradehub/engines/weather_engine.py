@@ -19,6 +19,7 @@ import requests
 from datetime import datetime
 
 from tradehub.core.kalshi_feed import get_weather_markets, get_kalshi_event_url
+from tradehub.markets import quote_cents
 
 
 class WeatherEngine:
@@ -211,13 +212,18 @@ class WeatherEngine:
             # Market structure: floor_strike = "above X", cap_strike = "below X"
             floor = market.get('floor_strike')
             cap = market.get('cap_strike')
-            yes_ask = market.get('yes_ask', 0)
+            # `quote_cents` is the shared normaliser (`tradehub/markets.py`), the same one
+            # `kalshi_feed.process_markets` uses: Kalshi sends `yes_ask_dollars` as a 0-1 string
+            # and no longer sends the legacy cent key `yes_ask` at all, so a read of `yes_ask`
+            # with a `0` default returned 0 for a market that was quoting right now. A market
+            # that cannot be priced comes back None here, which is what the skip below tests for.
+            yes_ask = quote_cents(market)['yes_ask']
             ticker = market.get('ticker', '')
             title = market.get('title', '')
             subtitle = market.get('subtitle', '')
             expiration = market.get('expiration_time', '')
 
-            if yes_ask == 0:
+            if yes_ask is None:
                 continue
 
             # Calculate our probability based on NWS forecast
