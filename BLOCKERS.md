@@ -41,6 +41,24 @@ policy. **Verify this with a read before assuming it.**
 Do not trust the migration file's own comments about what is applied. Read the
 schema.
 
+**Applying the migration will not make `/shadow` work.** It has a second,
+independent blocker. `orchestrator.py:741` needs Alpaca hourly bars to produce
+*any* crypto signal, so with no `ALPACA_*` key there are no `signal_events` rows
+with `model_probability_yes` and nothing for the timeline to grade. A price
+fallback would not help: the dependency is in the input, not the page. Kalshi is
+the wrong instrument — its candles are probability cents, not BTC/USD, so
+`virtual_pnl_pct` would silently become return-on-a-contract.
+
+To fix: set `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` in the stack `.env`
+**and** name them in the `tradehub` service's `environment:` block in
+`vps-stack/compose.yml`. **Setting them in `.env` alone does nothing** — compose
+forwards only what it names, and today it names no `ALPACA_*` at all. Optionally
+`ALPACA_DATA_API_BASE` too.
+
+**Expect `/shadow` to look unavailable after the migration.** Until compose is
+fixed, the amber "Waiting on environment variables" panel is the correct and
+intended rendering — not a new fault.
+
 ## 2. A Supabase MCP is registered but unauthenticated
 
 `~/.config/opencode/opencode.json` registers
@@ -110,6 +128,16 @@ question from "what are the models doing".
   discrimination, not calibration.
 - **`/api/shadow-performance` and `/api/quarantine` returning 503 is correct
   behaviour**, not a fault. Each names the migration to apply.
+- **`/shadow` has three failure modes, and they are not all faults.**
+  503 = migration, 424 = missing credentials (an *operator step*, rendered amber),
+  500 = the code is broken (the only red one). Classify on `X-Error-Code`, or on
+  status. **Do not string-match `detail`** — the same sentence must render as an
+  operator step at 424 and a fault at 500, so a prose matcher gets it backwards.
+  There is one narrow exception: the 503 branch reads `detail` to separate a
+  missing table from other runtime errors the 503 also forwards. Do not widen it.
+- **`main.py`'s "The database still has crypto_signal_events under its old name"
+  is now false** — the rename committed. It only fires when the table is genuinely
+  absent, so it is inert, but it is stale copy.
 - **The "not running" label for Weather/Macro is a hand-maintained list.** If
   those engines are repaired, it must be removed by a human or it will go stale.
 - **`current_runs` keys on `(engine, mode)`**, so `cpi-v1` and `cpi-core-v1` under
