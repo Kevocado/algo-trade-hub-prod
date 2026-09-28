@@ -9,6 +9,7 @@ import {
   cpiRowNote,
   cpiTruncationNote,
   hoursText,
+  nTrainText,
   nowcastMeasure,
   probMeasure,
   sigmaText,
@@ -35,7 +36,9 @@ import {
  *   * the read was TRUNCATED, rather than quietly showing the newest 200 rows as if they were all
  *     of them;
  *   * the rows WITHHELD FROM THE COMPARISON, counted over the whole read, each with its reason;
- *   * and, underneath all of it, a figure the scan did not record is rendered as words. Never as 0,
+ *   * each row's ERROR MODEL PROVENANCE, so a probability produced from the engine's hardcoded
+ *     fallback sigma is not sitting beside a fitted one looking identical; and
+ *   * underneath all of it, a figure the scan did not record is rendered as words. Never as 0,
  *     never as 0.0, never as a dash standing in for one.
  */
 
@@ -71,6 +74,15 @@ function Row({ row }: { row: CpiDisplayRow }) {
         <Figure measure={nowcastMeasure(row.nowcast)} />
         {sigmaText(row.sigma) && (
           <span className="ml-1 text-xs text-slate-500">{sigmaText(row.sigma)}</span>
+        )}
+        {/* The training-set size. `fit_cpi_error` returns a hardcoded DEFAULT_CPI_ERROR below
+            CPI_MIN_TRAIN pairs, so a sigma without its n is a number of unknown origin -- and a
+            probability from a constant otherwise reads exactly like one from a fit. */}
+        {nTrainText(row.n_train) && (
+          <span className="block text-[10px] text-slate-500">
+            {row.default_error_model === true ? "default, not fitted · " : "fitted on "}
+            {nTrainText(row.n_train)}
+          </span>
         )}
       </td>
       <td className="py-2 pr-3 text-xs text-slate-400">
@@ -137,7 +149,10 @@ export default function CpiDisplay() {
     );
   }
 
-  if (!data) return <div className="p-8 text-slate-400">Loading the CPI nowcast…</div>;
+  // No `if (!data)` branch. `loading` starts true and is only cleared by the effect's `finally`,
+  // and every path that clears it also sets `data` or `error`, so this point is unreachable; and
+  // were it ever reached, "Loading..." would render for ever rather than resolve. An unreachable
+  // branch that would render a permanent lie is worse than no branch.
 
   const headline = cpiHeadline(data);
   const gate = cpiGateNote(data);

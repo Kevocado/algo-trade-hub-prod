@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 
-import WithheldEdgesNotice from "@/components/WithheldEdgesNotice";
-import { DISPLAY_ONLY_REASON, type WithheldEdge } from "@/lib/displayOnlyEngines";
+import WithheldEdgesNotice, {
+  RETENTION_SENTENCE,
+  RETENTION_UNCONDITIONAL,
+} from "@/components/WithheldEdgesNotice";
+import { DISPLAY_ONLY_REASON, EDGES_READ_LIMIT, type WithheldEdge } from "@/lib/displayOnlyEngines";
+// Type-only, deliberately: a value import would execute `@/lib/supabase`, which calls
+// createClient() at module scope and throws in a test with no URL.
 import type { KalshiEdge } from "@/hooks/useMarketEdges";
 
 /**
@@ -49,13 +54,49 @@ describe("WithheldEdgesNotice", () => {
     expect(screen.getByText(new RegExp("not an edge engine", "i"))).toBeTruthy();
     // Both rows, so "1 withheld" can never stand in for "2 withheld".
     expect(screen.getAllByText(/KXCPI-26SEP09-T0\.3/)).toHaveLength(2);
-    expect(screen.getByText(/2 rows/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`2 rows of the ${EDGES_READ_LIMIT} rows read`))).toBeTruthy();
   });
 
-  it("states that the rows are neither an opportunity nor deleted", () => {
-    render(<WithheldEdgesNotice withheld={withheld([cpiEdge()])} />);
-    expect(screen.getByText(/not deleted/i)).toBeTruthy();
+  it("states that the rows are not opportunities, and bounds their retention to the market's life", () => {
+    // THE CRITICAL FIX. This used to assert `/not deleted/i` against a sentence that said "they are
+    // not deleted either, so the record of what the scan did survives". That was false on screen:
+    // `remove_closed_cpi_edges` deletes every cpi_nowcast row whose `expires_at` has passed, on
+    // every hourly scan, so a row is gone within the hour its market closes. The claim had to be
+    // bounded to what the data supports.
+    const { container } = render(<WithheldEdgesNotice withheld={withheld([cpiEdge()])} />);
+    const text = container.textContent ?? "";
+
+    expect(text).toContain(RETENTION_SENTENCE);
+    expect(text).toMatch(/while its market is still open/i);
+    expect(text).toMatch(/deleted when that market closes/i);
     expect(screen.getByText(/shown for context, not as an opportunity/i)).toBeTruthy();
+  });
+
+  it("can never again claim the rows are not deleted", () => {
+    // The anti-drift assertion, and the reason this test file is worth reading. It fails on the
+    // old copy, so the overclaim cannot be reintroduced by a well-meaning edit to the paragraph.
+    for (const phrase of RETENTION_UNCONDITIONAL) {
+      const { container, unmount } = render(<WithheldEdgesNotice withheld={withheld([cpiEdge()])} />);
+      expect(container.textContent?.toLowerCase()).not.toContain(phrase);
+      unmount();
+    }
+  });
+
+  it("counts the READ, not the table, and says so when the read is truncated", () => {
+    // `useMarketEdges` reads the newest 100 rows. A heading reading "3 rows" is a claim about the
+    // table and is not one -- the same hazard `/api/cpi-display` answers with its own `truncated`.
+    const { container, unmount } = render(<WithheldEdgesNotice withheld={withheld([cpiEdge("a")])} />);
+    expect(container.textContent).toContain(`1 row of the ${EDGES_READ_LIMIT} rows read`);
+    expect(container.textContent).not.toMatch(/the table holds more/);
+    unmount();
+
+    const truncated = render(
+      <WithheldEdgesNotice withheld={withheld([cpiEdge("a")])} truncated />,
+    );
+    expect(truncated.container.textContent).toContain(
+      `1 row of the newest ${EDGES_READ_LIMIT} rows read`,
+    );
+    expect(truncated.container.textContent).toContain("the table holds more");
   });
 
   it("prints no edge figure, because the number is the thing being withheld", () => {
@@ -90,6 +131,48 @@ describe("WithheldEdgesNotice", () => {
     expect(screen.getByText("cpi_nowcast")).toBeTruthy();
     expect(screen.getByText("other_engine")).toBeTruthy();
     expect(screen.getByText(/Fuel is a display engine too/)).toBeTruthy();
-    expect(screen.getByText(/2 rows/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`2 rows of the ${EDGES_READ_LIMIT}`))).toBeTruthy();
+  });
+});
+
+/**
+ * The failed read. This is the ambiguity the withholding rule was built to remove, reintroduced one
+ * layer up: a Supabase error used to be swallowed into `console.error`, leaving both buckets empty,
+ * so the notice rendered `null` -- which reads as "nothing was withheld", the one thing a reader
+ * cannot be allowed to infer from a read that never happened.
+ */
+describe("WithheldEdgesNotice on a failed read", () => {
+  it("renders a distinct could-not-read line rather than nothing at all", () => {
+    render(<WithheldEdgesNotice withheld={[]} readError="relation kalshi_edges does not exist" />);
+
+    expect(screen.getByTestId("edges-read-failure")).toBeTruthy();
+    expect(screen.getByText(/could not read the edge ledger/i)).toBeTruthy();
+    expect(screen.getByText("relation kalshi_edges does not exist")).toBeTruthy();
+    expect(screen.getByText(/failed read, not an empty one/i)).toBeTruthy();
+  });
+
+  it("SUPPRESSES the authoritative copy entirely, so absence is not claimed", () => {
+    // The critical half. "Nothing was withheld" is true only of a read that succeeded.
+    const { container } = render(
+      <WithheldEdgesNotice withheld={[]} readError="network request failed" />,
+    );
+    const text = container.textContent ?? "";
+
+    expect(text).not.toContain(RETENTION_SENTENCE);
+    for (const phrase of RETENTION_UNCONDITIONAL) {
+      expect(text.toLowerCase()).not.toContain(phrase);
+    }
+    expect(text).not.toMatch(/rows read/i);
+  });
+
+  it("outranks a non-empty bucket: claim nothing rather than claim from a failed read", () => {
+    // Defensive. The hook clears both buckets on failure, so this state should be unreachable -- but
+    // if it ever is reachable, the failure has to win, because a row from a previous successful
+    // read is a claim about the current one.
+    render(<WithheldEdgesNotice withheld={withheld([cpiEdge()])} readError="boom" />);
+
+    expect(screen.getByTestId("edges-read-failure")).toBeTruthy();
+    expect(screen.queryByText(/KXCPI-26SEP09-T0\.3/)).toBeNull();
+    expect(screen.queryByText(/not an edge engine/i)).toBeNull();
   });
 });

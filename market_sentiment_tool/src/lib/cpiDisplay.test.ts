@@ -9,6 +9,7 @@ import {
   cpiTruncationNote,
   hoursText,
   isDisplayOnly,
+  nTrainText,
   nowcastMeasure,
   probMeasure,
   sigmaText,
@@ -37,6 +38,8 @@ const row = (extra: Partial<CpiDisplayRow> = {}): CpiDisplayRow => ({
   nowcast_obs: "CLEVELAND-2026-09",
   sigma: 0.15,
   n_train: 24,
+  default_error_model: false,
+  default_error_model_reason: null,
   hours_to_close: 6.5,
   as_of: "2026-09-27T12:00:00+00:00",
   status: "OPEN",
@@ -248,6 +251,49 @@ describe("cpiRowNote", () => {
     const note = cpiRowNote(row({ nowcast: null, sigma: null }));
     expect(note).toMatch(/nowcast not recorded/i);
     expect(note).not.toMatch(/\+0\.00% MoM/);
+  });
+
+  it("states where the error model came from, so a DEFAULT is not read as a fit", () => {
+    // `fit_cpi_error` returns a hardcoded DEFAULT_CPI_ERROR below CPI_MIN_TRAIN pairs, so a row's
+    // probability can come out of a constant. Nothing on the page used to say so.
+    const note = cpiRowNote(
+      row({
+        n_train: 3,
+        default_error_model: true,
+        default_error_model_reason: "The error model is the default, not a fit.",
+      }),
+    );
+    expect(note).toMatch(/the error model is the default, not a fit/i);
+    expect(note).not.toMatch(/fitted on/i);
+  });
+
+  it("says the fit's size on a fitted row", () => {
+    expect(cpiRowNote(row({ n_train: 24 }))).toMatch(/error model fitted on 24 pairs/i);
+  });
+
+  it("claims neither a fit nor a default when n_train is absent", () => {
+    // An absent count is not evidence of a fit. Guessing in either direction is the same defect the
+    // rest of this module exists to prevent, so the row says the count is unknown.
+    const note = cpiRowNote(row({ n_train: null, default_error_model: null }));
+    expect(note).toMatch(/training-set size not recorded/i);
+    expect(note).not.toMatch(/fitted on/i);
+    expect(note).not.toMatch(/default/i);
+  });
+
+  it("has a fallback reason if the flag says default but the endpoint sent no words", () => {
+    const note = cpiRowNote(row({ n_train: 3, default_error_model: true, default_error_model_reason: null }));
+    expect(note).toMatch(/error model is the engine's default, not a fit/i);
+  });
+});
+
+describe("nTrainText", () => {
+  it("formats the count with its unit, and never a zero for an absent count", () => {
+    expect(nTrainText(24)).toBe("24 pairs");
+    expect(nTrainText(1)).toBe("1 pair");
+    expect(nTrainText(0)).toBe("0 pairs"); // a measured zero
+    expect(nTrainText(null)).toBeNull();
+    expect(nTrainText(undefined)).toBeNull();
+    expect(nTrainText(Number.NaN)).toBeNull();
   });
 });
 

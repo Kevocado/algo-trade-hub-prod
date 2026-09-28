@@ -129,15 +129,27 @@ def test_the_prediction_carries_no_gate_status_and_could_not_read_as_promoted():
     assert not [e for e in _scan()[1] if e.get("gate_status") == "PROMOTED"]
 
 
-def test_the_display_view_will_see_a_non_promoted_cpi_row():
-    """What the display endpoint will read. It falls back to SHADOW when the column is absent, so a
-    display-only row can never render as promoted -- checked here because that fallback is the
-    thing Task 2's endpoint depends on, and it is not something the scan sets."""
-    row = _scan()[0][0]
+def test_the_display_row_fails_closed_for_a_cpi_row():
+    """What the display endpoint actually publishes for this row.
 
-    assert row.get("gate_status", "SHADOW") == "SHADOW", (
-        "the gate must fail closed for a CPI row: an absent status is SHADOW, never PROMOTED"
-    )
+    This replaced an assertion on the SCAN output -- `row.get("gate_status", "SHADOW") == "SHADOW"`
+    -- which could not fail: the default *is* the asserted value, so it said nothing at all. The real
+    property lives on the other side of the endpoint, where the constants are set unconditionally,
+    so that is what is asserted here. The claim it protects is unchanged: a CPI row cannot reach a
+    reader as promoted.
+
+    Note the endpoint does NOT take the `_attach_gate_status` fallback this test used to describe.
+    CPI's rows carry no `gate_status` at all (see the test above), so the display endpoint publishes
+    `CPI_GATE_STATUS` outright and pairs it with `gate_checked: False` -- because "SHADOW" on its own
+    is the gate's own vocabulary and reads as a verdict that was reached."""
+    from tradehub.api.main import CPI_GATE_STATUS, _cpi_display_row
+
+    out = _cpi_display_row(_scan()[0][0])
+
+    assert out["gate_status"] == CPI_GATE_STATUS == "SHADOW"
+    # The stronger half, and the one a reader actually sees: no gate was consulted.
+    assert out["gate_checked"] is False
+    assert out["gate_status"] != "PROMOTED"
 
 
 def test_the_prediction_records_no_edge_figure():
@@ -262,6 +274,24 @@ def test_a_closed_cpi_edge_is_still_deleted_because_its_market_is_gone():
     scan.remove_closed_cpi_edges(client, datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc))
 
     assert client.deleted == [{"engine": "cpi_nowcast", "expires_at": "2026-09-11T12:05:00+00:00"}]
+
+
+def test_the_cpi_delete_is_run_on_every_scan_which_is_what_bounds_the_retention_claim():
+    """Why the on-screen copy is qualified, pinned from the Python side.
+
+    `remove_closed_cpi_edges` is not a once-a-while tidy-up: `main()` calls it on every hourly scan,
+    and the predicate is `expires_at <= now`. So a `cpi_nowcast` row is deleted within the hour its
+    market closes -- which is why the UI may not say "the rows are not deleted", and says the
+    bounded thing instead. If this ever stops being true the UI copy becomes conservative rather
+    than wrong, which is the safe direction to be wrong in; the reverse is not."""
+    import inspect
+
+    main_source = inspect.getsource(scan.main)
+
+    assert "remove_closed_cpi_edges(client, now)" in main_source, (
+        "the closed-market delete must still run on every scan: it is what bounds the retention "
+        "claim the UI makes, and dropping it would let the rows accumulate for ever"
+    )
 
 
 # ── the end-to-end claim: what the scan actually wrote ───────────────────────────────────────────

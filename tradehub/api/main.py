@@ -26,6 +26,7 @@ from tradehub.api.schemas import (
 )
 from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
+from tradehub.engines.cpi import CPI_MIN_TRAIN, DEFAULT_CPI_ERROR
 from tradehub.gate_status import latest_gate_statuses
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
 from tradehub.sports.scan import edge_row
@@ -315,6 +316,32 @@ CPI_NOT_COMPARABLE = (
     "mid is not a market mid of zero."
 )
 
+# `fit_cpi_error` (tradehub/engines/cpi.py) returns DEFAULT_CPI_ERROR -- a CONSTANT -- whenever it
+# has fewer than CPI_MIN_TRAIN training pairs, so a row's `our_prob` can come out of a hardcoded
+# sigma rather than a fit. Nothing distinguished the two on the page, which is the inverse of the
+# rule this endpoint is built on: a figure that was not measured is being presented as though it
+# were, and the reader cannot tell. `n_train` is the honest signal, because it is what the branch in
+# `fit_cpi_error` actually tested, so the flag is derived from it rather than from `sigma == 0.15`
+# (which a fitted model can also return).
+CPI_DEFAULT_ERROR_SIGMA = DEFAULT_CPI_ERROR.sigma
+CPI_DEFAULT_ERROR_MODEL = (
+    f"The error model is the default, not a fit: fewer than {CPI_MIN_TRAIN} nowcast/print pairs "
+    f"were available, so the {CPI_DEFAULT_ERROR_SIGMA}pp sigma is the constant the engine falls back "
+    "to rather than something measured. This row's probability comes from that default."
+)
+
+# `offset` is advertised, echoed and bounds-tested, so paging reads as supported. But the read is
+# bounded at CPI_ROW_SCAN, and the window is applied to that bounded list, so any offset past the
+# bound returns an empty page while `total` still says CPI_ROW_SCAN: a 200 with no rows, which is
+# indistinguishable from a ledger that has none. At three scans a day the ledger passes 200 rows in
+# about two weeks, so this is the normal case and not an edge case. Rejected instead of served.
+CPI_PAGE_WINDOW_MAX = CPI_ROW_SCAN
+CPI_PAGE_WINDOW_DETAIL = (
+    f"offset + limit must be at most {CPI_PAGE_WINDOW_MAX}: the read is bounded at that many rows, "
+    f"so a window past it could only ever return an empty page, and an empty page reads as a ledger "
+    f"with nothing in it. Ask for a smaller limit, or start from an earlier offset."
+)
+
 
 def _page(limit: int, offset: int) -> tuple[int, int]:
     if limit < 1 or limit > SPORTS_PAGE_MAX or offset < 0:
@@ -518,6 +545,13 @@ def _cpi_display_row(row: dict) -> dict:
     raw = row.get("raw_payload") or {}
     market_prob = row.get("market_prob")
     comparable = market_prob is not None
+    n_train = raw.get("n_train")
+    # The same branch `fit_cpi_error` took, decided from the number it branched on. `sigma` is NOT
+    # used: the default's own sigma is a value a fitted model can also produce, so comparing against
+    # it would label some fitted rows "default" and never miss a default one. An absent n_train
+    # means the scan did not record it, which is not evidence the model was fitted -- so the flag is
+    # `None` and the row says the count is unknown rather than asserting either way.
+    default_error_model: bool | None = None if n_train is None else int(n_train) < CPI_MIN_TRAIN
     return {
         "market_ticker": row.get("market_ticker"),
         "our_prob": row.get("our_prob"),
@@ -532,7 +566,10 @@ def _cpi_display_row(row: dict) -> dict:
         "nowcast": raw.get("nowcast"),
         "nowcast_obs": raw.get("nowcast_obs"),
         "sigma": raw.get("sigma"),
-        "n_train": raw.get("n_train"),
+        # The training-set size, because a sigma printed without it is a number of unknown origin.
+        "n_train": n_train,
+        "default_error_model": default_error_model,
+        "default_error_model_reason": CPI_DEFAULT_ERROR_MODEL if default_error_model else None,
         "hours_to_close": raw.get("hours_to_close"),
         # `as_of`, not `updated_at`: the ledger's timestamp is the engine's own and is NOT NULL, and
         # `predictions` has no `updated_at` column at all. `status` travels so a settled row from a
@@ -556,8 +593,9 @@ def get_cpi_display(
 ):
     """CPI as context, not as an opportunity.
 
-    Approved display-only on 2026-09-27 (spec section 9, approval 3: "DISPLAY ONLY. Show the
-    nowcast vs the market for context; it's not an edge engine"), on the evidence in 5a: the market's
+    Approved display-only on 2026-09-27 (spec section 9, approval 3, quoted verbatim from
+    docs/superpowers/specs/2026-09-27-hub-redesign.md:505: "DISPLAY ONLY. Show the nowcast against
+    the market for context; not an edge engine."), on the evidence in 5a: the market's
     Brier at 5 days out (0.0710) is barely worse than at 25 minutes (0.0677), so Kalshi prices this
     series about as accurately a week ahead as in the last half hour. It is not pricing off the
     nowcast, so a nowcast-based model has nothing to exploit by being early, and at every lead we
@@ -568,7 +606,7 @@ def get_cpi_display(
     `predictions` is owner-only under RLS, so this endpoint is the only route by which these numbers
     reach a browser: a label that only existed in a component would not travel with the data.
 
-    Three claims this response makes about itself, and each of them is a claim a reader would
+    Four claims this response makes about itself, and each of them is a claim a reader would
     otherwise have to assume:
 
     * `mode`/`edge_pct`/null: this is context, there is no edge, and nothing here implies otherwise.
@@ -577,12 +615,20 @@ def get_cpi_display(
       an engine that loses stays visible.
     * `truncated`: a read bounded at CPI_ROW_SCAN says so rather than letting `total` read as the
       whole set.
+    * `n_train` with `default_error_model`: a probability produced from the engine's FALLBACK sigma
+      says so, because a constant and a fit are otherwise the same figure on the page.
 
     A failed read is a 503, never a 200 with an empty page: "not measured" and "measured, and there
-    is nothing there" are different facts and must not look alike.
+    is nothing there" are different facts and must not look alike. For the same reason a `offset` that
+    would read past the bound is a 422 and not an empty window.
     """
     if supabase is None:
         raise HTTPException(status_code=503, detail="Supabase not configured")
+    # The window is checked against the READ'S bound, before the read, because after it an offset
+    # past the bound is a well-formed 200 whose `rows` is empty -- the one shape a client cannot tell
+    # from a ledger with nothing in it.
+    if offset + limit > CPI_PAGE_WINDOW_MAX:
+        raise HTTPException(status_code=422, detail=CPI_PAGE_WINDOW_DETAIL)
     try:
         # `as_of` descending, with `_fetch_all` appending `id` as the tiebreak so the pages line up
         # (PostgREST without a stable order can repeat one row and skip another between pages).

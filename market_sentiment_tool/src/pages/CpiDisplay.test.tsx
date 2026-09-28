@@ -18,6 +18,11 @@ import type { CpiDisplayResponse, CpiDisplayRow } from "@/lib/cpiDisplay";
  *      read, with the reason shown.
  *   4. `comparable` -- and the rule underneath: a figure the response does not carry is rendered as
  *      words, never as 0, 0.0, or a dash standing in for one.
+ *
+ * Plus a fifth, which is obligation 4's INVERSE and was missed: `default_error_model`. A row whose
+ * probability came out of the engine's hardcoded fallback sigma is not missing a figure, so none of
+ * the rules above catches it -- it is a DEFAULTED figure, rendered in the exact shape of a measured
+ * one. That is the same failure the page exists to prevent, from the other direction.
  */
 
 const row = (extra: Partial<CpiDisplayRow> = {}): CpiDisplayRow => ({
@@ -29,6 +34,8 @@ const row = (extra: Partial<CpiDisplayRow> = {}): CpiDisplayRow => ({
   nowcast_obs: "CLEVELAND-2026-09",
   sigma: 0.15,
   n_train: 24,
+  default_error_model: false,
+  default_error_model_reason: null,
   hours_to_close: 6.5,
   as_of: "2026-09-27T12:00:00+00:00",
   status: "OPEN",
@@ -266,5 +273,67 @@ describe("CpiDisplay", () => {
     expect(screen.getByText(/public\.predictions/)).toBeTruthy();
     expect(screen.queryByText(/between prints is expected/i)).toBeNull();
     expect(screen.queryByText(/No CPI markets in the ledger/i)).toBeNull();
+  });
+
+  // ── obligation 5: a DEFAULTED error model is not a fitted one ───────────────
+  it("renders n_train, so a sigma is never a number of unknown origin", async () => {
+    stubFetch(payload());
+    const { container } = render(<CpiDisplay />);
+    await screen.findByText("+0.39% MoM");
+
+    expect(container.textContent).toContain("24 pairs");
+  });
+
+  it("says the error model is a DEFAULT when the engine used its fallback sigma", async () => {
+    // `fit_cpi_error` returns a hardcoded DEFAULT_CPI_ERROR below CPI_MIN_TRAIN pairs, so
+    // `our_prob` came out of a constant. This is the INVERSE of the rule the rest of this file
+    // enforces -- a figure that was not measured, presented in the shape of one that was -- and it
+    // used to be indistinguishable from a fit on the same page.
+    const reason =
+      "The error model is the default, not a fit: fewer than 12 nowcast/print pairs were " +
+      "available, so the 0.15pp sigma is the constant the engine falls back to rather than " +
+      "something measured. This row's probability comes from that default.";
+    stubFetch(
+      payload({
+        rows: [
+          row({ n_train: 3, sigma: 0.15, default_error_model: true, default_error_model_reason: reason }),
+        ],
+      }),
+    );
+    render(<CpiDisplay />);
+
+    expect(await screen.findByText(/default, not fitted · 3 pairs/)).toBeTruthy();
+    expect(document.body.textContent).toContain(reason);
+  });
+
+  it("does not label a fitted row as a default, even when the fit lands on the default's sigma", async () => {
+    // The flag has to come from n_train, not from `sigma === 0.15` -- the default's own value is
+    // one a fit can also return, so branching on it would mislabel fitted rows and be a coin flip
+    // on the rest.
+    stubFetch(payload({ rows: [row({ n_train: 40, sigma: 0.15, default_error_model: false })] }));
+    render(<CpiDisplay />);
+
+    // Twice on purpose: the Nowcast cell as a figure, and the row's own note so the provenance
+    // travels with the reasoning rather than only sitting in a column a reader may skip.
+    expect((await screen.findAllByText(/fitted on 40 pairs/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/default, not fitted/)).toBeNull();
+  });
+
+  it("claims neither a fit nor a default when n_train was not recorded", async () => {
+    // Three-valued. An absent count is not evidence that the model was fitted, so the row says the
+    // count is unknown rather than defaulting the reader to a conclusion in either direction.
+    stubFetch(
+      payload({
+        rows: [
+          row({ n_train: null, default_error_model: null, default_error_model_reason: null }),
+        ],
+      }),
+    );
+    render(<CpiDisplay />);
+
+    expect(await screen.findByText(/not recorded/i)).toBeTruthy();
+    expect(screen.getByText(/training-set size not recorded/i)).toBeTruthy();
+    expect(screen.queryByText(/fitted on/)).toBeNull();
+    expect(screen.queryByText(/default, not fitted/)).toBeNull();
   });
 });

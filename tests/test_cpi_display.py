@@ -271,6 +271,63 @@ def test_limit_and_offset_are_bounded():
     assert _get([], offset=-1)[0].status_code == 422
 
 
+# ── GREEN AND WRONG #2: an offset past the read's bound serving an empty page ───
+
+def _ledger(n: int) -> list[dict]:
+    return [_row(f"KXCPI-26SEP-{i}.0", our=0.5, market=0.5, nowcast=0.3, as_of=_stamp(i))
+            for i in range(n)]
+
+
+def test_an_offset_past_the_read_bound_is_rejected_not_served_as_an_empty_page():
+    """The endpoint advertises `offset`, echoes it, and `test_limit_and_offset_are_bounded` asserts
+    its bounds -- so paging reads as supported. But the window is applied to `read[:CPI_ROW_SCAN]`
+    and `_fetch_all` stops at CPI_ROW_SCAN + 1, so any offset past the bound answered
+
+        200, rows: [], total: 200, truncated: true
+
+    which is indistinguishable from a ledger that holds nothing. The rows past the bound were never
+    read, so the empty page is not a fact about the data. At three scans a day the ledger passes
+    CPI_ROW_SCAN in about two weeks, so this is the normal case and not an edge case."""
+    ledger = _ledger(300)   # past the bound, so the old code had rows to be silent about
+
+    for offset in (200, 201, 250, 10_000):
+        response, _ = _get(ledger, offset=offset, limit=50)
+        assert response.status_code == 422, f"offset={offset} served {response.status_code}"
+        assert "rows" not in response.json(), response.json()
+
+
+def test_the_rejection_says_why_rather_than_only_being_a_422():
+    response, _ = _get(_ledger(300), offset=200, limit=50)
+
+    detail = response.json()["detail"]
+    assert str(api_main.CPI_ROW_SCAN) in detail
+    assert "empty page" in detail, detail
+
+
+def test_a_window_inside_the_bound_still_pages():
+    """The bound is on the WINDOW, not on paging. Four full 50-row windows exactly cover the read,
+    and the last one is the boundary rather than one past it."""
+    body = _get(_ledger(200), offset=150, limit=50)[0].json()
+
+    assert body["offset"] == 150 and body["limit"] == 50
+    assert len(body["rows"]) == 50
+    assert body["total"] == 200 and body["truncated"] is False
+
+
+def test_the_whole_read_is_still_one_window_when_offset_overshoots_the_ledger():
+    """An offset past the end of a COMPLETE read is ordinary paging, not the defect above, and
+    `total` is what tells the two apart: here the read was not truncated and `total` is below the
+    offset, so a client can see why the page is empty. The defect was an offset past the read's
+    BOUND, where `total` said 200 and `truncated` said true and the page still said nothing."""
+    response, _ = _get(_ledger(120), offset=150, limit=50)
+    body = response.json()
+
+    assert body["rows"] == []
+    assert body["total"] == 120
+    assert body["truncated"] is False
+    assert body["offset"] > body["total"]
+
+
 # ── GREEN AND WRONG #1: a failed read rendering as "no CPI data" ──────────────
 
 def test_a_read_failure_is_a_503_and_never_an_empty_board():
@@ -388,6 +445,73 @@ def test_the_withheld_count_is_over_the_whole_read_not_the_page():
     assert body["withheld_count"] == 1, "the withheld row is on page 2 and must still be counted"
 
 
+# ── GREEN AND WRONG #3: a DEFAULTED error model rendering as a fitted one ────
+
+def test_a_row_whose_sigma_is_the_engine_default_says_so():
+    """`fit_cpi_error` returns the CONSTANT `DEFAULT_CPI_ERROR` (sigma 0.15) whenever it has fewer
+    than CPI_MIN_TRAIN pairs, so `our_prob` can come out of a hardcoded number. On the page that row
+    used to be identical to a fitted one: same "±0.15pp", same probability, nothing to tell them
+    apart. This is the INVERSE of the missing-figure rule and the same class of defect -- a figure
+    the scan did not measure, presented in the shape of one it did."""
+    row = _row("KXCPI-26SEP09-3.0", our=0.55, market=0.52, nowcast=0.3)
+    row["raw_payload"].update(sigma=0.15, n_train=3)   # below CPI_MIN_TRAIN
+
+    out = _get([row])[0].json()["rows"][0]
+
+    assert out["n_train"] == 3
+    assert out["default_error_model"] is True
+    assert isinstance(out["default_error_model_reason"], str)
+    assert "default" in out["default_error_model_reason"].lower()
+    assert "fit" in out["default_error_model_reason"].lower()
+
+
+def test_a_fitted_row_is_not_labelled_a_default():
+    row = _row("KXCPI-26SEP09-3.0", our=0.55, market=0.52, nowcast=0.3)
+    row["raw_payload"].update(sigma=0.11, n_train=24)
+
+    out = _get([row])[0].json()["rows"][0]
+
+    assert out["n_train"] == 24
+    assert out["default_error_model"] is False
+    assert out["default_error_model_reason"] is None
+
+
+def test_the_default_flag_is_derived_from_n_train_and_not_from_the_sigma_value():
+    """The default's own sigma (0.15) is a value a FITTED model can also return, so branching on
+    `sigma == 0.15` would label some fitted rows "default" and would be a coin flip on the rest.
+    The signal has to be the number `fit_cpi_error` actually branched on."""
+    row = _row("KXCPI-26SEP09-3.0", our=0.55, market=0.52, nowcast=0.3)
+    row["raw_payload"].update(sigma=0.15, n_train=40)   # fitted, and it happened to fit 0.15
+
+    out = _get([row])[0].json()["rows"][0]
+
+    assert out["sigma"] == 0.15
+    assert out["default_error_model"] is False, "a fit that lands on the default's sigma is a fit"
+
+
+def test_an_unrecorded_n_train_claims_neither_a_fit_nor_a_default():
+    """Three-valued on purpose. An absent `n_train` is not evidence that the model was fitted, so
+    the flag is null and the page says the count is unknown -- rather than defaulting the reader to a
+    conclusion in either direction."""
+    row = _row("KXCPI-26SEP09-3.0", our=0.55, market=0.52, nowcast=0.3)
+    del row["raw_payload"]["n_train"]
+
+    out = _get([row])[0].json()["rows"][0]
+
+    assert out["n_train"] is None
+    assert out["default_error_model"] is None
+    assert out["default_error_model_reason"] is None
+
+
+def test_the_default_sigma_matches_the_engine_constant_so_the_words_cannot_go_stale():
+    from tradehub.engines.cpi import DEFAULT_CPI_ERROR, fit_cpi_error
+
+    # Zero pairs: the branch the endpoint derives `default_error_model` from.
+    assert fit_cpi_error([]) is DEFAULT_CPI_ERROR
+    assert api_main.CPI_DEFAULT_ERROR_SIGMA == DEFAULT_CPI_ERROR.sigma
+    assert str(api_main.CPI_DEFAULT_ERROR_SIGMA) in api_main.CPI_DEFAULT_ERROR_MODEL
+
+
 # ── the scan bound ───────────────────────────────────────────────────────────
 
 def test_a_read_that_hits_the_scan_bound_says_it_was_truncated():
@@ -420,18 +544,64 @@ def test_a_read_exactly_at_the_bound_is_not_called_truncated():
 
 # ── registration order ───────────────────────────────────────────────────────
 
-def test_the_route_is_registered_before_the_spa_catch_all():
-    """`mount_frontend` mounts the SPA at "/", so a route added after it is shadowed and this
-    endpoint would answer with the app shell instead of JSON. Registration order is load-bearing."""
-    import os
-    from pathlib import Path
+def _routes_with_a_spa_mounted(tmp_path):
+    """`api_main.app` as it is registered when the SPA is actually present.
 
-    dist = Path(os.getenv("FRONTEND_DIST",
-                          str(Path(api_main.__file__).resolve().parents[2] / "market_sentiment_tool" / "dist")))
-    if not (dist / "index.html").is_file():
-        return   # the SPA is not built here; the order cannot bite in this environment
-    paths = [getattr(route, "path", None) for route in api_main.app.routes]
+    A SEPARATE module instance, deliberately. `importlib.reload` is not safe here: four test
+    modules bind `app` with `from tradehub.api.main import app` at import time, so a reload would
+    leave them holding the previous object while `api_main.app` became a new one, and this repo has
+    order-dependent tests already. Loading the file under a private name gives a fresh FastAPI and
+    a fresh `mount_frontend` call, and the real module -- and every other test -- is untouched.
+
+    The alternative was to assert against the live `app.routes` and skip when
+    `market_sentiment_tool/dist/index.html` is absent. That is what this test used to do, and
+    `dist` is gitignored and never built before pytest, so in CI the assertion never ran: 128
+    green Python tests and a route ordering nobody had checked. It passed on a machine where
+    someone had run `npm run build` at some point, which is exactly the kind of coverage that only
+    exists for whoever built it.
+    """
+    import importlib.util
+    import os
+    import sys
+
+    (tmp_path / "index.html").write_text("<!doctype html><title>spa</title>")
+    previous = os.environ.get("FRONTEND_DIST")
+    os.environ["FRONTEND_DIST"] = str(tmp_path)
+    spec = importlib.util.spec_from_file_location("_cpi_display_spa_probe", api_main.__file__)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous is None:
+            os.environ.pop("FRONTEND_DIST", None)
+        else:
+            os.environ["FRONTEND_DIST"] = previous
+    return [getattr(route, "path", None) for route in module.app.routes]
+
+
+def test_the_route_is_registered_before_the_spa_catch_all(tmp_path):
+    """`mount_frontend` mounts the SPA at "/", so a route added after it is shadowed and this
+    endpoint would answer with the app shell instead of JSON. Registration order is load-bearing.
+
+    Unconditional, and driven from a temp dist so the SPA is mounted whether or not this machine
+    has ever run `npm run build`."""
+    paths = _routes_with_a_spa_mounted(tmp_path)
+
+    assert "" in paths, "the probe did not mount a SPA, so it proves nothing about the order"
     assert "/api/cpi-display" in paths, paths
     assert paths.index("/api/cpi-display") < paths.index(""), (
         "the endpoint is registered after the SPA catch-all mount and would be shadowed"
     )
+
+
+def test_the_endpoint_is_registered_after_every_other_api_route(tmp_path):
+    """The same hazard for a route added later, and it is the direction that matters: `mount_frontend`
+    is the last statement in the module, so anything registered after it is shadowed in production
+    and invisible here. Asserting the CPI route is the LAST `/api/` route makes a future route
+    added below the mount fail here instead of shipping."""
+    paths = _routes_with_a_spa_mounted(tmp_path)
+    api_routes = [p for p in paths if isinstance(p, str) and p.startswith("/api/")]
+
+    assert api_routes[-1] == "/api/cpi-display", api_routes
+    assert paths.index(api_routes[-1]) < paths.index("")

@@ -234,8 +234,8 @@ def test_deploy_workflow_builds_then_deploys_to_vps():
     assert path.is_file(), "deploy workflow missing"
     text = path.read_text(encoding="utf-8")
     workflow = yaml.safe_load(text)
-    assert set(workflow["jobs"]) == {"test", "build", "vps"}
-    assert workflow["jobs"]["build"]["needs"] == "test"
+    assert set(workflow["jobs"]) == {"test", "frontend", "build", "vps"}
+    assert workflow["jobs"]["build"]["needs"] == ["test", "frontend"]
     assert workflow["jobs"]["vps"]["needs"] == "build"
     assert workflow["jobs"]["vps"]["if"] == "vars.VPS_HOST != ''"
     assert workflow["env"]["IMAGE"] == "ghcr.io/kevocado/tradehub"
@@ -248,6 +248,46 @@ def test_deploy_workflow_builds_then_deploys_to_vps():
         assert needle in text, f"workflow missing {needle}"
     for azure in ("az login", "containerapp", "AZURE_"):
         assert azure not in text, f"workflow must not reference Azure ({azure})"
+
+
+def test_ci_runs_the_frontend_suite_and_typechecker():
+    """The workflow ran `python -m pytest -q` and nothing else, so all of market_sentiment_tool's
+    tests never executed on any PR: 128 green tests that were not run. The Dockerfile's
+    `npm run build` is `vite build`, which transpiles without typechecking and never runs vitest, so
+    a `tsc` break shipped green too. `build` now depends on this job, which is what makes any
+    frontend test claim on this repo mean something.
+
+    Each command is asserted separately because dropping ONE of them leaves the others looking fine:
+    `npm ci` alone is a green no-op, and a job that only runs vitest still ships a type error."""
+    import yaml
+
+    workflow = yaml.safe_load(
+        (REPO / ".github/workflows/deploy-tradehub.yml").read_text(encoding="utf-8"))
+    job = workflow["jobs"]["frontend"]
+    steps = [str(s.get("run", "")) for s in job["steps"]]
+
+    assert job["defaults"]["run"]["working-directory"] == "market_sentiment_tool"
+    assert any(s.strip() == "npm ci" for s in steps), steps
+    assert any(s.strip() == "npm run typecheck" for s in steps), steps
+    assert any(s.strip() == "npx vitest run" for s in steps), steps
+    # `npm test` is `vitest run` here, but the explicit form is what the job must say.
+    assert workflow["jobs"]["build"]["needs"] == ["test", "frontend"], (
+        "the image must not be built or pushed when the frontend job fails"
+    )
+
+
+def test_ci_frontend_job_shares_the_python_job_path_triggers():
+    """The `paths:` filter is workflow-level, so a new job inherits it -- but only while it stays in
+    this workflow file. Asserted so a job added to a trigger-less workflow is not mistaken for one
+    that runs on the same paths as the Python tests."""
+    import yaml
+
+    workflow = yaml.safe_load(
+        (REPO / ".github/workflows/deploy-tradehub.yml").read_text(encoding="utf-8"))
+    paths = workflow[True]["push"]["paths"]   # `on:` parses to the YAML boolean True
+
+    assert "market_sentiment_tool/**" in paths, paths
+    assert ".github/workflows/deploy-tradehub.yml" in paths, paths
 
 
 def test_pm2_process_files_are_retired():

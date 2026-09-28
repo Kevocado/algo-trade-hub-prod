@@ -22,7 +22,7 @@ const chartData = [
 export default function Home() {
   const { metrics, loading: mLoading } = usePortfolioMetrics();
   const { portfolio, positions: paperPositions, loading: pLoading } = usePortfolio();
-  const { edges: readEdges, withheld: readWithheld, loading: eLoading } = useMarketEdges();
+  const { edges: readEdges, withheld: readWithheld, loading: eLoading, error: edgesError, truncated } = useMarketEdges();
   // Same rule as the Prediction Lab, same reason: this page renders `edge_pct` as a headline
   // number, so a display-only row reaching `topEdges` would read as an opportunity. The hook
   // withholds it; this is the reader being the last line as well.
@@ -71,8 +71,10 @@ export default function Home() {
 
       {/* An engine that is no longer an edge engine is relabelled, not removed. Without this the War
           Room's edge board simply gets quieter, which is indistinguishable from CPI never having
-          existed -- and CPI did exist, and was measured. */}
-      <WithheldEdgesNotice withheld={withheld} />
+          existed -- and CPI did exist, and was measured. A FAILED read is a third thing, and it must
+          not be allowed to look like the second: `readError` suppresses the authoritative copy and
+          renders the reason the board cannot be read. */}
+      <WithheldEdgesNotice withheld={withheld} readError={edgesError} truncated={truncated} />
 
       {/* AI War Room Section */}
       {topEdges.length > 0 && (

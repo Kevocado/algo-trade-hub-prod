@@ -42,13 +42,19 @@ const cpiRow = {
  * can read the current value, which is what makes these two tests real.
  */
 const HOOK = vi.hoisted(() => ({
-  current: { edges: [] as unknown[], withheld: [] as unknown[], loading: false },
+  current: {
+    edges: [] as unknown[],
+    withheld: [] as unknown[],
+    loading: false,
+    error: null as string | null,
+    truncated: false,
+  },
 }));
 
 vi.mock("@/hooks/useMarketEdges", () => ({ useMarketEdges: () => HOOK.current }));
 
-function stubHook(withheld: unknown[], edges: unknown[] = []) {
-  HOOK.current = { edges, withheld, loading: false };
+function stubHook(withheld: unknown[], edges: unknown[] = [], over: Record<string, unknown> = {}) {
+  HOOK.current = { edges, withheld, loading: false, error: null, truncated: false, ...over };
 }
 
 describe("PredictionLab must say that cpi_nowcast exists and is not an edge engine", () => {
@@ -100,5 +106,59 @@ describe("PredictionLab must say that cpi_nowcast exists and is not an edge engi
 
     expect(screen.getByText(/10\.0% EDGE/)).toBeTruthy();
     expect(screen.queryByText(/not an edge engine/i)).toBeNull();
+  });
+});
+
+/**
+ * The failed read, on the page. The hook swallows nothing now, but the BOARD is the other half:
+ * "No high-confidence edges detected" is a finding, and a read that never completed cannot produce
+ * one. This is the same ambiguity one layer up that the withholding rule exists to remove.
+ */
+describe("PredictionLab must not report a failed read as a finding", () => {
+  it("does not say no edges were detected when the table could not be read", () => {
+    stubHook([], [], { error: "Could not find the table 'public.kalshi_edges'" });
+
+    render(<PredictionLab />);
+
+    expect(screen.queryByText(/No high-confidence edges detected/i)).toBeNull();
+    expect(screen.getByText(/could not be read/i)).toBeTruthy();
+    // Twice on purpose: the board says it and so does the withheld notice below, because they are
+    // making the same claim about two different things (the board, and the withheld bucket).
+    expect(screen.getAllByText(/kalshi_edges/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/not an empty result/i)).toBeTruthy();
+  });
+
+  it("withholds the edge count and the global heat rather than reporting zero", () => {
+    // `0` and `0.00%` are measurements of nothing that was measured.
+    stubHook([], [], { error: "boom" });
+
+    const { container } = render(<PredictionLab />);
+
+    expect(container.textContent).not.toMatch(/\b0\.00%/);
+    expect(screen.queryByText(/Active Edges/i)).toBeTruthy();
+  });
+
+  it("keeps the 'nothing was withheld' claim off the page when the read failed", () => {
+    // The notice's authoritative wording is suppressed rather than rendered against an empty bucket
+    // that a failure produced.
+    stubHook([], [], { error: "boom" });
+
+    const { container } = render(<PredictionLab />);
+
+    expect(screen.getByTestId("edges-read-failure")).toBeTruthy();
+    expect(container.textContent).not.toMatch(/not deleted/i);
+    expect(container.textContent).not.toMatch(/of the \d+ rows read/i);
+  });
+
+  it("still says no edges were detected on a read that SUCCEEDED and found none", () => {
+    // The other direction, and the one that would be broken by a fix that only ever renders the
+    // failure: an empty successful read really is an empty board, and hiding that would be its own
+    // kind of lie.
+    stubHook([], []);
+
+    render(<PredictionLab />);
+
+    expect(screen.getByText(/No high-confidence edges detected in all/i)).toBeTruthy();
+    expect(screen.queryByTestId("edges-read-failure")).toBeNull();
   });
 });

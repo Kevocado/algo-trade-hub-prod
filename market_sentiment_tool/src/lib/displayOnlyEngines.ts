@@ -1,8 +1,9 @@
 /**
  * Which engines are DISPLAY engines, and the rule that stops them being presented as edges.
  *
- * CPI (`cpi_nowcast`) was approved display-only on 2026-09-27 (spec 5a, section 9 approval 3:
- * "DISPLAY ONLY. Show the nowcast vs the market for context; it's not an edge engine"). The
+ * CPI (`cpi_nowcast`) was approved display-only on 2026-09-27 (spec 5a, section 9 approval 3,
+ * quoted verbatim from docs/superpowers/specs/2026-09-27-hub-redesign.md:505: "DISPLAY ONLY. Show
+ * the nowcast against the market for context; not an edge engine."). The
  * evidence is that the market prices this series about as accurately 5 days out (Brier 0.0710) as
  * it does 25 minutes before close (0.0677), so Kalshi is not pricing off the Cleveland Fed
  * nowcast, a nowcast-based model has nothing to exploit by being early, and at every lead we are
@@ -11,9 +12,14 @@
  * `scan_cpi` stopped writing `kalshi_edges` rows on the same date. That alone is not enough, for
  * two reasons this module exists to handle:
  *
- * 1. THE ROWS ARE NOT DELETED. They are a record of what the scan did, and the ruling is no
- *    migration: the standing rule is a read filter, because a filter keeps holding and a one-time
- *    delete does not. The `kalshi_edges` rows written before the change are still in the table.
+ * 1. THE ROWS ARE NOT DELETED BY THIS CHANGE, BUT ONLY WHILE THEIR MARKET IS OPEN. The ruling is
+ *    no migration: the standing rule is a read filter, because a filter keeps holding and a
+ *    one-time delete does not. The `kalshi_edges` rows written before the change are still in the
+ *    table -- and then `remove_closed_cpi_edges` (tradehub/scripts/scan.py) deletes each one on the
+ *    first hourly scan after its `expires_at`, so a row outlives its market by about an hour. A row
+ *    is a record of what the scan did while the market it measured was still open; it is not a
+ *    permanent archive, and no copy on screen may claim it is. The filter below is a standing rule
+ *    over the rows that are still there.
  * 2. A READ THAT DROPS A ROW SILENTLY IS INDISTINGUISHABLE FROM THERE HAVING BEEN NO ROWS. That
  *    is the "unrecognised kinds" defect already ruled on in the sports path, where
  *    `sportsTierOf` returns null for a MACRO row and the MACRO tab simply gets quieter. A reader
@@ -27,6 +33,17 @@
 
 /** Engines whose rows are context, not opportunities. Add to this only with a written ruling. */
 export const DISPLAY_ONLY_ENGINES = ["cpi_nowcast"] as const;
+
+/**
+ * How many rows `useMarketEdges` reads.
+ *
+ * Lives here, not in the hook, because it is a policy number the COPY depends on: every count a
+ * reader sees derived from that read is a count OF THE READ, so the notice has to be able to say
+ * which read it is counting. Putting it in the hook would make a presentational component import a
+ * module that builds a Supabase client at import time, which is a dependency direction this file's
+ * sibling `displayOnlyEngines` exists to avoid.
+ */
+export const EDGES_READ_LIMIT = 100;
 
 export type DisplayOnlyEngine = (typeof DISPLAY_ONLY_ENGINES)[number];
 

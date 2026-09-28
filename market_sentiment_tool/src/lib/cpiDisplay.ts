@@ -1,8 +1,9 @@
 /**
  * Copy rules for the CPI display.
  *
- * CPI was approved DISPLAY ONLY on 2026-09-27 (spec 5a, section 9 approval 3: "DISPLAY ONLY. Show
- * the nowcast vs the market for context; it's not an edge engine"). The evidence is that the market
+ * CPI was approved DISPLAY ONLY on 2026-09-27 (spec 5a, section 9 approval 3, quoted verbatim from
+ * docs/superpowers/specs/2026-09-27-hub-redesign.md:505: "DISPLAY ONLY. Show the nowcast against
+ * the market for context; not an edge engine."). The evidence is that the market
  * prices this series about as accurately 5 days out (Brier 0.0710) as 25 minutes before close
  * (0.0677), so Kalshi is not pricing off the Cleveland Fed nowcast, a nowcast-based model has
  * nothing to exploit by being early, and at every lead we are 1.33-1.43x behind with negative P&L.
@@ -51,7 +52,17 @@ export interface CpiDisplayRow {
   nowcast_obs: string | null;
   /** Standard deviation of the MoM print, same units as `nowcast`. */
   sigma: number | null;
+  /** Training-set size. A sigma printed without it is a number of unknown origin. */
   n_train: number | null;
+  /**
+   * True when the engine had too few nowcast/print pairs to fit an error model and used its
+   * hardcoded fallback sigma, so `our_prob` came from a CONSTANT. False when it fitted. `null` when
+   * `n_train` was not recorded -- which is not evidence either way, so the row says the count is
+   * unknown rather than asserting which of the two it was.
+   */
+  default_error_model: boolean | null;
+  /** Why it is a default, in words. Present exactly when `default_error_model` is true. */
+  default_error_model_reason: string | null;
   hours_to_close: number | null;
   /** The ledger's own timestamp. NOT `updated_at`: `predictions` has no such column. */
   as_of: string | null;
@@ -139,6 +150,19 @@ export function nowcastMeasure(raw: number | null | undefined): Measure {
 /** 0.15 -> "±0.15pp". Null sigma prints nothing rather than a zero-width band. */
 export function sigmaText(raw: number | null | undefined): string | null {
   return isNum(raw) ? `±${raw.toFixed(2)}pp` : null;
+}
+
+/**
+ * 24 -> "24 pairs". The size of the set a sigma was measured over.
+ *
+ * Published, not optional decoration: `fit_cpi_error` returns a hardcoded DEFAULT_CPI_ERROR
+ * whenever it has fewer than CPI_MIN_TRAIN pairs, so a sigma -- and a probability derived from it
+ * -- used to sit on the page looking exactly like one from a fit. The count is what tells them
+ * apart, and `cpiRowNote` pairs it with `default_error_model` so the distinction is made in words
+ * rather than left to a reader who would not know to look.
+ */
+export function nTrainText(raw: number | null | undefined): string | null {
+  return isNum(raw) ? `${raw} pair${raw === 1 ? "" : "s"}` : null;
 }
 
 export function hoursText(raw: number | null | undefined): Measure {
@@ -246,6 +270,20 @@ export function cpiRowNote(row: CpiDisplayRow): string {
         }`
       : "Cleveland Fed nowcast not recorded",
   );
+  // The error model's provenance, next to the sigma it produced. This is the INVERSE of the rule
+  // above and the same class of defect: a figure the scan did not measure, presented in the shape
+  // of one it did. `null` (n_train absent) is not evidence either way, so the row says the count
+  // is unknown rather than guessing, and it never claims a fit it cannot see.
+  if (row?.default_error_model === true) {
+    parts.push(
+      row.default_error_model_reason?.trim() ||
+        "the error model is the engine's default, not a fit, so this probability came from a constant",
+    );
+  } else if (nTrainText(row?.n_train)) {
+    parts.push(`error model fitted on ${nTrainText(row?.n_train)}`);
+  } else {
+    parts.push("training-set size not recorded, so the error model's origin is unknown");
+  }
   parts.push(lead.known ? `${lead.value} to close` : lead.note);
   // The state is reported whether or not the timestamp is, so a row missing one still cannot read
   // as live. Neither field is ever substituted for the other.

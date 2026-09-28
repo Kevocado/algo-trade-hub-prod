@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMarketEdges, KalshiEdge } from "@/hooks/useMarketEdges";
-import { Loader2, TrendingUp, Cloud, Globe, Trophy, Brain, ExternalLink, Zap, Activity } from "lucide-react";
+import { Loader2, TrendingUp, Cloud, Globe, Trophy, Brain, ExternalLink, Zap, Activity, AlertTriangle } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { GateBadge } from "@/components/GateBadge";
 import WithheldEdgesNotice from "@/components/WithheldEdgesNotice";
@@ -139,7 +139,7 @@ const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
 };
 
 export default function PredictionLab() {
-  const { edges: readEdges, withheld: readWithheld, loading } = useMarketEdges();
+  const { edges: readEdges, withheld: readWithheld, loading, error: edgesError, truncated } = useMarketEdges();
   const [activeTab, setActiveTab] = useState("all");
 
   // The hook already withholds display-only rows, and that is where the standing rule lives. The
@@ -174,12 +174,18 @@ export default function PredictionLab() {
         <div className="flex items-center gap-6">
           <div className="text-right">
             <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Global Heat</p>
-            <p className="text-2xl font-black text-emerald-500">{(edges.reduce((a, b) => a + (b.edge_pct || 0), 0) / (edges.length || 1)).toFixed(2)}%</p>
+            {/* A failed read has no mean, no sum and no count. `0.00%` and `0` are measurements of
+                nothing that was measured, which is the same defect as a defaulted figure. */}
+            <p className={`text-2xl font-black ${edgesError ? "text-slate-600" : "text-emerald-500"}`} title={edgesError ?? undefined}>
+              {edgesError ? "—" : `${(edges.reduce((a, b) => a + (b.edge_pct || 0), 0) / (edges.length || 1)).toFixed(2)}%`}
+            </p>
           </div>
           <div className="h-10 w-px bg-slate-800 hidden md:block" />
           <div className="text-right">
             <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Active Edges</p>
-            <p className="text-2xl font-black text-white">{edges.length}</p>
+            <p className={`text-2xl font-black ${edgesError ? "text-slate-600" : "text-white"}`} title={edgesError ?? undefined}>
+              {edgesError ? "—" : edges.length}
+            </p>
           </div>
         </div>
       </div>
@@ -201,10 +207,27 @@ export default function PredictionLab() {
 
         <TabsContent value={activeTab} className="m-0 focus-visible:outline-none">
           {filteredEdges.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-32 space-y-4 border-2 border-dashed border-slate-900 rounded-3xl">
-              <TrendingUp className="w-12 h-12 text-slate-800" />
-              <p className="text-slate-500 font-bold uppercase tracking-tighter">No high-confidence edges detected in {activeTab}</p>
-            </div>
+            edgesError ? (
+              /* A FAILED read, not an empty one. "No high-confidence edges detected" is a finding,
+                 and a read that never completed cannot produce one. The ambiguity this component
+                 was built to remove -- a row that never existed against a row I could not see --
+                 was being reintroduced a layer up, by the board rendering the same emptiness. */
+              <div className="flex flex-col items-center justify-center gap-3 py-32 border-2 border-dashed border-rose-900/60 rounded-3xl">
+                <AlertTriangle className="w-10 h-10 text-rose-800" />
+                <p className="text-rose-300 font-bold uppercase tracking-tighter">
+                  The edge table could not be read
+                </p>
+                <p className="text-xs text-rose-200/70 max-w-md text-center">{edgesError}</p>
+                <p className="text-xs text-slate-500 text-center">
+                  Nothing is being claimed about which edges exist. This is not an empty result.
+                </p>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-32 space-y-4 border-2 border-dashed border-slate-900 rounded-3xl">
+                <TrendingUp className="w-12 h-12 text-slate-800" />
+                <p className="text-slate-500 font-bold uppercase tracking-tighter">No high-confidence edges detected in {activeTab}</p>
+              </div>
+            )
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
               {filteredEdges.map((edge) => (
@@ -218,8 +241,10 @@ export default function PredictionLab() {
       {/* Ruling 1's visible half. The hook withholds these rows and conserves them, but a row that is
           read and not rendered is indistinguishable from there having been no rows -- so a MACRO tab
           that merely got quieter would read as "the engine was retired". It was relabelled. Placed
-          under the board because that is where the quiet it explains shows up. */}
-      <WithheldEdgesNotice withheld={withheld} />
+          under the board because that is where the quiet it explains shows up. The hook's `error`
+          and `truncated` travel through: a failed read must not render as "nothing was withheld",
+          and the count is a count of the newest 100 rows read, not of the table. */}
+      <WithheldEdgesNotice withheld={withheld} readError={edgesError} truncated={truncated} />
       
       {/* Risk Disclosure Section */}
       <div className="mt-16 p-6 rounded-2xl bg-slate-900/40 border border-slate-800/60 text-slate-500 text-[10px] uppercase tracking-widest font-bold leading-relaxed">
