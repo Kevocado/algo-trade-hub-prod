@@ -112,6 +112,7 @@ def scan_quant_ml():
     paper_opportunities = []
 
     data_cache = {}
+    unpriced = 0
     for ticker in tickers:
         try:
             print(f"    📡 Fetching live {ticker} from Alpaca API...")
@@ -169,7 +170,13 @@ def scan_quant_ml():
             if not is_above:
                 my_prob = 100 - my_prob
 
-            yes_ask = m.get('yes_ask', 0)
+            yes_ask = m.get('yes_ask')
+            if yes_ask is None or yes_ask <= 0:
+                # No quote means no price to buy at. Skipping is the only honest
+                # move: `my_prob - 0` would publish a probability-sized "edge"
+                # and size a Kelly bet at a price nobody can trade.
+                unpriced += 1
+                continue
             edge = my_prob - yes_ask
             bet_size = kelly_criterion(my_prob, yes_ask, bankroll=20, fractional=0.25)
 
@@ -203,6 +210,9 @@ def scan_quant_ml():
                     "Status": "PAPER TRADE ONLY",
                     "Engine": "Quant",
                 })
+
+    if unpriced:
+        print(f"    ⏭️ Skipped {unpriced} market(s) with no YES ask (no price, no edge)")
 
     return snapshot_records, paper_opportunities
 

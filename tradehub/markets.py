@@ -48,6 +48,54 @@ def parse_market(raw: dict[str, Any]) -> KalshiMarket:
     )
 
 
+QUOTE_FIELDS = ("yes_bid", "yes_ask", "no_bid", "no_ask")
+
+
+def _tradeable_cents(value: Any) -> float | None:
+    """A price in 0-100 cents, or None when it is not one you could trade at."""
+    if value is None or value == "":
+        return None
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return None
+    # Rejects NaN, and the degenerate ends: Kalshi quotes 0.0000/1.0000 rather
+    # than omitting the field, and a 0c ask would make `prob - 0` a fake edge.
+    return price if 0.0 < price < 100.0 else None
+
+
+def quote_cents(raw: dict[str, Any]) -> dict[str, float | None]:
+    """Top-of-book YES/NO prices in cents (0-100) from a raw Kalshi market dict.
+
+    Kalshi's current API publishes prices as 0-1 dollar *strings* under the
+    ``*_dollars`` keys ("0.6200") and no longer emits the legacy cent keys
+    ``yes_bid``/``yes_ask``/``no_bid``/``no_ask`` at all. Reading the legacy key
+    with a ``0`` default therefore fabricates a 0-cent quote for every market --
+    including ones quoting right now -- and downstream that becomes a
+    probability-sized "edge" priced at zero. So: read the dollar string and
+    rescale, and fall back to a legacy key only when it is genuinely present.
+
+    A missing figure is never a number. Every absent, empty, unparseable or
+    degenerate price is reported as None -- never as 0 -- so callers are forced
+    to decide what to do about a market they cannot price.
+    """
+    prices: dict[str, float | None] = {}
+    for field in QUOTE_FIELDS:
+        dollars_key = f"{field}_dollars"
+        if dollars_key in raw:
+            try:
+                # round() first: 0.29 * 100 == 28.999999999999996, and
+                # 0.07 * 100 == 7.000000000000001 in IEEE 754.
+                prices[field] = _tradeable_cents(round(float(raw[dollars_key]) * 100.0))
+            except (TypeError, ValueError):
+                prices[field] = None
+        elif field in raw:
+            prices[field] = _tradeable_cents(raw[field])  # legacy cents, never rescaled
+        else:
+            prices[field] = None
+    return prices
+
+
 def event_date(event_ticker: str) -> date:
     """'KXHIGHNY-26SEP25' -> date(2026, 9, 25); 'KXNFLGAME-26OCT01PITCLE' -> date(2026, 10, 1).
 

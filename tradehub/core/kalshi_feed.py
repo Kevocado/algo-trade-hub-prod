@@ -12,6 +12,8 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+from tradehub.markets import quote_cents
+
 # Load .env from root directory
 root_dir = Path(__file__).parent.parent
 env_path = root_dir / '.env'
@@ -393,10 +395,9 @@ def process_markets(markets, ticker):
             'floor_strike': floor,
             'cap_strike': cap,
             'market_type': market_type,
-            'yes_bid': m.get('yes_bid', 0),
-            'no_bid': m.get('no_bid', 0),
-            'yes_ask': m.get('yes_ask', 0),
-            'no_ask': m.get('no_ask', 0),
+            # quote_cents() reads Kalshi's *_dollars strings and rescales them to
+            # cents; an unpriceable market gets None, never a fabricated 0.
+            **quote_cents(m),
             'expiration': m.get('expiration_time'),
             'market_id': m.get('ticker'),
             'title': m.get('title', ''),
