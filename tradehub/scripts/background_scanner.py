@@ -1,11 +1,20 @@
 """
 Background Scanner — Multi-Engine Compute-on-Write
 Runs from GitHub Actions (or locally). Executes Weather + Macro engines first (real edge),
-then Quant engine (paper trading). All real-edge ops go through AI Validator.
+then Quant engine (paper trading).
 
 ARCHITECTURE:
-  Tier 1 (Real Edge): Weather Engine + Macro Engine → AI Validator → Supabase kalshi_edges
-  Tier 2 (Paper):     Quant Engine → Supabase paper_trading_signals
+  Tier 1 (QUARANTINED): Weather + Macro → measured → Supabase kalshi_quarantine_edges
+  Tier 2 (Paper):       Quant Engine → Supabase paper_trading_signals
+
+**Tier 1 does not publish, and that is the architecture rather than an omission.** These two engines
+had been reading a Kalshi quote field the API no longer sends, so every market they fetched looked
+unpriceable, every one was skipped, and they produced nothing while appearing to run (PR #38). They
+are now repaired and produce real output — 295 rows a scan — and the question of whether any of it
+should reach `kalshi_edges` is the owner's, not this file's. So the output is measured, marked, and
+written to its own table, and `run_scan` never passes it to `upsert_opportunities`. Two independent
+things enforce that, and neither depends on the other being remembered: the lists are separate here,
+and `upsert_opportunities` drops any row marked `quarantined` even if it is handed one.
 """
 
 import re
@@ -25,8 +34,18 @@ from tradehub.engines.quant_engine import (
 )
 from tradehub.core.ai_validator import AIValidator
 from tradehub.core.kalshi_feed import get_real_kalshi_markets
-from tradehub.core.supabase_client import upsert_opportunities, upsert_portfolio_metrics
+from tradehub.core.supabase_client import (
+    upsert_opportunities,
+    upsert_portfolio_metrics,
+    upsert_quarantined,
+)
 from tradehub.core.kalshi_portfolio import KalshiPortfolio
+from tradehub.quarantine import (
+    QUARANTINE_FLAG,
+    QUARANTINE_MARK,
+    mark_quarantine,
+    partition_quarantine,
+)
 
 # ─── Environment ─────────────────────────────────────────────────────
 # The developer-local `.env` is loaded explicitly in `main()`/`run_scan()` at
@@ -63,8 +82,31 @@ def update_live_portfolio():
 
 def scan_real_edge():
     """
-    Run Weather and Macro engines.
-    Returns raw math-based opportunities.
+    Run the Weather and Macro engines and return their output as QUARANTINED rows.
+
+    This function used to return opportunities that `run_scan` pushed straight into
+    `kalshi_edges`. It no longer does, and the change is the whole point of the module it lives
+    beside: the engines were repaired (they had been reading a Kalshi quote field the API stopped
+    sending, so every market read as a 0c quote and every one was skipped), they now compute real
+    output, and **none of it is published** until the owner rules on whether it should be. What that
+    decision needs is to be made against real output rather than against unseen code, so the output
+    is measured and shown instead of suppressed or shipped.
+
+    Every row handed back is marked `quarantined` (`tradehub.quarantine.QUARANTINE_FLAG`), which is
+    what `upsert_opportunities` refuses. The marking is not decoration: it is the second of the two
+    things that make the property true, the first being that `run_scan` never puts these rows in the
+    list it publishes. Either alone would do; both, and neither depends on the other being
+    remembered.
+
+    The two verdicts about each row -- whether its edge is a units artefact, and whether it is an
+    independent statement or a restatement of a forecast another row already made -- are computed
+    here, in Python, from the rows as a set. They are not a per-row flag, because neither is a
+    property of one row: 143 rows restating one GDP point forecast is a fact about the SCAN, and
+    deciding it row by row would make the count depend on iteration order.
+
+    Returns the marked rows, and logs the measured split. It returns them rather than a summary
+    because the owner is being asked to look at the rows, and a summary of 265 opportunities is the
+    thing that was misleading in the first place.
     """
     all_ops = []
 
@@ -73,8 +115,10 @@ def scan_real_edge():
     try:
         weather_engine = WeatherEngine()
         weather_ops = weather_engine.find_opportunities()
-        for op in weather_ops: op["edge_type"] = "WEATHER"
-        print(f"  Found {len(weather_ops)} weather opportunities")
+        for op in weather_ops:
+            op["edge_type"] = "WEATHER"
+            op[QUARANTINE_FLAG] = True
+        print(f"  Found {len(weather_ops)} weather opportunities (QUARANTINED, not published)")
         all_ops.extend(weather_ops)
     except Exception as e:
         print(f"  ⚠️ Weather Engine failed: {e}")
@@ -84,17 +128,26 @@ def scan_real_edge():
     try:
         macro_engine = MacroEngine()
         macro_ops = macro_engine.find_opportunities()
-        for op in macro_ops: op["edge_type"] = "MACRO"
-        print(f"  Found {len(macro_ops)} macro opportunities")
+        for op in macro_ops:
+            op["edge_type"] = "MACRO"
+            op[QUARANTINE_FLAG] = True
+        print(f"  Found {len(macro_ops)} macro opportunities (QUARANTINED, not published)")
         all_ops.extend(macro_ops)
     except Exception as e:
         print(f"  ⚠️ Macro Engine failed: {e}")
 
-    print(f"\n📊 Total real-edge opportunities: {len(all_ops)}")
     if all_ops:
-        for op in all_ops:
-            print(f"  ✨ Edge: {op.get('market_title')} ({op.get('edge', 0):.1f}%)")
-    return all_ops
+        # Measured over the whole scan, because "one forecast restated across eleven year-events" is
+        # a fact about the set and not about any row in it. Printed because a quarantine whose
+        # numbers only exist in a database is a quarantine nobody can make a decision from.
+        marked = mark_quarantine(all_ops)
+        counts = partition_quarantine(marked).counts()
+        print(f"\n📊 QUARANTINED: {counts['rows']} rows, {counts['independent_opportunities']} "
+              f"independent opportunities")
+        print(f"   {counts['units_artefacts']} units artefact(s) (BUY NO against a degenerate YES ask)")
+        print(f"   {counts['restated_opportunities']} of the rest are restatements of one forecast")
+        print(f"   ⛔ 0 of these reach kalshi_edges.")
+    return mark_quarantine(all_ops)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -226,14 +279,32 @@ def run_scan():
     now = datetime.now(timezone.utc)
     print(f"🚀 Starting Multi-Engine Scan at {now.isoformat()}")
 
-    # ══════════════ TIER 1: REAL EDGE ══════════════
-    real_edge_ops = scan_real_edge()
+    # ══════════════ TIER 1: QUARANTINED (measured, never published) ══════════════
+    quarantined_ops = scan_real_edge()
+
+    # The quarantine sink, and it is a DIFFERENT TABLE. Not a table in `kalshi_edges` with a column
+    # that says "quarantined" -- a row in the trade-proposal sink is a row something downstream can
+    # act on, and a column that says do not is one refactor away from not being there. The rows go
+    # somewhere that only the quarantine surface reads.
+    print(f"\n📦 Writing {len(quarantined_ops)} QUARANTINED row(s) to kalshi_quarantine_edges...")
+    try:
+        written = upsert_quarantined(quarantined_ops)
+        counts = partition_quarantine(quarantined_ops).counts()
+        print(f"  ✅ {QUARANTINE_MARK}: {written} written · {counts['independent_opportunities']} "
+              f"independent opportunity(ies) of {counts['rows']} rows")
+    except Exception as e:
+        print(f"  ❌ Quarantine sink write failed (the trade sink is unaffected): {e}")
 
     # ── Discord Alerts ──
+    # QUARANTINED rows are NOT sent. An alert channel is the one place a reader cannot see the
+    # marker beside the number, because it is a push notification carrying a headline on its own --
+    # "84-point edge" with nothing saying quarantined is exactly the false reading this whole change
+    # exists to prevent, and it would land in someone's phone. Paper signals are the only thing here
+    # that has always been allowed to notify, and they are published to a different table anyway.
     try:
         notifier = DiscordNotifier()
         if notifier.is_enabled():
-            notifier.send_alert(real_edge_ops, min_edge=30.0)
+            notifier.send_alert([], min_edge=30.0)
     except Exception as e:
         print(f"  ⚠️ Discord alert failed: {e}")
 
@@ -243,10 +314,15 @@ def run_scan():
     print(f"  Found {len(paper_ops)} quant signals (EDUCATIONAL ONLY)")
 
     # ── Sync to Supabase Unified Table ──
+    #
+    # `all_opps` is the paper signals ALONE. Quarantined rows are not in this list and cannot be
+    # added to it without being marked, because `upsert_opportunities` refuses anything marked
+    # `quarantined` -- so this is belt and braces on purpose: the omission here and the refusal
+    # there are independent, and it takes breaking both to publish a quarantined row.
     print("\nPushing to Supabase kalshi_edges...")
     try:
         from collections import Counter
-        all_opps = real_edge_ops + paper_ops
+        all_opps = list(paper_ops)
         count_dict = dict(Counter(op.get('edge_type', 'UNKNOWN') for op in all_opps))
         print(f"  Types: {count_dict}")
         

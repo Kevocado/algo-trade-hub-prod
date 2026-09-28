@@ -3,13 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   FOUND_NOTHING_PHRASE,
   HEALTH_UNREAD_REASON,
+  QUARANTINED_WORD,
   QUIET_REASON,
   STOPPED_WORD,
   edgeTypeStateOf,
   edgeTypesText,
   emptyBoard,
+  isQuarantined,
   opportunitiesFoundReason,
   opportunitiesFoundText,
+  quarantineSinkOf,
   stoppedEngineOf,
   type EdgeTypeState,
   type EngineHealthResponse,
@@ -17,24 +20,36 @@ import {
 import { NOT_MEASURED } from "@/lib/edgeFigures";
 
 /**
- * The wording half of the stopped-engine ruling, and the two tests that were waiting for it.
+ * The wording half of the stopped-engine ruling, and the third state that arrived with the repair.
  *
  * `emptyBoard` is the only place in the product allowed to say "nothing here" about an empty board,
- * and it may only say it when the server has said the engine ran. Everything else is either a
- * broken engine or an unknown one, and the three branches have to stay apart:
+ * and it may only say it when the server has said the engine ran. Everything else is broken,
+ * withheld, or unknown, and the FOUR branches have to stay apart:
  *
- *   quiet      the engine ran and found nothing. A MEASUREMENT. The finding.
- *   stopped    an engine that feeds this board could not run. Nothing was measured.
- *   unchecked  the ruling itself could not be read, so the emptiness is not established either way.
+ *   quiet        the engine ran and found nothing. A MEASUREMENT. The finding.
+ *   stopped      an engine that feeds this board could not run. Nothing was measured.
+ *   quarantined  the engine ran, measured, and its output is withheld BY RULING. 295 rows on
+ *                2026-09-28, 26 of them independent opportunities. The board is empty by decision.
+ *   unchecked    the ruling itself could not be read, so the emptiness is not established either way.
  *
- * The last branch is the one that is easiest to leave out and the one that makes the other two
- * worth having: without it, a 500 on /api/engine-health is a quiet market, and a label that a
- * server outage can switch off is not a label.
+ * `quarantined` is the one that is easy to get wrong in both directions, and the tests below pin
+ * both: calling it "stopped" is a false claim about an engine that runs, and calling it "quiet" is
+ * this page's original defect reached from the other direction -- a confident finding about a scan
+ * whose result was deliberately never published.
+ *
+ * The last branch is the one that is easiest to leave out and the one that makes the others worth
+ * having: without it, a 500 on /api/engine-health is a quiet market, and a label that a server
+ * outage can switch off is not a label.
  */
 
 const WEATHER_REASON =
   "Not running. This is the Tier-1 real-edge weather engine, and it prices every market against " +
   "`yes_ask`, which Kalshi's API no longer sends. It skips every market and publishes nothing.";
+
+const QUARANTINED_REASON =
+  "REPAIRED and QUARANTINED. Kalshi's API no longer sends `yes_ask`; the call site now reads it " +
+  "through `quote_cents`, so the engine runs. Its output is measured into kalshi_quarantine_edges " +
+  "and no row reaches kalshi_edges.";
 
 function stoppedWeather(): EdgeTypeState {
   return {
@@ -46,9 +61,10 @@ function stoppedWeather(): EdgeTypeState {
       {
         name: "WeatherEngine",
         module: "tradehub/engines/weather_engine.py",
-        site: "tradehub/engines/weather_engine.py:214",
+        site: "tradehub/engines/weather_engine.py:220",
         edge_type: "WEATHER",
         wired_to_a_scanner: true,
+        disposition: "repaired_quarantined",
         reason: WEATHER_REASON,
       },
       {
@@ -57,12 +73,39 @@ function stoppedWeather(): EdgeTypeState {
         site: "tradehub/engines/weather_maker.py:258",
         edge_type: "WEATHER",
         wired_to_a_scanner: false,
+        disposition: "unrepaired",
         reason: "Not running, and not wired to any scanner.",
       },
     ],
+    quarantine_sink: null,
     opportunities_found: null,
     opportunities_found_reason:
       "No count, because nothing ran. The engine did not execute, so there is no opportunity count to report -- not a count of zero.",
+  };
+}
+
+function quarantinedWeather(): EdgeTypeState {
+  return {
+    edge_type: "WEATHER",
+    label: "Weather",
+    state: "quarantined",
+    reason: QUARANTINED_REASON,
+    stopped_sites: [
+      {
+        name: "WeatherEngine",
+        module: "tradehub/engines/weather_engine.py",
+        site: "tradehub/engines/weather_engine.py:220",
+        edge_type: "WEATHER",
+        wired_to_a_scanner: true,
+        disposition: "repaired_quarantined",
+        reason: QUARANTINED_REASON,
+      },
+    ],
+    quarantine_sink: "kalshi_quarantine_edges",
+    opportunities_found: null,
+    opportunities_found_reason:
+      "Counted elsewhere, and withheld here on purpose. This engine ran and computed real opportunities, " +
+      "and none of them were published. The measured split is served by /api/quarantine.",
   };
 }
 
@@ -73,6 +116,7 @@ function quietSports(): EdgeTypeState {
     state: "ran",
     reason: null,
     stopped_sites: [],
+    quarantine_sink: null,
     opportunities_found: null,
     opportunities_found_reason: "Not counted here. This endpoint reports which engines are stopped.",
   };
@@ -86,6 +130,7 @@ function health(over: Partial<EngineHealthResponse> = {}): EngineHealthResponse 
     edge_types: [stopped, quiet],
     edge_types_total: 2,
     edge_types_could_not_run: 1,
+    edge_types_quarantined: 0,
     edge_types_ran: 1,
     board_state: "could_not_run",
     board_reason: WEATHER_REASON,
@@ -93,7 +138,33 @@ function health(over: Partial<EngineHealthResponse> = {}): EngineHealthResponse 
     sites_total: 2,
     sites_wired: 1,
     sites_unwired: 1,
+    sites_repaired: 1,
+    sites_unrepaired: 1,
     note: "An engine on this list did not run.",
+    ...over,
+  };
+}
+
+/** The same response with the wired site repaired, which is the state the product is actually in. */
+function quarantinedHealth(over: Partial<EngineHealthResponse> = {}): EngineHealthResponse {
+  const quarantined = quarantinedWeather();
+  const quiet = quietSports();
+  return {
+    as_of: "2026-09-28T00:00:00Z",
+    edge_types: [quarantined, quiet],
+    edge_types_total: 2,
+    edge_types_could_not_run: 0,
+    edge_types_quarantined: 1,
+    edge_types_ran: 1,
+    board_state: "quarantined",
+    board_reason: QUARANTINED_REASON,
+    sites: quarantined.stopped_sites,
+    sites_total: 1,
+    sites_wired: 1,
+    sites_unwired: 0,
+    sites_repaired: 1,
+    sites_unrepaired: 0,
+    note: "An engine on this list either did not run, or had its output quarantined.",
     ...over,
   };
 }
@@ -145,6 +216,84 @@ describe("a broken engine reads as broken, with a reason", () => {
   });
 });
 
+// ── the third state: ran, measured, withheld on purpose ───────────────────────────────────
+
+describe("a quarantined engine reads as neither stopped nor quiet", () => {
+  it("says it ran and that its opportunities are not published", () => {
+    const board = emptyBoard(quarantinedHealth(), "WEATHER", "weather");
+    expect(board.kind).toBe("quarantined");
+    expect(board.headline).toContain(QUARANTINED_WORD);
+    expect(board.headline).toContain("ran");
+  });
+
+  it("never claims the engine is not running, which is false", () => {
+    // The engine runs. It measured 295 rows on 2026-09-28. "Not running" sends a reader to fix
+    // something that is already fixed, and is the single most misleading thing this branch could say.
+    for (const tab of ["WEATHER", "MACRO", ""]) {
+      const board = emptyBoard(quarantinedHealth(), tab, "weather");
+      expect(`${board.headline} ${board.body ?? ""}`).not.toContain(STOPPED_WORD);
+    }
+  });
+
+  it("never claims the market was quiet, which is this page's own defect reversed", () => {
+    // "No high-confidence edges detected" beside a board that is empty because a decision was made
+    // is a confident finding about a scan whose result was never published. This is the assertion
+    // that would have caught the ruling going straight from "not running" to "quiet" after the repair.
+    for (const tab of ["WEATHER", "MACRO", ""]) {
+      const board = emptyBoard(quarantinedHealth(), tab, "weather");
+      expect(board.headline).not.toMatch(/no high-confidence edges/i);
+      expect(`${board.headline} ${board.body ?? ""}`.toLowerCase()).not.toContain(
+        FOUND_NOTHING_PHRASE,
+      );
+    }
+  });
+
+  it("carries the server's reason", () => {
+    const board = emptyBoard(quarantinedHealth(), "WEATHER", "weather");
+    expect(board.body).toBe(QUARANTINED_REASON);
+  });
+
+  it("points at the sink rather than repeating a count the reader would then mistrust", () => {
+    // The number is on /api/quarantine, and it is 26 independent opportunities out of 295 rows.
+    // Repeating either figure here would put a second, worse version of it on this panel.
+    expect(quarantineSinkOf(quarantinedWeather())).toBe("kalshi_quarantine_edges");
+    const board = emptyBoard(quarantinedHealth(), "WEATHER", "weather");
+    expect(`${board.headline} ${board.body ?? ""}`).not.toMatch(/\b295\b/);
+  });
+
+  it("is identifiable as quarantined without parsing the sentence", () => {
+    expect(isQuarantined(quarantinedHealth(), "WEATHER")).toBe(true);
+    expect(isQuarantined(quarantinedHealth(), "SPORTS")).toBe(false);
+    expect(isQuarantined(health(), "WEATHER")).toBe(false);
+    expect(isQuarantined(null, "WEATHER")).toBe(false);
+  });
+
+  it("says the unfiltered board is quarantined, not stopped, when nothing is broken", () => {
+    const board = emptyBoard(quarantinedHealth(), "", "all");
+    expect(board.kind).toBe("quarantined");
+    expect(board.headline).toContain("1 of 2");
+    expect(board.body).toBe(QUARANTINED_REASON);
+  });
+
+  it("reports no opportunity count here, and says where the real one is", () => {
+    // A quarantined engine HAS a count. Putting it on this endpoint would be a second number for one
+    // fact, and a bare row total would throw away the split that makes it worth having.
+    expect(opportunitiesFoundText(quarantinedWeather())).toBe(NOT_MEASURED);
+    const reason = opportunitiesFoundReason(quarantinedWeather());
+    expect(reason).toContain("/api/quarantine");
+    expect(reason).not.toBe(opportunitiesFoundReason(stoppedWeather()));
+    expect(reason).not.toBe(opportunitiesFoundReason(quietSports()));
+  });
+
+  it("counts quarantined boards separately in the one-liner", () => {
+    // Summing them would produce a number nobody could act on: "2 of 5 boards are not working" is
+    // true and useless when one of the two is working perfectly well and merely withheld.
+    const text = edgeTypesText(quarantinedHealth());
+    expect(text).toContain("0 cannot run");
+    expect(text).toContain(`1 ${QUARANTINED_WORD}`);
+  });
+});
+
 describe("an engine that ran and found nothing still reads as quiet", () => {
   it("keeps the finding it is entitled to", () => {
     const board = emptyBoard(health(), "SPORTS", "sports");
@@ -163,6 +312,7 @@ describe("an engine that ran and found nothing still reads as quiet", () => {
       edge_types: [quietSports()],
       edge_types_total: 1,
       edge_types_could_not_run: 0,
+      edge_types_quarantined: 0,
       edge_types_ran: 1,
       board_state: "ran",
       board_reason: null,
@@ -170,10 +320,27 @@ describe("an engine that ran and found nothing still reads as quiet", () => {
       sites_total: 0,
       sites_wired: 0,
       sites_unwired: 0,
+      sites_repaired: 0,
+      sites_unrepaired: 0,
     });
     const board = emptyBoard(clean, "", "all");
     expect(board.kind).toBe("quiet");
     expect(board.headline).toBe("No high-confidence edges detected in all");
+  });
+
+  it("is not silenced by a quarantined board elsewhere", () => {
+    // The mirror of the quarantine tests, and the reason they are worth having: hiding the quiet
+    // case would be its own kind of lie, training the reader to ignore the label on every board.
+    const mixed = health({
+      edge_types: [quarantinedWeather(), quietSports()],
+      edge_types_could_not_run: 0,
+      edge_types_quarantined: 1,
+      edge_types_ran: 1,
+      board_state: "quarantined",
+    });
+    const board = emptyBoard(mixed, "SPORTS", "sports");
+    expect(board.kind).toBe("quiet");
+    expect(`${board.headline} ${board.body ?? ""}`).not.toContain(QUARANTINED_WORD);
   });
 
   it("carries no reason on a running engine, so the two states cannot look alike", () => {
@@ -261,9 +428,18 @@ describe("a ruling that could not be read claims nothing either way", () => {
 
 describe("the counts are the server's", () => {
   it("each count agrees its own noun", () => {
-    expect(edgeTypesText(health())).toBe("2 boards · 1 cannot run · 1 ran");
-    const one = health({ edge_types_total: 1, edge_types_could_not_run: 1, edge_types_ran: 0 });
-    expect(edgeTypesText(one)).toBe("1 board · 1 cannot run · 0 ran");
+    // The three buckets are all printed, including a `0 quarantined`. A real count of zero is a
+    // measurement here -- zero of five boards are withheld on purpose right now -- and forcing it
+    // out of the sentence would be a rule applied where it does not belong. What must never appear
+    // is a zero standing in for something nobody measured, which is the null figures' job.
+    expect(edgeTypesText(health())).toBe("2 boards · 1 cannot run · 0 quarantined · 1 ran");
+    const one = health({
+      edge_types_total: 1,
+      edge_types_could_not_run: 1,
+      edge_types_quarantined: 0,
+      edge_types_ran: 0,
+    });
+    expect(edgeTypesText(one)).toBe("1 board · 1 cannot run · 0 quarantined · 0 ran");
   });
 
   it("words a missing ruling as a failure, never as zero", () => {

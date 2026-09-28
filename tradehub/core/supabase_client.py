@@ -8,6 +8,16 @@ Uses the supabase-py SDK with the service role key for server-side writes.
 import os
 from datetime import datetime, timezone
 
+from tradehub.quarantine import (
+    KIND_OPPORTUNITY,
+    QUARANTINE_FLAG,
+    QUARANTINE_MARK,
+    QUARANTINE_NOTE,
+    forecast_key,
+    is_quarantined_row,
+    normalize_edge_type,
+)
+
 # NOTE: no `load_dotenv()` here, on purpose. Importing this module must not
 # touch `os.environ` -- see `tradehub.core.env`. Credentials come from the
 # process environment; entrypoints opt into the developer-local `.env`
@@ -71,9 +81,40 @@ def insert_opportunities(run_id: str, opportunities: list):
     client.table("live_opportunities").insert(rows).execute()
 
 def upsert_opportunities(opportunities: list):
-    """Upsert opportunities into the new unified kalshi_edges Supabase table."""
+    """Upsert opportunities into the new unified kalshi_edges Supabase table.
+
+    **Refuses quarantined rows.** The Weather and Macro real-edge engines are repaired and running
+    (`tradehub/quarantine.py`), they produce real output, and none of it is allowed to reach this
+    table until the owner rules on whether it should. They mark every row they produce with
+    `QUARANTINE_FLAG`, and this function drops any row carrying that mark before building a payload.
+
+    The flag is the mechanism rather than a check on `edge_type`, and it has to be: this writer is
+    shared with `tradehub/scripts/scan.py`, whose measured `weather` engine and macro ladder engine
+    publish to the SAME two edge types and must keep doing so. A sink that refused `WEATHER` and
+    `MACRO` to protect a ruling about two other engines that share those boards would be refusing the
+    product's working engines. The flag can only be set by the path that is meant to be quarantined
+    -- it is written in exactly one place -- so dropping on it cannot be evaded by a caller and
+    cannot be tripped by one either.
+
+    It is a DROP and not a raise, deliberately. This is a shared writer on the scan path: one row
+    that ought to be somewhere else must not take the crypto and sports rows down with it. The
+    refusal is loud -- it is printed, and the return value is the number dropped -- because a
+    silent drop of the thing the whole quarantine exists to prevent is the defect this PR is about,
+    reproduced one layer down. `tests/test_weather_macro_quarantine.py` pins that a quarantined row
+    handed to this function produces zero writes.
+
+    Returns the number of rows dropped, so the caller can log the refusal instead of inferring it.
+    """
+    dropped = [op for op in opportunities if is_quarantined_row(op)]
+    opportunities = [op for op in opportunities if not is_quarantined_row(op)]
+    if dropped:
+        print(
+            f"  ⛔ QUARANTINE: refused {len(dropped)} row(s) from the trade sink. "
+            f"Marked '{QUARANTINE_FLAG}' rows are measured and written to "
+            f"kalshi_quarantine_edges instead, and never to kalshi_edges."
+        )
     if not opportunities:
-        return
+        return len(dropped)
     client = get_client()
     # De-duplicate rows by market_id to avoid Supabase 500 error
     unique_rows = {}
@@ -131,6 +172,97 @@ def upsert_opportunities(opportunities: list):
         
     rows = list(unique_rows.values())
     client.table("kalshi_edges").upsert(rows, on_conflict="market_id").execute()
+    return len(dropped)
+
+
+# ── The quarantine sink ──────────────────────────────────────────────────────────────────────
+#
+# A second table, and the only place a quarantined row is allowed to land. It exists because PR #38's
+# report said this "needs a real second sink, so it is a bigger change", and because the alternative
+# is worse in both directions: not repairing the engines leaves the owner unable to see what they
+# would do, and repairing them into `kalshi_edges` publishes 295 unvalidated rows a scan from a
+# model with no measurement and no gate, which is a data-quality incident rather than a bug report.
+#
+# What it is NOT, on purpose: not a pipeline, not a queue, not a reconciliation system, and not a
+# shadow-trading ledger. Nothing reads it to place an order, nothing settles it, and it feeds no
+# scoreboard. It is a measurement surface -- the place a row goes so that the owner can look at it
+# and decide -- and it stays that small because anything larger would start accruing state that
+# somebody later mistakes for a track record.
+
+def upsert_quarantined(rows: list):
+    """Write quarantined rows to `kalshi_quarantine_edges`. Never to `kalshi_edges`.
+
+    Every row written here is stamped three ways, so it cannot be mistaken for a live edge if it is
+    read out of context: a literal `quarantined` boolean, the `QUARANTINE_MARK` word, and the note
+    explaining what it means. The classification travels too -- `edge_kind`, `independent`, and the
+    `forecast_key` a row shares with its restatements -- because a table of 295 rows with no way to
+    tell a units artefact from an independent opinion is the same unreadable number the surface was
+    built to replace.
+
+    `price_cents` and `model_probability_pct` are stored as the engines produced them, in cents and
+    percentage points, rather than rescaled into 0-1 the way `kalshi_edges` stores probabilities. The
+    two tables are read by different things and mixing the two conventions is how a 29c quote becomes
+    a 0.29% one.
+
+    Returns the number of rows written. A missing figure on a row is stored as NULL, never 0: a row
+    that recorded no price has no price, and writing 0 would put a fabricated zero into a table whose
+    entire purpose is to hold numbers that were really measured.
+    """
+    if not rows:
+        return 0
+    client = get_client()
+
+    written: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not is_quarantined_row(row):
+            continue
+        title = row.get("market_title") or row.get("title") or "Unknown Market"
+        market_id = str(
+            row.get("market_id") or row.get("market_ticker") or f"GEN_{title.replace(' ', '_').upper()}"
+        )[:50]
+        key = forecast_key(row)
+        written[market_id] = {
+            "market_id": market_id,
+            "title": title,
+            "engine": _opt_text(row.get("engine")),
+            "edge_type": normalize_edge_type(row.get("edge_type")),
+            "action": _opt_text(row.get("action")),
+            "market_ticker": _opt_text(row.get("market_ticker")),
+            "event_ticker": _opt_text(row.get("event_ticker")),
+            # Cents, and NULL when there is none. Never 0 -- see the docstring.
+            "price_cents": _opt_number(row.get("market_price")),
+            "model_probability_pct": _opt_number(row.get("model_probability")),
+            "edge_points": _opt_number(row.get("edge")),
+            "edge_kind": row.get("edge_kind") or KIND_OPPORTUNITY,
+            "independent": bool(row.get("independent", True)),
+            "forecast_key": " | ".join(part for part in key if part) or None,
+            "reasoning": _opt_text(row.get("reasoning")),
+            "kalshi_url": _opt_text(row.get("kalshi_url")),
+            "quarantined": True,
+            "marker": QUARANTINE_MARK,
+            "note": QUARANTINE_NOTE,
+            "updated_at": row.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+        }
+
+    if not written:
+        return 0
+    client.table("kalshi_quarantine_edges").upsert(
+        list(written.values()), on_conflict="market_id"
+    ).execute()
+    return len(written)
+
+
+def _opt_text(value) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _opt_number(value) -> float | None:
+    """A real number or `None`. A missing figure is never a number, and this table is the one place
+    that rule has to be enforced rather than assumed -- it exists to hold measured figures, so a
+    fabricated 0 in it would be the whole defect again, quieter."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
 
 
 # ── Signal Ledger (cross-domain shadow-validation log) ────────────────

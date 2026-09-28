@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMarketEdges, KalshiEdge } from "@/hooks/useMarketEdges";
-import { Loader2, TrendingUp, Cloud, Globe, Trophy, Brain, ExternalLink, Zap, Activity, AlertTriangle } from "lucide-react";
+import { Loader2, TrendingUp, Cloud, Globe, Trophy, Brain, ExternalLink, Zap, Activity, AlertTriangle, FlaskConical } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { GateBadge } from "@/components/GateBadge";
 import WithheldEdgesNotice from "@/components/WithheldEdgesNotice";
@@ -20,7 +20,9 @@ import {
 import { enforceDisplayOnlyPartition } from "@/lib/displayOnlyEngines";
 import { emptyBoard } from "@/lib/engineHealth";
 import { useEngineHealth } from "@/hooks/useEngineHealth";
+import { useQuarantine } from "@/hooks/useQuarantine";
 import { StoppedEnginesNotice } from "@/components/StoppedEnginesNotice";
+import { QuarantineNotice } from "@/components/QuarantineNotice";
 import { TIER_LABELS, isExecutableSportsEdge, rejectReasonLabel, sportsTierOf } from "@/lib/sportsEdges";
 
 const TIER_BADGE_CLASS: Record<string, string> = {
@@ -171,6 +173,12 @@ export default function PredictionLab() {
   // its failure is kept separately too: "I cannot see the rows" and "I cannot tell whether the
   // engine ran" are two different gaps, and merging them would let one swallow the other.
   const { data: engineHealth, error: healthError } = useEngineHealth();
+  // The quarantined engines' MEASURED output, read separately and failing separately. Three reads,
+  // three different questions: "I cannot see the published rows", "I cannot tell whether an engine
+  // ran", "I cannot see what the withheld engines measured". Merging any two would let one hide
+  // another, and showing the third as the first would conclude there are no quarantined rows --
+  // which is a count of zero arrived at through a different door.
+  const { data: quarantine, error: quarantineError } = useQuarantine();
   const [activeTab, setActiveTab] = useState("all");
 
   // The hook already withholds display-only rows, and that is where the standing rule lives. The
@@ -199,16 +207,21 @@ export default function PredictionLab() {
 
   const filteredEdges = activeTab === "all" ? edges : edges.filter(e => e.edge_type === activeTab.toUpperCase());
 
-  // The empty board's own words, and there are three of them. Only `quiet` is allowed to say "no
+  // The empty board's own words, and there are FOUR of them. Only `quiet` is allowed to say "no
   // high-confidence edges": that sentence is a FINDING, and it was being printed for the Weather
-  // and Macro tabs while their engines were not running at all.
+  // and Macro tabs while their engines were not running at all -- and would have been printed for
+  // them again if the ruling had gone from "not running" straight to "quiet" once they were repaired.
   //
-  //   quiet      the engine ran and nothing qualified. A measurement, and the board is right.
-  //   stopped    an engine that feeds this board could not run. Nothing was measured, and the
-  //              reason is the server's, from the written ruling in `tradehub/engine_health.py`.
-  //   unchecked  the ruling itself could not be read, so the emptiness is not established either
-  //              way. This is the branch that used not to exist, and without it a 500 here would
-  //              read as a quiet market.
+  //   quiet       the engine ran and nothing qualified. A measurement, and the board is right.
+  //   stopped     an engine that feeds this board could not run. Nothing was measured, and the
+  //               reason is the server's, from the written ruling in `tradehub/engine_health.py`.
+  //   quarantined the engine RAN, measured, and its output is withheld by ruling. The board is
+  //               empty by DECISION, and the measurement is on /api/quarantine. Saying "no
+  //               high-confidence edges" here would be this page's own defect reached from the
+  //               other direction: a confident finding over a scan whose result was never published.
+  //   unchecked   the ruling itself could not be read, so the emptiness is not established either
+  //               way. This is the branch that used not to exist, and without it a 500 here would
+  //               read as a quiet market.
   //
   // The tab is "all" when nothing is selected, and the whole board is fed by several engines, so
   // there is no single engine to name. What an empty ALL board can honestly say is the weakest of
@@ -283,6 +296,23 @@ export default function PredictionLab() {
                   Nothing is being claimed about which edges exist. This is not an empty result.
                 </p>
               </div>
+            ) : empty.kind === "quarantined" ? (
+              /* A REPAIRED engine whose output is withheld, which is neither of the two states this
+                 branch used to cover. Both Weather and Macro were repaired on 2026-09-28: they had
+                 been reading a Kalshi quote field the API stopped sending, so every market looked
+                 like a 0c quote, every one was skipped, and they published nothing while appearing
+                 to run. They now compute 295 rows a scan and NONE of it reaches kalshi_edges.
+
+                 So this board is empty by decision, and "No high-confidence edges detected" would be
+                 a finding about a market that was never scanned for publication. The frame is amber
+                 rather than rose for the same reason: nothing is broken. The measurement is on
+                 /api/quarantine and rendered below, with the split between 26 independent
+                 opportunities and 269 rows that are units artefacts or the same forecast restated. */
+              <div className="flex flex-col items-center justify-center gap-3 py-32 border-2 border-dashed border-amber-700/60 rounded-3xl px-8 text-center">
+                <FlaskConical className="w-10 h-10 text-amber-700" />
+                <p className="text-amber-200 font-bold uppercase tracking-tighter">{empty.headline}</p>
+                <p className="text-xs text-amber-100/60 max-w-xl">{empty.body}</p>
+              </div>
             ) : empty.kind === "stopped" ? (
               /* A BROKEN engine, not a quiet one. This is the branch that did not exist, and its
                  absence IS the defect: "No high-confidence edges detected in weather" is a finding,
@@ -346,7 +376,20 @@ export default function PredictionLab() {
           up. The ruling's own read failure travels through for the reason above -- a 500 here must
           not render as "nothing is stopped". */}
       <StoppedEnginesNotice health={engineHealth} readError={healthError} />
-      
+
+      {/* The quarantine surface, and the answer to the question PR #38 could not answer. The ruling
+          above says these engines are quarantined; this says what they measured. Placed directly
+          under it so the two are read together, because a reader who sees "quarantined" and no
+          numbers will assume the product has nothing to show and that the label is an excuse.
+
+          The headline it prints is 26, not 295: 26 independent opportunities out of 295 rows, the
+          rest being units artefacts and one forecast restated across eleven year-events. The
+          component cannot print the row count as an opportunity count -- `headlineCount` reads
+          `independent_opportunities` and returns a dash rather than a zero if the measurement is
+          missing. Nothing here reaches kalshi_edges, and the panel says so with a hard 0 in the
+          place a reader who doubts the label will look. */}
+      <QuarantineNotice payload={quarantine} readError={quarantineError} />
+
       {/* Risk Disclosure Section */}
       <div className="mt-16 p-6 rounded-2xl bg-slate-900/40 border border-slate-800/60 text-slate-500 text-[10px] uppercase tracking-widest font-bold leading-relaxed">
          ⚠️ High-Frequency Prediction Alpha: Modeling and probability assessments are provided "as-is" for educational and backtesting purposes. Market entry involves significant capital risk. Ensure strict bankroll management (Kelley Criterion recommended).
