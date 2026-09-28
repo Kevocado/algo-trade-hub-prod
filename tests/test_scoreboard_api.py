@@ -833,6 +833,137 @@ class TestTheSummary:
         ]
 
 
+# ── the catalogue: which engines EXIST, not only which were measured ─────────
+class TestTheCatalogue:
+    """`catalogue` is the answer to "what are the models and what are they doing".
+
+    It rides on this response rather than on a second endpoint, for two reasons that are both about
+    drift rather than about cost. The page needs the rows and the claims JOINED -- an engine with
+    a run beside its claim, and an engine with no run beside its claim anyway -- and a join done at
+    render time is a join a component can do wrong in a direction nobody sees. And the claim is a
+    sentence about what an engine predicts, which is a fact about the same code that reduces the
+    runs; a second endpoint would be a second place for it to be out of date.
+    """
+
+    def test_an_engine_with_no_backtest_is_still_in_the_response(self):
+        """The rule the page exists to keep. `backtest_runs` only holds engines somebody ran a
+        backtest for, so a response built from the board alone has already dropped most of the
+        product before a reader sees it."""
+        body = _get_body([_run("gas", "gas-v1")])
+
+        engines = {entry["engine"] for entry in body["catalogue"]["entries"]}
+        assert "gas" in engines
+        for unmeasured in ("crypto", "sports_nfl", "sports_cfb"):
+            assert unmeasured in engines
+
+    def test_an_unmeasured_engine_says_not_measured_and_carries_no_number(self):
+        entry = next(
+            e for e in _get_body([])["catalogue"]["entries"] if e["engine"] == "crypto"
+        )
+
+        assert entry["measured"] is False
+        assert entry["status"] == "not_measured"
+        # None, never 0. A ratio of zero is a model that never misses.
+        assert entry["worst_brier_ratio"] is None
+        # And the claim is still there: a claim is not a measurement, and the engine is real
+        # whether or not anybody has scored it.
+        assert entry["claim"]
+
+    def test_the_counts_say_how_much_of_the_product_has_never_been_measured(self):
+        body = _get_body([_run("gas", "gas-v1")])
+        catalogue = body["catalogue"]
+
+        assert catalogue["engines_measured"] == 1
+        assert catalogue["engines_not_measured"] == catalogue["engines_total"] - 1
+        # And the number the page leads with is one the server computed, because it is a
+        # subtraction on a set and a page that does it at render time does it in a component.
+        assert catalogue["engines_total"] == len(catalogue["entries"])
+
+    def test_every_catalogue_entry_carries_its_own_rows_whole(self):
+        """Self-contained, so the page reads a row's ratio, verdict and both bars off the entry
+        instead of joining on a name. And it is the same object, not an edited copy."""
+        body = _get_body([
+            _run("gas", "gas-v1", brier_ours=0.1148, brier_market=0.02676),
+        ])
+
+        gas = next(e for e in body["catalogue"]["entries"] if e["engine"] == "gas")
+        assert gas["measured"] is True
+        assert gas["measured_rows"] == 1
+        assert gas["status"] == "behind"
+        assert gas["worst_brier_ratio"] == pytest.approx(4.29, abs=0.01)
+        # The row is the scoreboard's, whole -- including the promotion verdict the route attached
+        # AFTER the reduction. An entry built before that loop would ship a gate the board does not
+        # show, which is a right number under the wrong label. Compared by value, because the
+        # response has been through JSON by now and identity is gone; every field is compared.
+        assert gas["rows"][0] == body["rows"][0]
+        assert gas["rows"][0]["promotion_status"] == "SHADOW"
+
+    def test_every_row_lands_in_exactly_one_entry(self):
+        body = _get_body([
+            _run("gas", "gas-v1"),
+            _run("weather", "weather-v1", mode="taker", brier_ours=0.13, brier_market=0.1017),
+            _run("weather", "weather-v1", mode="maker", brier_ours=0.1242, brier_market=0.09713),
+        ])
+
+        carried = [row for entry in body["catalogue"]["entries"] for row in entry["rows"]]
+
+        assert len(carried) == body["rows_total"] == 3
+        # A weather row's count is 2, and the engine count is 2 across 3 rows -- the same
+        # rows-vs-engines distinction the headline counts already make.
+        weather = next(e for e in body["catalogue"]["entries"] if e["engine"] == "weather")
+        assert weather["measured_rows"] == 2
+        assert body["engines"] == 2
+
+    def test_a_losing_engine_is_reported_at_its_worst_row(self):
+        body = _get_body([
+            _run("weather", "weather-v1", mode="taker", brier_ours=0.1242, brier_market=0.09713),
+            _run("weather", "weather-v1", mode="maker", brier_ours=0.1347, brier_market=0.1124),
+        ])
+
+        weather = next(e for e in body["catalogue"]["entries"] if e["engine"] == "weather")
+
+        assert weather["status"] == "behind"
+        assert weather["worst_brier_ratio"] == pytest.approx(1.2787, abs=0.0001)
+        # ...and the better row is still on the entry, so the worst is a summary and not a filter.
+        assert len(weather["rows"]) == 2
+
+    def test_the_catalogue_costs_no_extra_reads(self):
+        """It is a pure join over rows already in hand. A catalogue that had to read something --
+        an `engines` table, a config file, a query -- would be a second source of truth about
+        which engines exist, and the two could disagree."""
+        supa = _Supa({"backtest_runs": [_run("gas", "gas-v1")]})
+
+        _get(supa)
+
+        assert {q["table"] for q in supa.queries} == {"backtest_runs"}
+
+    def test_a_failed_read_is_still_a_503_and_still_carries_no_catalogue(self):
+        """The catalogue joins rows that were read. A failed read has none, and an empty catalogue
+        would be indistinguishable from a product with no engines in it."""
+        response = _get(_Supa({"backtest_runs": [_run("gas", "gas-v1")]}, fail_on_call=1))
+
+        assert response.status_code == 503
+        assert "catalogue" not in response.json()
+
+    def test_the_page_does_not_have_to_derive_the_claim_or_the_status(self):
+        """Structural. The two things the page must not compute are the ratio comparison and the
+        engine list, and both are words and arithmetic the server resolved. `1.0` in the route's
+        executable text is a second copy of `BEHIND_THE_MARKET`."""
+        from tradehub.api import main
+
+        tree = ast.parse(inspect.getsource(main.get_scoreboard))
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and body
+                    and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)):
+                body[0].value.value = ""
+        executable = ast.unparse(tree)
+
+        assert "1.0" not in executable
+        assert "engine_catalogue(" in executable
+        assert "market_verdict" not in executable, "the route decided a market verdict itself"
+
+
 # ── structural: the route has to be reachable, and above the SPA mount ────────
 class TestRegistration:
     def test_the_route_is_registered(self):

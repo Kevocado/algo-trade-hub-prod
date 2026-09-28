@@ -2,17 +2,16 @@ import { useEffect, useState } from "react";
 
 import { buildApiUrl } from "@/lib/api";
 import { GateBadge } from "@/components/GateBadge";
+import { SettledBars } from "@/components/SettledBars";
 import {
   backtestGateLabel,
   brierVerdict,
   formatBrier,
   formatCount,
   formatSimulatedMoney,
-  settledBars,
   summarise,
   type ScoreboardResponse,
   type ScoreboardRow,
-  type SettledBar,
 } from "@/lib/scoreboard";
 
 /**
@@ -55,46 +54,8 @@ import {
  * `tradehub/scoreboard.py` and rides in on the response. This file decides layout and nothing else.
  */
 
-/** One bar. Its own heading, so the two can never be read as one number. */
-function Bar({ bar }: { bar: SettledBar }) {
-  // Tri-state, and null is rendered as its own thing: collapsing "not measured" into "not met"
-  // turns a gap in the evidence into a verdict against the engine.
-  const verdict =
-    bar.met === null
-      ? { text: "Not measured", className: "bg-slate-700/40 text-slate-400 border-slate-600" }
-      : bar.met
-        ? { text: "Met", className: "bg-emerald-500/10 text-emerald-300 border-emerald-500/30" }
-        : { text: "Not met", className: "bg-amber-500/10 text-amber-300 border-amber-500/30" };
-
-  return (
-    <div className="mt-1.5">
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-          {bar.label}
-        </span>
-        <span
-          className={`rounded-full border px-1.5 py-px text-[9px] font-bold uppercase ${verdict.className}`}
-        >
-          {verdict.text}
-        </span>
-      </div>
-      {/* The fill is the response's own capped percentage. No bar is drawn where none was measured. */}
-      {bar.pct !== null && (
-        <div className="mt-1 h-1 w-28 rounded-full bg-slate-800">
-          <div
-            className={`h-1 rounded-full ${bar.met ? "bg-emerald-500" : "bg-amber-500"}`}
-            style={{ width: `${bar.pct}%` }}
-          />
-        </div>
-      )}
-      <div className="text-[11px] leading-tight text-slate-400">{bar.line}</div>
-    </div>
-  );
-}
-
+/** One scoreboard row. The two bars are `@/components/SettledBars`, shared with `/models`. */
 function Row({ row }: { row: ScoreboardRow }) {
-  const bars = settledBars(row);
-
   return (
     <tr className="border-t border-slate-800 align-top">
       <th scope="row" className="py-3 pr-3 text-left font-normal">
@@ -126,9 +87,7 @@ function Row({ row }: { row: ScoreboardRow }) {
         </div>
       </td>
       <td className="py-3 pr-3">
-        {bars.map((bar) => (
-          <Bar key={bar.key} bar={bar} />
-        ))}
+        <SettledBars row={row} />
       </td>
       <td className="py-3 pr-3">
         <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
