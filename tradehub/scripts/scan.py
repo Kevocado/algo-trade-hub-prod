@@ -142,9 +142,22 @@ def remove_closed_labor_edges(client, now: datetime) -> None:
 
 
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
-    """Delete stale rows only for the scan-owned weather/gas/payrolls engines."""
+    """Delete stale rows only for the scan-owned weather/gas/payrolls engines.
+
+    `cpi_nowcast` is deliberately NOT in the allowlist. CPI was approved display-only on 2026-09-27
+    (spec 5a, section 9 approval 3), so `scan_cpi` now returns an empty produced set -- and a prune
+    keyed on that set would read "this engine produced nothing" and delete EVERY historical
+    cpi_nowcast edge row on the next due scan. That would be a silent delete by omission, which is
+    exactly what the ruling rules out: an edge row is a record of what the scan did, the rows stay
+    in the table, and what changes is that the read no longer presents them as opportunities (see
+    `useMarketEdges`, which relabels the engine as display-only rather than dropping it silently).
+
+    The rows also have to survive for that standing rule to mean anything -- a filter over rows that
+    have already been deleted passes vacuously. `remove_closed_cpi_edges` still deletes them once
+    their market closes, which is lifecycle cleanup, not hiding a losing engine.
+    """
     for engine, produced in produced_by_engine.items():
-        if engine not in {"weather", "gas", "cpi_nowcast", "labor_nowcast", "sports_nfl", "sports_cfb"}:
+        if engine not in {"weather", "gas", "labor_nowcast", "sports_nfl", "sports_cfb"}:
             continue
         current_market_ids = {str(market_id)[:50] for market_id in produced}
         result = client.table("kalshi_edges").select("market_id").eq("engine", engine).execute()
@@ -328,6 +341,10 @@ def scan_cpi(
     window = int(cfg.params.get("train_months", CPI_TRAIN_MONTHS))
     use_bias = bool(cfg.params.get("use_bias", 0.0))
     predictions: list[dict] = []
+    # Always empty, and that is the contract rather than an accident: CPI is a display engine
+    # (spec 5a, section 9 approval 3). The return shape is unchanged so main() needs no edit and
+    # the signature stays honest about what it produces. Nothing reads this list for CPI any more --
+    # see the allowlist in remove_stale_edges for why the empty set must NOT be allowed to prune.
     edges: list[dict] = []
     for series, (kind, version) in targets.items():
         markets = live.open_markets(series)
@@ -350,11 +367,18 @@ def scan_cpi(
                                  "sigma": model.sigma, "n_train": len(pairs),
                                  "hours_to_close": round(horizon.total_seconds() / 3600.0, 2)},
                 ))
-                suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
-                                           prefer_maker=cfg.prefer_maker)
-                if suggestion:
-                    edges.append(edge_row(lm.market, suggestion, "MACRO", engine="cpi_nowcast",
-                                          engine_version=version, updated_at=now))
+                # No edge row, deliberately. Approved DISPLAY ONLY on 2026-09-27 (spec 5a, and
+                # approval 3 in section 9). The prediction above is the product: it carries the
+                # nowcast, our probability and the market mid, which is exactly the context the
+                # display view reads, and it is what keeps the oracle-bound analysis in 5a
+                # reproducible from the ledger. An `edges` row is the thing that tells a reader
+                # "here is an opportunity", and that claim is not supported: the market's Brier at
+                # 5 days out (0.0710) is barely worse than at 25 minutes (0.0677), so Kalshi is
+                # not pricing off the nowcast and deciding early buys nothing. We are 1.33-1.43x
+                # behind at every lead, with negative P&L at every lead.
+                #
+                # `cfg.min_edge_pct` and `cfg.prefer_maker` are no longer read here. `cfg` itself
+                # still is, above, for the fit window (`train_months`, `use_bias`).
             except Exception:
                 log.exception("scan engine=cpi_nowcast market=%s failed; skipping", lm.market.ticker)
     return predictions, edges
@@ -590,6 +614,9 @@ def main(
         for name, edges in (
             ("weather", weather_edges),
             ("gas", gas_edges),
+            # Still offered to the prune, and still a no-op: `remove_stale_edges` keeps
+            # cpi_nowcast out of its allowlist precisely because this produced set is now empty.
+            # Do not "simplify" this entry away -- see that function's docstring.
             ("cpi_nowcast", cpi_edges),
         ):
             if not engine_states[name]["complete"] or edge_writes.get(name) != "ok":
