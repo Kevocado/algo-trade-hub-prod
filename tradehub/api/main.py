@@ -26,7 +26,7 @@ from tradehub.api.schemas import (
 )
 from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
-from tradehub.gate_status import latest_gate_statuses
+from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses
 from tradehub.scoreboard import current_runs, market_comparison
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
 from tradehub.sports.scan import edge_row
@@ -503,7 +503,7 @@ def get_scoreboard(supabase=Depends(get_supabase)):
             promotion_lookup_failed = True
     for row in rows:
         row["promotion_status"] = promotion.get(
-            (row["engine"], row["engine_version"]), "SHADOW"
+            (row["engine"], row["engine_version"]), DEFAULT_GATE_STATUS
         )
 
     return {
@@ -566,7 +566,11 @@ async def get_jobs_scorecard(
     for row in rows:
         version = row.get("engine_version")
         row["engine"] = engine
-        row["gate_status"] = statuses.get((engine, version), "SHADOW") if engine and version else "SHADOW"
+        row["gate_status"] = (
+            statuses.get((engine, version), DEFAULT_GATE_STATUS)
+            if engine and version
+            else DEFAULT_GATE_STATUS
+        )
     return rows
 
 

@@ -40,6 +40,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any, Iterable, Mapping
 
+from tradehub.gate_status import DEFAULT_GATE_STATUS
 from tradehub.sports.scorecard import MIN_SETTLED
 
 # Any occurrence of the marker, NOT the anchored `-lead<number>h` form.
@@ -268,7 +269,7 @@ def settled_distance(
     return out
 
 
-def market_verdict(brier_ratio: Any) -> str:
+def market_verdict(ratio: Any) -> str:
     """Where one row stands against the market, as one of the four `VERDICT_*` values.
 
     The single application of `BEHIND_THE_MARKET`, and it exists because the PAGE has to say the
@@ -277,17 +278,22 @@ def market_verdict(brier_ratio: Any) -> str:
     which one the reader was shown. `market_comparison` buckets on this function rather than
     re-implementing it, so a row's own verdict and the headline's counts cannot disagree.
 
+    The parameter is `ratio`, not `brier_ratio`: the latter is this module's own function, and a
+    parameter that shadows it inside a module about having ONE copy of everything is a trap for the
+    next reader -- the obvious next edit is `ratio = brier_ratio(ratio)`, which is `brier_ratio` of
+    itself and a TypeError.
+
     `bool` is refused because `bool` is an `int`: a stray `True` would otherwise be a measured
     1.0, which is a tie invented out of a value that is not a measurement. Absent and
     non-numeric are the same fact -- the market Brier was not recorded, so nothing was compared.
     """
-    if isinstance(brier_ratio, bool) or not isinstance(brier_ratio, (int, float)):
+    if isinstance(ratio, bool) or not isinstance(ratio, (int, float)):
         return VERDICT_NOT_COMPARABLE
-    if brier_ratio != brier_ratio:  # NaN: the one float that compares false to itself
+    if ratio != ratio:  # NaN: the one float that compares false to itself
         return VERDICT_NOT_COMPARABLE
-    if brier_ratio > BEHIND_THE_MARKET:
+    if ratio > BEHIND_THE_MARKET:
         return VERDICT_BEHIND
-    if brier_ratio < BEHIND_THE_MARKET:
+    if ratio < BEHIND_THE_MARKET:
         return VERDICT_AHEAD
     return VERDICT_LEVEL
 
@@ -344,7 +350,7 @@ def current_runs(runs: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     for (engine, mode), run in sorted(best.items()):
         raw_reasons = run.get("gate_reasons")
         reasons = raw_reasons or []
-        status = run.get("gate_status") or "SHADOW"
+        status = run.get("gate_status") or DEFAULT_GATE_STATUS
 
         # Which bar the settled verdict is against. `check_promotion_gate` names a bar only
         # when n_settled < min_contracts (tradehub/track_record.py:143), so a gate that ran and

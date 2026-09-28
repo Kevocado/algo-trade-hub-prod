@@ -1,7 +1,7 @@
 /**
  * Wording and shape for the engine scoreboard (spec section 9, approval 4).
  *
- * This module holds NO threshold, NO gate logic and NO rounding policy of its own. Every number it
+ * This module holds NO threshold, NO gate logic and NO verdict of its own. Every number it
  * prints is a number the response carried, and every verdict it words is a verdict the server
  * resolved:
  *
@@ -12,6 +12,13 @@
  *   - the settled requirement and whether it is met is `settled_distance`, in the same module.
  *   - the headline, its kind, and the count that says how much of the board it covers are
  *     `market_comparison`, in the same module.
+ *   - `runs_read` and `engines` are counts of what was READ and of how many engines are on the
+ *     board. Neither is a verdict, and neither is computed here.
+ *
+ * The one thing this module does decide is how the multiple is *drawn*: `formatRatio`, applied at
+ * one precision everywhere. Two precisions on one quantity -- 4.3x behind, 0.50x ahead -- is the
+ * same right-number-wrong-label defect in a different costume, and a reader cannot tell whether the
+ * extra digit is precision or drift.
  *
  * What lives here is the layer the server cannot: how a resolved fact is worded, and the fail-safe
  * presentation of a figure nobody measured. Every formatter below returns a dash for anything it
@@ -109,6 +116,20 @@ export function formatBrier(value: number | null | undefined): string {
   return value.toFixed(5);
 }
 
+/**
+ * The Brier multiple, at ONE precision, for every verdict it appears in.
+ *
+ * The server rounds `brier_ratio` to four decimals (`tradehub/scoreboard.py:146`), so two decimals
+ * is exact for every ratio that can arrive and shows the value the rest of the spec quotes -- gas is
+ * 4.29x, not "about 4.3x". The bar is drawn here rather than at each call site because a page that
+ * states one quantity at two precisions has told the reader that the more precise number is the
+ * more true one, which is a claim about nothing.
+ */
+export function formatRatio(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  return value.toFixed(2);
+}
+
 /** A count, grouped. An unreadable one is a dash, never a zero. */
 export function formatCount(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
@@ -142,12 +163,12 @@ export function brierVerdict(row: ScoreboardRow): string {
     return "Not measured: no market Brier was recorded for this run.";
   }
   if (row.market_verdict === "level") {
-    return `Level with the market on Brier (ratio ${ratio.toFixed(2)}).`;
+    return `Level with the market on Brier (ratio ${formatRatio(ratio)}).`;
   }
   if (row.market_verdict === "ahead") {
-    return `Ahead of the market: its Brier is ${ratio.toFixed(2)}x the market's.`;
+    return `Ahead of the market: its Brier is ${formatRatio(ratio)}x the market's.`;
   }
-  return `${ratio.toFixed(1)}x the market's Brier — behind.`;
+  return `${formatRatio(ratio)}x the market's Brier — behind.`;
 }
 
 export type SettledBarKey = "own_gate" | "reviewer_floor";
@@ -180,7 +201,11 @@ export function settledBars(row: ScoreboardRow): [SettledBar, SettledBar] {
   const count = d && isNumber(d.n_settled) ? d.n_settled : null;
 
   const ownRequired = d && isNumber(d.required) && d.required > 0 ? d.required : null;
-  const ownMet = ownRequired === null && d?.required_source !== "gate" ? (d?.met ?? null) : d?.met ?? null;
+  // `met` belongs to the bar the server measured it against, so it is passed through untouched --
+  // in particular it stays tri-state where the server measured nothing. It used to be written as a
+  // conditional on `required_source` whose two arms were identical, which read as source-dependent
+  // logic that did not exist and invited the next reader to "fix" the null arm into a guess.
+  const ownMet = d?.met ?? null;
   const ownLine =
     ownRequired !== null
       ? `${count === null ? "?" : count} of ${ownRequired} settled` +
@@ -248,7 +273,19 @@ export interface ScoreboardSummary {
   tone: "behind" | "ahead" | "unknown";
 }
 
-/** Restates the server's own headline and its caveat. Recomputing either here is how they drift. */
+/**
+ * Restates the server's own headline and its caveat. Recomputing either here is how they drift.
+ *
+ * `counts` also carries `runs_read` and `engines`, which is the fix for the failure this page cannot
+ * otherwise detect: `is_experiment_version` fails toward EXCLUSION, so a version string that trips it
+ * -- a new `gas-v1-leading-edge`, a typo, a stray space -- makes an engine disappear from the board
+ * while the headline still reads confidently. The excluded versions are NOT listed here, and must
+ * not be: an experiment is absent because the two runs disagree about the engine, and a footnote is
+ * something a reader skips. But the SIZE of the reduction is a different claim from presenting an
+ * experiment as a record -- it is a count of what was read against a count of what is shown, and
+ * nothing about any excluded run's numbers reaches the reader. Without it a complete board and a
+ * silently reduced one are the same page.
+ */
 export function summarise(body: ScoreboardResponse): ScoreboardSummary {
   const tone =
     body.headline_kind === "behind" ? "behind" : body.headline_kind === "ahead" ? "ahead" : "unknown";
@@ -261,7 +298,10 @@ export function summarise(body: ScoreboardResponse): ScoreboardSummary {
       `${formatCount(body.rows_behind_market)} behind the market · ` +
       `${formatCount(body.rows_ahead_of_market)} ahead · ` +
       `${formatCount(body.rows_level_with_market)} level · ` +
-      `${formatCount(body.rows_not_comparable)} not comparable`,
+      `${formatCount(body.rows_not_comparable)} not comparable · ` +
+      // Read against shown, so a reduction is visible. Both are counts the response carried, and
+      // both dash rather than print 0 if they are unreadable.
+      `read ${formatCount(body.runs_read)} runs · ${formatCount(body.engines)} engines`,
     tone,
   };
 }

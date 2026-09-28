@@ -5,7 +5,7 @@ import Scoreboard from "@/pages/Scoreboard";
 import type { ScoreboardResponse, ScoreboardRow } from "@/lib/scoreboard";
 
 /**
- * The three obligations the review left, none of which the code alone enforces.
+ * The four obligations the review left, none of which the code alone enforces.
  *
  * 1. `rows_not_comparable` is rendered BESIDE the headline, or the headline is not rendered. The
  *    headline is a claim about ENGINES; that count is about ROWS. "No engine beats the market on
@@ -14,6 +14,10 @@ import type { ScoreboardResponse, ScoreboardRow } from "@/lib/scoreboard";
  * 2. A losing engine is never dropped and never softened. This page exists to show losses, so
  *    there is no hide-losers affordance and no collapse of the losing tail.
  * 3. `HEADLINE_NOT_COMPARABLE` is honoured as its own case: no claim about the market at all.
+ * 4. `runs_read` and `engines` are rendered, so the board's own reduction is visible. The reduction
+ *    fails toward EXCLUSION, so an engine can vanish and leave the headline reading confidently; the
+ *    counts are what tell a complete board from a reduced one. And the excluded runs are NOT listed,
+ *    which is a separate obligation with a separate test.
  *
  * These are asserted against rendered output rather than against a returned object, because a
  * function that returns the right pair and a component that renders one of them is the failure.
@@ -129,6 +133,64 @@ describe("obligation 1: the headline never travels without the count that qualif
   });
 });
 
+describe("obligation 4: the reader can see that the board is a reduction, not the whole ledger", () => {
+  // `is_experiment_version` fails toward EXCLUSION. A version that trips it -- a future
+  // `gas-v1-leading-edge`, a typo, a stray space -- drops that engine off the board entirely, and
+  // an absent engine reads as "this engine has nothing to show", which is a claim about the engine.
+  // Nothing else on the page distinguishes a complete board from a silently reduced one, because
+  // the headline is computed from whatever survived.
+  it("prints the runs read beside the rows shown, in the summary block", async () => {
+    await renderWith(
+      response({
+        rows: [gasRow()],
+        rows_total: 1,
+        engines: 1,
+        runs_read: 7, // 7 runs in `backtest_runs`, 1 row on the board
+      }),
+    );
+
+    const summary = screen.getByText(/rows ·/);
+    expect(summary).toHaveTextContent("read 7 runs");
+    expect(summary).toHaveTextContent("1 engines");
+  });
+
+  it("says so even when the headline block is the only thing on an empty board", async () => {
+    // The empty case is the one where the count is least likely to be noticed and most likely to
+    // matter: "0 rows" over a table that was never read, and "0 rows" over an empty ledger, look
+    // identical without it.
+    mockScoreboard(() => ({
+      ok: true,
+      status: 200,
+      body: response({
+        rows: [],
+        engines: 0,
+        runs_read: 4,
+        rows_total: 0,
+        headline: "No backtest runs are recorded yet, so no engine has a record to show.",
+        headline_kind: "no_runs",
+      }),
+    }));
+
+    render(<Scoreboard />);
+
+    const summary = await screen.findByText(/rows ·/);
+    expect(summary).toHaveTextContent("read 4 runs");
+    expect(summary).toHaveTextContent("0 engines");
+  });
+
+  it("does not list the excluded versions, because an experiment is absent, not footnoted", async () => {
+    // The design ruling: an experiment is absent because the two runs disagree about the engine,
+    // and a footnote is something a reader skips. Naming it would put a second run on the page
+    // next to the record. The COUNT of a reduction is a different claim -- it carries no run's
+    // numbers, so it cannot be mistaken for a record -- and this is the boundary.
+    await renderWith(response({ runs_read: 7, engines: 1 }));
+
+    const page = document.body.textContent ?? "";
+    expect(page).not.toMatch(/lead|experimental|excluded|not shown/i);
+    expect(screen.getAllByRole("rowheader")).toHaveLength(1);
+  });
+});
+
 describe("obligation 2: a losing engine is never dropped and never softened", () => {
   const losers = [
     gasRow(),
@@ -165,7 +227,7 @@ describe("obligation 2: a losing engine is never dropped and never softened", ()
     await renderWith(response({ rows: losers, rows_total: 3, engines: 3, rows_behind_market: 3 }));
 
     const gas = screen.getByRole("rowheader", { name: /gas/ }).closest("tr") as HTMLElement;
-    expect(gas).toHaveTextContent("4.3x the market's Brier — behind");
+    expect(gas).toHaveTextContent("4.29x the market's Brier — behind");
     expect(gas).toHaveTextContent("-$3.84");
     expect(gas).toHaveTextContent("0.11480");
     expect(gas).toHaveTextContent("0.02676");
@@ -310,6 +372,17 @@ describe("the two gates are two things, and are not merged", () => {
     await renderWith(response({ promotion_lookup_failed: true }));
 
     expect(screen.getByText(/promotion.*could not be read|unverified/i)).toBeInTheDocument();
+  });
+
+  it("puts the (engine, version) scope in the label, not only in the source", async () => {
+    await renderWith(response());
+
+    const row = screen.getByRole("rowheader", { name: /gas/ }).closest("tr") as HTMLElement;
+    // This cell is one of seven in a row keyed on (engine, mode), and the verdict is per
+    // (engine, engine_version). A bare "Promotion" is the one place on this page where the module's
+    // standard -- a number or a verdict never carries an unstated scope -- is met in prose alone,
+    // and prose in a comment is not something a reader sees.
+    expect(within(row).getByText("Promotion (this engine + version)")).toBeInTheDocument();
   });
 });
 

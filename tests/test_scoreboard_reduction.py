@@ -585,14 +585,16 @@ class TestBacktestRunsProvenance:
     pinned to the writers rather than to a comment.
     """
 
-    def test_the_two_writers_emit_exactly_the_five_production_versions(self):
+    def test_the_two_writers_emit_only_the_five_production_versions_and_one_experiment(self):
         from tradehub.engines.cpi import CPI_TARGETS
         from tradehub.scripts.backtest_engines import gas_version_for_lead
         from tradehub.scripts.backtest_labor import LABOR_ENGINE_VERSION
 
         # Every value `backtest_engines.py` or `backtest_labor.py` can pass as engine_version:
         # gas at the production lead and at an experimental one, weather, both CPI targets,
-        # and labor. Nothing else reaches `backtest_runs` (no trigger, no other writer).
+        # and labor. Nothing else reaches `backtest_runs` (no trigger, no other writer). SIX
+        # values, of which five are production and one (`gas-v1-lead2.5h`) is the experiment
+        # `is_experiment_version` excludes -- so the name says six, not five, and says which.
         produced = {
             gas_version_for_lead(2.0),
             gas_version_for_lead(2.5),
@@ -602,6 +604,10 @@ class TestBacktestRunsProvenance:
         }
         assert produced == {"gas-v1", "gas-v1-lead2.5h", "weather-v1", "cpi-v1", "cpi-core-v1",
                             "labor-v1"}
+        # The excluded one, named. The next test asserts the OTHER five are clean, and this is what
+        # makes "the other five" a fact rather than a hope -- it is why the count in the name is 5
+        # and the count in the set is 6.
+        assert {v for v in produced if is_experiment_version(v)} == {"gas-v1-lead2.5h"}
 
     def test_the_production_versions_are_exactly_the_ones_the_predators_declare(self):
         from tradehub.engines.cpi import CPI_CORE_ENGINE_VERSION, CPI_ENGINE_VERSION
@@ -730,7 +736,15 @@ class TestMarketVerdict:
 
     def test_it_is_exactly_the_threshold_market_comparison_already_used(self):
         """One threshold, applied once. If these two ever disagree, the page's per-row verdict and
-        the API's headline are counting different things."""
+        the API's headline are counting different things.
+
+        WEAKER THAN IT LOOKS, ON PURPOSE -- do not mistake it for the test that guards this
+        invariant. It would pass just as happily against a `market_comparison` that re-implemented
+        the same comparison inline: two implementations that agree are indistinguishable from one
+        shared implementation. The test that CAN fail is structural:
+        `test_market_comparison_asks_market_verdict_rather_than_re_applying_the_threshold` below.
+        Do not delete that one, and do not treat this one as its replacement.
+        """
         for ratio in (0.0, 0.25, 0.9999, 1.0, 1.0001, 2.0, 4.29, 9.0, None, "x", True):
             summary = market_comparison([{"engine": "gas", "brier_ratio": ratio}])
             verdict = market_verdict(ratio)

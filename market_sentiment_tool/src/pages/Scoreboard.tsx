@@ -37,6 +37,17 @@ import {
  *      shared lookup's full verdict, keyed on (engine, engine_version). A column reading "promoted"
  *      off the first one would tell a human an edge is tradable when the gate has not said so.
  *
+ * And one it would otherwise fail silently, which is the reduction itself. `is_experiment_version`
+ * fails toward EXCLUSION, so a version string that trips it -- a future `gas-v1-leading-edge`, a
+ * typo, a stray space -- drops that engine off the board while the headline keeps reading
+ * confidently. An absent engine reads as "this engine has nothing to show", which is a claim about
+ * the engine. So the summary carries `runs_read` and `engines`: enough to see that N runs were read
+ * and M rows are on the board, which is what makes a reduced board distinguishable from a complete
+ * one. The excluded versions are NOT listed. An experiment is absent because the two runs disagree
+ * about the engine, and a footnote is something a reader skips; the count of a reduction is a
+ * different claim, because it carries no run's numbers and therefore no record for a reader to
+ * mistake for one.
+ *
  * A separate page rather than a change to `/shadow`: that route is the crypto shadow-timeline
  * backtester, a different thing that happens to share a name.
  *
@@ -125,7 +136,11 @@ function Row({ row }: { row: ScoreboardRow }) {
         </div>
         <div className="text-[11px] text-slate-300">{backtestGateLabel(row.gate_status)}</div>
         <div className="mt-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-          Promotion
+          {/* The qualifier is IN the label, not in a comment: this cell is one of seven in a row
+              keyed on (engine, mode), and a reader who has not opened the code has no other way to
+              know the verdict is about this engine AND this version. Two versions of one engine
+              carry the same verdict, and a bare "Promotion" reads as the engine's. */}
+          Promotion (this engine + version)
         </div>
         {/* The shared lookup's verdict, for this engine AND this version. */}
         <GateBadge edge={{ gate_status: row.promotion_status }} />
@@ -203,9 +218,11 @@ export default function Scoreboard() {
         </p>
       </header>
 
-      {/* The headline and the count that qualifies it, in one block. Rendered together or not at
-          all: a sentence about engines next to an unstated count of unmeasured rows is a claim
-          the board has not earned. */}
+      {/* The headline, the count that qualifies it, and the count of the reduction, in one block.
+          Rendered together or not at all: a sentence about engines next to an unstated count of
+          unmeasured rows is a claim the board has not earned -- and `runs_read` beside `rows_total`
+          is the only thing that distinguishes a complete board from one an engine has silently
+          vanished from. The excluded versions are NOT listed; only the size of the reduction is. */}
       <div className={`rounded-lg border p-4 text-sm ${TONES[summary.tone]}`}>
         <p className="font-semibold">{summary.headline}</p>
         <p className="mt-1 text-xs opacity-90">{summary.counts}</p>

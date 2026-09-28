@@ -5,6 +5,7 @@ import {
   brierVerdict,
   formatBrier,
   formatCount,
+  formatRatio,
   formatSimulatedMoney,
   settledBars,
   summarise,
@@ -21,10 +22,12 @@ import {
  * wording is pinned by test rather than left to taste.
  *
  * The other thing pinned here is what this module is NOT allowed to do. It holds no threshold, no
- * gate logic and no rounding policy of its own: every number it prints is a number the response
+ * gate logic and no verdict of its own: every number it prints is a number the response
  * carried, and every verdict it words is a verdict the server resolved. `brier_verdict` and
  * `settled_distance` exist in `tradehub/scoreboard.py` for exactly that reason, and a second copy
- * of either in the browser is a second thing to keep wrong.
+ * of either in the browser is a second thing to keep wrong. The ONE thing it does decide is how the
+ * multiple is drawn -- `formatRatio`, at one precision, which is pinned here so a second precision
+ * cannot creep back in.
  */
 
 /** A gas run at the production 2h: 4.29x the market, 42 settled against its own 200. */
@@ -129,6 +132,24 @@ describe("formatBrier", () => {
   });
 });
 
+describe("formatRatio", () => {
+  it("gives the multiple ONE precision, and it is the one the spec quotes", () => {
+    // The server rounds to 4dp (tradehub/scoreboard.py:146), so 2dp is exact for every ratio that
+    // can arrive, and 4.29x is the figure the rest of the spec cites for gas.
+    expect(formatRatio(4.29)).toBe("4.29");
+    expect(formatRatio(0.5)).toBe("0.50");
+    expect(formatRatio(1.0)).toBe("1.00");
+    expect(formatRatio(9)).toBe("9.00");
+  });
+
+  it("dashes an unreadable multiple rather than printing 0.00", () => {
+    for (const absent of [null, undefined, NaN]) {
+      expect(formatRatio(absent)).toBe("—");
+      expect(formatRatio(absent)).not.toBe("0.00");
+    }
+  });
+});
+
 describe("formatCount and formatSimulatedMoney", () => {
   it("groups counts and dashes an absent one", () => {
     expect(formatCount(1982)).toBe("1,982");
@@ -147,7 +168,17 @@ describe("formatCount and formatSimulatedMoney", () => {
 
 describe("brierVerdict", () => {
   it("states the multiple when the model is behind", () => {
-    expect(brierVerdict(behind)).toMatch(/4\.3/);
+    expect(brierVerdict(behind)).toMatch(/4\.29/);
+  });
+
+  it("states every multiple at the same precision, so one quantity has one drawn form", () => {
+    // It used to print 4.3x behind and 0.50x ahead. Two precisions on one quantity tells a reader
+    // the more precise number is the more true one, which is a claim about nothing.
+    const decimals = (row: ScoreboardRow) => (brierVerdict(row).match(/\d\.(\d+)/) ?? ["", ""])[1].length;
+
+    expect(decimals(behind)).toBe(2);
+    expect(decimals({ ...behind, market_verdict: "ahead", brier_ratio: 0.5 })).toBe(2);
+    expect(decimals({ ...behind, market_verdict: "level", brier_ratio: 1.0 })).toBe(2);
   });
 
   it("never calls a deficit competitive, at any size", () => {
@@ -304,6 +335,37 @@ describe("summarise", () => {
   it("names all four buckets, so no row is silently uncounted", () => {
     const counts = summarise(body({ rows_not_comparable: 2 })).counts;
     for (const n of ["3", "1", "2"]) expect(counts).toContain(n);
+  });
+
+  it("carries runs_read and engines, so a reduced board is not mistaken for the whole ledger", () => {
+    // 9 runs were read and 3 are on the board. The reduction is `is_experiment_version` failing
+    // toward EXCLUSION, and without this the page renders a confident headline over a board an
+    // engine has silently vanished from.
+    const counts = summarise(body({ runs_read: 9, engines: 3 })).counts;
+
+    expect(counts).toContain("read 9 runs");
+    expect(counts).toContain("3 engines");
+  });
+
+  it("dashes an unreadable run or engine count rather than printing zero", () => {
+    // A fabricated 0 reads as "nothing was read" and "no engine exists" -- two claims nobody made.
+    const counts = summarise(
+      body({ runs_read: null as unknown as number, engines: null as unknown as number }),
+    ).counts;
+
+    expect(counts).toContain("read — runs");
+    expect(counts).toContain("— engines");
+  });
+
+  it("never names an excluded version, because an experiment is absent rather than footnoted", () => {
+    // The page's premise is which run is each engine's record, and the design ruling is that a
+    // disagreeing experiment is ABSENT. Naming it here would put a second run on the page next to
+    // the record, which is the footnoted outcome the ruling forbids. The count is not that.
+    const counts = summarise(
+      body({ runs_read: 9, engines: 3, rows: [behind, metOwnGate] } as Partial<ScoreboardResponse>),
+    ).counts;
+
+    expect(counts).not.toMatch(/lead|experimental|excluded/i);
   });
 
   it("does not claim a win when the sample is too small to mean one", () => {

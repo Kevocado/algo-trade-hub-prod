@@ -695,6 +695,28 @@ class TestTheGateLookupIsShared:
         assert scan.latest_gate_statuses is gate_status.latest_gate_statuses
         assert "track_record" in inspect.getsource(gate_status.latest_gate_statuses)
 
+    def test_the_fail_closed_default_is_one_named_constant(self):
+        """`"SHADOW"` was written out at four call sites across three modules.
+
+        All four failed closed, so drift was harmless -- and that is exactly how a default starts
+        disagreeing with itself: a reader comparing `scoreboard.py`'s default against
+        `latest_gate_statuses`'s return could not tell a deliberate agreement from a coincidence, and
+        there was no name to grep for. `tradehub/gate_status.py` is the module that decides the
+        value, so `DEFAULT_GATE_STATUS` lives there and the callers import it.
+
+        Structural, like the assertion above, because the behavioural version cannot work: a caller
+        that restated the literal produces byte-identical output.
+        """
+        from tradehub import gate_status, scoreboard
+        from tradehub.api import main
+
+        assert gate_status.DEFAULT_GATE_STATUS == "SHADOW"
+        for module in (main, scoreboard):
+            assert '"SHADOW"' not in inspect.getsource(module), (
+                f"{module.__name__} restates the fail-closed default; import DEFAULT_GATE_STATUS "
+                f"from tradehub.gate_status instead"
+            )
+
 
 # ── the summary: derived here, never by the page ──────────────────────────────
 class TestTheSummary:
