@@ -10,7 +10,6 @@ ARCHITECTURE:
 
 import re
 from datetime import datetime, timezone
-from dotenv import load_dotenv
 import pandas as pd
 
 # Add project root to path so we can import src modules and shared
@@ -30,7 +29,8 @@ from tradehub.core.supabase_client import upsert_opportunities, upsert_portfolio
 from tradehub.core.kalshi_portfolio import KalshiPortfolio
 
 # ─── Environment ─────────────────────────────────────────────────────
-load_dotenv()
+# The developer-local `.env` is loaded explicitly in `main()`/`run_scan()` at
+# run time, not here at import time. See `tradehub.core.env`.
 EDGE_THRESHOLD = 5.0
 
 # ─── Portfolio Sync ──────────────────────────────────────────────────
@@ -298,6 +298,12 @@ def run_scan():
 
 if __name__ == "__main__":
     import time
+
+    # Entry point: opt into the developer-local `.env` here, explicitly.
+    # See `tradehub.core.env`.
+    from tradehub.core.env import load_local_env
+    load_local_env()
+
     while True:
         try:
             update_live_portfolio()

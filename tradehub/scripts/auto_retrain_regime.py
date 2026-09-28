@@ -9,12 +9,32 @@ from typing import Any
 import joblib
 import numpy as np
 import pandas as pd
-from dotenv import load_dotenv
+from tradehub.core.env import load_local_env
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from shared.crypto_features import CANONICAL_CRYPTO_FEATURES, build_features
-from market_sentiment_tool.backend import orchestrator
+
+# `market_sentiment_tool.backend.orchestrator` is a heavy import (model
+# discovery, Supabase client construction). It is resolved on first access via
+# the module `__getattr__` below -- `auto_retrain_regime.orchestrator` still
+# works for callers and tests, but only after something actually asks for it, so
+# importing this module stays cheap and side-effect free. See
+# `tradehub.core.env`.
+_LAZY = {"orchestrator": ("market_sentiment_tool.backend.orchestrator", None)}
+
+
+def __getattr__(name: str):
+    try:
+        module_path, attr = _LAZY[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    import importlib
+    value = importlib.import_module(module_path)
+    if attr is not None:
+        value = getattr(value, attr)
+    globals()[name] = value
+    return value
 
 
 @dataclass(frozen=True)
@@ -58,6 +78,7 @@ def _brier_score(model: Any, x: pd.DataFrame, y: pd.Series) -> float:
 
 
 def _candidate_model_path(asset: str) -> Path:
+    orchestrator = globals()["orchestrator"]
     explicit = orchestrator.BTC_MODEL_PATH if asset == "BTC" else orchestrator.ETH_MODEL_PATH
     candidates = [
         "/root/kalshibot/btc_model.pkl" if asset == "BTC" else "/root/kalshibot/eth_model.pkl",
@@ -75,7 +96,7 @@ def _candidate_model_path(asset: str) -> Path:
 
 def _feature_contract_matches(model: Any) -> bool:
     try:
-        return list(orchestrator._model_feature_names(model)) == list(CANONICAL_CRYPTO_FEATURES)
+        return list(globals()["orchestrator"]._model_feature_names(model)) == list(CANONICAL_CRYPTO_FEATURES)
     except Exception:
         return False
 
@@ -132,7 +153,7 @@ def retrain_asset(asset: str) -> RetrainResult:
     promoted = False
 
     if model_path.exists():
-        incumbent_model = orchestrator._load_pickle_model(model_path)
+        incumbent_model = globals()["orchestrator"]._load_pickle_model(model_path)
         if not _feature_contract_matches(incumbent_model):
             reason = "incumbent_feature_contract_mismatch"
         else:
@@ -174,7 +195,7 @@ def retrain_asset(asset: str) -> RetrainResult:
 
 
 def main() -> int:
-    load_dotenv(REPO_ROOT / ".env")
+    load_local_env()
     results = [retrain_asset("BTC"), retrain_asset("ETH")]
     for result in results:
         print(

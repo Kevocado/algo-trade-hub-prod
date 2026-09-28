@@ -19,7 +19,8 @@ from supabase import create_client, Client as SupabaseClient
 from shared.kalshi_ws import sign_kalshi_message
 from market_sentiment_tool.backend.runtime_bootstrap import (
     critical_var_presence,
-    load_canonical_env,
+    env as _env_lookup,
+    load_env_values,
     resolve_kalshi_runtime_settings,
 )
 from market_sentiment_tool.backend.crypto_operator_state import (
@@ -29,8 +30,18 @@ from market_sentiment_tool.backend.crypto_operator_state import (
 )
 
 # ── Runtime bootstrap ──
-ENV_BOOTSTRAP = load_canonical_env(__file__)
-KALSHI_RUNTIME = resolve_kalshi_runtime_settings()
+# See the equivalent comment in `orchestrator.py`: `load_env_values` parses the
+# canonical `.env` without installing it, so importing this module has no effect
+# on `os.environ`. `_getenv` reads the file on demand instead.
+ENV_BOOTSTRAP = load_env_values(__file__)
+_ENV_FILE = __file__
+
+
+def _getenv(name: str, default: str = "") -> str:
+    return _env_lookup(name, default, module_file=_ENV_FILE)
+
+
+KALSHI_RUNTIME = resolve_kalshi_runtime_settings({**os.environ, **ENV_BOOTSTRAP.parsed_values})
 
 # ── Logging ──
 logging.basicConfig(
@@ -40,8 +51,8 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Clients ──
-SUPABASE_URL = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_URL = _getenv("SUPABASE_URL", "") or _getenv("VITE_SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = _getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 _critical_presence = critical_var_presence(
     ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "KALSHI_API_KEY_ID", "KALSHI_PRIVATE_KEY_PATH"),
     ENV_BOOTSTRAP.parsed_values,
@@ -63,8 +74,8 @@ for _kalshi_error in KALSHI_RUNTIME.errors:
 
 KALSHI_API_BASE = KALSHI_RUNTIME.api_base.rsplit("/trade-api/v2", 1)[0]
 KALSHI_TRADE_API_V2_BASE = KALSHI_RUNTIME.api_base
-KALSHI_API_KEY_ID = os.getenv("KALSHI_API_KEY_ID", "")
-KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
+KALSHI_API_KEY_ID = _getenv("KALSHI_API_KEY_ID", "")
+KALSHI_PRIVATE_KEY_PATH = _getenv("KALSHI_PRIVATE_KEY_PATH", "")
 
 supa: SupabaseClient | None = None
 _KALSHI_PRIVATE_KEY = None
@@ -185,9 +196,9 @@ def _kalshi_signed_headers(method: str, path: str) -> dict[str, str]:
 # FastMCP Server & Tools
 # ═══════════════════════════════════════════════════════════════════
 
-# Host/port configured via env vars for HTTP mode, or stdio for LangGraph
-os.environ.setdefault("FASTMCP_HOST", "127.0.0.1")
-os.environ.setdefault("FASTMCP_PORT", "5100")
+# Host/port for HTTP mode are read by FastMCP from the environment, so they have
+# to be in `os.environ` -- but that is a server-start concern, not an import one.
+# Moved into `main()` below so importing this module stays side-effect free.
 mcp = FastMCP("Trading Engine MCP")
 
 
@@ -345,6 +356,17 @@ def submit_kalshi_order(
         return {"status": "error", "detail": str(exc)}
 
 
-if __name__ == "__main__":
+def main() -> None:
+    # Entrypoint: install the canonical `.env` and the transport settings here,
+    # explicitly, rather than as a side effect of import.
+    from market_sentiment_tool.backend.runtime_bootstrap import export_canonical_env
+
+    export_canonical_env(__file__)
+    os.environ.setdefault("FASTMCP_HOST", "127.0.0.1")
+    os.environ.setdefault("FASTMCP_PORT", "5100")
     log.info("Starting FastMCP server on 127.0.0.1:5100 …")
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

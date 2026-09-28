@@ -5,11 +5,10 @@ Keeps the main app clean and makes testing easy (override dependencies in tests)
 
 import os
 from functools import lru_cache
-from pathlib import Path
-from dotenv import load_dotenv
 
-root_dir = Path(__file__).parent.parent
-load_dotenv(dotenv_path=root_dir / '.env', override=True)
+# No `load_dotenv()` at import time -- see `tradehub.core.env`. The API app
+# calls `load_local_env()` in its lifespan, which runs when the server actually
+# boots, so importing this module (as the test suite does) is side-effect free.
 
 
 # ─── Supabase client ─────────────────────────────────────────────────────────

@@ -7,24 +7,35 @@ Uses the supabase-py SDK with the service role key for server-side writes.
 
 import os
 from datetime import datetime, timezone
-from dotenv import load_dotenv
 
-load_dotenv()
-
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip('"').strip("'")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip('"').strip("'")
-
+# NOTE: no `load_dotenv()` here, on purpose. Importing this module must not
+# touch `os.environ` -- see `tradehub.core.env`. Credentials come from the
+# process environment; entrypoints opt into the developer-local `.env`
+# explicitly via `load_local_env()`.
+#
+# They are also read at call time rather than bound at import time, so that a
+# caller which loads its environment after importing this module still gets the
+# right values. Nothing outside this module referenced these two names.
 _client = None
+
+
+def supabase_url() -> str:
+    return os.getenv("SUPABASE_URL", "").strip('"').strip("'")
+
+
+def supabase_key() -> str:
+    return os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip('"').strip("'")
 
 
 def get_client():
     """Lazy-init Supabase client singleton."""
     global _client
     if _client is None:
-        if not SUPABASE_URL or not SUPABASE_KEY:
+        url, key = supabase_url(), supabase_key()
+        if not url or not key:
             raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set (environment or .env)")
         from supabase import create_client
-        _client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        _client = create_client(url, key)
     return _client
 
 
@@ -297,7 +308,7 @@ if __name__ == "__main__":
     print("Testing Supabase connection...")
     try:
         c = get_client()
-        print(f"  ✅ Connected to {SUPABASE_URL}")
+        print(f"  ✅ Connected to {supabase_url()}")
         # Quick read test
         result = c.table("scanner_runs").select("*").limit(1).execute()
         print(f"  ✅ Read test passed ({len(result.data)} rows)")

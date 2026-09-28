@@ -4,11 +4,27 @@ import argparse
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from tradehub.core.env import load_local_env
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-from market_sentiment_tool.backend.mcp_server import submit_kalshi_order
+# `market_sentiment_tool.backend.mcp_server` is a heavy import (FastMCP server
+# construction, Supabase client). It is resolved on first access via the module
+# `__getattr__` below -- `force_demo_trade.submit_kalshi_order` still works for
+# callers and tests, but only after something actually asks for it, so importing
+# this module stays cheap and side-effect free. See `tradehub.core.env`.
+_LAZY = {"submit_kalshi_order": ("market_sentiment_tool.backend.mcp_server", "submit_kalshi_order")}
+
+
+def __getattr__(name: str):
+    try:
+        module_path, attr = _LAZY[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    import importlib
+    value = getattr(importlib.import_module(module_path), attr)
+    globals()[name] = value
+    return value
 
 
 def _parse_args() -> argparse.Namespace:
@@ -21,7 +37,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    load_dotenv(REPO_ROOT / ".env")
+    load_local_env()
     args = _parse_args()
 
     if os.getenv("KALSHI_ENV", "").strip().lower() != "demo":
@@ -39,7 +55,7 @@ def main() -> int:
         return 2
 
     print(f"Submitting forced demo order: ticker={ticker} side={side} count=1")
-    result = submit_kalshi_order(
+    result = globals()["submit_kalshi_order"](
         ticker=ticker,
         side=side.lower(),
         action="buy",

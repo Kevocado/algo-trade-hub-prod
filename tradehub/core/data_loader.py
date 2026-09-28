@@ -13,14 +13,10 @@ import pandas as pd
 import os
 from datetime import datetime, timedelta, timezone
 import dateutil.relativedelta
-from dotenv import load_dotenv
 
-load_dotenv()
-
-# API Keys
-ALPACA_KEY = os.getenv("ALPACA_API_KEY", "").strip('"')
-ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY", "").strip('"')
-TIINGO_KEY = os.getenv("TIINGO_API_KEY", "").strip('"')
+# No `load_dotenv()` at import time -- see `tradehub.core.env`. Read the keys
+# at call time instead of binding them at import, so a caller that loads its
+# environment after importing this module still sees the right values.
 
 # Supported tickers and their index mappings
 TICKER_MAP = {
@@ -59,7 +55,8 @@ def fetch_tiingo(ticker="SPY", period="5d", interval="1min"):
     Returns:
         pd.DataFrame with OHLCV columns and DatetimeIndex
     """
-    if not TIINGO_KEY:
+    tiingo_key = os.getenv("TIINGO_API_KEY", "").strip('"')
+    if not tiingo_key:
         print("  ⚠️ TIINGO_API_KEY not set, falling back to Alpaca")
         return pd.DataFrame()
 
@@ -88,7 +85,7 @@ def fetch_tiingo(ticker="SPY", period="5d", interval="1min"):
         "startDate": start,
         "resampleFreq": interval,
         "columns": "open,high,low,close,volume",
-        "token": TIINGO_KEY,
+        "token": tiingo_key,
     }
 
     try:
@@ -135,7 +132,9 @@ def fetch_alpaca(ticker="SPY", period="5d", interval="1m"):
     """
     Fetch from Alpaca Markets (fallback or real-time supplement).
     """
-    if not ALPACA_KEY or not ALPACA_SECRET:
+    alpaca_key = os.getenv("ALPACA_API_KEY", "").strip('"')
+    alpaca_secret = os.getenv("ALPACA_SECRET_KEY", "").strip('"')
+    if not alpaca_key or not alpaca_secret:
         print("  ⚠️ Missing Alpaca credentials")
         return pd.DataFrame()
 
@@ -162,7 +161,7 @@ def fetch_alpaca(ticker="SPY", period="5d", interval="1m"):
     timeframe = tf_map.get(interval, TimeFrame.Minute)
 
     try:
-        client = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET)
+        client = StockHistoricalDataClient(alpaca_key, alpaca_secret)
         req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=timeframe, start=start)
         bars = client.get_stock_bars(req)
 

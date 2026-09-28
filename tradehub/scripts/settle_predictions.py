@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 
+from tradehub.core.env import load_local_env
 from tradehub.core.kalshi_feed import fetch_market
 from tradehub.core.supabase_client import get_client
 from tradehub.settlement import run_settlement_pass
@@ -33,6 +34,10 @@ ENGINES = [
 
 
 def main() -> int:
+    # Entry point: load the developer-local `.env` explicitly. A no-op in
+    # production, where the container supplies real variables and has no `.env`.
+    # See `tradehub.core.env`.
+    load_local_env()
     supa = get_client()
     summary = run_settlement_pass(supa, fetch_market)
     refreshed = []

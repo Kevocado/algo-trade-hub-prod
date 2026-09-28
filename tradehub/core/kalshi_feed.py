@@ -7,22 +7,17 @@ This bypasses the 15k sports parlay flood in the raw /markets endpoint.
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 
 import requests
-from dotenv import load_dotenv
 
 from tradehub.markets import quote_cents
 
-# Load .env from root directory
-root_dir = Path(__file__).parent.parent
-env_path = root_dir / '.env'
-load_dotenv(dotenv_path=env_path, override=True)
-
+# No `load_dotenv()` at import time -- see `tradehub.core.env`. `API_KEY` is
+# resolved at call time (see `api_key()`) so an entrypoint that loads its
+# environment after importing this module still gets the right value.
 KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_API_URL = f"{KALSHI_BASE_URL}/markets"
 KALSHI_EVENTS_URL = f"{KALSHI_BASE_URL}/events"
-API_KEY = os.getenv("KALSHI_API_KEY")
 
 # Categories we care about (skip Sports, Entertainment, Social, Mentions)
 TARGET_CATEGORIES = {
@@ -49,11 +44,17 @@ CATEGORY_NORMALIZE = {
 }
 
 
+def api_key() -> str | None:
+    """KALSHI_API_KEY, read now rather than bound at import time."""
+    return os.getenv("KALSHI_API_KEY")
+
+
 # ─── HEADERS HELPER ──────────────────────────────────────────────────
 def _headers():
     h = {}
-    if API_KEY:
-        h["Authorization"] = f"Bearer {API_KEY}"
+    key = api_key()
+    if key:
+        h["Authorization"] = f"Bearer {key}"
     return h
 
 

@@ -12,22 +12,53 @@ import requests
 from supabase import create_client
 
 
-from market_sentiment_tool.backend.runtime_bootstrap import load_canonical_env
+from market_sentiment_tool.backend.runtime_bootstrap import env_candidates_for, load_canonical_env
 from market_sentiment_tool.backend.signal_events import CRYPTO_DOMAIN, SIGNAL_EVENTS_TABLE, is_supported_signal_event_domain
 
-ENV_BOOTSTRAP = load_canonical_env(__file__)
-DEFAULT_LOOKBACK_HOURS = int(os.getenv("SHADOW_SCORECARD_HOURS", "24"))
-DEFAULT_BTC_YES = float(os.getenv("CRYPTO_BTC_YES_THRESHOLD", "0.5751"))
-DEFAULT_BTC_NO = float(os.getenv("CRYPTO_BTC_NO_THRESHOLD", "0.4249"))
-DEFAULT_ETH_YES = float(os.getenv("CRYPTO_ETH_YES_THRESHOLD", "0.551"))
-DEFAULT_ETH_NO = float(os.getenv("CRYPTO_ETH_NO_THRESHOLD", "0.449"))
-DEFAULT_STALE_GRACE_SECONDS = float(os.getenv("CRYPTO_STALE_DATA_GRACE_SECONDS", "60"))
+# NB: no env load at import time. `load_canonical_env` writes into `os.environ`,
+# so calling it at module scope made `import tradehub.scripts.shadow_performance`
+# -- which `tradehub.api.main` does -- pull a developer's `.env` into the
+# process. It is loaded on first use instead; see `_missing_env_detail` and
+# `main`. See `tradehub.core.env` for the full rationale.
 
 
 @dataclass(frozen=True)
 class ThresholdConfig:
     yes: float
     no: float
+
+
+# Threshold/env lookups are resolved at call time rather than bound at import
+# time, so a value in the developer-local `.env` is still honoured once an
+# entrypoint has loaded it. The fallbacks are the same strings the previous
+# module-level `os.getenv` calls used, so behaviour is unchanged.
+def _env_float(name: str, fallback: str) -> float:
+    return float(os.getenv(name, fallback))
+
+
+def _env_int(name: str, fallback: str) -> int:
+    return int(os.getenv(name, fallback))
+
+
+def default_lookback_hours() -> int:
+    return _env_int("SHADOW_SCORECARD_HOURS", "24")
+
+
+def default_stale_grace_seconds() -> float:
+    return _env_float("CRYPTO_STALE_DATA_GRACE_SECONDS", "60")
+
+
+def default_thresholds() -> dict[str, ThresholdConfig]:
+    return {
+        "BTC": ThresholdConfig(
+            yes=_env_float("CRYPTO_BTC_YES_THRESHOLD", "0.5751"),
+            no=_env_float("CRYPTO_BTC_NO_THRESHOLD", "0.4249"),
+        ),
+        "ETH": ThresholdConfig(
+            yes=_env_float("CRYPTO_ETH_YES_THRESHOLD", "0.551"),
+            no=_env_float("CRYPTO_ETH_NO_THRESHOLD", "0.449"),
+        ),
+    }
 
 
 @dataclass(frozen=True)
@@ -63,8 +94,16 @@ def _to_utc_timestamp(value: Any) -> pd.Timestamp:
 
 
 def _missing_env_detail() -> str:
-    if ENV_BOOTSTRAP.env_path is not None:
-        return f"Loaded env from {ENV_BOOTSTRAP.env_path}"
+    """Where env came from, for the error a missing credential produces.
+
+    Deliberately does NOT load anything. This runs on the missing-credential path,
+    so loading here would re-introduce the exact import/env mutation this module
+    was fixed to avoid -- and would defeat the check that produced the error. It
+    only reports which file an entrypoint would have consulted.
+    """
+    for _label, candidate in env_candidates_for(__file__):
+        if candidate.is_file():
+            return f"Loaded env from {candidate}"
     return "No canonical .env file was found under the repo root or service root."
 
 
@@ -93,14 +132,21 @@ def _load_supabase_client():
 
 def _scorecard_thresholds(
     *,
-    btc_yes: float = DEFAULT_BTC_YES,
-    btc_no: float = DEFAULT_BTC_NO,
-    eth_yes: float = DEFAULT_ETH_YES,
-    eth_no: float = DEFAULT_ETH_NO,
+    btc_yes: float | None = None,
+    btc_no: float | None = None,
+    eth_yes: float | None = None,
+    eth_no: float | None = None,
 ) -> dict[str, ThresholdConfig]:
+    defaults = default_thresholds()
     return {
-        "BTC": ThresholdConfig(yes=float(btc_yes), no=float(btc_no)),
-        "ETH": ThresholdConfig(yes=float(eth_yes), no=float(eth_no)),
+        "BTC": ThresholdConfig(
+            yes=float(defaults["BTC"].yes if btc_yes is None else btc_yes),
+            no=float(defaults["BTC"].no if btc_no is None else btc_no),
+        ),
+        "ETH": ThresholdConfig(
+            yes=float(defaults["ETH"].yes if eth_yes is None else eth_yes),
+            no=float(defaults["ETH"].no if eth_no is None else eth_no),
+        ),
     }
 
 
@@ -112,10 +158,11 @@ def _is_manual_test(payload: dict[str, Any]) -> bool:
 
 def fetch_recent_signal_events(
     *,
-    hours: int = DEFAULT_LOOKBACK_HOURS,
+    hours: int | None = None,
     limit: int = 500,
     domain: str = CRYPTO_DOMAIN,
 ) -> list[dict[str, Any]]:
+    hours = default_lookback_hours() if hours is None else hours
     normalized_domain = str(domain).strip().lower()
     if not is_supported_signal_event_domain(normalized_domain):
         raise RuntimeError(f"Unsupported signal-event domain: {domain}")
@@ -219,7 +266,9 @@ def _considered_signal_count(rows: list[dict[str, Any]], thresholds: dict[str, T
     return {"evaluated_count": total, "considered_count": considered, "dead_zone_count": dead_zone}
 
 
-def _latest_bar_status(asset: str, *, current_hour: pd.Timestamp, grace_seconds: float = DEFAULT_STALE_GRACE_SECONDS) -> dict[str, Any]:
+def _latest_bar_status(asset: str, *, current_hour: pd.Timestamp, grace_seconds: float | None = None) -> dict[str, Any]:
+    if grace_seconds is None:
+        grace_seconds = default_stale_grace_seconds()
     start = current_hour - pd.Timedelta(hours=6)
     closes = _fetch_alpaca_hourly_closes(asset, start=start, end=current_hour)
     if closes.empty:
@@ -322,13 +371,15 @@ def _asset_summary(evaluated: list[EvaluatedSignal], asset: str) -> dict[str, fl
 
 def build_shadow_report(
     *,
-    hours: int = DEFAULT_LOOKBACK_HOURS,
+    hours: int | None = None,
     domain: str = CRYPTO_DOMAIN,
-    btc_yes: float = DEFAULT_BTC_YES,
-    btc_no: float = DEFAULT_BTC_NO,
-    eth_yes: float = DEFAULT_ETH_YES,
-    eth_no: float = DEFAULT_ETH_NO,
+    btc_yes: float | None = None,
+    btc_no: float | None = None,
+    eth_yes: float | None = None,
+    eth_no: float | None = None,
 ) -> dict[str, Any]:
+    if hours is None:
+        hours = default_lookback_hours()
     normalized_domain = str(domain).strip().lower()
     thresholds = _scorecard_thresholds(
         btc_yes=btc_yes,
@@ -430,13 +481,15 @@ def _serialize_freshness(freshness: dict[str, dict[str, Any]]) -> dict[str, dict
 
 def build_shadow_timeline_response(
     *,
-    hours: int = DEFAULT_LOOKBACK_HOURS,
+    hours: int | None = None,
     domain: str = CRYPTO_DOMAIN,
-    btc_yes: float = DEFAULT_BTC_YES,
-    btc_no: float = DEFAULT_BTC_NO,
-    eth_yes: float = DEFAULT_ETH_YES,
-    eth_no: float = DEFAULT_ETH_NO,
+    btc_yes: float | None = None,
+    btc_no: float | None = None,
+    eth_yes: float | None = None,
+    eth_no: float | None = None,
 ) -> dict[str, Any]:
+    if hours is None:
+        hours = default_lookback_hours()
     normalized_domain = str(domain or "").strip().lower()
     if not is_supported_signal_event_domain(normalized_domain):
         raise ValueError(f"Unsupported signal-event domain: {domain}")
@@ -565,17 +618,22 @@ def render_shadow_report(report: dict[str, Any], *, telegram: bool = False) -> s
 
 
 def _parse_args() -> argparse.Namespace:
+    thresholds = default_thresholds()
     parser = argparse.ArgumentParser(description="Compute domain shadow hit rate, Brier Score, and virtual PnL.")
-    parser.add_argument("--hours", type=int, default=DEFAULT_LOOKBACK_HOURS)
+    parser.add_argument("--hours", type=int, default=default_lookback_hours())
     parser.add_argument("--domain", type=str, default=CRYPTO_DOMAIN)
-    parser.add_argument("--btc-yes", type=float, default=DEFAULT_BTC_YES)
-    parser.add_argument("--btc-no", type=float, default=DEFAULT_BTC_NO)
-    parser.add_argument("--eth-yes", type=float, default=DEFAULT_ETH_YES)
-    parser.add_argument("--eth-no", type=float, default=DEFAULT_ETH_NO)
+    parser.add_argument("--btc-yes", type=float, default=thresholds["BTC"].yes)
+    parser.add_argument("--btc-no", type=float, default=thresholds["BTC"].no)
+    parser.add_argument("--eth-yes", type=float, default=thresholds["ETH"].yes)
+    parser.add_argument("--eth-no", type=float, default=thresholds["ETH"].no)
     return parser.parse_args()
 
 
 def main() -> int:
+    # Entry point: opt into the developer-local `.env` explicitly, so importing
+    # this module stays side-effect free. A no-op in production. See
+    # `tradehub.core.env`.
+    load_canonical_env(__file__)
     args = _parse_args()
     report = build_shadow_report(
         hours=args.hours,

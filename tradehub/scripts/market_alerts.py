@@ -10,9 +10,8 @@ Alerts:
 Called from background_scanner.py on each scan cycle.
 """
 
-from dotenv import load_dotenv
-
-load_dotenv()
+# The developer-local `.env` is loaded by the entrypoint, not at import time.
+# See `tradehub.core.env`.
 
 # State tracking (persists across scan cycles in memory)
 _last_gex_sign = None
@@ -160,6 +159,9 @@ def _send_alert(message):
 
 
 if __name__ == "__main__":
+    from tradehub.core.env import load_local_env
+    load_local_env()
+
     print("Testing Market Alert System...")
     print()
 

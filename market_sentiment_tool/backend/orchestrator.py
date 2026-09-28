@@ -37,7 +37,9 @@ from shared.crypto_features import (
 from market_sentiment_tool.backend.runtime_bootstrap import (
     RuntimeBootstrapError,
     critical_var_presence,
-    load_canonical_env,
+    env as _env_lookup,
+    env_flag as _env_flag_lookup,
+    load_env_values,
     resolve_kalshi_runtime_settings,
     validate_runtime_env,
 )
@@ -49,46 +51,65 @@ from market_sentiment_tool.backend.crypto_operator_state import (
 from market_sentiment_tool.backend.signal_events import CRYPTO_DOMAIN, SIGNAL_EVENTS_TABLE
 
 # ── Runtime bootstrap ──
-ENV_BOOTSTRAP = load_canonical_env(__file__)
+# `load_env_values` PARSES the canonical `.env`; it does not install it into
+# `os.environ`. This module used to call `load_canonical_env` at module scope,
+# which meant that merely importing it (the test suite does, and so did
+# `tradehub.scripts.*`) pulled a developer's gitignored secrets file into the
+# process environment for the whole session -- and made the suite's result
+# depend on whether that untracked file existed. Reads below go through
+# `_getenv`, which consults the file without mutating anything. A process that
+# wants the values installed calls `export_canonical_env` from its entrypoint.
+ENV_BOOTSTRAP = load_env_values(__file__)
 ENV_PATH = str(ENV_BOOTSTRAP.env_path) if ENV_BOOTSTRAP.env_path else "<missing>"
-KALSHI_RUNTIME = resolve_kalshi_runtime_settings()
+_ENV_FILE = __file__
+
+
+def _getenv(name: str, default: str = "") -> str:
+    return _env_lookup(name, default, module_file=_ENV_FILE)
+
+
+# What `resolve_kalshi_runtime_settings` used to see implicitly, via a populated
+# `os.environ`: the real environment, with the canonical `.env` layered over it.
+# File values win, matching the previous `load_dotenv(override=True)` behaviour.
+_KALSHI_ENVIRON = {**os.environ, **ENV_BOOTSTRAP.parsed_values}
+KALSHI_RUNTIME = resolve_kalshi_runtime_settings(_KALSHI_ENVIRON)
 
 
 def _env_flag(name: str, default: str = "false") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+    return _env_flag_lookup(name, default, module_file=_ENV_FILE)
 
 # ── Config ──
-SUPABASE_URL = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_URL = _getenv("SUPABASE_URL", "") or _getenv("VITE_SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = _getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
 # Crypto worker config (Kalshi WS + model inference)
-CRYPTO_MIN_BACKOFF_S = float(os.getenv("CRYPTO_MIN_BACKOFF_S", "1.0"))
-CRYPTO_MAX_BACKOFF_S = float(os.getenv("CRYPTO_MAX_BACKOFF_S", "60.0"))
-CRYPTO_JITTER_S = float(os.getenv("CRYPTO_JITTER_S", "0.25"))
-CRYPTO_TRADE_COOLDOWN_S = int(os.getenv("CRYPTO_TRADE_COOLDOWN_S", "600"))
-CRYPTO_BTC_YES_THRESHOLD = float(os.getenv("CRYPTO_BTC_YES_THRESHOLD", "0.5751"))
-CRYPTO_BTC_NO_THRESHOLD = float(os.getenv("CRYPTO_BTC_NO_THRESHOLD", "0.4249"))
-CRYPTO_ETH_YES_THRESHOLD = float(os.getenv("CRYPTO_ETH_YES_THRESHOLD", "0.551"))
-CRYPTO_ETH_NO_THRESHOLD = float(os.getenv("CRYPTO_ETH_NO_THRESHOLD", "0.449"))
+CRYPTO_MIN_BACKOFF_S = float(_getenv("CRYPTO_MIN_BACKOFF_S", "1.0"))
+CRYPTO_MAX_BACKOFF_S = float(_getenv("CRYPTO_MAX_BACKOFF_S", "60.0"))
+CRYPTO_JITTER_S = float(_getenv("CRYPTO_JITTER_S", "0.25"))
+CRYPTO_TRADE_COOLDOWN_S = int(_getenv("CRYPTO_TRADE_COOLDOWN_S", "600"))
+CRYPTO_BTC_YES_THRESHOLD = float(_getenv("CRYPTO_BTC_YES_THRESHOLD", "0.5751"))
+CRYPTO_BTC_NO_THRESHOLD = float(_getenv("CRYPTO_BTC_NO_THRESHOLD", "0.4249"))
+CRYPTO_ETH_YES_THRESHOLD = float(_getenv("CRYPTO_ETH_YES_THRESHOLD", "0.551"))
+CRYPTO_ETH_NO_THRESHOLD = float(_getenv("CRYPTO_ETH_NO_THRESHOLD", "0.449"))
 CRYPTO_DIAGNOSTIC_MODE = _env_flag("CRYPTO_DIAGNOSTIC_MODE", "false")
-CRYPTO_DIAGNOSTIC_BTC_YES_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_BTC_YES_THRESHOLD", "0.53"))
-CRYPTO_DIAGNOSTIC_BTC_NO_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_BTC_NO_THRESHOLD", "0.47"))
-CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD", "0.505"))
-CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD = float(os.getenv("CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD", "0.495"))
-CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY = int(os.getenv("CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY", "50"))
-CRYPTO_DEEP_AUDIT_EVERY = int(os.getenv("CRYPTO_DEEP_AUDIT_EVERY", "20"))
+CRYPTO_DIAGNOSTIC_BTC_YES_THRESHOLD = float(_getenv("CRYPTO_DIAGNOSTIC_BTC_YES_THRESHOLD", "0.53"))
+CRYPTO_DIAGNOSTIC_BTC_NO_THRESHOLD = float(_getenv("CRYPTO_DIAGNOSTIC_BTC_NO_THRESHOLD", "0.47"))
+CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD = float(_getenv("CRYPTO_DIAGNOSTIC_ETH_YES_THRESHOLD", "0.505"))
+CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD = float(_getenv("CRYPTO_DIAGNOSTIC_ETH_NO_THRESHOLD", "0.495"))
+CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY = int(_getenv("CRYPTO_DIAGNOSTIC_SNAPSHOT_EVERY", "50"))
+CRYPTO_DEEP_AUDIT_EVERY = int(_getenv("CRYPTO_DEEP_AUDIT_EVERY", "20"))
 CRYPTO_ALPACA_PAYLOAD_AUDIT = _env_flag("CRYPTO_ALPACA_PAYLOAD_AUDIT", "false")
-CRYPTO_FEATURE_LOOKBACK_HOURS = int(os.getenv("CRYPTO_FEATURE_LOOKBACK_HOURS", "400"))
-CRYPTO_FEATURE_CACHE_TTL_S = float(os.getenv("CRYPTO_FEATURE_CACHE_TTL_S", "30"))
-CRYPTO_MIN_FEATURE_BARS = int(os.getenv("CRYPTO_MIN_FEATURE_BARS", "205"))
-CRYPTO_OPPORTUNITY_ALERT_DEDUPE_S = int(os.getenv("CRYPTO_OPPORTUNITY_ALERT_DEDUPE_S", "300"))
-CRYPTO_NEAR_MISS_ALERT_DEDUPE_S = int(os.getenv("CRYPTO_NEAR_MISS_ALERT_DEDUPE_S", "600"))
-CRYPTO_INFERENCE_HEARTBEAT_EVERY = int(os.getenv("CRYPTO_INFERENCE_HEARTBEAT_EVERY", "100"))
-CRYPTO_ALPACA_VOLUME_MULTIPLIER = float(os.getenv("CRYPTO_ALPACA_VOLUME_MULTIPLIER", "1.0"))
+CRYPTO_FEATURE_LOOKBACK_HOURS = int(_getenv("CRYPTO_FEATURE_LOOKBACK_HOURS", "400"))
+CRYPTO_FEATURE_CACHE_TTL_S = float(_getenv("CRYPTO_FEATURE_CACHE_TTL_S", "30"))
+CRYPTO_MIN_FEATURE_BARS = int(_getenv("CRYPTO_MIN_FEATURE_BARS", "205"))
+CRYPTO_OPPORTUNITY_ALERT_DEDUPE_S = int(_getenv("CRYPTO_OPPORTUNITY_ALERT_DEDUPE_S", "300"))
+CRYPTO_NEAR_MISS_ALERT_DEDUPE_S = int(_getenv("CRYPTO_NEAR_MISS_ALERT_DEDUPE_S", "600"))
+CRYPTO_INFERENCE_HEARTBEAT_EVERY = int(_getenv("CRYPTO_INFERENCE_HEARTBEAT_EVERY", "100"))
+CRYPTO_ALPACA_VOLUME_MULTIPLIER = float(_getenv("CRYPTO_ALPACA_VOLUME_MULTIPLIER", "1.0"))
 
 # Optional explicit model paths (otherwise auto-discover).
-BTC_MODEL_PATH = os.getenv("BTC_MODEL_PATH") or os.getenv("KALSHI_BTC_MODEL_PATH")
-ETH_MODEL_PATH = os.getenv("ETH_MODEL_PATH") or os.getenv("KALSHI_ETH_MODEL_PATH")
+BTC_MODEL_PATH = _getenv("BTC_MODEL_PATH") or _getenv("KALSHI_BTC_MODEL_PATH")
+ETH_MODEL_PATH = _getenv("ETH_MODEL_PATH") or _getenv("KALSHI_ETH_MODEL_PATH")
 # Sniper models precede the legacy model/ dir, whose lgbm_model_* files fail the crypto feature contract.
 BTC_MODEL_CANDIDATES = [
     "/root/kalshibot/btc_model.pkl",
@@ -110,11 +131,11 @@ KALSHI_ENV = KALSHI_RUNTIME.mode
 KALSHI_API_BASE = KALSHI_RUNTIME.api_base.rsplit("/trade-api/v2", 1)[0]
 KALSHI_TRADE_API_V2_BASE = KALSHI_RUNTIME.api_base
 KALSHI_WS_URL = KALSHI_RUNTIME.ws_url
-KALSHI_ORDER_COUNT = int(os.getenv("KALSHI_ORDER_COUNT", "1"))
-ALPACA_DATA_API_BASE = os.getenv("ALPACA_DATA_API_BASE", "https://data.alpaca.markets").strip('"').strip("'")
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
-CRYPTO_STALE_DATA_GRACE_SECONDS = float(os.getenv("CRYPTO_STALE_DATA_GRACE_SECONDS", "60"))
+KALSHI_ORDER_COUNT = int(_getenv("KALSHI_ORDER_COUNT", "1"))
+ALPACA_DATA_API_BASE = _getenv("ALPACA_DATA_API_BASE", "https://data.alpaca.markets").strip('"').strip("'")
+ALPACA_API_KEY = _getenv("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY = _getenv("ALPACA_SECRET_KEY", "")
+CRYPTO_STALE_DATA_GRACE_SECONDS = float(_getenv("CRYPTO_STALE_DATA_GRACE_SECONDS", "60"))
 
 
 # ── Logging ──
@@ -1174,7 +1195,7 @@ def _kalshi_load_rest_key():
     if _KALSHI_REST_PRIVATE_KEY is not None:
         return _KALSHI_REST_PRIVATE_KEY
 
-    private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
+    private_key_path = _getenv("KALSHI_PRIVATE_KEY_PATH", "")
     if not private_key_path:
         raise ValueError("Missing KALSHI_PRIVATE_KEY_PATH for Kalshi REST signing.")
 
@@ -1185,7 +1206,7 @@ def _kalshi_load_rest_key():
 
 
 def _kalshi_rest_headers(method: str, path: str) -> dict[str, str]:
-    api_key_id = os.getenv("KALSHI_API_KEY_ID", "")
+    api_key_id = _getenv("KALSHI_API_KEY_ID", "")
     if not api_key_id:
         raise ValueError("Missing KALSHI_API_KEY_ID for Kalshi REST signing.")
 
