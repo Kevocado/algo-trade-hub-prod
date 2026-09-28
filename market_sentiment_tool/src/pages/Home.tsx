@@ -6,6 +6,7 @@ import { TrendingUp, Wallet, ArrowUpRight, Activity, Loader2, Brain } from "luci
 import { usePortfolio, usePortfolioMetrics } from "@/hooks/usePortfolio";
 import { moneyMetric } from "@/lib/portfolioTruth";
 import { useMarketEdges, type KalshiEdge } from "@/hooks/useMarketEdges";
+import { edgePctNumber, edgePctText, edgeReason } from "@/lib/edgeFigures";
 import { enforceDisplayOnlyPartition } from "@/lib/displayOnlyEngines";
 import WithheldEdgesNotice from "@/components/WithheldEdgesNotice";
 import { GateBadge } from "@/components/GateBadge";
@@ -91,7 +92,15 @@ export default function Home() {
                     <Badge className="bg-emerald-500 text-emerald-950 text-[10px] font-bold uppercase tracking-tighter">{edge.edge_type}</Badge>
                     <div className="flex items-center gap-2">
                       <GateBadge edge={edge} />
-                      <span className="text-xl font-black text-emerald-400">+{edge.edge_pct.toFixed(1)}%</span>
+                      {/* Null when the row recorded no edge. A dash with the reason, never "+0.0%":
+                          an edge of zero is a measurement and "no edge was recorded" is not one,
+                          and this board is the first thing a reader lands on. */}
+                      <span
+                        className={`text-xl font-black ${edgePctNumber(edge.edge_pct) ? "text-emerald-400" : "text-slate-600"}`}
+                        title={edgeReason(edge.edge_pct) ?? undefined}
+                      >
+                        {edgePctText(edge.edge_pct)}
+                      </span>
                     </div>
                   </div>
                   <CardTitle className="text-sm font-bold text-white mt-2 line-clamp-1">{edge.market_title}</CardTitle>

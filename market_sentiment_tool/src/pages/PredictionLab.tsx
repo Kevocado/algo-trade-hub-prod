@@ -7,6 +7,16 @@ import { Loader2, TrendingUp, Cloud, Globe, Trophy, Brain, ExternalLink, Zap, Ac
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { GateBadge } from "@/components/GateBadge";
 import WithheldEdgesNotice from "@/components/WithheldEdgesNotice";
+import {
+  NOT_MEASURED,
+  edgePctNumber,
+  edgePctText,
+  edgeReason,
+  meanEdgePct,
+  meanEdgeReason,
+  probReason,
+  probText,
+} from "@/lib/edgeFigures";
 import { enforceDisplayOnlyPartition } from "@/lib/displayOnlyEngines";
 import { TIER_LABELS, isExecutableSportsEdge, rejectReasonLabel, sportsTierOf } from "@/lib/sportsEdges";
 
@@ -34,9 +44,21 @@ const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
     }
   };
 
-  const modelProb = (edge.our_prob * 100).toFixed(1);
-  const marketPrice = (edge.market_prob * 100).toFixed(1);
-  const edgePct = edge.edge_pct.toFixed(1);
+  // The three figures are `number | null`: `useMarketEdges` no longer defaults a missing one to 0,
+  // because a model probability of 0 is a prediction and an edge of 0.0 is a measurement, and
+  // neither is what a row that recorded nothing is. So each one formats through `edgeFigures` and
+  // a row that has none shows a dash and says why, rather than a confident number nobody measured.
+  const modelProb = probText(edge.our_prob);
+  const marketPrice = probText(edge.market_prob, "cents");
+  const edgePct = edgePctText(edge.edge_pct);
+  // The badge's colour is a claim too. A row with no edge recorded is not a "below 10%" row; it is
+  // an unmeasured one, so it takes the muted class rather than the lowest band, which would be a
+  // verdict on a number that does not exist.
+  const edgeBand = !edgePctNumber(edge.edge_pct)
+    ? "bg-slate-500/10 text-slate-400 border-slate-500/30"
+    : Math.abs(edge.edge_pct) > 15 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+    : Math.abs(edge.edge_pct) > 10 ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+    : 'bg-slate-500/10 text-slate-400 border-slate-500/30';
 
   return (
     <Card className="bg-slate-900/40 border-slate-800 hover:border-emerald-500/50 transition-all duration-300 group overflow-hidden">
@@ -57,12 +79,10 @@ const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
           </div>
           <div className="flex flex-col items-end gap-1">
           <Badge variant="outline" className={`
-            ${Math.abs(edge.edge_pct) > 15 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 
-              Math.abs(edge.edge_pct) > 10 ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' : 
-              'bg-slate-500/10 text-slate-400 border-slate-500/30'}
+            ${edgeBand}
             px-2 py-0.5 rounded-full text-[10px] font-bold
-          `}>
-            {edgePct}% EDGE
+          `} title={edgeReason(edge.edge_pct) ?? undefined}>
+            {edgePct === NOT_MEASURED ? "EDGE —" : `${edgePct} EDGE`}
           </Badge>
           <GateBadge edge={edge} />
           {sportsTier && (
@@ -85,11 +105,15 @@ const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1">
             <p className="text-[10px] text-slate-500 font-bold uppercase">Our Model</p>
-            <p className="text-xl font-black text-white">{modelProb}%</p>
+            <p className="text-xl font-black text-white" title={probReason(edge.our_prob) ?? undefined}>
+              {modelProb}
+            </p>
           </div>
           <div className="space-y-1 text-right">
             <p className="text-[10px] text-slate-500 font-bold uppercase">Market Ask</p>
-            <p className="text-xl font-black text-slate-300">{marketPrice}¢</p>
+            <p className="text-xl font-black text-slate-300" title={probReason(edge.market_prob, "cents") ?? undefined}>
+              {marketPrice}
+            </p>
           </div>
         </div>
 
@@ -149,6 +173,14 @@ export default function PredictionLab() {
   // bucket -- from a stub, a new caller, a hook regression -- is pulled back and shown as withheld.
   const { edges, withheld } = enforceDisplayOnlyPartition<KalshiEdge>(readEdges, readWithheld);
 
+  // The board's headline average. Over the rows that recorded an edge, and null when none did --
+  // the old `reduce(... || 0) / (length || 1)` counted every unmeasured row as a zero in the sum
+  // while still counting it in the denominator, so a board could go quiet and its headline number
+  // would slide towards 0.00% because data was missing, and an empty board reported a confident
+  // 0.00% for having no edges at all.
+  const heat = meanEdgePct(edges);
+  const heatReason = edgesError ?? meanEdgeReason(heat);
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-slate-950 gap-4">
@@ -174,10 +206,11 @@ export default function PredictionLab() {
         <div className="flex items-center gap-6">
           <div className="text-right">
             <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Global Heat</p>
-            {/* A failed read has no mean, no sum and no count. `0.00%` and `0` are measurements of
-                nothing that was measured, which is the same defect as a defaulted figure. */}
-            <p className={`text-2xl font-black ${edgesError ? "text-slate-600" : "text-emerald-500"}`} title={edgesError ?? undefined}>
-              {edgesError ? "—" : `${(edges.reduce((a, b) => a + (b.edge_pct || 0), 0) / (edges.length || 1)).toFixed(2)}%`}
+            {/* A failed read has no mean, and neither has a board whose rows recorded no edge. `0.00%`
+                and `0` are measurements of nothing that was measured, which is the same defect as a
+                defaulted figure. */}
+            <p className={`text-2xl font-black ${heatReason && heat.value === null ? "text-slate-600" : "text-emerald-500"}`} title={heatReason ?? undefined}>
+              {heat.value === null ? NOT_MEASURED : `${heat.value.toFixed(2)}%`}
             </p>
           </div>
           <div className="h-10 w-px bg-slate-800 hidden md:block" />

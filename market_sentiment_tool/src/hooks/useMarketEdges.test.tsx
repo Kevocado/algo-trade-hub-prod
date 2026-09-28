@@ -229,3 +229,130 @@ describe("useMarketEdges — the read is bounded, and says so", () => {
     expect(result.current.edges.some((e) => e.id === `e-${EDGES_READ_LIMIT}`)).toBe(false);
   });
 });
+
+/**
+ * The three numbers this hook used to invent.
+ *
+ * `useMarketEdges` normalised `our_prob`, `market_prob` and `edge_pct` with `?? 0`, so a row that
+ * recorded neither the column nor a `raw_payload` fallback was handed to every page as a model
+ * probability of exactly zero and an edge of exactly 0.0%. Both are specific, confident and false,
+ * and both are read as measurements by every consumer: `PredictionLab`'s EdgeCard prints
+ * `{edge_pct}% EDGE` and the War Room prints `+{edge_pct}%`. An unmeasured edge reading as 0.0% is
+ * "we looked and there is nothing here", which is the single most misleading thing a display can
+ * say about a number it does not have -- the same class as the `$0.00` the War Room used to print
+ * for a portfolio it had never measured, one screen over.
+ *
+ * The rule under all of these: a missing figure is `null` in the data and a dash on screen, and a
+ * MEASURED zero is a number and is printed as one. Those two cases must never share an expression,
+ * which is why the fallback here is a plain `null` rather than another conditional.
+ */
+describe("useMarketEdges — a figure it did not measure is null, never 0", () => {
+  const bare = (id: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    market_id: `KXCPI-26SEP09-T${id}.3`,
+    edge_type: "MACRO",
+    engine: "labor_nowcast",
+    engine_version: "labor-v1",
+    gate_status: "SHADOW",
+    discovered_at: "2026-09-27T12:00:00Z",
+    raw_payload: {},
+    ...extra,
+  });
+
+  it("leaves all three null when the row recorded none of them", async () => {
+    const { result } = renderWith([bare("1")]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const row = result.current.edges[0];
+    expect(row.our_prob).toBeNull();
+    expect(row.market_prob).toBeNull();
+    expect(row.edge_pct).toBeNull();
+  });
+
+  it("does not turn an absent edge into an edge of zero", async () => {
+    // The single most damaging of the three, so it gets its own line: `0.0%` on a card reading
+    // "0.0% EDGE" is a measurement, and the reader is entitled to act on a measurement.
+    const { result } = renderWith([bare("1", { our_prob: 0.5, market_prob: 0.48 })]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.edges[0].edge_pct).toBeNull();
+  });
+
+  it("does not turn an absent model probability into a model that rates the outcome at zero", async () => {
+    const { result } = renderWith([bare("1", { market_prob: 0.48, edge_pct: 4 })]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.edges[0].our_prob).toBeNull();
+    // 0.0 would be a PREDICTION. A reader is entitled to act on a prediction.
+    expect(result.current.edges[0].our_prob).not.toBe(0);
+  });
+
+  it("still falls back to raw_payload when there is something to fall back to", async () => {
+    // The fallback is not the defect; the `0` it degraded into was. `my_prob`/`yes_ask` are percent,
+    // `edge` is already in the columns' unit, and the two conversions must not be confused.
+    const { result } = renderWith([
+      bare("1", { raw_payload: { my_prob: 52, yes_ask: 48, edge: 4 } }),
+    ]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const row = result.current.edges[0];
+    expect(row.our_prob).toBeCloseTo(0.52);
+    expect(row.market_prob).toBeCloseTo(0.48);
+    expect(row.edge_pct).toBe(4);
+  });
+
+  it("prefers the column over the payload", async () => {
+    const { result } = renderWith([
+      bare("1", { our_prob: 0.51, raw_payload: { my_prob: 99 } }),
+    ]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.edges[0].our_prob).toBe(0.51);
+  });
+
+  it("keeps a measured zero a number, because zero is a measurement and null is not", async () => {
+    // The two must never share an expression. The old truthiness test on the payload fallback sent
+    // a recorded `my_prob: 0` down the "no value" branch, so a real zero and a missing figure were
+    // indistinguishable -- which is how a `?? 0` gets added in the first place.
+    const { result } = renderWith([
+      bare("1", { our_prob: 0, market_prob: 0, edge_pct: 0 }),
+    ]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const row = result.current.edges[0];
+    expect(row.our_prob).toBe(0);
+    expect(row.market_prob).toBe(0);
+    expect(row.edge_pct).toBe(0);
+  });
+
+  it("keeps a measured zero in raw_payload a number too", async () => {
+    const { result } = renderWith([bare("1", { raw_payload: { my_prob: 0 } })]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.edges[0].our_prob).toBe(0);
+  });
+
+  it("leaves a non-numeric figure absent rather than coercing it", async () => {
+    // `Number.isFinite` on purpose: NaN and Infinity are numbers to `typeof` and are not figures.
+    const { result } = renderWith([
+      bare("1", { our_prob: Number.NaN, market_prob: Number.POSITIVE_INFINITY, edge_pct: "4" }),
+    ]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const row = result.current.edges[0];
+    expect(row.our_prob).toBeNull();
+    expect(row.market_prob).toBeNull();
+    expect(row.edge_pct).toBeNull();
+  });
+
+  it("withholds a figure in the same way whether the row is an edge or a display-only one", async () => {
+    // The partition runs on the normalised rows, so a null has to survive being split. A row that
+    // recorded nothing is still a row, and the withholding bucket still counts it.
+    const { result } = renderWith([{ ...bare("1"), engine: "cpi_nowcast" }]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.withheld).toHaveLength(1);
+    expect(result.current.withheld[0].edge.edge_pct).toBeNull();
+    expect(result.current.withheld[0].edge.our_prob).toBeNull();
+  });
+});

@@ -35,7 +35,12 @@ def _run_main(monkeypatch, *, cpi_due, closed_raises=False):
     monkeypatch.setattr(predictions, "record_predictions", lambda *a, **k: None)
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserts.append(rows))
 
-    def closed(client, now):
+    def closed(client, now, *, not_open=()):
+        # `not_open` is the delisted-before-`expires_at` set, computed by `cpi_markets_not_open`.
+        # These tests are about the cleanup's SCHEDULE and failure handling, not about that set, so
+        # it is swallowed here -- and swallowed explicitly, because accepting only the two positional
+        # arguments would turn the new keyword into a TypeError that `main()` reports as a cleanup
+        # failure and the exit code with it.
         closed_calls.append(now)
         if closed_raises:
             raise RuntimeError("supabase down")

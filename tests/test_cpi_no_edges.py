@@ -280,17 +280,30 @@ def test_the_cpi_delete_is_run_on_every_scan_which_is_what_bounds_the_retention_
     """Why the on-screen copy is qualified, pinned from the Python side.
 
     `remove_closed_cpi_edges` is not a once-a-while tidy-up: `main()` calls it on every hourly scan,
-    and the predicate is `expires_at <= now`. So a `cpi_nowcast` row is deleted within the hour its
-    market closes -- which is why the UI may not say "the rows are not deleted", and says the
-    bounded thing instead. If this ever stops being true the UI copy becomes conservative rather
-    than wrong, which is the safe direction to be wrong in; the reverse is not."""
+    and the predicate is `expires_at <= now` PLUS the tickers Kalshi reports are no longer open --
+    the second because a market delisted before its close never satisfies the first, and a row that
+    survives that is a trade nobody can place sitting on a page that promises otherwise. So a
+    `cpi_nowcast` row is deleted within the hour its market stops being open -- which is why the UI
+    may not say "the rows are not deleted", and says the bounded thing instead. If this ever stops
+    being true the UI copy becomes conservative rather than wrong, which is the safe direction to be
+    wrong in; the reverse is not.
+
+    The literal is a call site, so it also pins that the delete is handed the liveness set: a
+    `remove_closed_cpi_edges(client, now)` that quietly dropped the second predicate would satisfy a
+    weaker version of this assertion, and would be the defect tests/test_cpi_delisted_cleanup.py
+    exists to catch.
+    """
     import inspect
 
     main_source = inspect.getsource(scan.main)
 
-    assert "remove_closed_cpi_edges(client, now)" in main_source, (
+    assert "remove_closed_cpi_edges(client, now, not_open=not_open)" in main_source, (
         "the closed-market delete must still run on every scan: it is what bounds the retention "
         "claim the UI makes, and dropping it would let the rows accumulate for ever"
+    )
+    assert "cpi_markets_not_open(client, now, fetch_market)" in main_source, (
+        "the delisted-market set has to be computed on the same scan, or the second predicate is "
+        "never handed anything and a market delisted before its close keeps its row"
     )
 
 
