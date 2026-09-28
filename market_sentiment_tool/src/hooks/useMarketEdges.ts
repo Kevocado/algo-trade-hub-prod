@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 import { EDGES_READ_LIMIT, partitionDisplayOnly, type WithheldEdge } from "@/lib/displayOnlyEngines";
+import { readNumber } from "@/lib/edgeFigures";
 
 export interface KalshiEdge {
   id: string;
@@ -11,9 +12,25 @@ export interface KalshiEdge {
   market_url?: string | null;
   title?: string;
   market_title?: string;
-  market_prob: number;
-  our_prob: number;
-  edge_pct: number;
+  /**
+   * P(YES) as the model has it, in [0, 1]. NULL when nothing measured it.
+   *
+   * NOT a required number, and that is the point of the `| null`: these three fields used to be
+   * `number` and were filled in with `?? 0`, so a row that never recorded a probability was handed
+   * to a reader as a model that rates the outcome at exactly zero -- a confident, specific,
+   * completely false claim, and the same class of defect as the `$0.00` the War Room used to print
+   * for a portfolio it had never measured. A missing figure is a fact about the row, and the type
+   * has to be able to say so; a caller that formats one has to handle it (see `probText` in
+   * lib/edgeFigures.ts, and the `—` in PredictionLab's EdgeCard and the War Room's edge board).
+   */
+  market_prob: number | null;
+  /** See `market_prob`. A missing market quote is not a market that priced the outcome at 0. */
+  our_prob: number | null;
+  /**
+   * See `market_prob`. A missing edge is NOT an edge of zero: 0.0 reads as "measured, and there is
+   * nothing here", which is the one thing an unmeasured edge most resembles and must never be.
+   */
+  edge_pct: number | null;
   discovered_at: string;
   raw_payload: any;
   ui_reasoning?: boolean;
@@ -37,9 +54,10 @@ export const useMarketEdges = () => {
   //
   // The historical cpi_nowcast rows stay in kalshi_edges while their markets are open --
   // `remove_closed_cpi_edges` (tradehub/scripts/scan.py) deletes each one on the first hourly
-  // scan after `expires_at`, so a closed market's rows are lifecycle-cleaned like every other
-  // engine's. The filter is a standing rule over the rows that are still there, not a promise that
-  // the rows are permanent, and nothing may state otherwise.
+  // scan after `expires_at`, or on the first scan after Kalshi reports the market is no longer
+  // open (a delisting can land before that close), so a closed market's rows are lifecycle-cleaned
+  // like every other engine's. The filter is a standing rule over the rows that are still there,
+  // not a promise that the rows are permanent, and nothing may state otherwise.
   const [withheld, setWithheld] = useState<WithheldEdge<KalshiEdge>[]>([]);
   const [loading, setLoading] = useState(true);
   /**
@@ -76,11 +94,19 @@ export const useMarketEdges = () => {
         const read = data ?? [];
         // The +1 row is the sentinel, not data. It is dropped before anything can count it.
         const hasMore = read.length > EDGES_READ_LIMIT;
+        // A `raw_payload` fallback, when there is one to fall back to, and `null` when there is not.
+        //
+        // The `?? 0` that used to close this out was the defect: a row that recorded neither the
+        // column nor the payload field was published as a model probability of exactly zero, and
+        // `edge_pct: 0` is read by every consumer as "we looked and there is no opportunity here",
+        // which is a measurement. Nothing was measured. The three figures are now nullable end to
+        // end, and `readNumber` returns null rather than 0 for the same reason, so a row that is
+        // merely MISSING the number is not confused with one that recorded a genuine zero.
         const normalized = read.slice(0, EDGES_READ_LIMIT).map(d => ({
             ...d,
-            our_prob: d.our_prob ?? (d.raw_payload?.my_prob ? d.raw_payload.my_prob / 100 : 0),
-            market_prob: d.market_prob ?? (d.raw_payload?.yes_ask ? d.raw_payload.yes_ask / 100 : 0),
-            edge_pct: d.edge_pct ?? d.raw_payload?.edge ?? 0
+            our_prob: readNumber(d.our_prob, d.raw_payload?.my_prob, 100),
+            market_prob: readNumber(d.market_prob, d.raw_payload?.yes_ask, 100),
+            edge_pct: readNumber(d.edge_pct, d.raw_payload?.edge, 1)
         }));
 
         // Split AFTER the read, not in the query. Two reasons. A `.neq("engine", ...)` filter

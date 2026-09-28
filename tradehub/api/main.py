@@ -349,6 +349,24 @@ CPI_PAGE_WINDOW_DETAIL = (
     f"with nothing in it. Ask for a smaller limit, or start from an earlier offset."
 )
 
+# `comparable=true` keeps only the rows that carry a market mid. The page asks for it (see
+# CPI_CONTEXT_ROWS in market_sentiment_tool/src/lib/cpiDisplay.ts for the count and the reasoning),
+# and the filter lives HERE rather than in the component for two reasons that both come from the
+# review this endpoint was built under: no rule that filters or reorders data may live in TSX, and a
+# client-side filter would describe a window the response does not describe -- `total` would count
+# rows the response never sent, and the page would be reporting on its own reordering rather than on
+# the read. Opt-in, so an unfiltered read of the whole ledger is still available to a caller that
+# wants it; the page is not the only possible reader of this endpoint.
+#
+# The number of rows is a low-teens count decided by the page's own request, not clamped here: this
+# endpoint has no opinion about how much context a reader wants, and a clamp would make a short page
+# a server-side policy the reader could not see.
+CPI_COMPARABLE_HELP = (
+    "comparable=true keeps only the releases that carry a market mid to set the nowcast against. "
+    "Rows without one are still counted in `withheld_count` -- a shorter page is not a licence to "
+    "stop saying what was withheld."
+)
+
 
 def _page(limit: int, offset: int) -> tuple[int, int]:
     if limit < 1 or limit > SPORTS_PAGE_MAX or offset < 0:
@@ -773,6 +791,7 @@ def _cpi_display_row(row: dict) -> dict:
 def get_cpi_display(
     limit: int = Query(CPI_PAGE_DEFAULT, ge=1, le=CPI_PAGE_MAX),
     offset: int = Query(0, ge=0),
+    comparable: bool = Query(False, description=CPI_COMPARABLE_HELP),
     supabase=Depends(get_supabase),
 ):
     """CPI as context, not as an opportunity.
@@ -790,7 +809,7 @@ def get_cpi_display(
     `predictions` is owner-only under RLS, so this endpoint is the only route by which these numbers
     reach a browser: a label that only existed in a component would not travel with the data.
 
-    Four claims this response makes about itself, and each of them is a claim a reader would
+    Six claims this response makes about itself, and each of them is a claim a reader would
     otherwise have to assume:
 
     * `mode`/`edge_pct`/null: this is context, there is no edge, and nothing here implies otherwise.
@@ -801,6 +820,18 @@ def get_cpi_display(
       whole set.
     * `n_train` with `default_error_model`: a probability produced from the engine's FALLBACK sigma
       says so, because a constant and a fit are otherwise the same figure on the page.
+    * `read_count`: how many rows the bounded read examined, which is NOT `total` once `comparable`
+      has removed any. The page's "N rows read" comes from here.
+    * `comparable_only`: whether this response applied that filter, echoed because a client must be
+      able to tell a short page from a filter it did not know about.
+
+    `comparable=true` is the one that answers the complaint this page was built for: on 2026-09-28
+    the unfiltered read returned 50 rows of which 69 across the read had no market mid at all, so
+    the page was mostly rows with nothing to compare. A row with no market mid has no comparison in
+    it, so for a page whose whole job is the comparison it is padding -- but it is still WITHHELD
+    rather than discarded, and `withheld_count` still says how many. Filtering happens before the
+    window, so `offset`/`limit` index the comparable set, and `total` is the count of what the
+    response describes.
 
     A failed read is a 503, never a 200 with an empty page: "not measured" and "measured, and there
     is nothing there" are different facts and must not look alike. For the same reason a `offset` that
@@ -831,13 +862,26 @@ def get_cpi_display(
         raise HTTPException(status_code=503, detail=_missing_table_message("predictions", exc))
     truncated = len(read) > CPI_ROW_SCAN
     read = read[:CPI_ROW_SCAN]
-    total = len(read)
     # Built once for the whole read, so the count and the rows come from the same rule rather than
-    # from two copies of "is this row comparable". Counted before slicing: a client cannot derive it
-    # from one page, and deriving it is what makes an offset window report on itself instead of on
-    # the set.
+    # from two copies of "is this row comparable". Counted before any filter and before slicing: a
+    # client cannot derive it from one page, and deriving it is what makes an offset window report
+    # on itself instead of on the set.
     display = [_cpi_display_row(r) for r in read]
+    read_count = len(display)
+    # Counted BEFORE the `comparable` filter, which is the whole point. Counting after it would
+    # report zero whenever the filter is on -- and that is the one number a reader must never be
+    # able to lose, because a short page that also says "nothing was withheld" is a page that is
+    # padded and silent about it at the same time.
     withheld_count = sum(1 for r in display if not r["comparable"])
+    # The filter runs BEFORE the window, so `offset`/`limit` index the comparable set rather than
+    # the raw read. Paging past the withheld rows is what makes the short page reach the same
+    # comparable row a reader would have found by scrolling the long one.
+    if comparable:
+        display = [r for r in display if r["comparable"]]
+    # The count of what THIS RESPONSE DESCRIBES, and therefore not a count of what was read once
+    # the filter has run. `read_count` is the latter, and `read_count == total + withheld_count`
+    # whenever `comparable` is on.
+    total = len(display)
     return {
         "as_of": datetime.now(timezone.utc).isoformat(),
         "mode": "display",
@@ -850,10 +894,13 @@ def get_cpi_display(
         "gate_checked_reason": CPI_GATE_CHECKED_REASON,
         "row_order": "as_of desc",
         "rows": display[offset:offset + limit],
-        # The number of rows read. When `truncated` is true it is a floor, not a count.
+        # The number of rows in the set this response describes. When `truncated` is true it is a
+        # floor, not a count.
         "total": total,
         "truncated": truncated,
         "withheld_count": withheld_count,
+        "read_count": read_count,
+        "comparable_only": comparable,
         "limit": limit,
         "offset": offset,
     }
