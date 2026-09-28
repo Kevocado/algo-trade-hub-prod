@@ -10,7 +10,10 @@ Two defects this pins, both found in the live app on 2026-09-27:
   both. These now answer honestly instead of raising.
 - `/api/shadow-performance` needs `signal_events`, which `20260415090000_signal_events_unification.sql`
   creates by renaming `crypto_signal_events`. The code is right and the database is behind, so the
-  error has to SAY that rather than forward a raw PostgREST dump.
+  error has to SAY that rather than forward a raw PostgREST dump. It did not: the handler caught
+  `RuntimeError` to recognise the missing table, postgREST raises its own `APIError`, so the branch
+  was unreachable and the page answered 500 with `{'message': ..., 'code': 'PGRST205', ...}`.
+  Recognising a missing table is now text-matched in one place, so no exception type can hide it.
 
 And one guard, because both are the same mistake: a name passed to `supabase.table(...)` that no
 migration creates. `test_no_code_references_a_table_no_migration_creates` fails the build instead of
@@ -22,10 +25,32 @@ import asyncio
 
 import pytest
 from fastapi import FastAPI, HTTPException
+from postgrest.exceptions import APIError
 
 from tradehub.api import main as api_main
 
 MIGRATIONS = Path(__file__).resolve().parents[1] / "market_sentiment_tool" / "supabase" / "migrations"
+
+
+def _pgrst205() -> APIError:
+    """The exception the live database actually raises, with the payload it actually sends.
+
+    Not a RuntimeError that says the same thing. `APIError` derives straight from `Exception`, so a
+    handler that catches RuntimeError to recognise this never runs -- which is precisely how a
+    503-naming-migration branch shipped dead.
+    """
+    return APIError({
+        "message": "Could not find the table 'public.signal_events' in the schema cache",
+        "code": "PGRST205",
+        "hint": "Perhaps you meant the table 'public.crypto_signal_events'.",
+    })
+
+
+def _raises(exc: Exception):
+    """A stand-in for the builder that fails the way the real one fails."""
+    def boom(**_kwargs):
+        raise exc
+    return boom
 
 
 class _Query:
@@ -130,18 +155,88 @@ def test_a_ledger_that_is_not_in_the_database_fails_loudly_and_says_which_migrat
 def test_the_shadow_performance_error_says_which_migration_is_missing(monkeypatch):
     """A raw PostgREST dump is not actionable. This failure is fixed by APPLYING a migration, not by
     editing code, so the response has to say which one -- otherwise the next person to see a red
-    /shadow has to reverse-engineer it."""
-    def boom(**_kwargs):
-        raise RuntimeError("Could not find the table 'public.signal_events' in the schema cache")
+    /shadow has to reverse-engineer it.
 
-    monkeypatch.setattr(api_main, "build_shadow_timeline_response", boom)
+    The exception is the real postgrest APIError, not a hand-raised RuntimeError carrying the same
+    words. That distinction is the whole bug: the handler caught RuntimeError, postgREST raises
+    APIError, so the branch meant to name the migration was unreachable and /api/shadow-performance
+    served the raw PGRST205 dump with a 500. A faked RuntimeError cannot see that, which is why a
+    test written that way sat here passing the entire time the page was red.
+    """
+    monkeypatch.setattr(api_main, "build_shadow_timeline_response", _raises(_pgrst205()))
 
     with pytest.raises(HTTPException) as caught:
         asyncio.run(api_main.get_shadow_performance(domain="crypto", hours=24))
 
+    assert caught.value.status_code == 503
     detail = str(caught.value.detail)
     assert "20260415090000_signal_events_unification.sql" in detail, detail
     assert "crypto_signal_events" in detail, detail
+
+
+def test_the_shadow_performance_503_detail_is_a_sentence_and_not_the_postgrest_dump(monkeypatch):
+    """The symptom, pinned on its own. APIError stringifies to the repr of the dict postgREST sent,
+    so any handler that forwards `str(exc)` -- or the exception itself -- hands the browser
+    `{'message': ..., 'code': 'PGRST205', 'hint': ...}`. The detail must be a plain string a person
+    can act on, and specifically not that dump."""
+    monkeypatch.setattr(api_main, "build_shadow_timeline_response", _raises(_pgrst205()))
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(api_main.get_shadow_performance(domain="crypto", hours=24))
+
+    detail = caught.value.detail
+    assert isinstance(detail, str), f"detail must be a string, got {type(detail).__name__}: {detail!r}"
+    assert not detail.lstrip().startswith("{"), f"detail is a raw dump, not a sentence: {detail}"
+    assert "PGRST205" not in detail, f"the raw PostgREST dump is still being forwarded: {detail}"
+    assert "'hint'" not in detail and '"hint"' not in detail, detail
+
+
+def test_a_broken_shadow_builder_is_a_500_and_not_a_migration_prompt(monkeypatch):
+    """The other half of the distinction, and the reason this is not just `except Exception: 503`.
+    A TypeError inside the builder is a fact about this code, not about the database. Telling the
+    operator to apply a migration they already applied sends them away from the bug."""
+    monkeypatch.setattr(api_main, "build_shadow_timeline_response", _raises(
+        TypeError("unsupported operand type(s) for +: 'int' and 'NoneType'")))
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(api_main.get_shadow_performance(domain="crypto", hours=24))
+
+    assert caught.value.status_code == 500
+    detail = caught.value.detail
+    assert isinstance(detail, str), f"detail must be a string, got {type(detail).__name__}: {detail!r}"
+    assert ".sql" not in detail, f"a genuine bug must not be dressed as a migration: {detail}"
+    assert "unsupported operand" in detail, detail
+
+
+def test_an_unsupported_domain_is_still_a_400(monkeypatch):
+    """The third arm, so routing the table handling through one helper did not swallow the
+    request-validation arm on the way past."""
+    monkeypatch.setattr(api_main, "build_shadow_timeline_response", _raises(
+        ValueError("domain 'weather' is not a supported signal-event domain")))
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(api_main.get_shadow_performance(domain="weather", hours=24))
+
+    assert caught.value.status_code == 400
+    assert "not a supported" in str(caught.value.detail)
+
+
+def test_the_migration_naming_is_not_wired_to_one_exception_type():
+    """The invariant, stated once so a fourth handler cannot reintroduce type-matching. Every
+    exception type that carries the missing-table text earns the same 503, because the text is what
+    postgREST actually tells us, and nothing else does."""
+    for exc in (
+        _pgrst205(),
+        RuntimeError("Could not find the table 'public.signal_events' in the schema cache"),
+        ValueError("PGRST205"),
+        ConnectionError("schema cache"),
+    ):
+        assert api_main._is_missing_table(exc) is True, exc
+        assert api_main._table_fault("signal_events", exc).status_code == 503, exc
+
+    for exc in (TypeError("bad operand"), RuntimeError("connection reset"), ValueError("")):
+        assert api_main._is_missing_table(exc) is False, exc
+        assert api_main._table_fault("signal_events", exc).status_code == 500, exc
 
 
 # ── the guard that stops this whole class ─────────────────────────────────────
