@@ -380,15 +380,35 @@ describe("the two gates are two things, and are not merged", () => {
     expect(screen.getByText(/promotion.*could not be read|unverified/i)).toBeInTheDocument();
   });
 
-  it("puts the (engine, version) scope in the label, not only in the source", async () => {
+  it("puts the (engine, version) scope in the cell, in text a reader without a mouse can reach", async () => {
     await renderWith(response());
 
     const row = screen.getByRole("rowheader", { name: /gas/ }).closest("tr") as HTMLElement;
-    // This cell is one of seven in a row keyed on (engine, mode), and the verdict is per
-    // (engine, engine_version). A bare "Promotion" is the one place on this page where the module's
-    // standard -- a number or a verdict never carries an unstated scope -- is met in prose alone,
-    // and prose in a comment is not something a reader sees.
-    expect(within(row).getByText("Promotion (this engine + version)")).toBeInTheDocument();
+    // `promotion_status` is the shared lookup's verdict, keyed on (engine, engine_version), and this
+    // cell is one of seven in a row keyed on (engine, mode). So the cell has to name WHICH pair --
+    // and it has to name it in rendered text. Not in a comment, and not in the badge's `title=`,
+    // which is a native tooltip on a <div> with no tabindex, no role and no aria-describedby: a
+    // keyboard user cannot reach it and a screen reader never announces it, so text parked there is
+    // text only a mouse user gets. Asserted on the whole rendered string, not a loose regex, so
+    // "this engine + version" cannot satisfy it.
+    expect(within(row).getByText("for gas · gas-v1")).toBeInTheDocument();
+    // And the header it qualifies is still its own element, so the scope is attached to "Promotion"
+    // rather than welded into it -- the fragment the review flagged.
+    expect(within(row).getByText("Promotion")).toBeInTheDocument();
+  });
+
+  it("gives each version of one engine its own promotion scope", async () => {
+    // Two versions of one engine are two rows carrying the same verdict, so the same badge appearing
+    // twice is not the same claim twice. Neither a bare "Promotion" nor "this engine" can tell the
+    // two apart, and this is the case the scope exists for -- so it is asserted per version here,
+    // not only on the single-row fixture, where almost any wording passes.
+    const v1 = gasRow({ engine_version: "gas-v1", promotion_status: "SHADOW" });
+    const v2 = gasRow({ engine_version: "gas-v2", promotion_status: "PROMOTED" });
+    await renderWith(response({ rows: [v1, v2], rows_total: 2, engines: 1 }));
+
+    const table = screen.getByRole("table");
+    expect(within(table).getByText("for gas · gas-v1")).toBeInTheDocument();
+    expect(within(table).getByText("for gas · gas-v2")).toBeInTheDocument();
   });
 });
 

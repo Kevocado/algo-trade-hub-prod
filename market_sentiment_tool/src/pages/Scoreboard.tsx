@@ -136,13 +136,32 @@ function Row({ row }: { row: ScoreboardRow }) {
         </div>
         <div className="text-[11px] text-slate-300">{backtestGateLabel(row.gate_status)}</div>
         <div className="mt-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-          {/* The qualifier is IN the label, not in a comment: this cell is one of seven in a row
-              keyed on (engine, mode), and a reader who has not opened the code has no other way to
-              know the verdict is about this engine AND this version. Two versions of one engine
-              carry the same verdict, and a bare "Promotion" reads as the engine's. */}
-          Promotion (this engine + version)
+          Promotion
         </div>
-        {/* The shared lookup's verdict, for this engine AND this version. */}
+        {/* The scope, in the cell and in VISIBLE TEXT, naming the pair rather than "this".
+
+            Two reasons it is not prose in a comment, which is what it was before the review found it:
+            a reader who has not opened the code has no other way to know the verdict is about this
+            engine AND this version, and two versions of one engine carry the same verdict, so a
+            bare "Promotion" reads as the engine's. It is not in the badge's `title=` either: that is
+            a native tooltip on a <div> with no tabindex, no role and no aria-describedby, so it
+            cannot be reached by keyboard and is never announced. The scope is the one claim in this
+            cell that a mouse-only affordance would take away from everyone else.
+
+            10px is deliberate and is the size this cell's own headers already use, not a leftover:
+            there is no 12px floor in this repo, and 10px is this file's convention -- the two
+            micro-headers in this cell, each bar's own label, and the shared `GateBadge` below. (No
+            count is quoted here, because a comment that quoted the class name would inflate it.)
+            The claim is carried by sentence case, not by size -- `uppercase` would have case-folded
+            `gas-v1` into a different string than the one the lookup is keyed on.
+
+            `—` rather than a guess: the API's `is_experiment_version` fails toward EXCLUSION, so a
+            run with an absent or empty version never reaches this table and the dash is a guard for
+            the type, not a state a reader will see. */}
+        <div className="text-[10px] text-slate-500">
+          for {row.engine} · {row.engine_version ?? "—"}
+        </div>
+        {/* The shared lookup's verdict, for the engine and version named above. */}
         <GateBadge edge={{ gate_status: row.promotion_status }} />
         {row.gate_reasons.length > 0 && (
           <ul className="mt-2 list-disc pl-4 text-[11px] text-slate-500">
