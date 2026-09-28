@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -94,6 +94,18 @@ def test_run_sports_scan_reports_a_down_predictor_and_keeps_going():
     assert out.reports["cfb"]["matched"] == 2
     assert all(p["engine"] == "sports_cfb" for p in out.predictions)
     assert all(e["tier"] != "top_pick" for e in out.edges)   # no reviewer configured
+    # The far bound is keyed on how far out this run's games are, and at NOW the two recorded CFB
+    # games are -16h (already started) and +14.5h, so nothing is out here. That makes the count a
+    # weak check on its own -- it would be 0 with the bound deleted outright. So scan the same
+    # recorded feed three days earlier: Temple@Army is then 56h out and still priced, while
+    # Stanford@Georgia Tech is 86.5h out, past the configured 72h. Exactly one game is dropped,
+    # and `per_sport` has to say so -- that key had no assertion anywhere, so deleting the two
+    # lines that write it left this suite green.
+    assert out.per_sport["cfb"]["too_far"] == 0, out.per_sport["cfb"]
+    early = sports_scan.run_sports_scan(NOW - timedelta(days=3), kalshi, fetch=fetch, sports=("cfb",))
+    assert early.per_sport["cfb"]["too_far"] == 1, early.reports["cfb"]
+    assert early.reports["cfb"]["games_started"] == 0
+    assert early.reports["cfb"]["markets_priced"] == 2, "the 56h game must still be priced"
 
 
 def test_unrecorded_drops_markets_already_in_the_ledger():
@@ -182,7 +194,14 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
     assert [row for rows in edge_writes for row in rows] == [
         {"edge_type": "SPORTS", "engine": "sports_nfl", "market_ticker": "T1", "gate_status": "SHADOW"}
     ]
-    assert json.loads(capsys.readouterr().out)["sports"] == {"nfl": {"matched": 1}}
+    # The printed sports summary is `run.reports` with the per-sport diagnostics folded in -- the
+    # keys are the run's own (`DIAGNOSTIC_KEYS`, and this hand-built `per_sport` carries none of
+    # them), so all read as `None`: "not measured", which is the truth about a run with no scan
+    # behind it, and not the `0` that would claim the window dropped nothing. Named by reading the
+    # list rather than written out, so this cannot go stale when a key is added to it.
+    assert json.loads(capsys.readouterr().out)["sports"] == {
+        "nfl": {"matched": 1, **{key: None for key in sports_scan.DIAGNOSTIC_KEYS}}
+    }
 
 
 def test_scan_main_survives_a_sports_crash(monkeypatch, capsys):

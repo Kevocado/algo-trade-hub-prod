@@ -6,9 +6,10 @@ import ShadowBacktester from "@/pages/ShadowBacktester";
 import Scoreboard from "@/pages/Scoreboard";
 import SportsEdges from "@/pages/SportsEdges";
 import JobsScorecard from "@/pages/JobsScorecard";
+import CpiDisplay from "@/pages/CpiDisplay";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
-import { LayoutDashboard, Activity, Wallet, Brain, LineChart, Scale, Trophy, Briefcase } from "lucide-react";
+import { LayoutDashboard, Activity, Wallet, Brain, LineChart, Scale, Trophy, Briefcase, BarChart3 } from "lucide-react";
 
 const Sidebar = () => {
   const { portfolio } = usePortfolio();
@@ -67,6 +68,15 @@ const Sidebar = () => {
         >
           <Briefcase className="w-5 h-5 text-sky-400" /> Jobs Scorecard
         </NavLink>
+        {/* Label says "Display", not "Nowcast" or "Edges". This board is NOT a board of
+            opportunities, and a nav entry that reads like the other four would put the claim back
+            that the page spends its length taking away. */}
+        <NavLink
+          to="/cpi"
+          className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
+        >
+          <BarChart3 className="w-5 h-5 text-amber-400" /> CPI Display
+        </NavLink>
       </nav>
 
       <div className="p-4 border-t border-slate-900">
@@ -112,6 +122,7 @@ function App() {
           <Route path="/scoreboard" element={<Scoreboard />} />
           <Route path="/sports" element={<SportsEdges />} />
           <Route path="/jobs" element={<JobsScorecard />} />
+          <Route path="/cpi" element={<CpiDisplay />} />
         </Routes>
       </AppShell>
     </BrowserRouter>

@@ -711,10 +711,20 @@ class TestTheGateLookupIsShared:
         from tradehub.api import main
 
         assert gate_status.DEFAULT_GATE_STATUS == "SHADOW"
+        # Walk the AST rather than grepping `getsource`: the invariant is about CODE,
+        # and a comment is allowed to name the value it is explaining. Grepping the
+        # raw source made a prose mention of "SHADOW" look like a second literal, which
+        # is the same class of error as the restatement itself -- a test that cannot
+        # tell a claim from the code making it.
         for module in (main, scoreboard):
-            assert '"SHADOW"' not in inspect.getsource(module), (
-                f"{module.__name__} restates the fail-closed default; import DEFAULT_GATE_STATUS "
-                f"from tradehub.gate_status instead"
+            restated = [
+                node.value
+                for node in ast.walk(ast.parse(inspect.getsource(module)))
+                if isinstance(node, ast.Constant) and node.value == "SHADOW"
+            ]
+            assert not restated, (
+                f"{module.__name__} restates the fail-closed default as a literal; import "
+                f"DEFAULT_GATE_STATUS from tradehub.gate_status instead"
             )
 
 

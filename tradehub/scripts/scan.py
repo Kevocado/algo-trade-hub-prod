@@ -57,6 +57,7 @@ from tradehub.markets import KalshiMarket, event_date, event_month, market_url
 from tradehub.predictions import build_prediction_row
 from tradehub.sports.scan import (
     prune_sports_if_healthy, remove_started_sports_edges, run_sports_for_cron, sports_due,
+    sports_run_summary,
 )
 
 
@@ -118,6 +119,13 @@ def remove_closed_cpi_edges(client, now: datetime) -> None:
     One filtered DELETE rather than a SELECT followed by a DELETE per row: the predicate is
     entirely expressible in PostgREST, so the database does the comparison and the round trip
     count does not grow with the number of closed markets.
+
+    This is also the BOUND on the retention claim the UI makes. No migration deletes the
+    historical cpi_nowcast rows, so they are all still there -- and a row whose market has closed
+    describes nothing anyone can act on, so it goes, and within the hour. A row is a record of
+    what the scan did while the market it measured was still open. The copy says exactly that much
+    (`RETENTION_SENTENCE` in WithheldEdgesNotice.tsx) rather than the unbounded "the rows are not
+    deleted", which this function makes false.
     """
     client.table("kalshi_edges").delete() \
         .eq("engine", "cpi_nowcast") \
@@ -142,9 +150,28 @@ def remove_closed_labor_edges(client, now: datetime) -> None:
 
 
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
-    """Delete stale rows only for the scan-owned weather/gas/payrolls engines."""
+    """Delete stale rows only for the scan-owned weather/gas/payrolls engines.
+
+    `cpi_nowcast` is deliberately NOT in the allowlist. CPI was approved display-only on 2026-09-27
+    (spec 5a, section 9 approval 3, quoted verbatim from the spec: "DISPLAY ONLY. Show the nowcast
+    against the market for context; not an edge engine."), so `scan_cpi` now returns an empty
+    produced set -- and a prune keyed on that set would read "this engine produced nothing" and
+    delete EVERY historical cpi_nowcast edge row on the next due scan. That would be a silent delete
+    by omission, which is exactly what the ruling rules out: an edge row is a record of what the
+    scan did, and what changes is that the read no longer presents those rows as opportunities (see
+    `useMarketEdges`, which relabels the engine as display-only rather than dropping it silently).
+
+    The rows have to survive for that standing rule to mean anything -- a filter over rows that
+    have already been deleted passes vacuously. What bounds that claim is the closed-market
+    cleanup, and it is part of what the claim IS: `remove_closed_cpi_edges` deletes a cpi_nowcast
+    row on the first scan after its `expires_at`, so a row is kept while its market is open and is
+    gone within the hour after it closes. That is lifecycle cleanup of a market nobody can act on,
+    the same rule `remove_closed_labor_edges` applies, not hiding a losing engine. A row is a
+    record of what the scan did while the market it measured was still open; it is not a permanent
+    archive, and no copy on screen may say it is.
+    """
     for engine, produced in produced_by_engine.items():
-        if engine not in {"weather", "gas", "cpi_nowcast", "labor_nowcast", "sports_nfl", "sports_cfb"}:
+        if engine not in {"weather", "gas", "labor_nowcast", "sports_nfl", "sports_cfb"}:
             continue
         current_market_ids = {str(market_id)[:50] for market_id in produced}
         result = client.table("kalshi_edges").select("market_id").eq("engine", engine).execute()
@@ -328,6 +355,10 @@ def scan_cpi(
     window = int(cfg.params.get("train_months", CPI_TRAIN_MONTHS))
     use_bias = bool(cfg.params.get("use_bias", 0.0))
     predictions: list[dict] = []
+    # Always empty, and that is the contract rather than an accident: CPI is a display engine
+    # (spec 5a, section 9 approval 3). The return shape is unchanged so main() needs no edit and
+    # the signature stays honest about what it produces. Nothing reads this list for CPI any more --
+    # see the allowlist in remove_stale_edges for why the empty set must NOT be allowed to prune.
     edges: list[dict] = []
     for series, (kind, version) in targets.items():
         markets = live.open_markets(series)
@@ -350,11 +381,18 @@ def scan_cpi(
                                  "sigma": model.sigma, "n_train": len(pairs),
                                  "hours_to_close": round(horizon.total_seconds() / 3600.0, 2)},
                 ))
-                suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
-                                           prefer_maker=cfg.prefer_maker)
-                if suggestion:
-                    edges.append(edge_row(lm.market, suggestion, "MACRO", engine="cpi_nowcast",
-                                          engine_version=version, updated_at=now))
+                # No edge row, deliberately. Approved DISPLAY ONLY on 2026-09-27 (spec 5a, and
+                # approval 3 in section 9). The prediction above is the product: it carries the
+                # nowcast, our probability and the market mid, which is exactly the context the
+                # display view reads, and it is what keeps the oracle-bound analysis in 5a
+                # reproducible from the ledger. An `edges` row is the thing that tells a reader
+                # "here is an opportunity", and that claim is not supported: the market's Brier at
+                # 5 days out (0.0710) is barely worse than at 25 minutes (0.0677), so Kalshi is
+                # not pricing off the nowcast and deciding early buys nothing. We are 1.33-1.43x
+                # behind at every lead, with negative P&L at every lead.
+                #
+                # `cfg.min_edge_pct` and `cfg.prefer_maker` are no longer read here. `cfg` itself
+                # still is, above, for the fit window (`train_months`, `use_bias`).
             except Exception:
                 log.exception("scan engine=cpi_nowcast market=%s failed; skipping", lm.market.ticker)
     return predictions, edges
@@ -590,6 +628,9 @@ def main(
         for name, edges in (
             ("weather", weather_edges),
             ("gas", gas_edges),
+            # Still offered to the prune, and still a no-op: `remove_stale_edges` keeps
+            # cpi_nowcast out of its allowlist precisely because this produced set is now empty.
+            # Do not "simplify" this entry away -- see that function's docstring.
             ("cpi_nowcast", cpi_edges),
         ):
             if not engine_states[name]["complete"] or edge_writes.get(name) != "ok":
@@ -700,7 +741,11 @@ def main(
         else:
             try:
                 run = run_sports_for_cron(now, client, deadline=deadline)
-                sports_predictions, sports_summary = run.predictions, run.reports
+                # `sports_run_summary`, not `run.reports`: the per-sport diagnostics (`too_far`,
+                # `unrecognised_kinds`) live in `run.per_sport`, and the print below is the only
+                # thing an operator ever reads. Taking the reports directly left the run's own
+                # diagnostic keys recorded and unreadable.
+                sports_predictions, sports_summary = run.predictions, sports_run_summary(run)
                 sports_per_sport = run.per_sport
                 try:
                     sports_pairs = {(row["engine"], row.get("engine_version", "v0"))

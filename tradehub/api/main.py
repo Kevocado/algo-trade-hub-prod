@@ -26,10 +26,11 @@ from tradehub.api.schemas import (
 )
 from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
+from tradehub.engines.cpi import CPI_MIN_TRAIN, DEFAULT_CPI_ERROR
 from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses
 from tradehub.scoreboard import current_runs, market_comparison
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
-from tradehub.sports.scan import edge_row
+from tradehub.sports.scan import edge_row, edge_sigma_score
 from tradehub.sports.scorecard import reviewer_scorecard
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ log = logging.getLogger(__name__)
 TABLE_MIGRATIONS = {
     "signal_events": "20260415090000_signal_events_unification.sql",
     "crypto_signal_events": "20260415090000_signal_events_unification.sql",
+    "predictions": "20260416000003_predictions_ledger.sql",
     "paper_trades": "20260416000011_war_room_tables.sql",
     "live_opportunities": "20260416000011_war_room_tables.sql",
     "paper_signals": "20260416000011_war_room_tables.sql",
@@ -271,6 +273,82 @@ SPORTS_REVIEW_SCAN = 5000
 # see more has to page with .range() explicitly.
 POSTGREST_CAP = 1000
 
+# ── CPI display (display-only, approved 2026-09-27) ─────────────────────────
+CPI_ENGINE = "cpi_nowcast"
+CPI_PAGE_DEFAULT = 50
+CPI_PAGE_MAX = 200
+# `predictions` is append-only and nothing prunes it: one row per open CPI market per scan run,
+# three runs a day, forever. So the read has to be bounded, and the bound has to be visible -- a
+# `total` that quietly counts only the rows we happened to read is a claim about the data, the same
+# silent-truncation hazard the scoreboard's cap=200 and the edges hook's limit(100) already carry.
+# Ordering by `as_of` descending means the bound drops the OLDEST history, which is the right thing
+# to drop for a live display.
+CPI_ROW_SCAN = 200
+
+# The gate, and the honest reason there is no gate. `predictions` has no `gate_status` column --
+# 20260416000003_predictions_ledger.sql:10 defines the table and `gate_status` is `track_record`'s,
+# at line 43 of the same file -- and `build_prediction_row` (tradehub/predictions.py:41) never sets
+# one. So this endpoint cannot read a gate status and does not try: a display engine is not a
+# candidate for promotion, so there is nothing to check. The gate fails closed, so the value is
+# SHADOW, and `gate_checked` says out loud that no gate was consulted -- because "SHADOW" on its own
+# is the gate's own vocabulary and reads as "not promoted", i.e. as a verdict that was reached.
+# The status is the shared fail-closed default, not a second copy of the string:
+# two literals in this module is how the scan and the API would start disagreeing
+# about whether an edge is tradable, which is what DEFAULT_GATE_STATUS exists to
+# prevent. What makes CPI's verdict its own is CPI_GATE_CHECKED below -- the gate
+# was never checked, which is not the same claim as "checked, and it said no".
+CPI_GATE_STATUS = DEFAULT_GATE_STATUS
+CPI_GATE_CHECKED = False
+CPI_GATE_CHECKED_REASON = (
+    "No gate was consulted and none is expected. cpi_nowcast is a display engine, not a candidate "
+    "for promotion, and the predictions table has no gate_status column to read one from. This "
+    "SHADOW is a fails-closed default, not a verdict from a gate that was checked and said no."
+)
+
+CPI_DISPLAY_REASON = (
+    "Not an edge engine. CPI is shown for context only. Measured over 2026-06-01..2026-09-20 the "
+    "market's Brier score was 0.0677 at 25 minutes before close and 0.0710 five days out, so it "
+    "prices this series about as accurately a week ahead as in the last half hour. The market is "
+    "not pricing off the Cleveland Fed nowcast, so a nowcast-based model has nothing to exploit by "
+    "being early. At every lead this model is 1.33-1.43x behind the market, with negative P&L."
+)
+
+# Why a row is withheld FROM THE COMPARISON (it is never withheld from the page). A release scanned
+# before its first quote has no market mid at all, which is a different fact from a market
+# probability of zero -- `useMarketEdges` still fabricates that zero with `?? 0`, and the same
+# "right number, wrong attribution" shape is not repeated here.
+CPI_NOT_COMPARABLE = (
+    "No market mid was recorded for this release, so there is no market probability to set the "
+    "nowcast against. The nowcast is shown on its own; nothing here is a comparison, and a missing "
+    "mid is not a market mid of zero."
+)
+
+# `fit_cpi_error` (tradehub/engines/cpi.py) returns DEFAULT_CPI_ERROR -- a CONSTANT -- whenever it
+# has fewer than CPI_MIN_TRAIN training pairs, so a row's `our_prob` can come out of a hardcoded
+# sigma rather than a fit. Nothing distinguished the two on the page, which is the inverse of the
+# rule this endpoint is built on: a figure that was not measured is being presented as though it
+# were, and the reader cannot tell. `n_train` is the honest signal, because it is what the branch in
+# `fit_cpi_error` actually tested, so the flag is derived from it rather than from `sigma == 0.15`
+# (which a fitted model can also return).
+CPI_DEFAULT_ERROR_SIGMA = DEFAULT_CPI_ERROR.sigma
+CPI_DEFAULT_ERROR_MODEL = (
+    f"The error model is the default, not a fit: fewer than {CPI_MIN_TRAIN} nowcast/print pairs "
+    f"were available, so the {CPI_DEFAULT_ERROR_SIGMA}pp sigma is the constant the engine falls back "
+    "to rather than something measured. This row's probability comes from that default."
+)
+
+# `offset` is advertised, echoed and bounds-tested, so paging reads as supported. But the read is
+# bounded at CPI_ROW_SCAN, and the window is applied to that bounded list, so any offset past the
+# bound returns an empty page while `total` still says CPI_ROW_SCAN: a 200 with no rows, which is
+# indistinguishable from a ledger that has none. At three scans a day the ledger passes 200 rows in
+# about two weeks, so this is the normal case and not an edge case. Rejected instead of served.
+CPI_PAGE_WINDOW_MAX = CPI_ROW_SCAN
+CPI_PAGE_WINDOW_DETAIL = (
+    f"offset + limit must be at most {CPI_PAGE_WINDOW_MAX}: the read is bounded at that many rows, "
+    f"so a window past it could only ever return an empty page, and an empty page reads as a ledger "
+    f"with nothing in it. Ask for a smaller limit, or start from an earlier offset."
+)
+
 
 def _page(limit: int, offset: int) -> tuple[int, int]:
     if limit < 1 or limit > SPORTS_PAGE_MAX or offset < 0:
@@ -379,6 +457,11 @@ def get_sports_edges(
         # Whole-set candidate count. A client cannot derive it from one page, and deriving it is
         # what made the "everything was rejected" banner wrong on every page after the first.
         "candidate_count": candidate_count,
+        # Which ranking produced the order above, over the WHOLE filtered set rather than this page:
+        # a sigma on page 3 is a sigma the sort used, and a page-local count would report `raw_edge`
+        # while rows were being scored. The page states it, because claiming a confidence ranking it
+        # is not applying is worse than never claiming one.
+        "ranking": _ranking_mode(candidates),
         "reviewer_scorecard": reviewer_scorecard(reviews, results),
     }
 
@@ -388,10 +471,20 @@ def _tier_of(row: dict) -> str | None:
 
 
 def _sports_rank(row: dict) -> tuple[int, int, float]:
-    """Sort key: top_pick, then any other candidate, then the rest; edge_pct descending.
+    """Sort key: top_pick, then any other candidate, then the rest; then the confidence score.
 
     A `filtered` row is one the candidate filter rejected, so it ranks below every candidate
-    regardless of its edge — a large gap the filter already refused should not lead the board.
+    regardless of its edge — a large gap the filter already refused should not lead the board. That
+    grouping is the outer key and the confidence score only ever orders rows WITHIN it.
+
+    Within a tier, the sort is on `edge_sigma_score` when the feed published a sigma, because two
+    equal edges at different confidences are not equal claims. The score is capped, floored and
+    `None` when there is no sigma, and the fallback is the raw edge: NOT 0.0, which would sort the
+    row last in its tier and read as "the least interesting pick here" — a claim, made by a
+    fallback, about a row whose confidence is merely unknown.
+
+    The stored column is `edge_pct` (this runs before `edge_row`); the same number is published to
+    clients as `rank_edge_pct`, which is why the fallback is that number.
     """
     tier = _tier_of(row)
     if tier == "top_pick":
@@ -400,7 +493,59 @@ def _sports_rank(row: dict) -> tuple[int, int, float]:
         group = 1
     else:
         group = 2
-    return group, _TIER_ORDER.get(tier, 9), -float(row.get("edge_pct") or 0)
+    score = edge_sigma_score(row.get("edge_pct"), (row.get("raw_payload") or {}).get("sigma"))
+    if score is None:
+        # A partly-publishing feed compares INCOMMENSURABLE UNITS in this one key, deliberately, and
+        # the ordering it produces can INVERT the board -- not merely bias it toward the scored rows
+        # at equal edge, which is how this used to be described and which undersells it. A scored
+        # row's key is a z-score; an unscored row's is its edge in decimal. So the comparison is
+        # score-vs-edge, not score-vs-score, and those are not two numbers on one scale: a scored
+        # 2pp edge at sigma 0.001 scores 20.0 and outranks an unscored 40pp edge outright, and the
+        # row that leads its tier is the one the 20.0 cap invented. The cap is the tell -- a
+        # saturated score is a value the feature refused to measure precisely, and here it is
+        # out-measuring a real 40pp disagreement.
+        #
+        # Every one of those terms is reachable: `sigma_floor` is 0.005, and a predictor publishing
+        # a width of 0.1pp on a genuine edge produces exactly 20.0. So this is a latent inversion
+        # that fires on the first run where one sport publishes a sigma and another row does not --
+        # which is the same run on which the page's sentence starts claiming a confidence ranking.
+        #
+        # The alternative is inventing a sigma for the row that has none, which is the one thing
+        # this feature must never do -- a made-up sigma ranks confidently off nothing, and
+        # 0.10 / 0.005 is the cap. So the bias stands, it is recorded here rather than left to be
+        # discovered, and the page's sentence says it out loud ("...wherever the feed publishes one,
+        # and by raw edge for the rest"), because a reader comparing a 4pp z-scored row against a
+        # 4pp unscored one is owed the reason one of them led. The disclosed sentence is what makes
+        # this acceptable rather than a defect: the page does not claim a total order it cannot
+        # deliver, it names the fallback and the fact that the two are not on one scale.
+        score = float(row.get("edge_pct") or 0)
+    return group, _TIER_ORDER.get(tier, 9), -score
+
+
+def _ranking_mode(rows: list[dict]) -> str:
+    """Which ranking the response actually used, so the page can say so.
+
+    Reads the STORED row, not the served one, and that is not incidental: `sports.scan._edge_row` is
+    what writes `raw_payload["sigma"]` at all, and `edge_row` deliberately withholds sigma from the
+    payload the page receives. So this is the only place the number exists, and it is also the only
+    place the ranking can honestly be described from.
+
+    Reporting the mode rather than implying sigma always applies is the whole point: a page that
+    claims to rank by confidence while ranking by raw edge is worse than one that never claimed it.
+
+    `edge_sigma` means the score was in play for at least one row — which is exactly the condition
+    under which the sort stopped being a pure raw-edge sort. A *published* sigma of zero counts,
+    because it was floored and scored like any other value and the sort did use it; a page reporting
+    `raw_edge` there would be describing a sort that did not happen. A *negative* sigma does not
+    count, because the score is `None` for it: a corrupt value is handled exactly as an absent one
+    is, so it is never the thing that put a row on the board, and a page must not claim the sort used
+    confidence because one broken predictor published a negative width. An empty set reports
+    `raw_edge`: nothing was ranked, so the answer that claims the least is the honest one.
+    """
+    for row in rows:
+        if edge_sigma_score(row.get("edge_pct"), (row.get("raw_payload") or {}).get("sigma")) is not None:
+            return "edge_sigma"
+    return "raw_edge"
 
 
 def _is_upcoming(row: dict, now: datetime) -> bool:
@@ -572,6 +717,146 @@ async def get_jobs_scorecard(
             else DEFAULT_GATE_STATUS
         )
     return rows
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ENDPOINT: /api/cpi-display (the nowcast against the market, as context)
+# ════════════════════════════════════════════════════════════════════════════
+def _cpi_display_row(row: dict) -> dict:
+    """One `predictions` row as a display row. Nothing measured is changed, and nothing missing is
+    invented: a figure the scan did not record stays null, and the row says why it cannot be
+    compared rather than being passed off as a comparison."""
+    raw = row.get("raw_payload") or {}
+    market_prob = row.get("market_prob")
+    comparable = market_prob is not None
+    n_train = raw.get("n_train")
+    # The same branch `fit_cpi_error` took, decided from the number it branched on. `sigma` is NOT
+    # used: the default's own sigma is a value a fitted model can also produce, so comparing against
+    # it would label some fitted rows "default" and never miss a default one. An absent n_train
+    # means the scan did not record it, which is not evidence the model was fitted -- so the flag is
+    # `None` and the row says the count is unknown rather than asserting either way.
+    default_error_model: bool | None = None if n_train is None else int(n_train) < CPI_MIN_TRAIN
+    return {
+        "market_ticker": row.get("market_ticker"),
+        "our_prob": row.get("our_prob"),
+        # The quote mid, the same quantity the sports endpoint reports. It is NOT what an edge would
+        # be measured against, and `edge_pct` below is null so nothing here implies otherwise.
+        "market_prob": market_prob,
+        # Present and always null. A reader shown a probability and a market price will assume an
+        # opportunity unless something says otherwise, and a null says it in the shape a client
+        # checks rather than in prose it might ignore. There is no edge here to publish: spec 5a
+        # records the outcome as REFUTED, not weak.
+        "edge_pct": None,
+        "nowcast": raw.get("nowcast"),
+        "nowcast_obs": raw.get("nowcast_obs"),
+        "sigma": raw.get("sigma"),
+        # The training-set size, because a sigma printed without it is a number of unknown origin.
+        "n_train": n_train,
+        "default_error_model": default_error_model,
+        "default_error_model_reason": CPI_DEFAULT_ERROR_MODEL if default_error_model else None,
+        "hours_to_close": raw.get("hours_to_close"),
+        # `as_of`, not `updated_at`: the ledger's timestamp is the engine's own and is NOT NULL, and
+        # `predictions` has no `updated_at` column at all. `status` travels so a settled row from a
+        # market that closed last month cannot render as if it were live. The result is deliberately
+        # NOT published: a bare yes/no beside a probability reads as our win, which is a claim the
+        # ledger supports only through the settlement job, not here.
+        "as_of": row.get("as_of"),
+        "status": row.get("status"),
+        "comparable": comparable,
+        "withheld_reason": None if comparable else CPI_NOT_COMPARABLE,
+        "gate_status": CPI_GATE_STATUS,
+        "gate_checked": CPI_GATE_CHECKED,
+    }
+
+
+@app.get("/api/cpi-display", tags=["CPI"])
+def get_cpi_display(
+    limit: int = Query(CPI_PAGE_DEFAULT, ge=1, le=CPI_PAGE_MAX),
+    offset: int = Query(0, ge=0),
+    supabase=Depends(get_supabase),
+):
+    """CPI as context, not as an opportunity.
+
+    Approved display-only on 2026-09-27 (spec section 9, approval 3, quoted verbatim from
+    docs/superpowers/specs/2026-09-27-hub-redesign.md:505: "DISPLAY ONLY. Show the nowcast against
+    the market for context; not an edge engine."), on the evidence in 5a: the market's
+    Brier at 5 days out (0.0710) is barely worse than at 25 minutes (0.0677), so Kalshi prices this
+    series about as accurately a week ahead as in the last half hour. It is not pricing off the
+    nowcast, so a nowcast-based model has nothing to exploit by being early, and at every lead we
+    are 1.33-1.43x behind with negative P&L.
+
+    So this reads the `predictions` rows -- which carry the nowcast, our probability and the market
+    mid -- and labels them. The label is in the payload and not only in the page, because
+    `predictions` is owner-only under RLS, so this endpoint is the only route by which these numbers
+    reach a browser: a label that only existed in a component would not travel with the data.
+
+    Four claims this response makes about itself, and each of them is a claim a reader would
+    otherwise have to assume:
+
+    * `mode`/`edge_pct`/null: this is context, there is no edge, and nothing here implies otherwise.
+    * `withheld_count` and each row's `withheld_reason`: a release with no market mid is shown, and
+      says it is not a comparison. The row is withheld from the comparison, never from the page --
+      an engine that loses stays visible.
+    * `truncated`: a read bounded at CPI_ROW_SCAN says so rather than letting `total` read as the
+      whole set.
+    * `n_train` with `default_error_model`: a probability produced from the engine's FALLBACK sigma
+      says so, because a constant and a fit are otherwise the same figure on the page.
+
+    A failed read is a 503, never a 200 with an empty page: "not measured" and "measured, and there
+    is nothing there" are different facts and must not look alike. For the same reason a `offset` that
+    would read past the bound is a 422 and not an empty window.
+    """
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
+    # The window is checked against the READ'S bound, before the read, because after it an offset
+    # past the bound is a well-formed 200 whose `rows` is empty -- the one shape a client cannot tell
+    # from a ledger with nothing in it.
+    if offset + limit > CPI_PAGE_WINDOW_MAX:
+        raise HTTPException(status_code=422, detail=CPI_PAGE_WINDOW_DETAIL)
+    try:
+        # `as_of` descending, with `_fetch_all` appending `id` as the tiebreak so the pages line up
+        # (PostgREST without a stable order can repeat one row and skip another between pages).
+        # cap is the bound plus one, so "there are more rows" is something the read established
+        # rather than something it guessed from filling the cap.
+        read = _fetch_all(
+            supabase, "predictions",
+            lambda q: q.select("*").eq("engine", CPI_ENGINE).order("as_of", desc=True),
+            page=CPI_ROW_SCAN, cap=CPI_ROW_SCAN + 1,
+        )
+    except Exception as exc:
+        # Deliberately not swallowed into an empty list: an empty page means the nowcast has no
+        # markets, and a reader who is told that when the database was never reached has been told
+        # something false. The detail names the migration, because a 500 with PostgREST's raw dump
+        # is what put a red "unavailable" on the War Room.
+        raise HTTPException(status_code=503, detail=_missing_table_message("predictions", exc))
+    truncated = len(read) > CPI_ROW_SCAN
+    read = read[:CPI_ROW_SCAN]
+    total = len(read)
+    # Built once for the whole read, so the count and the rows come from the same rule rather than
+    # from two copies of "is this row comparable". Counted before slicing: a client cannot derive it
+    # from one page, and deriving it is what makes an offset window report on itself instead of on
+    # the set.
+    display = [_cpi_display_row(r) for r in read]
+    withheld_count = sum(1 for r in display if not r["comparable"])
+    return {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "mode": "display",
+        "engine": CPI_ENGINE,
+        "suggest_only": True,
+        "reason": CPI_DISPLAY_REASON,
+        "edge_pct": None,
+        "gate_status": CPI_GATE_STATUS,
+        "gate_checked": CPI_GATE_CHECKED,
+        "gate_checked_reason": CPI_GATE_CHECKED_REASON,
+        "row_order": "as_of desc",
+        "rows": display[offset:offset + limit],
+        # The number of rows read. When `truncated` is true it is a floor, not a count.
+        "total": total,
+        "truncated": truncated,
+        "withheld_count": withheld_count,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 # ── War Room SPA (mounted last so every /api route above wins) ─────────────

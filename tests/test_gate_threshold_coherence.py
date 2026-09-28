@@ -29,10 +29,28 @@ The coherence test is `xfail(strict=True)`: it fails today by design, and when s
 thresholds it will XPASS, which under `strict` is itself a failure telling them to delete this marker.
 Without `strict` the fix would silently leave a stale xfail behind and the defect would be forgotten
 again.
+
+**TWO consumers now, and the whole point of this file is the relation between them.** When this was
+written, `MIN_SETTLED` was the only number in the product that meant "enough settled". The inversion
+added a second one — `HUB_LEDGER_MIN_SETTLED` in `sports/candidates.py`, chosen as 100 *precisely
+because* it equals `MIN_SETTLED` — so a test in `test_sports_inversion.py` ties the two constants
+together and calls the tie done. What the tie does not cover is the arithmetic on the other side of
+the constant: `choose_calibration` counts settled rows of ONE kind, so a kind goes live at
+`HUB_LEDGER_MIN_SETTLED` of its own rows, and the same `n_buckets x calibration_min_n` that has to
+fit under the reviewer's bar has to fit under this one too. Two thresholds for one concept with the
+equation between them unpinned is the same defect this file exists to prevent, one increment later —
+and the increment is silent, because raising `HUB_LEDGER_MIN_SETTLED` to 200 would fail the equality
+test and pass this one, or the reverse, and nobody would be watching the relation.
+
+That is why the second test below exists. It is worth being precise about what it is: **a missing
+invariant, not a missing mutation.** `HUB_LEDGER_MIN_SETTLED`'s value is already pinned twice (its
+equality with `MIN_SETTLED`, and its use as a threshold in the per-kind tests), so a mutation to 300
+fails today. What nothing watched was the relation — the one fact that is not a value.
 """
 import pytest
 import yaml
 
+from tradehub.sports.candidates import HUB_LEDGER_MIN_SETTLED
 from tradehub.sports.scorecard import MIN_SETTLED
 
 ENGINES_YAML = "tradehub/config/engines.yaml"
@@ -82,6 +100,44 @@ def test_the_gate_needs_no_more_evidence_than_the_reviewer_does(sport):
 
 
 @pytest.mark.parametrize("sport", ["sports_nfl", "sports_cfb"])
+def test_the_gate_needs_no_more_evidence_than_the_hub_ledger_demands(sport):
+    """The same invariant, for the second consumer of it, which is the one the gate itself reads.
+
+    `n_buckets x calibration_min_n` is what every calibration bucket needs before a single edge can
+    be admitted, and it is what `HUB_LEDGER_MIN_SETTLED` demands before the hub's own settled record
+    takes over from the published one. They are the SAME concept with TWO consumers — "enough
+    settled" in this product — so a change to either has to confront the other, and this is the file
+    that says so. Today it holds at 4 x 20 = 80 under both 100s.
+
+    It is worth saying out loud what this file did NOT have, because the difference is the finding:
+    the constant's VALUE was already pinned (`test_the_threshold_is_the_reviewers_own_number` ties
+    `HUB_LEDGER_MIN_SETTLED` to `MIN_SETTLED`, and the per-kind tests use it as a threshold), so
+    mutating the constant to 300 fails today. What nothing watched was the RELATION — which is not a
+    value, and is the only thing here that can be wrong while every number is individually correct.
+
+    The sting, and why the relation is worth this assertion: the 4-bucket ruling is OUTSTANDING in
+    NFL_Predictor and CFB_Predictor and the live feeds still emit `n_buckets = 10`. So on the day
+    the flip lands, admitting an edge through the hub needs `10 x 20 = 200` settled OF THAT KIND,
+    while the reviewer renders its verdict at 100 ACROSS THE ENGINE. That is this file's original
+    defect, reintroduced one threshold over, and it would have been invisible: a wider band is a
+    thinner band, so every edge would read `calibration_insufficient` and a hub that had 200 settled
+    rows would still be described as short of evidence.
+    """
+    params = _sport_params(sport)
+    implied_required = PREDICTOR_N_BUCKETS * params["calibration_min_n"]
+
+    assert implied_required <= HUB_LEDGER_MIN_SETTLED, (
+        f"{sport} needs {implied_required} settled contracts of ONE kind for every calibration bucket "
+        f"to clear ({PREDICTOR_N_BUCKETS} buckets x min_n {params['calibration_min_n']}), but the "
+        f"hub's ledger only takes over at {HUB_LEDGER_MIN_SETTLED} of that kind. Until it does, every "
+        f"edge of that kind is judged on the published record -- which is the safe direction, and "
+        f"which also means the hub is off while a reader of the run summary is told nothing about "
+        f"why. Raise the bucket count or the per-bucket minimum together, or move "
+        f"HUB_LEDGER_MIN_SETTLED."
+    )
+
+
+@pytest.mark.parametrize("sport", ["sports_nfl", "sports_cfb"])
 def test_the_current_gate_arithmetic_is_what_this_file_claims(sport):
     """Pins the two numbers the docstring quotes, so a config change cannot quietly invalidate the
     reasoning above without this failing and forcing the comment to be rewritten."""
@@ -93,3 +149,7 @@ def test_the_current_gate_arithmetic_is_what_this_file_claims(sport):
         "reviewer's bar"
     )
     assert MIN_SETTLED == 100
+    # And the second consumer is the same number today, which is what lets the test above be a
+    # relation rather than two independent accidents. `test_sports_inversion.py` pins the equality
+    # itself; this is here so that moving one of them fails in the file that owns the arithmetic.
+    assert HUB_LEDGER_MIN_SETTLED == 100
