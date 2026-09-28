@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { buildApiUrl } from "@/lib/api";
-import type { ShadowPerformanceResponse } from "@/lib/shadowPerformance";
+import { SHADOW_ERROR_CODE_HEADER, type ShadowPerformanceResponse } from "@/lib/shadowPerformance";
 
 type UseShadowPerformanceOptions = {
   domain: string;
@@ -23,6 +23,14 @@ export interface ShadowReadError {
   /** `detail` from the response body, or a synthesised status line. */
   message: string;
   status: number | null;
+  /**
+   * `X-Error-Code` as the server sent it, or null.
+   *
+   * Carried for the same reason `status` is: it is a machine-readable claim about WHICH of the
+   * three failures this is, and the alternative -- reading it back out of `message` -- is the
+   * parse-the-prose mistake this change exists to end. `message` is for the reader, verbatim.
+   */
+  code: string | null;
 }
 
 /**
@@ -38,12 +46,27 @@ export interface ShadowReadError {
  */
 class ShadowRequestError extends Error {
   readonly status: number | null;
+  readonly code: string | null;
 
-  constructor(message: string, status: number | null) {
+  constructor(message: string, status: number | null, code: string | null = null) {
     super(message);
     this.name = "ShadowRequestError";
     this.status = status;
+    this.code = code;
   }
+}
+
+/**
+ * The `X-Error-Code` off a failed response, or null when there is none.
+ *
+ * Read here, where the `Response` still exists. `null` is a real answer and not a fallback to be
+ * papered over: a transport failure has no response at all, and a proxy sitting in front of the API
+ * may not forward custom headers. Either way the status is still there, and the status is enough.
+ */
+function errorCodeOf(response: Response): string | null {
+  const raw = response.headers?.get(SHADOW_ERROR_CODE_HEADER) ?? null;
+  const code = raw?.trim();
+  return code ? code : null;
 }
 
 export function useShadowPerformance({
@@ -78,6 +101,7 @@ export function useShadowPerformance({
           throw new ShadowRequestError(
             payload?.detail || `Request failed with status ${response.status}`,
             response.status,
+            errorCodeOf(response),
           );
         }
         if (!cancelled) {
@@ -93,7 +117,7 @@ export function useShadowPerformance({
                   err instanceof Error ? err.message : "Unknown shadow dashboard error",
                   null,
                 );
-          setError({ message: failure.message, status: failure.status });
+          setError({ message: failure.message, status: failure.status, code: failure.code });
         }
       } finally {
         if (!cancelled) {

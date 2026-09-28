@@ -70,6 +70,15 @@ const HOURS_OPTIONS = [6, 12, 24, 48, 72];
  *   - read. Every figure comes off `data`, which is non-null from here on, so
  *     there is no `?.` and no `?? 0` left in this file to fall back to.
  *
+ * "Waiting on a person" now covers TWO deployment steps, not one, and they are told apart by
+ * status. `/api/shadow-performance` returns 503 for a migration that has not been applied and 424
+ * for a credential that is not set (`vps-stack/compose.yml` passes no `ALPACA_*` to the tradehub
+ * service, so the 424 is what every reader gets once the migration lands). Both are amber and both
+ * quote the server's sentence, because both are the same kind of fact about the same deployment; a
+ * 500 is the one that is red, because it is a fact about this code. Before this page learned the
+ * difference, the 424 rendered as a red "could not be read" panel -- the undiagnosable outcome the
+ * 424 was introduced to end, surviving on the client side.
+ *
  * The wording of the failed state is `shadowUnavailable` in
  * `@/lib/shadowPerformance`, with its own tests, and it quotes the sentence the
  * API sent rather than restating the migration name -- that sentence names the
@@ -128,25 +137,44 @@ function NotTheScoreboard({ muted = false }: { muted?: boolean }) {
   );
 }
 
-/** The unavailable state. No figure, no chart, no count -- by construction. */
-function Unavailable({ status, detail }: { status: number | null; detail: string | null }) {
-  const notice = shadowUnavailable(status, detail);
-  // A migration wait is an amber notice, not a red one. Red says "this is
-  // broken and nobody knows why"; amber says "this is known and it has a step".
-  const frame =
-    notice.tone === "waiting"
-      ? "border-amber-500/30 bg-amber-500/10 text-amber-100"
-      : "border-rose-500/30 bg-rose-500/10 text-rose-100";
+/**
+ * The unavailable state. No figure, no chart, no count -- by construction.
+ *
+ * `status` and `errorCode` are the inputs and `detail` is not, and the component does not need to
+ * know why: `shadowUnavailable` resolves the status and the code into a tone, and the tone picks
+ * the frame. There is one branch here -- fault or not -- deliberately, so that a fourth state added
+ * to `shadowUnavailable` lands on the operator side by default rather than on the red one. Being
+ * wrong in that direction means an operator reads a notice instead of an alarm; the other way round
+ * a red panel would again be claiming the product is broken when a person has two variables to set.
+ */
+function Unavailable({
+  status,
+  detail,
+  errorCode,
+}: {
+  status: number | null;
+  detail: string | null;
+  errorCode: string | null;
+}) {
+  const notice = shadowUnavailable(status, detail, errorCode);
+  // A deployment step is an amber notice, not a red one, and there are two of them now: a migration
+  // to apply and an environment variable to set. Red says "this is broken and nobody knows why";
+  // amber says "this is known and it has a step". Only a 500 gets red, because a 500 is the one
+  // that is a fact about this code and the one no operator step closes.
+  const fault = notice.tone === "fault";
+  const frame = fault
+    ? "border-rose-500/30 bg-rose-500/10 text-rose-100"
+    : "border-amber-500/30 bg-amber-500/10 text-amber-100";
 
   return (
     <div className={`rounded-xl border p-6 ${frame}`}>
       {/* An <h2>, under the page's own <h1>. The unavailable state is a section of this page, and
           a reader -- or a screen reader -- navigating by heading has to be able to find it. */}
       <h2 className="flex items-center gap-2 text-lg font-semibold">
-        {notice.tone === "waiting" ? (
-          <Wrench className="h-5 w-5 text-amber-300" />
-        ) : (
+        {fault ? (
           <AlertTriangle className="h-5 w-5 text-rose-400" />
+        ) : (
+          <Wrench className="h-5 w-5 text-amber-300" />
         )}
         {notice.title}
       </h2>
@@ -216,7 +244,7 @@ export default function ShadowBacktester() {
               <Badge className="bg-emerald-500 text-emerald-950 font-bold">CRYPTO</Badge>
             </div>
           </header>
-          <Unavailable status={error.status} detail={error.message} />
+          <Unavailable status={error.status} detail={error.message} errorCode={error.code} />
         </div>
       </div>
     );
@@ -299,14 +327,14 @@ export default function ShadowBacktester() {
         {error ? (
           <div
             className={`rounded-xl border p-4 text-sm ${
-              shadowUnavailable(error.status, error.message).tone === "waiting"
-                ? "border-amber-500/30 bg-amber-500/10 text-amber-100"
-                : "border-rose-500/30 bg-rose-500/10 text-rose-100"
+              shadowUnavailable(error.status, error.message, error.code).tone === "fault"
+                ? "border-rose-500/30 bg-rose-500/10 text-rose-100"
+                : "border-amber-500/30 bg-amber-500/10 text-amber-100"
             }`}
           >
             <p className="font-semibold">
-              {shadowUnavailable(error.status, error.message).title} — the figures below are from
-              the last read that succeeded.
+              {shadowUnavailable(error.status, error.message, error.code).title} — the figures
+              below are from the last read that succeeded.
             </p>
             <p className="mt-1 font-mono text-xs text-slate-200">{error.message}</p>
           </div>
