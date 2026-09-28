@@ -18,6 +18,9 @@ import {
   probText,
 } from "@/lib/edgeFigures";
 import { enforceDisplayOnlyPartition } from "@/lib/displayOnlyEngines";
+import { emptyBoard } from "@/lib/engineHealth";
+import { useEngineHealth } from "@/hooks/useEngineHealth";
+import { StoppedEnginesNotice } from "@/components/StoppedEnginesNotice";
 import { TIER_LABELS, isExecutableSportsEdge, rejectReasonLabel, sportsTierOf } from "@/lib/sportsEdges";
 
 const TIER_BADGE_CLASS: Record<string, string> = {
@@ -164,6 +167,10 @@ const EdgeCard = ({ edge }: { edge: KalshiEdge }) => {
 
 export default function PredictionLab() {
   const { edges: readEdges, withheld: readWithheld, loading, error: edgesError, truncated } = useMarketEdges();
+  // The written ruling on which engines could not run at all. Read separately from the board, and
+  // its failure is kept separately too: "I cannot see the rows" and "I cannot tell whether the
+  // engine ran" are two different gaps, and merging them would let one swallow the other.
+  const { data: engineHealth, error: healthError } = useEngineHealth();
   const [activeTab, setActiveTab] = useState("all");
 
   // The hook already withholds display-only rows, and that is where the standing rule lives. The
@@ -191,6 +198,27 @@ export default function PredictionLab() {
   }
 
   const filteredEdges = activeTab === "all" ? edges : edges.filter(e => e.edge_type === activeTab.toUpperCase());
+
+  // The empty board's own words, and there are three of them. Only `quiet` is allowed to say "no
+  // high-confidence edges": that sentence is a FINDING, and it was being printed for the Weather
+  // and Macro tabs while their engines were not running at all.
+  //
+  //   quiet      the engine ran and nothing qualified. A measurement, and the board is right.
+  //   stopped    an engine that feeds this board could not run. Nothing was measured, and the
+  //              reason is the server's, from the written ruling in `tradehub/engine_health.py`.
+  //   unchecked  the ruling itself could not be read, so the emptiness is not established either
+  //              way. This is the branch that used not to exist, and without it a 500 here would
+  //              read as a quiet market.
+  //
+  // The tab is "all" when nothing is selected, and the whole board is fed by several engines, so
+  // there is no single engine to name. What an empty ALL board can honestly say is the weakest of
+  // the three, and it says it: not the finding, and not the breakdown either.
+  const empty = emptyBoard(
+    engineHealth,
+    activeTab === "all" ? "" : activeTab.toUpperCase(),
+    activeTab,
+    healthError,
+  );
 
   return (
     <div className="p-8 max-w-[1600px] mx-auto space-y-8 min-h-screen bg-slate-950 text-slate-100">
@@ -255,10 +283,41 @@ export default function PredictionLab() {
                   Nothing is being claimed about which edges exist. This is not an empty result.
                 </p>
               </div>
+            ) : empty.kind === "stopped" ? (
+              /* A BROKEN engine, not a quiet one. This is the branch that did not exist, and its
+                 absence IS the defect: "No high-confidence edges detected in weather" is a finding,
+                 and it was being printed for an engine that had not looked at anything.
+                 WeatherEngine prices every market off `yes_ask`, Kalshi stopped sending that key,
+                 the `0` default made every market look unpriceable, and the engine skipped all of
+                 them -- publishing nothing and raising nothing, because skipping an unpriceable
+                 market is the right move. Failing closed is why nothing wrong reached the ledger;
+                 it is also why nothing reached the reader.
+
+                 The state comes from the written ruling in `tradehub/engine_health.py` by way of
+                 /api/engine-health, and the words from `emptyBoard`. A component that asked "this
+                 tab is empty, so the engine is broken?" would relabel a merely quiet engine the
+                 first time a market was thin -- and would call a broken engine quiet whenever the
+                 breakage happened to coincide with a real lull. */
+              <div className="flex flex-col items-center justify-center gap-3 py-32 border-2 border-dashed border-rose-900/60 rounded-3xl px-8 text-center">
+                <AlertTriangle className="w-10 h-10 text-rose-800" />
+                <p className="text-rose-300 font-bold uppercase tracking-tighter">{empty.headline}</p>
+                <p className="text-xs text-rose-200/70 max-w-xl">{empty.body}</p>
+              </div>
+            ) : empty.kind === "unchecked" ? (
+              /* The board read fine and is empty, but the RULING could not be read -- so which of
+                 the two this is has not been established. Claiming either would be the defect moved
+                 up a layer: a 500 on /api/engine-health must not read as a quiet market, and it
+                 must not read as a broken engine either. */
+              <div className="flex flex-col items-center justify-center gap-3 py-32 border-2 border-dashed border-amber-900/60 rounded-3xl px-8 text-center">
+                <AlertTriangle className="w-10 h-10 text-amber-900" />
+                <p className="text-amber-300/90 font-bold uppercase tracking-tighter">{empty.headline}</p>
+                <p className="text-xs text-amber-200/60 max-w-xl">{empty.body}</p>
+              </div>
             ) : (
               <div className="flex flex-col items-center justify-center py-32 space-y-4 border-2 border-dashed border-slate-900 rounded-3xl">
                 <TrendingUp className="w-12 h-12 text-slate-800" />
-                <p className="text-slate-500 font-bold uppercase tracking-tighter">No high-confidence edges detected in {activeTab}</p>
+                <p className="text-slate-500 font-bold uppercase tracking-tighter">{empty.headline}</p>
+                <p className="text-xs text-slate-600 max-w-xl text-center">{empty.body}</p>
               </div>
             )
           ) : (
@@ -278,6 +337,15 @@ export default function PredictionLab() {
           and `truncated` travel through: a failed read must not render as "nothing was withheld",
           and the count is a count of the newest 100 rows read, not of the table. */}
       <WithheldEdgesNotice withheld={withheld} readError={edgesError} truncated={truncated} />
+
+      {/* Ruling 2's visible half, and the one that must NOT be conditional on the tab being empty. A
+          MACRO tab with rows on it is fed by labor_nowcast, and a WEATHER tab with rows on it can
+          be fed by the measured `weather` engine, so a stopped engine's board can look perfectly
+          healthy. "The tab is empty, therefore something is wrong" does not survive contact with
+          this product; the engine's state is the fact, and the tab is only where the absence shows
+          up. The ruling's own read failure travels through for the reason above -- a 500 here must
+          not render as "nothing is stopped". */}
+      <StoppedEnginesNotice health={engineHealth} readError={healthError} />
       
       {/* Risk Disclosure Section */}
       <div className="mt-16 p-6 rounded-2xl bg-slate-900/40 border border-slate-800/60 text-slate-500 text-[10px] uppercase tracking-widest font-bold leading-relaxed">

@@ -30,6 +30,7 @@ from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
 from tradehub.engines.cpi import CPI_MIN_TRAIN, DEFAULT_CPI_ERROR
 from tradehub.engine_catalogue import engine_catalogue
+from tradehub.engine_health import engine_health
 from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses
 from tradehub.scoreboard import current_runs, market_comparison
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
@@ -963,6 +964,58 @@ def get_cpi_display(
         "limit": limit,
         "offset": offset,
     }
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ENDPOINT: /api/engine-health (which edge types are fed by a STOPPED engine)
+#
+# Registered BEFORE mount_frontend below: the SPA is mounted at "/", so a route added after it is
+# shadowed and this endpoint would answer with the app shell. Same ordering rule as
+# /api/scoreboard and /api/jobs-scorecard above.
+#
+# No database, and that is the design rather than a shortcut. This endpoint's subject is whether an
+# engine RAN, and whether an engine ran is a written ruling, not a fact about a table: nothing in
+# `kalshi_edges` distinguishes "the engine looked and found nothing" from "the engine never got as
+# far as looking", because in the second case there is no row to look at. Inferring the state from
+# the absence of rows would be the defect restated one layer up -- a quiet board relabelled broken
+# the first time a market was thin, and a broken engine relabelled quiet every time it was quiet by
+# accident. So the ruling is `engine_health` (pure, in the same language as the engines it rules
+# on) and the counts that describe it are computed here rather than in the page.
+# ════════════════════════════════════════════════════════════════════════════
+@app.get("/api/engine-health", tags=["Engine Health"])
+def get_engine_health():
+    """Which of this product's edge types are fed by an engine that cannot run, and why.
+
+    The defect this exists for: Kalshi's API stopped sending `yes_ask`, and the Tier-1 real-edge
+    weather and macro engines still read it with a `0` default. Every market they fetch reads as a
+    0c quote, so they skip all of them, publish nothing and raise nothing -- the failure is closed,
+    which is why nothing was ever written that was wrong. What was wrong was the DISPLAY: the
+    Weather tab rendered "No high-confidence edges detected in weather", and that is a finding. It
+    was never looked for. The same ambiguity was already ruled on for CPI, where a withheld row
+    that vanished silently read as an engine that had been retired
+    (`market_sentiment_tool/src/lib/displayOnlyEngines.ts`); this is the same rule for a run that
+    produces no row to withhold.
+
+    A reader has to be able to tell three things apart, and only two of them are this endpoint's
+    business:
+
+      * an engine that RAN and found nothing -- a measurement, and the empty board is the finding;
+      * an engine that COULD NOT RUN -- nothing was measured, and this endpoint says so;
+      * a read that FAILED -- nothing is known at all, which the board already renders separately
+        (`edgesError` in the Prediction Lab) and which this endpoint does not participate in,
+        because it reads no table and so cannot fail.
+
+    Every edge type in `engine_health.EDGE_TYPES` appears in the response, in one state or the
+    other, and the counts are computed here: `edge_types_could_not_run` is a subtraction on a set,
+    and a component that does it at render time is a rule in a second language with no test on it.
+
+    `opportunities_found` is present and null on every entry. Not an unfinished field: this
+    endpoint reports whether an engine ran, and a count of what it found belongs to the read of the
+    ledger, which is a different read over a different bound. A null here is the machine-readable
+    half of "nothing was measured" -- and for a stopped engine, `0` would be the single most
+    damaging value in the product, because it would read as a search that ran and found nothing.
+    """
+    return {"as_of": datetime.now(timezone.utc).isoformat(), **engine_health()}
 
 
 # ── War Room SPA (mounted last so every /api route above wins) ─────────────

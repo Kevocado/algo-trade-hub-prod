@@ -595,16 +595,27 @@ def test_the_route_is_registered_before_the_spa_catch_all(tmp_path):
     )
 
 
-def test_the_endpoint_is_registered_after_every_other_api_route(tmp_path):
+def test_every_api_route_is_registered_before_the_spa_catch_all(tmp_path):
     """The same hazard for a route added later, and it is the direction that matters: `mount_frontend`
     is the last statement in the module, so anything registered after it is shadowed in production
-    and invisible here. Asserting the CPI route is the LAST `/api/` route makes a future route
-    added below the mount fail here instead of shipping."""
+    and invisible here.
+
+    This used to assert that `/api/cpi-display` was the LAST `/api/` route, which enforced the rule
+    by naming one route -- so the next honest endpoint to be added failed here, and the only fixes
+    available were to weaken the test or to bury the new route below the mount. It now asserts the
+    property itself: EVERY `/api/` route is above the catch-all. That is strictly stronger than the
+    version it replaces -- the old test would have passed with a second route registered after the
+    mount, as long as CPI happened to be last -- and adding an endpoint no longer costs a test edit.
+    """
     paths = _routes_with_a_spa_mounted(tmp_path)
     api_routes = [p for p in paths if isinstance(p, str) and p.startswith("/api/")]
 
-    assert api_routes[-1] == "/api/cpi-display", api_routes
-    assert paths.index(api_routes[-1]) < paths.index("")
+    assert api_routes, "the probe found no /api/ routes, so it proves nothing"
+    assert "" in paths, "the probe did not mount a SPA, so it proves nothing about the order"
+    shadowed = [p for p in api_routes if paths.index(p) > paths.index("")]
+    assert not shadowed, (
+        f"these routes are registered after the SPA catch-all mount and would be shadowed: {shadowed}"
+    )
 
 
 # ── the comparable filter: the page stopped showing rows with nothing to compare ───
