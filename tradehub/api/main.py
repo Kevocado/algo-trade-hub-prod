@@ -53,11 +53,23 @@ TABLE_MIGRATIONS = {
 }
 
 
+# How postgREST says "that table is not there". Matched on the text, never on the exception type:
+# postgrest raises its own APIError, which is not a RuntimeError, so a handler that caught
+# RuntimeError to find this never ran and the raw PGRST205 dump went out with a 500 instead.
+_MISSING_TABLE_MARKERS = ("PGRST205", "schema cache", "Could not find the table")
+
+
+def _is_missing_table(exc: Exception) -> bool:
+    """True when the database does not have the table, whatever exception type carries the news."""
+    detail = str(exc)
+    return any(marker in detail for marker in _MISSING_TABLE_MARKERS)
+
+
 def _missing_table_message(table: str, exc: Exception) -> str:
     """An actionable sentence for a failure a human has to fix by applying a migration."""
     migration = TABLE_MIGRATIONS.get(table)
     detail = str(exc)
-    if "PGRST205" in detail or "schema cache" in detail or "Could not find the table" in detail:
+    if _is_missing_table(exc):
         if migration:
             extra = ""
             if table == "signal_events":
@@ -67,6 +79,26 @@ def _missing_table_message(table: str, exc: Exception) -> str:
                     f"market_sentiment_tool/supabase/migrations/{migration} and redeploy.{extra}")
         return f"table '{table}' is not in the database and no migration in this repo creates it."
     return detail
+
+
+def _table_fault(table: str, exc: Exception) -> HTTPException:
+    """The one place a failed table read becomes an HTTP answer, for every handler that has one.
+
+    Two different facts, and a reader has to be able to tell them apart:
+
+    - the table is not in the database. That is a fact about the deployment, fixed by applying a
+      migration, so it is a 503 that names the migration.
+    - anything else. That is a fact about this code, so it is a 500 carrying the exception text.
+
+    Both are decided from the exception's own text rather than its type, because three handlers that
+    each picked their own exception class is how /api/shadow-performance ended up serving a raw
+    PGRST205 dump with a 500: it caught RuntimeError, postgREST raised APIError, and the branch
+    meant to name the migration was unreachable. One helper, one decision, no fourth handler to
+    get it wrong.
+    """
+    if _is_missing_table(exc):
+        return HTTPException(status_code=503, detail=_missing_table_message(table, exc))
+    return HTTPException(status_code=500, detail=str(exc))
 
 
 # ── App ─────────────────────────────────────────────────────────────────────
@@ -153,7 +185,7 @@ async def get_positions(
         result = q.execute()
         return result.data or []
     except Exception as e:
-        raise HTTPException(status_code=503, detail=_missing_table_message("paper_trades", e))
+        raise _table_fault("paper_trades", e)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -196,7 +228,7 @@ async def get_pnl_summary(supabase=Depends(get_supabase)):
             as_of=datetime.now(timezone.utc),
         )
     except Exception as e:
-        raise HTTPException(status_code=503, detail=_missing_table_message("paper_trades", e))
+        raise _table_fault("paper_trades", e)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -238,14 +270,14 @@ async def get_shadow_performance(
     try:
         return build_shadow_timeline_response(domain=domain, hours=hours)
     except ValueError as exc:
+        # The one failure that is about the request rather than the database: an unsupported domain.
         raise HTTPException(status_code=400, detail=str(exc))
-    except RuntimeError as exc:
-        # The shadow timeline reads signal_events, which 20260415090000 renames into place. That
-        # migration was never applied to the live project, so this 503 names it rather than
-        # forwarding PostgREST's dump.
-        raise HTTPException(status_code=503, detail=_missing_table_message("signal_events", exc))
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        # The shadow timeline reads signal_events, which 20260415090000 renames into place. That
+        # migration was never applied to the live project, so a missing table is a 503 that names
+        # it. Handing every exception to _table_fault is what makes that true for the APIError
+        # postgREST actually raises, not just for the RuntimeError this used to catch.
+        raise _table_fault("signal_events", exc)
 
 
 # ════════════════════════════════════════════════════════════════════════════
