@@ -27,6 +27,7 @@ from tradehub.api.schemas import (
 from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
 from tradehub.engines.cpi import CPI_MIN_TRAIN, DEFAULT_CPI_ERROR
+from tradehub.engine_catalogue import engine_catalogue
 from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses
 from tradehub.scoreboard import current_runs, market_comparison
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
@@ -604,6 +605,13 @@ def get_scoreboard(supabase=Depends(get_supabase)):
     - `MIN_SETTLED` is not named in this file. It rides on each row's `settled_distance` as the
       reviewer's floor, separately from the bar the gate itself stated, and the row says which
       one the verdict was made against.
+    - `catalogue` is `engine_catalogue` (`tradehub/engine_catalogue.py`), also pure. It is the
+      answer to "which engines does this product have, and what does each one claim to predict",
+      and it joins that to the rows above rather than replacing them: an engine with no backtest
+      run is in the response with `measured: false` rather than absent, because an absent engine
+      reads as "this engine has nothing to show" and that is a claim nobody made. Its counts are
+      here for the same reason the headline's are -- `engines_not_measured` is a subtraction on a
+      set, and a page that does it at render time does it in a component.
 
     The one lookup this endpoint makes, and the one it does not:
 
@@ -680,6 +688,10 @@ def get_scoreboard(supabase=Depends(get_supabase)):
         # two labels is what made a single number unable to say what it was counting.
         "engines": len({row["engine"] for row in rows}),
         **market_comparison(rows),
+        # Built LAST, because each entry carries its rows whole and those rows have to carry
+        # `promotion_status` -- an entry built before the loop above would ship a gate the board
+        # does not show, which is a right number under the wrong label on a page about labels.
+        "catalogue": engine_catalogue(rows),
     }
 
 

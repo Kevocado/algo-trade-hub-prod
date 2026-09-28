@@ -3,13 +3,14 @@ import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
 import Home from "@/pages/Home";
 import PredictionLab from "@/pages/PredictionLab";
 import ShadowBacktester from "@/pages/ShadowBacktester";
+import Models from "@/pages/Models";
 import Scoreboard from "@/pages/Scoreboard";
 import SportsEdges from "@/pages/SportsEdges";
 import JobsScorecard from "@/pages/JobsScorecard";
 import CpiDisplay from "@/pages/CpiDisplay";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
-import { LayoutDashboard, Activity, Wallet, Brain, LineChart, Scale, Trophy, Briefcase, BarChart3 } from "lucide-react";
+import { LayoutDashboard, Activity, Wallet, Brain, Cpu, LineChart, Scale, Trophy, Briefcase, BarChart3 } from "lucide-react";
 
 const Sidebar = () => {
   const { portfolio } = usePortfolio();
@@ -47,6 +48,16 @@ const Sidebar = () => {
           className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
         >
           <LineChart className="w-5 h-5 text-amber-400" /> Shadow
+        </NavLink>
+        <NavLink
+          to="/models"
+          className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
+        >
+          {/* "Models", not "Engines": the product's own word for these is engine, and that word
+              appears in every row of the page, but the person reading the nav asked what the MODELS
+              are doing and did not know the site had any. It sits above Scoreboard in the list
+              because it is the frame the other pages sit inside. */}
+          <Cpu className="w-5 h-5 text-indigo-400" /> Models
         </NavLink>
         <NavLink
           to="/scoreboard"
@@ -119,6 +130,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/lab" element={<PredictionLab />} />
           <Route path="/shadow" element={<ShadowBacktester />} />
+          <Route path="/models" element={<Models />} />
           <Route path="/scoreboard" element={<Scoreboard />} />
           <Route path="/sports" element={<SportsEdges />} />
           <Route path="/jobs" element={<JobsScorecard />} />
