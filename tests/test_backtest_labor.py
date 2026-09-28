@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from labor_fakes import synthetic_inputs
@@ -11,6 +11,7 @@ from tradehub.engines.labor import labor_market
 from tradehub.scripts.backtest_labor import (
     build_labor_decisions,
     kalshi_implied_means,
+    labor_histories,
     quoted_only,
     release_dates,
     settled_ladder,
@@ -115,6 +116,83 @@ def test_the_clis_only_call_methods_the_real_client_has():
             assert hasattr(KalshiHistoryClient, name), (
                 f"{module.__name__} calls client.{name}(), which KalshiHistoryClient does not have"
             )
+
+
+# ── the Kalshi tier: a settled ladder is not on the live tier ──────────────────
+
+# A real settled KXPAYROLLS market, from GET /historical/markets on 2026-09-28: closed
+# 2026-07-02T12:29Z, Kalshi settled it at 13:27Z the same day. `settlement_ts` is present on
+# every settled row of that endpoint (383/383), which is why this is a caller bug and not a
+# missing column: the honest settlement time is on the market, unpassed.
+SETTLED_RAW = {
+    "ticker": "KXPAYROLLS-26JUN-T175000",
+    "event_ticker": "KXPAYROLLS-26JUN",
+    "strike_type": "greater",
+    "floor_strike": 175000,
+    "open_time": "2026-05-01T14:00:00Z",
+    "close_time": "2026-07-02T12:29:00Z",
+    "settlement_ts": "2026-07-02T13:27:54.449499Z",
+    "result": "yes",
+    "expiration_value": "176000",
+    "title": "Will July payrolls be above 175,000?",
+}
+
+
+class _TieredClient:
+    """Kalshi's tier rule as it actually behaves: a 404 for the wrong tier.
+
+    `merged_candles` reads `/series/{series}/markets/{ticker}/candlesticks` for any market it
+    believes is live, and that path does not exist for a market Kalshi settled before
+    `/historical/cutoff`'s `market_settled_ts` (2026-07-29 when this was written). Reproduced
+    here rather than mocked away, because the bug is exactly "this call was never made".
+    """
+
+    cutoff = datetime(2026, 7, 29, tzinfo=timezone.utc)
+
+    def __init__(self):
+        self.calls = []
+
+    def merged_candles(self, ticker, start, end, *, market_settled_at=None, series_ticker=None):
+        self.calls.append((ticker, market_settled_at, series_ticker))
+        if market_settled_at is None or market_settled_at >= self.cutoff:
+            raise RuntimeError(
+                f"404 Client Error: Not Found for url: /series/{series_ticker}/markets/{ticker}/candlesticks"
+            )
+        return [Candle(end - timedelta(hours=1), 0.62, 0.63, 10.0)]
+
+    def merged_trades(self, ticker, *, start=None, end=None):
+        return []
+
+
+def test_labor_histories_reads_a_settled_ladder_from_the_historical_tier():
+    """`backtest_labor` 404s on its first market unless it passes the settlement time down.
+
+    Every market `settled_ladder` keeps is one Kalshi has already resolved, and
+    `merged_candles` defaults a missing `market_settled_at` to "still live" -- so the request
+    went to the live `/series/...` path, which 404s for a market that settled months ago, and
+    the CLI could not run at all. `backtest_engines._histories` and
+    `build_jobs_scorecard.event_ladders` both pass it; this one did not.
+    """
+    market = labor_market(SETTLED_RAW)
+    assert market.settlement_ts == datetime(2026, 7, 2, 13, 27, 54, 449499, tzinfo=timezone.utc)
+    client = _TieredClient()
+
+    histories = labor_histories(client, [market], {market.ticker: "yes"}, "taker")
+
+    assert client.calls == [(market.ticker, market.settlement_ts, "KXPAYROLLS")]
+    assert histories[market.ticker].result == "yes"
+    assert [c.yes_bid for c in histories[market.ticker].candles] == [0.62]
+
+
+def test_labor_histories_asks_for_maker_trades_over_the_same_window():
+    """Maker mode still needs its candles, on the same tier: one missed argument 404s the run."""
+    market = labor_market(SETTLED_RAW)
+    client = _TieredClient()
+
+    histories = labor_histories(client, [market], {market.ticker: "yes"}, "maker")
+
+    assert client.calls == [(market.ticker, market.settlement_ts, "KXPAYROLLS")]
+    assert histories[market.ticker].trades == []
 
 
 # ── --record must not be able to promote on non-point-in-time inputs ───────────

@@ -74,10 +74,22 @@ def build_labor_decisions(markets: list[KalshiMarket], nowcasts: Mapping[date, N
 
 def labor_histories(client: KalshiHistoryClient, markets: list[KalshiMarket], results: Mapping[str, str],
                     mode: str) -> dict[str, MarketHistory]:
+    """Candles and trades per market, read from the Kalshi tier that owns each one.
+
+    `market_settled_at` is what selects that tier. Kalshi serves a market from the live
+    `/series/.../candlesticks` path only while it is unsettled, so a ladder that settled months
+    ago has to be asked for by its settlement time or the request 404s and the whole run dies on
+    the first market. `settled_ladder` keeps only markets Kalshi itself has resolved, and
+    `/historical/markets` returns `settlement_ts` on every one of them (383/383 KXPAYROLLS rows on
+    2026-09-28), so the honest settlement time is already on `market` -- pass it, never invent one.
+    `backtest_engines._histories` and `build_jobs_scorecard.event_ladders` both do.
+    """
     out = {}
     for market in markets:
         start = market.close_time - CANDLE_WINDOW
-        candles = client.merged_candles(market.ticker, start, market.close_time, series_ticker=market.series_ticker)
+        candles = client.merged_candles(market.ticker, start, market.close_time,
+                                        market_settled_at=market.settlement_ts,
+                                        series_ticker=market.series_ticker)
         trades = client.merged_trades(market.ticker, start=start, end=market.close_time) if mode == "maker" else []
         out[market.ticker] = MarketHistory(market.ticker, results.get(market.ticker), market.close_time, candles, trades)
     return out
