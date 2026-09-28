@@ -6,6 +6,7 @@ import {
   TIER_LABELS,
   formatEdgePct,
   groupByTier,
+  rankingSentence,
   rejectReasonLabel,
   type SportsEdge,
   type SportsEdgesResponse,
@@ -137,7 +138,12 @@ export default function SportsEdges() {
           Suggestions only. Probabilities come from the NFL/CFB predictor sites&apos; frozen pre-game
           snapshots; the reviewer never changes them. Reviewer check: {card.approved.n} approved vs{" "}
           {card.rejected.n} rejected settled picks ({card.n_settled}/{card.min_settled} needed), verdict{" "}
-          <b>{card.verdict}</b>.
+          <b>{card.verdict}</b>.{" "}
+          {/* Which ranking ordered the table. The sentences, and the reasoning behind their exact
+              wording, live in `rankingSentence` in @/lib/sportsEdges with their tests -- that branch
+              used to live here with nothing covering it, and getting it backwards is the failure this
+              feature exists to prevent. This is a caller, deliberately. */}
+          {rankingSentence(data.ranking)}
         </p>
       </header>
 

@@ -57,6 +57,7 @@ from tradehub.markets import KalshiMarket, event_date, event_month, market_url
 from tradehub.predictions import build_prediction_row
 from tradehub.sports.scan import (
     prune_sports_if_healthy, remove_started_sports_edges, run_sports_for_cron, sports_due,
+    sports_run_summary,
 )
 
 
@@ -740,7 +741,11 @@ def main(
         else:
             try:
                 run = run_sports_for_cron(now, client, deadline=deadline)
-                sports_predictions, sports_summary = run.predictions, run.reports
+                # `sports_run_summary`, not `run.reports`: the per-sport diagnostics (`too_far`,
+                # `unrecognised_kinds`) live in `run.per_sport`, and the print below is the only
+                # thing an operator ever reads. Taking the reports directly left the run's own
+                # diagnostic keys recorded and unreadable.
+                sports_predictions, sports_summary = run.predictions, sports_run_summary(run)
                 sports_per_sport = run.per_sport
                 try:
                     sports_pairs = {(row["engine"], row.get("engine_version", "v0"))
