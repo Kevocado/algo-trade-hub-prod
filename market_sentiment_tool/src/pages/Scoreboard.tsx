@@ -47,8 +47,12 @@ import {
  * different claim, because it carries no run's numbers and therefore no record for a reader to
  * mistake for one.
  *
- * A separate page rather than a change to `/shadow`: that route is the crypto shadow-timeline
- * backtester, a different thing that happens to share a name.
+ * Renamed, rather than left at `/scoreboard`, on 2026-09-28. The owner went to `/shadow` looking
+ * for this page and got a 503 from the crypto shadow-timeline backtester, which is a different
+ * thing that happened to share a word. The name he used to approve this page was "the shadow
+ * scoreboard", so the route, the nav label and the h1 now all say the same thing and
+ * `/scoreboard` is a permanent redirect to here. `/shadow` keeps its own route and is NOT
+ * redirected here — see the note in `App.tsx` for why swapping those two would be a second lie.
  *
  * Nothing here computes a threshold, a gate or a rounding policy -- all of that is
  * `tradehub/scoreboard.py` and rides in on the response. This file decides layout and nothing else.

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
+import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
 // Pages
 import Home from "@/pages/Home";
 import PredictionLab from "@/pages/PredictionLab";
@@ -43,11 +43,17 @@ const Sidebar = () => {
         >
           <Brain className="w-5 h-5 text-emerald-500" /> Prediction Lab
         </NavLink>
-        <NavLink 
-          to="/shadow" 
+        {/* "Crypto Shadow", not "Shadow". This is the nav entry that cost the owner a page on
+            2026-09-28: a list item reading "Shadow" beside one reading "Scoreboard" reads as two
+            halves of the same thing, and they are not. This page is the crypto shadow-timeline
+            backtester; the other is every engine's Brier against the market. Naming the domain
+            here is the whole fix -- the word "shadow" on its own in a nav list is the collision,
+            and the route below is /shadow, so the label and the path finally say the same thing. */}
+        <NavLink
+          to="/shadow"
           className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
         >
-          <LineChart className="w-5 h-5 text-amber-400" /> Shadow
+          <LineChart className="w-5 h-5 text-amber-400" /> Crypto Shadow
         </NavLink>
         <NavLink
           to="/models"
@@ -59,13 +65,15 @@ const Sidebar = () => {
               because it is the frame the other pages sit inside. */}
           <Cpu className="w-5 h-5 text-indigo-400" /> Models
         </NavLink>
+        {/* "Shadow Scoreboard", not "Scoreboard" and not "Shadow". The owner's approval for this
+            page was literally called "the shadow scoreboard", so that is the string the next
+            person will look for, and a nav list is where a person looks. "/shadow" cannot take
+            the collision back: it is the crypto backtester's route and stays that way. */}
         <NavLink
-          to="/scoreboard"
+          to="/shadow-scoreboard"
           className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
         >
-          {/* "Scoreboard", not "Shadow": /shadow is the crypto shadow-timeline backtester, a
-              different page that happens to share a name with this one. */}
-          <Scale className="w-5 h-5 text-rose-400" /> Scoreboard
+          <Scale className="w-5 h-5 text-rose-400" /> Shadow Scoreboard
         </NavLink>
         <NavLink
           to="/sports"
@@ -129,9 +137,20 @@ function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/lab" element={<PredictionLab />} />
+          {/* The crypto shadow-timeline backtester, which keeps the /shadow route it has always
+              had. It is NOT the scoreboard and never becomes it: a redirect from here to the
+              scoreboard would swap a crypto backtester for an engine scoreboard without saying so,
+              which is the same collision wearing a hat. The page now says what it is and links to
+              the scoreboard instead. */}
           <Route path="/shadow" element={<ShadowBacktester />} />
           <Route path="/models" element={<Models />} />
-          <Route path="/scoreboard" element={<Scoreboard />} />
+          <Route path="/shadow-scoreboard" element={<Scoreboard />} />
+          {/* /scoreboard -> /shadow-scoreboard, permanently. This one IS the same page under a new
+              name, so a redirect tells the truth: the reader lands on the identical component
+              reading the identical /api/scoreboard, and the address bar updates to the name the
+              nav and the h1 use. Nothing is swapped. The rename was free on 2026-09-28 because
+              the owner had bookmarked nothing; that stops being true the moment he does. */}
+          <Route path="/scoreboard" element={<Navigate to="/shadow-scoreboard" replace />} />
           <Route path="/sports" element={<SportsEdges />} />
           <Route path="/jobs" element={<JobsScorecard />} />
           <Route path="/cpi" element={<CpiDisplay />} />

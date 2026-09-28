@@ -19,11 +19,19 @@ import {
   Loader2,
   RefreshCw,
   ShieldAlert,
+  Wrench,
 } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
+  NOT_THE_SCOREBOARD,
+  NO_FIGURE,
+  formatBrier4,
+  formatHitRate,
+  formatHours,
+  formatSignedPct,
+  shadowUnavailable,
   type ShadowPerformancePoint,
   filterShadowSeriesByAsset,
   getShadowAssets,
@@ -36,6 +44,44 @@ import { useShadowPerformance } from "@/hooks/useShadowPerformance";
 const DOMAIN = "crypto";
 const HOURS_OPTIONS = [6, 12, 24, 48, 72];
 
+/**
+ * The one state this page had, and the reason it was not honest.
+ *
+ * A failed read used to render a rose card saying "Shadow API unavailable" and
+ * then carry on rendering the whole dashboard underneath it, with
+ * `data?.summary.considered_count ?? 0` and three siblings. So a page that could
+ * not read a single row put "Considered Trades 0", "Dead Zone 0", "Evaluated 0"
+ * and "Series Points 0" in front of a reader as measurements. That is the claim
+ * this component must never make, and the red card is the least of it: the
+ * figures below it were stating that the crypto engine considered nothing and
+ * sat in no dead zone, which nobody measured.
+ *
+ * So the states are separated, and a figure is only ever drawn from a read that
+ * returned one:
+ *
+ *   - loading. Nothing at all, because a spinner over four zeros would be the
+ *     same claim with a pause in front of it.
+ *   - failed, and there is no data to show. The reason and the operator step,
+ *     and NOT ONE FIGURE. A page that says "apply this migration" is not
+ *     broken, it is waiting on a person, so it is not coloured like a fault.
+ *   - failed, but a previous poll returned data. The data is still real, so it
+ *     stays, with a banner saying the latest read failed. Blanket-ing a good
+ *     read because a later one broke would trade a lie for an inconvenience.
+ *   - read. Every figure comes off `data`, which is non-null from here on, so
+ *     there is no `?.` and no `?? 0` left in this file to fall back to.
+ *
+ * The wording of the failed state is `shadowUnavailable` in
+ * `@/lib/shadowPerformance`, with its own tests, and it quotes the sentence the
+ * API sent rather than restating the migration name -- that sentence names the
+ * table and the file (`tradehub/api/main.py:246`), and a second copy of that
+ * mapping here would be a second place to be wrong.
+ *
+ * Nothing here computes a threshold, a gate or a rounding policy. `hit_rate` and
+ * `brier_score` are `None` from the server when nothing finished in the window
+ * (`tradehub/scripts/shadow_performance.py:312`) and are printed as `NO_FIGURE`
+ * -- words, not a dash, because a dash in a figure column is a number that reads
+ * as zero. This file decides layout and nothing else.
+ */
 function ShadowMarker(props: Record<string, unknown>) {
   const { cx, cy, payload } = props as {
     cx?: number;
@@ -54,6 +100,62 @@ function ShadowMarker(props: Record<string, unknown>) {
       stroke="#020617"
       strokeWidth={1.5}
     />
+  );
+}
+
+
+/**
+ * The sentence that says this is not the scoreboard, with the route that is.
+ *
+ * Rendered in BOTH states rather than only when the read failed, because the failure is not when
+ * the collision happens. A visitor who typed `/shadow` for the engine scoreboard is on the wrong
+ * page whether the crypto read works or not, and the read is the one thing about this page most
+ * likely to be broken. So the correction sits in the page's own header, where it is read before
+ * any figure.
+ */
+function NotTheScoreboard({ muted = false }: { muted?: boolean }) {
+  return (
+    <p className={`max-w-3xl leading-relaxed ${muted ? "text-xs text-slate-500" : "text-sm text-slate-300"}`}>
+      {NOT_THE_SCOREBOARD}{" "}
+      <a href="/shadow-scoreboard" className="text-emerald-400 hover:underline">
+        Open the Shadow Scoreboard
+      </a>
+    </p>
+  );
+}
+
+/** The unavailable state. No figure, no chart, no count -- by construction. */
+function Unavailable({ status, detail }: { status: number | null; detail: string | null }) {
+  const notice = shadowUnavailable(status, detail);
+  // A migration wait is an amber notice, not a red one. Red says "this is
+  // broken and nobody knows why"; amber says "this is known and it has a step".
+  const frame =
+    notice.tone === "waiting"
+      ? "border-amber-500/30 bg-amber-500/10 text-amber-100"
+      : "border-rose-500/30 bg-rose-500/10 text-rose-100";
+
+  return (
+    <div className={`rounded-xl border p-6 ${frame}`}>
+      {/* An <h2>, under the page's own <h1>. The unavailable state is a section of this page, and
+          a reader -- or a screen reader -- navigating by heading has to be able to find it. */}
+      <h2 className="flex items-center gap-2 text-lg font-semibold">
+        {notice.tone === "waiting" ? (
+          <Wrench className="h-5 w-5 text-amber-300" />
+        ) : (
+          <AlertTriangle className="h-5 w-5 text-rose-400" />
+        )}
+        {notice.title}
+      </h2>
+      <p className="mt-2 max-w-2xl text-sm text-slate-300">{notice.lead}</p>
+      {/* The server's sentence, quoted. It names the table and the migration file, and it is the
+          only copy of that mapping in the product. */}
+      <p className="mt-3 max-w-2xl border-l-2 border-slate-600 pl-3 font-mono text-xs leading-relaxed text-slate-200">
+        {notice.body}
+      </p>
+      <div className="mt-4 max-w-2xl border-t border-slate-700/70 pt-4">
+        <NotTheScoreboard />
+      </div>
+    </div>
   );
 }
 
@@ -92,18 +194,53 @@ export default function ShadowBacktester() {
     );
   }
 
+  /* No read, and the read failed. The reason and the step, and not one figure.
+     Everything below this branch reads `data` directly, with no optional
+     chaining and no fallback, so there is no path from "nothing came back" to
+     a printed 0. */
+  if (error && !data) {
+    return (
+      <div className="min-h-screen bg-slate-950 px-8 py-10 text-slate-100">
+        <div className="mx-auto flex max-w-[1600px] flex-col gap-6">
+          {/* The h1 and the CRYPTO badge, and nothing else. The correction and the route to the
+              page he wanted both live at the foot of the panel below, so they are stated once and
+              next to the reason a person has to act on -- a header that carried them too would say
+              the same thing twice on the one screen where the reader is looking for what to do. */}
+          <header className="border-b border-slate-900 pb-6">
+            <div className="flex items-center gap-3">
+              <h1 className="text-3xl font-bold text-white">Crypto Shadow Timeline</h1>
+              <Badge className="bg-emerald-500 text-emerald-950 font-bold">CRYPTO</Badge>
+            </div>
+          </header>
+          <Unavailable status={error.status} detail={error.message} />
+        </div>
+      </div>
+    );
+  }
+
+  /* Past this line a read returned something, so every figure below is a figure
+     the server actually sent. `data` is non-null by the tests above. */
+  const read = data;
+  const series = read.series;
+
   return (
     <div className="min-h-screen bg-slate-950 px-8 py-10 text-slate-100">
       <div className="mx-auto flex max-w-[1600px] flex-col gap-8">
         <div className="flex flex-col gap-4 border-b border-slate-900 pb-8 lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-2">
             <div className="flex items-center gap-3">
-              <h1 className="text-4xl font-black uppercase italic tracking-tight text-white">Shadow Backtester</h1>
+              <h1 className="text-4xl font-black uppercase italic tracking-tight text-white">Crypto Shadow Timeline</h1>
               <Badge className="bg-emerald-500 text-emerald-950 font-bold">CRYPTO</Badge>
             </div>
             <p className="max-w-3xl text-sm text-slate-400">
               Visualize model probability against realized price movement and see exactly when threshold-triggered trades won or lost.
             </p>
+            {/* The disambiguation, said by the page itself. The nav entry used to read plain
+                "Shadow" and the route was /shadow, which is how a reader looking for the engine
+                scoreboard ended up here. */}
+            <div className="mt-3 max-w-3xl">
+              <NotTheScoreboard muted />
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
@@ -152,38 +289,58 @@ export default function ShadowBacktester() {
           </div>
         </div>
 
+        {/* A read that failed while an EARLIER one succeeded. The data below is real, so it stays
+            and the banner says which read failed rather than implying the whole board is empty.
+            Same wording as the full-page state, because it is the same condition. */}
         {error ? (
-          <Card className="border-rose-500/30 bg-rose-500/10">
-            <CardContent className="flex items-center gap-3 p-6 text-rose-100">
-              <AlertTriangle className="h-5 w-5 text-rose-400" />
-              <div>
-                <p className="font-semibold">Shadow API unavailable</p>
-                <p className="text-sm text-rose-200/80">{error}</p>
-              </div>
-            </CardContent>
-          </Card>
+          <div
+            className={`rounded-xl border p-4 text-sm ${
+              shadowUnavailable(error.status, error.message).tone === "waiting"
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-100"
+                : "border-rose-500/30 bg-rose-500/10 text-rose-100"
+            }`}
+          >
+            <p className="font-semibold">
+              {shadowUnavailable(error.status, error.message).title} — the figures below are from
+              the last read that succeeded.
+            </p>
+            <p className="mt-1 font-mono text-xs text-slate-200">{error.message}</p>
+          </div>
         ) : null}
 
+        {/* Five figures, all off one read that returned. `considered_count`, `dead_zone_count` and
+            `virtual_pnl_pct` are numbers the server computed, including a real 0 for an empty
+            window -- a sum over no signals IS zero and saying so is a measurement. `hit_rate` and
+            `brier_score` are None when nothing finished, and those two say so in words, because a
+            dash there is a figure that reads as a number. */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-5">
           <Card className="border-slate-800 bg-slate-900/50">
             <CardHeader className="pb-3">
               <CardDescription>Considered Trades</CardDescription>
-              <CardTitle className="text-3xl">{data?.summary.considered_count ?? 0}</CardTitle>
+              <CardTitle className="text-3xl">{read.summary.considered_count}</CardTitle>
             </CardHeader>
           </Card>
           <Card className="border-slate-800 bg-slate-900/50">
             <CardHeader className="pb-3">
               <CardDescription>Hit Rate</CardDescription>
-              <CardTitle className="text-3xl">
-                {data?.summary.hit_rate == null ? "—" : `${(data.summary.hit_rate * 100).toFixed(1)}%`}
+              <CardTitle className="text-2xl leading-snug">
+                {read.summary.hit_rate == null ? (
+                  <span className="text-base text-slate-500">{NO_FIGURE}</span>
+                ) : (
+                  formatHitRate(read.summary.hit_rate)
+                )}
               </CardTitle>
             </CardHeader>
           </Card>
           <Card className="border-slate-800 bg-slate-900/50">
             <CardHeader className="pb-3">
               <CardDescription>Brier Score</CardDescription>
-              <CardTitle className="text-3xl">
-                {data?.summary.brier_score == null ? "—" : data.summary.brier_score.toFixed(4)}
+              <CardTitle className="text-2xl leading-snug">
+                {read.summary.brier_score == null ? (
+                  <span className="text-base text-slate-500">{NO_FIGURE}</span>
+                ) : (
+                  formatBrier4(read.summary.brier_score)
+                )}
               </CardTitle>
             </CardHeader>
           </Card>
@@ -192,17 +349,17 @@ export default function ShadowBacktester() {
               <CardDescription>Virtual PnL</CardDescription>
               <CardTitle
                 className={`text-3xl ${
-                  (data?.summary.virtual_pnl_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                  read.summary.virtual_pnl_pct >= 0 ? "text-emerald-400" : "text-rose-400"
                 }`}
               >
-                {data?.summary.virtual_pnl_pct == null ? "—" : `${data.summary.virtual_pnl_pct >= 0 ? "+" : ""}${data.summary.virtual_pnl_pct.toFixed(2)}%`}
+                {formatSignedPct(read.summary.virtual_pnl_pct)}
               </CardTitle>
             </CardHeader>
           </Card>
           <Card className="border-slate-800 bg-slate-900/50">
             <CardHeader className="pb-3">
               <CardDescription>Dead Zone</CardDescription>
-              <CardTitle className="text-3xl">{data?.summary.dead_zone_count ?? 0}</CardTitle>
+              <CardTitle className="text-3xl">{read.summary.dead_zone_count}</CardTitle>
             </CardHeader>
           </Card>
         </div>
@@ -311,8 +468,11 @@ export default function ShadowBacktester() {
                   </ComposedChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-slate-800 text-slate-500">
-                  No completed {selectedAsset} shadow points in this window.
+                <div className="flex h-full items-center justify-center rounded-2xl border border-dashed border-slate-800 px-6 text-center text-slate-500">
+                  {/* An empty read, said as a read that came back empty. Not a figure, and not a
+                      dash in a figure's place. */}
+                  The read succeeded and {series.length === 0 ? "returned no points" : `returned no ${selectedAsset} points`}{" "}
+                  in this window. Widen the lookback, or apply the migration this page is waiting on.
                 </div>
               )}
             </CardContent>
@@ -343,7 +503,7 @@ export default function ShadowBacktester() {
                 <div className="flex items-center justify-between">
                   <span>Age</span>
                   <span className="text-slate-400">
-                    {freshness?.age_hours == null ? "Unavailable" : `${freshness.age_hours.toFixed(2)}h`}
+                    {freshness?.age_hours == null ? "Unavailable" : formatHours(freshness.age_hours)}
                   </span>
                 </div>
               </CardContent>
@@ -375,17 +535,15 @@ export default function ShadowBacktester() {
               <CardContent className="space-y-3 text-sm text-slate-300">
                 <div className="flex items-center justify-between">
                   <span>Generated</span>
-                  <span className="text-slate-400">
-                    {data?.generated_at ? new Date(data.generated_at).toLocaleString() : "Unavailable"}
-                  </span>
+                  <span className="text-slate-400">{new Date(read.generated_at).toLocaleString()}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>Evaluated</span>
-                  <span className="text-slate-400">{data?.summary.evaluated_count ?? 0}</span>
+                  <span className="text-slate-400">{read.summary.evaluated_count}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span>Series Points</span>
-                  <span className="text-slate-400">{data?.series.length ?? 0}</span>
+                  <span className="text-slate-400">{series.length}</span>
                 </div>
               </CardContent>
             </Card>
@@ -421,7 +579,7 @@ export default function ShadowBacktester() {
                       <tr key={`${point.asset}-${point.timestamp}-${point.market_ticker}`} className="border-t border-slate-800/70">
                         <td className="px-4 py-3 text-slate-300">{new Date(point.timestamp).toLocaleString()}</td>
                         <td className="px-4 py-3 font-medium text-white">{point.market_ticker}</td>
-                        <td className="px-4 py-3 text-right text-slate-300">{(point.probability_yes * 100).toFixed(1)}%</td>
+                        <td className="px-4 py-3 text-right text-slate-300">{formatHitRate(point.probability_yes)}</td>
                         <td className="px-4 py-3 text-right text-slate-400">${point.current_price.toLocaleString()}</td>
                         <td className="px-4 py-3 text-right text-slate-400">${point.next_hour_price.toLocaleString()}</td>
                         <td className="px-4 py-3 text-right">
@@ -430,15 +588,14 @@ export default function ShadowBacktester() {
                           </span>
                         </td>
                         <td className={`px-4 py-3 text-right font-semibold ${point.virtual_return_pct >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
-                          {point.virtual_return_pct >= 0 ? "+" : ""}
-                          {point.virtual_return_pct.toFixed(2)}%
+                          {formatSignedPct(point.virtual_return_pct)}
                         </td>
                       </tr>
                     ))
                 ) : (
                   <tr>
                     <td colSpan={7} className="px-4 py-12 text-center text-slate-500">
-                      No evaluated signals available for this selection.
+                      The read succeeded and returned no evaluated signals for this selection.
                     </td>
                   </tr>
                 )}
