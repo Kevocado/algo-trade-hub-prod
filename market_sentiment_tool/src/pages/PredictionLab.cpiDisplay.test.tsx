@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 
 import PredictionLab from "@/pages/PredictionLab";
 import { DISPLAY_ONLY_REASON } from "@/lib/displayOnlyEngines";
+import type { EngineHealthResponse } from "@/lib/engineHealth";
 
 /**
  * The page half of Ruling 1, and the two tests that were waiting for it.
@@ -52,6 +53,47 @@ const HOOK = vi.hoisted(() => ({
 }));
 
 vi.mock("@/hooks/useMarketEdges", () => ({ useMarketEdges: () => HOOK.current }));
+
+/**
+ * The page's SECOND read, stubbed with a ruling that has nothing stopped.
+ *
+ * The page now distinguishes "this engine ran and found nothing" from "this engine could not run",
+ * and the difference between those two is `/api/engine-health` rather than the board. So a page
+ * test that stubs only the board is a page whose board read SUCCEEDED and whose ruling did not
+ * arrive, and the honest rendering of that is "the emptiness is not established" -- not the quiet
+ * sentence. The test below that says "a successful read with no rows is an empty board" is right
+ * about the board and needs the ruling to be present before it can say anything at all, so it is
+ * stubbed here rather than weakened. Its own test cases about a FAILED board read are unaffected:
+ * that branch is above the ruling entirely, and it is tested in
+ * `PredictionLab.stoppedEngines.test.tsx` that a failed RULING claims nothing either way.
+ */
+const HEALTH = vi.hoisted(() => ({
+  current: {
+    data: {
+      as_of: "2026-09-28T00:00:00Z",
+      edge_types: [
+        { edge_type: "MACRO", label: "Macro", state: "ran", reason: null, stopped_sites: [],
+          opportunities_found: null, opportunities_found_reason: "Not counted here." },
+        { edge_type: "WEATHER", label: "Weather", state: "ran", reason: null, stopped_sites: [],
+          opportunities_found: null, opportunities_found_reason: "Not counted here." },
+      ],
+      edge_types_total: 2,
+      edge_types_could_not_run: 0,
+      edge_types_ran: 2,
+      board_state: "ran",
+      board_reason: null,
+      sites: [],
+      sites_total: 0,
+      sites_wired: 0,
+      sites_unwired: 0,
+      note: "An engine on this list did not run.",
+    } as unknown as EngineHealthResponse,
+    loading: false,
+    error: null as string | null,
+  },
+}));
+
+vi.mock("@/hooks/useEngineHealth", () => ({ useEngineHealth: () => HEALTH.current }));
 
 function stubHook(withheld: unknown[], edges: unknown[] = [], over: Record<string, unknown> = {}) {
   HOOK.current = { edges, withheld, loading: false, error: null, truncated: false, ...over };
