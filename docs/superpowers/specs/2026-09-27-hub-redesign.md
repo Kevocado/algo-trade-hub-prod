@@ -507,7 +507,14 @@ Kevin, on [#21](https://github.com/Kevocado/algo-trade-hub-prod/pull/21):
 
 The "distance to the gate" phrasing is a better specification than the one I wrote: it puts the
 reviewer's 100-settled threshold on the same screen as the count, so `42 of 100` is legible rather
-than implied.
+than implied. **But legible is not the same as authoritative, and the page now says which of the two
+it is.** The engine's own stated bar is authoritative for `met`, and it differs by cadence (200 daily,
+50 monthly), so a monthly engine holding 70 settled has met its bar: `70 of 100 — not met` is a verdict
+against a number that was never its own, which is the right-number-wrong-label defect this page exists
+to refuse. So 100 is a floor, drawn as its own second line beside the engine's bar, and `42 of 100` is
+still on screen — as the floor, not as the verdict. **Do not "fix" the page back to a single
+100-settled verdict to match the sentence above**; that sentence is why the number is visible, not
+what it decides.
 
 ### The two open gaps — RULED 2026-09-27
 

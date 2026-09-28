@@ -27,7 +27,8 @@ from tradehub.api.schemas import (
 from tradehub.api.dependencies import get_supabase, get_scanner_cache
 from tradehub.api.frontend import mount_frontend
 from tradehub.engines.cpi import CPI_MIN_TRAIN, DEFAULT_CPI_ERROR
-from tradehub.gate_status import latest_gate_statuses
+from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses
+from tradehub.scoreboard import current_runs, market_comparison
 from tradehub.scripts.shadow_performance import build_shadow_timeline_response
 from tradehub.sports.scan import edge_row, edge_sigma_score
 from tradehub.sports.scorecard import reviewer_scorecard
@@ -47,6 +48,7 @@ TABLE_MIGRATIONS = {
     "paper_signals": "20260416000011_war_room_tables.sql",
     "trade_history": "20260416000011_war_room_tables.sql",
     "scanner_runs": "20260416000011_war_room_tables.sql",
+    "backtest_runs": "20260416000004_backtest_runs.sql",
 }
 
 
@@ -290,7 +292,12 @@ CPI_ROW_SCAN = 200
 # candidate for promotion, so there is nothing to check. The gate fails closed, so the value is
 # SHADOW, and `gate_checked` says out loud that no gate was consulted -- because "SHADOW" on its own
 # is the gate's own vocabulary and reads as "not promoted", i.e. as a verdict that was reached.
-CPI_GATE_STATUS = "SHADOW"
+# The status is the shared fail-closed default, not a second copy of the string:
+# two literals in this module is how the scan and the API would start disagreeing
+# about whether an edge is tradable, which is what DEFAULT_GATE_STATUS exists to
+# prevent. What makes CPI's verdict its own is CPI_GATE_CHECKED below -- the gate
+# was never checked, which is not the same claim as "checked, and it said no".
+CPI_GATE_STATUS = DEFAULT_GATE_STATUS
 CPI_GATE_CHECKED = False
 CPI_GATE_CHECKED_REASON = (
     "No gate was consulted and none is expected. cpi_nowcast is a display engine, not a candidate "
@@ -553,6 +560,112 @@ def _is_upcoming(row: dict, now: datetime) -> bool:
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# ENDPOINT: /api/scoreboard — every engine's Brier beside the market's, and its
+# distance to its own gate. Approved 2026-09-27 (spec section 9, approval 4).
+#
+# Registered BEFORE mount_frontend below: the SPA is mounted at "/", so a route added after it
+# is shadowed and this endpoint would answer with the app shell.
+# ════════════════════════════════════════════════════════════════════════════
+@app.get("/api/scoreboard", tags=["Scoreboard"])
+def get_scoreboard(supabase=Depends(get_supabase)):
+    """Should I trust this engine? One row per engine and mode, from the current run.
+
+    The route reads and hands over. It decides nothing.
+
+    - The reduction is `current_runs` (`tradehub/scoreboard.py`), which is pure, so every rule
+      that decides what appears is testable without a database. In particular the rule this
+      endpoint exists to protect: a run whose `engine_version` carries a decision lead
+      (`gas-v1-lead12h`) is an EXPERIMENT, and is excluded from the page rather than footnoted.
+      The experiment stays in `backtest_runs` and stays reproducible from the CLI; presenting it
+      as the engine's record would make the page wrong in the direction that flatters the engine.
+    - The headline and the counts behind it are `market_comparison`, from the same module. The
+      "is this engine ahead" threshold lives there, because a second copy of it here is how the
+      page and the API start disagreeing with nothing downstream able to tell which one drifted.
+    - Each row's `market_verdict` is `market_verdict`, also from that module, so the page renders
+      a word rather than comparing ratios in TypeScript.
+    - `MIN_SETTLED` is not named in this file. It rides on each row's `settled_distance` as the
+      reviewer's floor, separately from the bar the gate itself stated, and the row says which
+      one the verdict was made against.
+
+    The one lookup this endpoint makes, and the one it does not:
+
+    - `promotion_status` is `latest_gate_statuses` (`tradehub/gate_status.py`) -- the SAME
+      function the scan uses, keyed on `(engine, engine_version)`, requiring the latest backtest
+      for that exact version AND a `track_record` row to both say PROMOTED, and failing closed
+      otherwise. `row["gate_status"]` is NOT that: it is what `check_promotion_gate` returned when
+      the run was recorded (`tradehub/track_record.py:126`), which never consults `track_record`
+      at all. So a run can carry `gate_status: "PROMOTED"` while the engine is not promoted, and
+      rendering that under the word PROMOTED reads as a promotion to a human. Both travel, both
+      labelled. The alternative -- a private reimplementation here -- is what that function's
+      docstring exists to prevent, and the extra reads are the price of there being one answer
+      about whether an edge is tradable rather than two.
+    - The verdict is per `(engine, engine_version)` while a row is per `(engine, mode)`, so both
+      rows of one engine carry the same verdict. That is the gate's own key, not a convenience.
+    - **A failed lookup fails closed and is announced.** `SHADOW` is the safe direction -- it
+      cannot make a non-tradable edge look tradable -- but a column of SHADOW badges that were
+      never verified is still a claim, so `promotion_lookup_failed` says so and the page says it
+      too. Same shape as the read failure below, applied to a read that is not the whole story.
+
+    Two decisions in the read itself:
+
+    - **The read is paged, with no cap.** PostgREST caps one response at 1000 rows, so a single
+      `.execute()` silently truncates; and a cap is worse, because the cap and the reduction pull
+      in opposite directions. `backtest_runs` grows by one row per recorded CLI run, so the 200
+      newest are overwhelmingly gas: a monthly-cadence engine whose only recent run falls outside
+      that window is not rendered slightly stale, it is ABSENT -- and an absent engine reads as
+      "this engine has no settled contracts", which is a claim about the engine. The table is one
+      row per recorded run rather than a growing event log, so paging it whole is cheap, and
+      `runs_read` travels in the response so a truncation is visible if one is ever added.
+    - **A read failure is a 503, never an empty scoreboard.** `_fetch_all` raises on the first
+      failing page, including a later one, so a partial read cannot be mistaken for a complete
+      one: either the whole ledger reduces or the page says it could not be read. The two are
+      distinguishable in the body as well as in the status -- a failure carries `detail` and no
+      `rows` at all, and a genuinely empty ledger returns 200 with `rows: []` and its own
+      headline. One sentinel, one meaning.
+    """
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase not configured")
+    try:
+        runs = _fetch_all(supabase, "backtest_runs", lambda q: q.select("*"))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=_missing_table_message("backtest_runs", e))
+    rows = current_runs(runs)
+
+    # The shared lookup, asked once for the pairs this board actually has. The version is part of
+    # the key and is dropped from neither side: a version that is not promoted must not inherit
+    # another version's promotion.
+    pairs = {(r["engine"], r["engine_version"]) for r in rows if r["engine"] and r["engine_version"]}
+    promotion: dict[tuple[str, str], str] = {}
+    promotion_lookup_failed = False
+    if pairs:
+        try:
+            promotion = latest_gate_statuses(supabase, pairs)
+        except Exception:
+            # Failing closed, and saying so. Same handling as /api/jobs-scorecard below, for the
+            # same reason: the rows are readable, so a failure here must not take the page down,
+            # and must not be mistaken for a verdict.
+            log.exception("api: scoreboard promotion-gate lookup failed")
+            promotion_lookup_failed = True
+    for row in rows:
+        row["promotion_status"] = promotion.get(
+            (row["engine"], row["engine_version"]), DEFAULT_GATE_STATUS
+        )
+
+    return {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "runs_read": len(runs),
+        "rows": rows,
+        # True when the promotion verdict below could not be read. Every row then reads SHADOW,
+        # which is the fail-closed default and NOT a measurement.
+        "promotion_lookup_failed": promotion_lookup_failed,
+        # Distinct engines, because `rows_*` below counts (engine, mode) pairs and one name under
+        # two labels is what made a single number unable to say what it was counting.
+        "engines": len({row["engine"] for row in rows}),
+        **market_comparison(rows),
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # ENDPOINT: /api/jobs-scorecard (service-role read, like /api/track-record;
 # jobs_scorecard keeps owner-only RLS)
 #
@@ -598,7 +711,11 @@ async def get_jobs_scorecard(
     for row in rows:
         version = row.get("engine_version")
         row["engine"] = engine
-        row["gate_status"] = statuses.get((engine, version), "SHADOW") if engine and version else "SHADOW"
+        row["gate_status"] = (
+            statuses.get((engine, version), DEFAULT_GATE_STATUS)
+            if engine and version
+            else DEFAULT_GATE_STATUS
+        )
     return rows
 
 
