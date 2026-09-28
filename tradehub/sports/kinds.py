@@ -24,6 +24,16 @@ not know -- the payload's calibration keys (`parse_feed`) and a settled row's `r
 the same fact: the first is an absence of evidence, the second is a gap in the build. Both read as a
 band with `n: 0`, so the distinction has to be carried rather than inferred.
 
+**All three of those reports reach a human as a `per_sport` key, and none of them is only a log
+line.** The feed's rides at `feed_unrecognised_kinds` (`Feed.unrecognised_kinds`), the ledger's at
+`unrecognised_kinds` (`HubLedger.unrecognised_by_engine`), and both are carried by
+`scan.DIAGNOSTIC_KEYS` into `sports_run_summary`. This sentence used to read "The two report in
+different places on purpose, and neither is a log line" -- while describing a `log.warning` as the
+feed side's whole report. A docstring that asserts a property its own module does not have is worse
+than no docstring, because the file exists to stop a reader trusting a claim the code does not
+back. It is now true, and the log lines are kept as the *immediate* half: they fire per fetch and
+per read, and the run summary is the half that survives to someone reading a report.
+
 The two sites cannot disagree about which names are unrecognised, and not because they share a
 helper -- one of them counts, one of them filters a row at a time -- but because both test
 membership in the *same object* above. `KINDS` is a tuple, not a copy of one: the feed's filter and
@@ -31,15 +41,16 @@ the ledger's filter are the same membership test against the same value, and a s
 importing it is a site the identity test in `tests/test_sports_inversion.py` fails on.
 
 `unrecognised()` is the reporting helper for a caller that has already found names it cannot use and
-has to say so, which today is the feed: a payload is a set of keys, so the whole answer exists at
-once and the line can name every kind in it. The ledger's rows arrive one at a time, so that side
-tallies as it goes and reports the tally in the run report -- see `scan.HubLedger`.
+has to say so, which is the feed: a payload is a set of keys, so the whole answer exists at once.
+The ledger's rows arrive one at a time, so that side tallies as it goes and reports the tally in the
+run report -- see `scan.HubLedger`.
 
-The two report in different places on purpose, and neither is a log line. The feed warning is
-immediate and per-fetch. The ledger's is a `per_sport` key in the run summary, because
-`_hub_settled_ledger` runs once in the cron entry point and a warning there is evidence nobody reads
-(this codebase upserts to four tables that never existed, with bare `print()`s, for its entire life
-without anyone noticing -- see the migration guard in PR #20).
+The feed's answer is a LIST of names and the ledger's is a COUNT per name, and the difference is not
+a stylistic one. The payload is a single object read once, so the set of names is fully known
+immediately; the ledger is a paged stream, so a count can only be finished after the last page, and
+a count taken from a read that never completed is a count nobody can trust (which is why a failed
+ledger read returns `read_failed=True` rather than a cheerful `{}`). Both shapes are the convention
+for "a real measurement of a build gap", and neither is the same as an absent key.
 """
 
 from __future__ import annotations

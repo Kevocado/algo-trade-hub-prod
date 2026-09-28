@@ -416,17 +416,28 @@ def _sports_rank(row: dict) -> tuple[int, int, float]:
     score = edge_sigma_score(row.get("edge_pct"), (row.get("raw_payload") or {}).get("sigma"))
     if score is None:
         # A partly-publishing feed compares INCOMMENSURABLE UNITS in this one key, deliberately, and
-        # the ordering that produces is biased toward the scored rows. A scored row's key is a
-        # z-score, an unscored row's is its edge in decimal, and a probability-space sigma is
-        # always < 1, so `edge / sigma > edge`: at equal edge, a scored row always outranks an
-        # unscored one, however vague the distribution that earned it.
+        # the ordering it produces can INVERT the board -- not merely bias it toward the scored rows
+        # at equal edge, which is how this used to be described and which undersells it. A scored
+        # row's key is a z-score; an unscored row's is its edge in decimal. So the comparison is
+        # score-vs-edge, not score-vs-score, and those are not two numbers on one scale: a scored
+        # 2pp edge at sigma 0.001 scores 20.0 and outranks an unscored 40pp edge outright, and the
+        # row that leads its tier is the one the 20.0 cap invented. The cap is the tell -- a
+        # saturated score is a value the feature refused to measure precisely, and here it is
+        # out-measuring a real 40pp disagreement.
+        #
+        # Every one of those terms is reachable: `sigma_floor` is 0.005, and a predictor publishing
+        # a width of 0.1pp on a genuine edge produces exactly 20.0. So this is a latent inversion
+        # that fires on the first run where one sport publishes a sigma and another row does not --
+        # which is the same run on which the page's sentence starts claiming a confidence ranking.
         #
         # The alternative is inventing a sigma for the row that has none, which is the one thing
         # this feature must never do -- a made-up sigma ranks confidently off nothing, and
         # 0.10 / 0.005 is the cap. So the bias stands, it is recorded here rather than left to be
         # discovered, and the page's sentence says it out loud ("...wherever the feed publishes one,
         # and by raw edge for the rest"), because a reader comparing a 4pp z-scored row against a
-        # 4pp unscored one is owed the reason one of them led.
+        # 4pp unscored one is owed the reason one of them led. The disclosed sentence is what makes
+        # this acceptable rather than a defect: the page does not claim a total order it cannot
+        # deliver, it names the fallback and the fact that the two are not on one scale.
         score = float(row.get("edge_pct") or 0)
     return group, _TIER_ORDER.get(tier, 9), -score
 
@@ -434,9 +445,13 @@ def _sports_rank(row: dict) -> tuple[int, int, float]:
 def _ranking_mode(rows: list[dict]) -> str:
     """Which ranking the response actually used, so the page can say so.
 
-    `sigma` is null on 61/61 games today, so this returns `raw_edge` in practice. Reporting the mode
-    rather than implying sigma always applies is the whole point: a page that claims to rank by
-    confidence while ranking by raw edge is worse than one that never claimed it.
+    Reads the STORED row, not the served one, and that is not incidental: `sports.scan._edge_row` is
+    what writes `raw_payload["sigma"]` at all, and `edge_row` deliberately withholds sigma from the
+    payload the page receives. So this is the only place the number exists, and it is also the only
+    place the ranking can honestly be described from.
+
+    Reporting the mode rather than implying sigma always applies is the whole point: a page that
+    claims to rank by confidence while ranking by raw edge is worse than one that never claimed it.
 
     `edge_sigma` means the score was in play for at least one row — which is exactly the condition
     under which the sort stopped being a pure raw-edge sort. A *published* sigma of zero counts,

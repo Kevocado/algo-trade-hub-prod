@@ -3,23 +3,24 @@
 Two +10pp edges are not the same claim: at sigma 1.5pp the score is 6.7, at sigma 15pp it is 0.7.
 Ranking on raw edge puts the vague one first.
 
-But `sigma` is null on 61 of 61 games right now (spec 3), so the score is undefined everywhere and
-raw edge stays in force. The point of these tests is that the absence is handled by FALLING BACK, not
-by substituting a default: a constant sigma would produce a confident-looking ranking with no
-information in it, which is the one thing this feature must not do.
+**The producer comes first in this file, and that ordering is the correction.** Every other test here
+built its own `raw_payload` with a `sigma` already in it, so 100% of the sigma coverage passed while
+nothing in the codebase ever wrote one: `_edge_row` had no `sigma` key, `core/supabase_client.py`
+stores `raw_payload = op` verbatim, and so `kalshi_edges.raw_payload["sigma"]` was ABSENT -- not
+null, which is the distinction the whole defect hid behind. The feature was unreachable from real
+data and the suite said it worked, because a hand-built payload is a statement about the test and not
+about the code. `TestTheProducer` runs a real `scan_sport` and asserts on what it STORES. Read that
+class first; the rest of this file is what happens to the number once it exists.
 
-The second half of the file is about the other half of that promise. A score that is never used, and
-a page that cannot say which ranking it used, are the same dishonesty one layer up: the feature
-would exist, and nothing on the page would admit that it is inert.
-
-The refusals are three-valued, and telling them apart IS the test. A missing sigma is today's normal
-state and falls back. A published ZERO is degenerate but real -- a distribution with no width is a
-distribution that was measured -- so it is floored and scored, and the response says `edge_sigma`
-because the sort really did consume it. A NEGATIVE sigma is neither: it is corrupt input, and it is
-refused exactly as a missing one is, because flooring it hands the row the cap and the top of the
-board. The third case arrived on review (2026-09-27): a test named for a negative sigma was asserting
-a negative EDGE, so the negative-sigma branch had a name, a docstring clause, and no coverage at all
--- and the value it was hiding was 20.0.
+The refusals are three-valued, and telling them apart IS the test. A missing sigma is a real
+possibility -- a feed that publishes none, a row written before the producer existed -- and it falls
+back. A published ZERO is degenerate but real: a distribution with no width is a distribution that
+was measured -- so it is floored and scored, and the response says `edge_sigma` because the sort
+really did consume it. A NEGATIVE sigma is neither: it is corrupt input, and it is refused exactly as
+a missing one is, because flooring it hands the row the cap and the top of the board. The third case
+arrived on review (2026-09-27): a test named for a negative sigma was asserting a negative EDGE, so
+the negative-sigma branch had a name, a docstring clause, and no coverage at all -- and the value it
+was hiding was 20.0.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -31,6 +32,221 @@ from tradehub.api.main import _ranking_mode, _sports_rank, app
 from tradehub.sports.scan import SIGMA_SCORE_CAP, edge_sigma_score, sigma_floor
 
 FUTURE = (datetime.now(timezone.utc) + timedelta(hours=48)).isoformat()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE PRODUCER. Everything below this block is downstream of one number existing.
+# ════════════════════════════════════════════════════════════════════════════
+
+NOW = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+
+
+class _Game:
+    """A `feed.FeedGame` built field by field, because that is the contract `_edge_row` reads.
+
+    The whole class exists because of the defect this block is named for. The earlier fakes in this
+    suite omitted `sigma` and that was invisible while `_edge_row` never read it -- the first thing a
+    real read of `game.sigma` did was turn three unrelated window tests into `AttributeError`s. So the
+    fields are spelled out, and one of them (`SIGMA`, below) is the one the ranking is about.
+    """
+
+    def __init__(self, start_utc, *, sigma):
+        self.sport = "cfb"
+        self.game_id = "g1"
+        self.home, self.away = "UConn", "Syracuse"
+        self.start_utc = start_utc
+        self.p_home = 0.55                 # what `price_market` reads for a winner market
+        self.margin_mu = 3.0
+        self.sigma = sigma
+        self.total_mu, self.total_sigma = 55.0, 12.0
+        self.model_version = "xgb@2026-09-04"
+        self.snapshotted_at = start_utc - timedelta(hours=6)
+        self.season, self.week = 2026, 5
+
+
+class _Market:
+    ticker = "KXNCAAFGAME-26SEP28SYRCONN-CONN"
+    title = "UConn wins"
+    event_ticker = "KXNCAAFGAME-26SEP28SYRCONN"
+    close_time = NOW + timedelta(days=10)
+
+
+class _Quote:
+    yes_bid, yes_ask = 0.40, 0.44
+    no_bid, no_ask = 0.56, 0.60
+    yes_bid_size = yes_ask_size = no_bid_size = no_ask_size = 500
+
+
+class _SportMarket:
+    suffix = "CONN"          # `team_code` strips trailing digits off this
+    volume = 5000.0
+
+    def __init__(self):
+        self.market = _Market()
+        self.quote = _Quote()
+
+
+class _Feed:
+    sport = "cfb"
+    generated_at = NOW
+    n_buckets = 10
+    calibration: dict = {}
+    rejected: list = []
+    games: list = []
+
+
+def _cfg(**params):
+    from tradehub.engine_config import EngineConfig
+    from tradehub.sports.config import SportConfig
+
+    p = {
+        "max_quote_spread": 0.04, "min_resting_size": 100, "min_volume": 1000,
+        "min_hours_to_start": 1, "max_hours_to_start": 72,
+        "calibration_max_dev": 0.10, "calibration_min_n": 20,
+    }
+    p.update(params)
+    return SportConfig(
+        sport="cfb", engine="sports_cfb", base_url="http://x", site_url="http://y",
+        series={"winner": "KXNCAAFGAME"}, series_titles={"KXNCAAFGAME": "NCAAF"},
+        edge=EngineConfig(min_edge_pct=4.0, prefer_maker=True, params=p),
+    )
+
+
+def _stored_rows(*, sigma, monkeypatch, hours_out=24):
+    """Run a REAL `scan_sport` and return what it would hand the database.
+
+    The point of the helper is that it returns the scan's own output rather than a payload built to
+    suit. `monkeypatch` rather than a bare assignment: `match_games` is a module global, and a
+    permanent one leaks this fake into every later test in the session.
+    """
+    from tradehub.sports import scan as scan_mod
+    from tradehub.sports.mapping import MatchedGame, MatchReport
+
+    sm = _SportMarket()
+    report = MatchReport(matched=[MatchedGame(
+        game=_Game(NOW + timedelta(hours=hours_out), sigma=sigma),
+        home_code="CONN", away_code="SYR", suffix="CONN", markets={"winner": [sm]},
+    )])
+    monkeypatch.setattr(scan_mod, "match_games", lambda *a, **k: report)
+    result = scan_mod.scan_sport(_cfg(), {}, _Feed(), NOW)
+    # `core.supabase_client.upsert_opportunities` stores `raw_payload = op` VERBATIM, so the op dict
+    # the scan produced IS the stored row's payload. Shaped as the API reads it back so the ranking
+    # assertions below run on the same shape the real handler gets, not on the scan's output alone.
+    return [
+        {"market_id": e["market_ticker"], "title": e["market_title"], "edge_type": "SPORTS",
+         "engine": "sports_cfb", "gate_status": "SHADOW", "our_prob": e["model_probability"],
+         "market_prob": e["market_price"], "edge_pct": round(e["edge"], 4), "expires_at": FUTURE,
+         "raw_payload": dict(e)}
+        for e in result.edges
+    ], result
+
+
+class TestTheProducer:
+    """What actually writes `raw_payload["sigma"]`, asserted on what it writes.
+
+    This is the class the defect slipped past. Every other test in this file, and the ones in
+    `test_sports_api_range_paging.py`, constructed a `raw_payload` carrying a sigma by hand -- so the
+    consumer was tested against an input no producer in the repository creates, and 100% of the
+    sigma coverage was green on a feature that could not fire.
+    """
+
+    def test_a_real_scan_stores_the_games_own_sigma(self, monkeypatch):
+        rows, result = _stored_rows(sigma=0.015, monkeypatch=monkeypatch)
+
+        assert result.edges, "the fixture produced no edge, so nothing here is testing the producer"
+        assert rows[0]["raw_payload"]["sigma"] == 0.015, (
+            f"a scan of a game the feed gave sigma=0.015 stored no sigma: {sorted(rows[0]['raw_payload'])}"
+        )
+
+    def test_a_stored_sigma_is_what_the_ranking_mode_reads(self, monkeypatch):
+        """The end of the line, and the only assertion here that is about the FEATURE rather than
+        about one function: a real scan of a real sigma must make the API report `edge_sigma`.
+
+        Before the producer existed this returned `raw_edge` over rows priced from a sigma of 0.015,
+        and the page said "the feed reports no sigma yet" -- a false claim about a feed that was
+        reporting one the whole time.
+        """
+        rows, _ = _stored_rows(sigma=0.015, monkeypatch=monkeypatch)
+
+        assert rows, "no rows, so there is nothing for the ranking to read"
+        assert _ranking_mode(rows) == "edge_sigma", (
+            f"a real scan stored rows the API reads as unscored: {[r['raw_payload'].get('sigma') for r in rows]}"
+        )
+
+    def test_a_game_with_no_sigma_still_stores_the_key_and_reports_raw_edge(self, monkeypatch):
+        """`None` is a real published value -- the feed said it has no width -- and it has to be
+        STORED, not omitted, so that `raw_payload["sigma"]` means "what the feed published" rather
+        than "whatever the writer remembered to add".
+
+        This is the case the two are easy to confuse over, and the confusion is what hid the bug: a
+        missing key and a null value read identically to `.get("sigma")`, so a test could not tell
+        "the feed published nothing" from "nobody wrote a producer". Storing the key either way is
+        what makes the difference observable.
+        """
+        rows, _ = _stored_rows(sigma=None, monkeypatch=monkeypatch)
+
+        assert "sigma" in rows[0]["raw_payload"], (
+            "a null sigma is a published value and must be stored; omitting the key is what made "
+            "the missing producer indistinguishable from a feed that publishes no sigma"
+        )
+        assert rows[0]["raw_payload"]["sigma"] is None
+        assert _ranking_mode(rows) == "raw_edge", (
+            "a null sigma is not scorable, so the sort really did fall back and must say so"
+        )
+
+    def test_the_api_does_NOT_publish_sigma_to_the_page(self, monkeypatch):
+        """The other half of the contract, and the half that must NOT be "fixed".
+
+        `_edge_row` writes the sigma; `edge_row` deliberately withholds it from the served payload.
+        That asymmetry is load-bearing: the server sorts and reports which ranking it used, and a
+        per-row sigma in the page's hands is a second source of the ranking -- one the page could
+        sort by and then have to describe, and which would let the client re-derive a mode the
+        response already states. Publishing it would also mean the fully-scored and partly-scored
+        boards stopped being one literal, and the `edge_sigma` sentence has to be true of both.
+        """
+        from tradehub.sports.scan import edge_row
+
+        rows, _ = _stored_rows(sigma=0.015, monkeypatch=monkeypatch)
+        served = [edge_row(r) for r in rows]
+
+        assert served, "no served rows"
+        for row in served:
+            assert "sigma" not in row, (
+                f"the page can now see a per-row sigma and could sort on it itself: {sorted(row)}"
+            )
+
+    def test_the_stored_sigma_is_a_width_the_pricer_reads_not_a_decoration(self):
+        """On a SPREAD market, `price_market` computes the quoted probability with this exact sigma
+        (`prob_in_interval(margin_mu, sigma, ...)`), so the row is ranked on the confidence of the
+        number it carries. Two sigmas, two prices, so the width is demonstrably an input rather than
+        a field copied in for show.
+
+        Winner markets are the honest exception and are named rather than glossed: their price comes
+        from `p_home` alone, so there the stored sigma is the game's published width rather than the
+        width of that particular quote. That is the shape `edge / sigma` asks for -- ONE sigma per
+        game, so spread and winner rows of a game stay comparable -- and it is why this test uses a
+        spread market rather than asserting the winner case too.
+        """
+        from tradehub.sports.mapping import MatchedGame
+        from tradehub.sports.pricing import price_market
+
+        sm = _SportMarket()
+        sm.market.floor_strike = 2.5
+        sm.market.strike_type = "greater"
+
+        def _price_at(sigma):
+            game = _Game(NOW + timedelta(hours=24), sigma=sigma)
+            return price_market("spread", sm, MatchedGame(
+                game=game, home_code="CONN", away_code="SYR", suffix="CONN",
+                markets={"spread": [sm]}))
+
+        tight, vague = _price_at(0.015), _price_at(0.20)
+        assert tight is not None and vague is not None, "the spread fixture priced to None"
+        assert tight != vague, (
+            "two different sigmas priced the same market identically, so the width is not an input "
+            "to the price and storing it records a number nothing used"
+        )
+        assert 0.0 <= vague < tight <= 1.0, (tight, vague)
 
 
 class TestScore:

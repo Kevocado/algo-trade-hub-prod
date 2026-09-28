@@ -69,9 +69,14 @@ export interface SportsEdgesResponse {
   offset: number;
   /**
    * Which ranking the response used: `edge_sigma` when the feed supplied a real sigma, else
-   * `raw_edge`. `sigma` is null on every game as of 2026-09-27, so this is `raw_edge` in practice --
-   * and the page says which, because claiming to rank by confidence while ranking by raw edge is
-   * worse than never claiming it.
+   * `raw_edge`. The page says which, because claiming to rank by confidence while ranking by raw
+   * edge is worse than never claiming it.
+   *
+   * `raw_edge` is a statement about the ROWS, not about the feed. It means no row in the whole
+   * filtered set carried a sigma the server could score -- which on today's data is because the
+   * predictor publishes none, but which would equally be true of a feed that publishes one and a
+   * set of rows written before the scan started carrying it. The `raw_edge` sentence is worded to
+   * be true of both rather than to blame the feed for a fact about the rows.
    */
   ranking: SportsRanking;
   reviewer_scorecard: {
@@ -97,7 +102,8 @@ export type SportsRanking = "edge_sigma" | "raw_edge";
  *
  * There are three states the backend can report, and the field carries only two literals:
  *
- * - `raw_edge`: no row carries a sigma, so nothing was scored. Today's state.
+ * - `raw_edge`: no row on the board carried a sigma, so nothing was scored. Today's state, and the
+ *   state the first run after a predictor publishes one stops being.
  * - `edge_sigma`, every row scored: the feed publishes a sigma for the whole board.
  * - `edge_sigma`, only some rows scored: the feed publishes sigma for some games. The sort is
  *   PER ROW, so a row without one falls back to its raw edge and the two kinds of key are compared
@@ -108,6 +114,12 @@ export type SportsRanking = "edge_sigma" | "raw_edge";
  *   scored one, which is the dishonesty. A third literal would need a third signal the response does
  *   not send.
  *
+ * The `raw_edge` sentence names the ROWS rather than the feed, for the same reason: `raw_edge` is
+ * computed from stored rows, so "the feed reports no sigma yet" is a claim about a component this
+ * file cannot observe, and it is false the moment the feed does publish one and the board is still
+ * made of rows written before the scan started carrying it. Blaming the feed for a fact about the
+ * rows is the attribution defect this whole feature exists to avoid, in miniature.
+ *
  * A `null`/`undefined` field is a backend predating the field, and degrades to the sentence that
  * claims the least.
  */
@@ -115,7 +127,7 @@ export const RANKING_SENTENCE: Record<SportsRanking, string> = {
   edge_sigma:
     "Ranked by edge over the predictor's own sigma wherever the feed publishes one, and by raw edge for the rest.",
   raw_edge:
-    "Ranked by raw edge: the feed reports no sigma yet, so there is no confidence to rank on.",
+    "Ranked by raw edge: no row on the board carries a forecast width, so there is no confidence to rank on.",
 };
 
 export function rankingSentence(ranking: SportsRanking | null | undefined): string {

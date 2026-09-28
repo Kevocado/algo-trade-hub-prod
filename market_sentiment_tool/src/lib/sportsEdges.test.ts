@@ -68,15 +68,21 @@ function claim(sentence: string): string {
  *
  * The served row has no `sigma` field -- it stays out of `edge_row`'s payload on purpose -- so a
  * fully scored board and a partly scored one are byte-identical to this file. That is the reason the
- * helper takes the mode and nothing else, and the reason the two states below share a literal: the
- * page cannot tell them apart, so the sentence it shows has to be true for both.
+ * helper takes the mode and nothing else, and the reason the two states share a literal: the page
+ * cannot tell them apart, so the sentence it shows has to be true for both.
+ *
+ * `edges` takes no argument any more. It used to, for a test that built two DIFFERENT edge lists and
+ * asserted they produced the same sentence -- which passed only because both lists were in fact
+ * identical, and because `ranking` is an input here rather than something derived from the list.
+ * There is no honest way to derive `ranking` from a payload in this file, so the parameter went with
+ * the test. See the note where it used to be.
  */
-function payload(ranking: SportsRanking, edges: SportsEdge[] = [base]): SportsEdgesResponse {
+function payload(ranking: SportsRanking): SportsEdgesResponse {
   return {
     as_of: "2026-09-27T12:00:00+00:00",
-    edges,
-    total: edges.length,
-    candidate_count: edges.length,
+    edges: [base],
+    total: 1,
+    candidate_count: 1,
     limit: 50,
     offset: 0,
     ranking,
@@ -118,16 +124,6 @@ describe("which ranking the page claims", () => {
     expect(sentence).not.toMatch(/\ball\b|\bevery\b|\bonly\b/i);
   });
 
-  it("gives a fully scored board and a partly scored one the same sentence", () => {
-    // The response carries no per-row sigma, so these two states are one literal. Asserted so that
-    // adding a distinction nobody can observe on the client has to be a deliberate change here.
-    const allScored = payload("edge_sigma", [base, { ...base, market_id: "b" }]);
-    const partlyScored = payload("edge_sigma", [base, { ...base, market_id: "b" }]);
-
-    expect(allScored.ranking).toBe(partlyScored.ranking);
-    expect(rankingSentence(allScored.ranking)).toBe(rankingSentence(partlyScored.ranking));
-  });
-
   it("says the sentence that claims least when the field is absent", () => {
     // A backend predating the field sends no `ranking` at all. The branch on `=== "edge_sigma"`
     // degrades to the raw-edge sentence, which is the conservative direction; now it is designed
@@ -136,18 +132,38 @@ describe("which ranking the page claims", () => {
     expect(rankingSentence(null)).toBe(RANKING_SENTENCE.raw_edge);
   });
 
-  it("leaves the page a caller rather than a second source of the sentence", () => {
-    // The branch used to be a ternary in the header with nothing covering it, and the mutation that
-    // matters is inverting it. Testing the helper alone would not catch the page growing its own
-    // literal, so the two literals and the call are both pinned in the page source. Read relative to
-    // the package root, which is vitest's cwd -- `import.meta.url` is a dev-server URL here, not a
-    // file: one.
+  // A test that used to sit here claimed to give "a fully scored board and a partly scored one the
+  // same sentence", and could not have failed: the two fixtures were byte-identical, and `ranking`
+  // is an INPUT to `rankingSentence` rather than something derived from the edges. It asserted its
+  // own argument round-tripped, so deleting the sentence's `raw edge` qualifier would have left it
+  // green. There is no replacement here because the two boards are genuinely indistinguishable in
+  // this file -- see the `payload` docstring -- and the property is now stated where it is
+  // testable: the `edge_sigma` sentence must NAME the fallback ("keeps the edge_sigma sentence true
+  // when only some rows are scored" above), which fails the moment it claims a total order.
+
+  it("SHAPE, not render: the page is a caller of the helper and owns no literal of its own", () => {
+    // NOT a render test. This reads the page's SOURCE with `readFileSync` and a regex, so it proves
+    // the shape of the page's use of the helper, not what a user sees. It is the only way to catch a
+    // second literal in the header -- a mutation that renders perfectly and leaves the Python suite
+    // green -- so it earns its place, but it must not be read as covering the rendered output.
+    //
+    // Two consequences a future editor should know before changing either line:
+    //
+    // 1. `not.toMatch(/Ranked (by|raw)/)` is a SHAPE assertion about a prefix, and it will fail on
+    //    unrelated future copy that happens to start a line with "Ranked by ..." -- including a
+    //    correct one. If it fires, read the page: the fix is to narrow the pattern, not to delete it
+    //    and not to reword the page to satisfy a regex.
+    // 2. The two `not.toContain` checks catch a copy-pasted literal verbatim. A REWORDED hardcode
+    //    slips past them, which is exactly why the regex above is here as well; neither check alone
+    //    covers the mutation.
+    //
+    // Read relative to the package root, which is vitest's cwd -- `import.meta.url` is a dev-server
+    // URL here, not a file: one.
     const page = readFileSync("src/pages/SportsEdges.tsx", "utf8");
 
     expect(page).toContain("rankingSentence(data.ranking)");
     expect(page).not.toContain(RANKING_SENTENCE.edge_sigma);
     expect(page).not.toContain(RANKING_SENTENCE.raw_edge);
-    // A reworded hardcode would slip past the two literal checks above; this does not.
     expect(page).not.toMatch(/Ranked (by|raw)/);
   });
 });

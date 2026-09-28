@@ -1227,21 +1227,31 @@ def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_trun
 # other, and no word about the gap.
 #
 # So the list now lives in `tradehub/sports/kinds.py` and is imported by every site that has to
-# agree with it, and a kind outside it is reported rather than dropped. The two reports are in
-# different places, for different reasons, and neither of them is a log line alone:
+# agree with it, and a kind outside it is reported rather than dropped. Both reports now reach a
+# human as a `per_sport` key in the run summary, and NEITHER is a log line alone:
 #
-#   - `parse_feed` warns, per fetch. A payload's calibration keys are all in hand at once, so the
-#     whole answer exists before the function returns and there is nowhere to put it but the log.
+#   - `parse_feed` records the payload's unread names on `Feed.unrecognised_kinds`, and
+#     `run_sports_scan` publishes them as `per_sport[sport]["feed_unrecognised_kinds"]`. A payload's
+#     calibration keys are all in hand at once, so the answer is complete before the function
+#     returns -- which used to be the argument for the log being the only place it could go. It is
+#     not: the caller is handed the whole `Feed`, so the list rides along exactly as
+#     `Feed.n_buckets` already did.
 #   - `_hub_settled_ledger` returns the tally on `HubLedger.unrecognised_by_engine`, and
 #     `run_sports_scan` publishes it as `per_sport[sport]["unrecognised_kinds"]`. Its rows arrive one
 #     at a time and it runs once in the cron entry point, so the report it has to reach is the one
 #     the caller builds. A log line here would be evidence nobody reads -- this codebase upserts to
 #     four tables that never existed, with bare `print()`s, for its whole life without anyone
-#     noticing (the migration guard in PR #20) -- which is what the log-only version of this was.
+#     noticing (the migration guard in PR #20).
 #
-# What the reports have to do is name the kind and the count, so that "this build cannot read that
-# kind" is distinguishable from "nothing of that kind has settled": two facts every number downstream
-# looks identical under, because both read as a band with `n: 0`.
+# The two are SEPARATE keys rather than one merged tally, because the consequences differ and a
+# single number could not say which was which: a settled row this build cannot file is evidence
+# lost, while a band list this build cannot read means the affected kinds are judged on NO band at
+# all. Both are build gaps, both were silent, and a reader who saw one number could not tell which
+# kind of gap they were looking at.
+#
+# What the reports have to do is name the kind, and where there is a count, the count, so that "this
+# build cannot read that kind" is distinguishable from "nothing of that kind has settled": two facts
+# every number downstream looks identical under, because both read as a band with `n: 0`.
 
 
 def test_the_feed_client_the_publisher_and_the_ledger_filter_share_one_list():
@@ -1504,6 +1514,147 @@ def test_the_unrecognised_kinds_key_is_there_even_when_the_sport_never_scanned()
     assert run.per_sport["nfl"]["feed_ok"] is False, "the sport really did not scan"
     assert run.per_sport["nfl"]["unrecognised_kinds"] == {"moneyline": 2}, run.per_sport["nfl"]
     assert run.per_sport["cfb"]["unrecognised_kinds"] == {}, run.per_sport["cfb"]
+    # And the feed's own key is `None` on this path rather than `[]`: the fetch raised, so no
+    # payload was ever parsed. An empty list here would be the reassuring answer to a question this
+    # run never asked -- the same collision `unrecognised_kinds` avoids by being `None` on a failed
+    # ledger read.
+    assert run.per_sport["nfl"]["feed_unrecognised_kinds"] is None, run.per_sport["nfl"]
+    assert run.per_sport["cfb"]["feed_unrecognised_kinds"] is None, run.per_sport["cfb"]
+
+
+# ── the FEED's unread names, which used to be a log line and nothing else ───────
+#
+# The ledger's side of this problem got a `per_sport` key because a log line in this codebase is
+# demonstrably not an observed channel (see the block comment above). The feed's side did not, and it
+# is the worse of the two: a payload publishing a name this build cannot read means every edge of
+# that kind is judged on NO band at all, so the gap is not a missing statistic, it is a gate running
+# without the input it exists to check. The only evidence was one `log.warning` per fetch.
+
+
+def _feed_with_extra_calibration_key(sport, key):
+    """The recorded feed with one extra key in `calibration`, parsed for real.
+
+    Parsed through `parse_feed` rather than assembled as a `Feed`, because the whole point is that
+    the parse is what records the name -- a hand-built `Feed` would satisfy this by construction,
+    which is the defect the producer test in `test_sports_sigma_rank.py` was written against.
+    """
+    raw = json.loads((FIXTURES / f"{sport}_kalshi_feed.json").read_text())
+    raw["calibration"][key] = [{"lo": 0.0, "hi": 1.0, "n": 1, "mean_prob": 0.5, "hit_rate": 0.5}]
+    return parse_feed(raw)
+
+
+def test_a_payload_name_this_build_cannot_read_is_carried_as_data_not_only_logged(caplog):
+    """The end of the feed-side chain: the name survives `parse_feed` on the object it returns.
+
+    Before this, `extra` existed only as a `log.warning` argument, so the whole finding evaporated
+    when the function returned. A `caplog` assertion alone would have passed on the version that had
+    no data channel at all, which is why the assertion is on the RETURN VALUE.
+    """
+    feed = _feed_with_extra_calibration_key("cfb", "moneyline")
+
+    assert feed.unrecognised_kinds == ["moneyline"], (
+        "the payload published a band list this build cannot read and the Feed does not say so; "
+        f"unrecognised_kinds={feed.unrecognised_kinds}"
+    )
+    # The gap is real: the band list is not read, so the kind has no bands anywhere. That is why the
+    # name has to travel -- every number downstream reads `n: 0` and cannot tell this from a kind
+    # with nothing settled.
+    assert "moneyline" not in feed.calibration, sorted(feed.calibration)
+    # And the log line is still there, as the immediate half of the same report.
+    assert any("moneyline" in r.message for r in caplog.records), [
+        r.message for r in caplog.records
+    ]
+
+
+def test_a_feed_that_publishes_only_known_names_reports_an_empty_list_not_a_missing_key():
+    """`[]` is the positive answer, and it has to be distinguishable from an absent key: absent reads
+    as "not measured", and this WAS measured. Recorded payloads carry exactly
+    `n_buckets, spread, total, winner`, so this is the state every real run is in today.
+    """
+    assert _recorded_feed("cfb").unrecognised_kinds == []
+    # `n_buckets` is a published scalar, not a kind, and is not tallied as an unread name. Recorded
+    # explicitly because the payload carrying it is the normal case and a regression here would make
+    # every run report a build gap that does not exist.
+    assert "n_buckets" in json.loads((FIXTURES / "cfb_kalshi_feed.json").read_text())["calibration"]
+
+
+def test_a_new_published_scalar_is_reported_as_an_unread_name_not_silently_ignored():
+    """Future-facing, and the reason the message wording matters.
+
+    `_PUBLISHED_SCALARS` is exactly `{"n_buckets"}`, so the day the payload starts publishing a
+    second scalar this build has not been taught to read, that scalar is reported as a name it
+    cannot place. That is the honest report -- this build genuinely has not been told about it --
+    and it arrives in the run summary rather than in a log, so the drift is visible without reading
+    anything. The test asserts the behaviour rather than a future payload's contents.
+    """
+    assert feed_mod._PUBLISHED_SCALARS == frozenset({"n_buckets"}), (
+        "the set of published scalars changed; if that is deliberate, the warning text and this "
+        "test both need to say what is now known to be a scalar rather than a kind"
+    )
+    feed = _feed_with_extra_calibration_key("cfb", "n_buckets_v2")
+    assert feed.unrecognised_kinds == ["n_buckets_v2"]
+
+
+def test_the_run_summary_carries_the_feeds_unread_names_per_sport():
+    """The property the whole block is for, end to end and in the summary a human reads.
+
+    NFL's payload publishes a band list this build cannot read; CFB's does not. So the run summary
+    names NFL's gap and reports CFB's as an empty list -- and both are separate values, so a reader
+    can tell which sport has a build gap rather than that one of them does.
+    """
+    parsed: list = []
+
+    def fetch(url, **_kw):
+        sport = "cfb" if url.startswith("https://cfb-") else "nfl"
+        if sport == "cfb":
+            return _recorded_feed(sport)
+        parsed.append(_feed_with_extra_calibration_key(sport, "moneyline"))
+        return parsed[-1]
+
+    run = scan_mod.run_sports_scan(
+        BOTH_NOW, _Kalshi({**_recorded_markets("nfl"), **_recorded_markets("cfb")}), fetch=fetch,
+        hub_ledger=_hub({}), sports=("nfl", "cfb"),
+    )
+
+    assert run.per_sport["nfl"]["feed_unrecognised_kinds"] == ["moneyline"], run.per_sport["nfl"]
+    assert run.per_sport["cfb"]["feed_unrecognised_kinds"] == [], run.per_sport["cfb"]
+    # Separate objects, so a consumer that edits one sport's report cannot reach the other's or the
+    # measurement's -- the same reason `_unrecognised_for` copies.
+    assert (run.per_sport["nfl"]["feed_unrecognised_kinds"]
+            is not run.per_sport["cfb"]["feed_unrecognised_kinds"])
+    # And a COPY, not the `Feed`'s own list: editing the report must not edit the measurement.
+    assert run.per_sport["nfl"]["feed_unrecognised_kinds"] is not parsed[0].unrecognised_kinds
+
+    published = scan_mod.sports_run_summary(run)
+    assert published["nfl"]["feed_unrecognised_kinds"] == ["moneyline"], published["nfl"]
+    assert published["cfb"]["feed_unrecognised_kinds"] == [], published["cfb"]
+    # The two gaps are not one number. A settled row this build cannot file is evidence lost; a band
+    # list it cannot read means those kinds are judged on no band at all. Merged, the reader could
+    # not tell which kind of gap they were reading.
+    assert published["nfl"]["unrecognised_kinds"] == {}, published["nfl"]
+
+
+def test_the_feeds_gap_survives_a_run_where_the_ledger_read_failed():
+    """The two diagnostics are INDEPENDENT measurements, and this is the run that proves it.
+
+    A failed ledger read makes the ledger's two keys `None` -- "not measured" -- while the feed's
+    key is still a real list from a payload that WAS parsed. Collapsing them into one shared
+    measurement would have to choose, and either choice is a lie: reporting the feed's names as
+    `None` loses a gap that was measured, and reporting the ledger's as a real value publishes a
+    count nobody took.
+    """
+    run = scan_mod.run_sports_scan(
+        BOTH_NOW, _Kalshi({**_recorded_markets("nfl"), **_recorded_markets("cfb")}),
+        fetch=lambda url, **_kw: _feed_with_extra_calibration_key(
+            "cfb" if url.startswith("https://cfb-") else "nfl", "moneyline"),
+        hub_ledger=scan_mod.HubLedger(read_failed=True), sports=("nfl", "cfb"),
+    )
+
+    published = scan_mod.sports_run_summary(run)
+    for sport in ("nfl", "cfb"):
+        assert published[sport]["unrecognised_kinds"] is None, published[sport]
+        assert published[sport]["settled_by_kind"] is None, published[sport]
+        assert published[sport]["feed_unrecognised_kinds"] == ["moneyline"], published[sport]
 
 
 def test_the_cron_path_actually_hands_the_ledger_to_the_scan(monkeypatch):
@@ -1838,6 +1989,19 @@ def test_a_sport_the_reports_never_mentioned_still_gets_its_facts():
     assert any(s.get("series_ok") for s in states), "no path that scanned"
     assert any(s.get("too_far") is not None for s in states), "no path that scanned"
     assert any(s.get("too_far") is None for s in states), "no path that did not"
+    # `too_soon` and `feed_unrecognised_kinds` are the two keys with a SPLIT value across the paths,
+    # so the list membership above is not enough for them: `too_soon` is a real count only where the
+    # window was applied, and `feed_unrecognised_kinds` is `None` on the two exits that never parsed
+    # a payload. A key present on every path with one value everywhere would be published as a
+    # measurement on runs that never took it.
+    assert any(s.get("too_soon") is not None for s in states), "no path that scanned"
+    assert any(s.get("too_soon") is None for s in states), "no path that did not"
+    # The same split for the feed's key: a parsed payload gives a real list on the paths that got
+    # one, and the 404 run above gives `None` on both of its sports because no payload was ever
+    # read. `None` is this summary's word for "not measured", and an empty list there would tell a
+    # reader the feed was checked and clean.
+    assert [s.get("feed_unrecognised_kinds") for s in scanned.per_sport.values()] == [[], []]
+    assert [s.get("feed_unrecognised_kinds") for s in unscanned.per_sport.values()] == [None, None]
     assert set(scan_mod.DIAGNOSTIC_KEYS) <= written, (
         f"DIAGNOSTIC_KEYS names {sorted(set(scan_mod.DIAGNOSTIC_KEYS) - written)}, which no path of "
         f"`run_sports_scan` writes. The list is how a diagnostic reaches the printed summary, so a "
@@ -1949,9 +2113,21 @@ def test_a_failed_ledger_read_publishes_not_measured_where_a_clean_one_publishes
     # of them could have been measured from.
     assert printed_failed["cfb"]["settled_by_kind"] is None, printed_failed["cfb"]
     assert printed_clean["cfb"]["settled_by_kind"] == {"winner": 1, "spread": 1}, printed_clean["cfb"]
-    assert scan_mod.sports_run_summary(scan_mod.SportsRun(
+    # The join publishes EVERY diagnostic key, including the ones this run never wrote into
+    # `per_sport`. Derived from `DIAGNOSTIC_KEYS` rather than spelled out, so that adding a
+    # diagnostic does not mean editing this assertion -- and so the assertion stays about the thing
+    # it is for (a key in the list cannot be dropped by the join) rather than about today's list. It
+    # still fails the moment a key in `DIAGNOSTIC_KEYS` is not published; what it no longer does is
+    # fail the moment a key is added, which is the churn that would have trained a reader to
+    # delete the assertion.
+    joined = scan_mod.sports_run_summary(scan_mod.SportsRun(
         [], [], {}, {"cfb": {"too_far": None, "unrecognised_kinds": None, "settled_by_kind": None}}
-    ))["cfb"] == {"too_far": None, "unrecognised_kinds": None, "settled_by_kind": None}
+    ))["cfb"]
+    assert set(joined) == set(scan_mod.DIAGNOSTIC_KEYS), (
+        f"the join published {sorted(joined)} for a sport whose per_sport entry carried none of "
+        f"them; every key in DIAGNOSTIC_KEYS must be published as None"
+    )
+    assert set(joined.values()) == {None}, joined
 
 
 def test_a_run_given_no_ledger_at_all_does_not_claim_the_read_found_nothing():

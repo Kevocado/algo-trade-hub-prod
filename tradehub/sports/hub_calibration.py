@@ -34,17 +34,42 @@ from tradehub.sports.kinds import KINDS
 # BOTH teams of a game, so bucketing the ledger's `our_prob` as-is mixes a home 0.65 and an away 0.65
 # into one band. The bias is real and it is parked, not fixed.
 #
-# **What the parked work is, corrected scope (2026-09-27, whole-branch review).** Two things were
-# wrong about how this was originally described, and both would have mis-scoped whoever picked it up.
+# **What the parked work is, corrected scope (2026-09-27, whole-branch review; re-corrected again the
+# same day, see 1 below).** Two things were wrong about how this was originally described, and both
+# would have mis-scoped whoever picked it up.
 #
-# 1. The effect is on the COUNT, not on "the calibration". `check_candidate` gates on exactly two
-#    things: `bucket["n"] < calibration_min_n` and `mean_prob is None`. Since #26 removed
-#    `calibration_off`, a band's `mean_prob` and `hit_rate` are reviewer-facing decoration -- the
-#    gate never reads them. So mixing orientations inflates `n` in every band that receives both
-#    orientations, which makes the hub's gate MORE PERMISSIVE, not less. It is a count-accuracy and
-#    reviewer-accuracy problem. It is not a gate-wrong-answer problem, and the urgency that came
-#    with the original note belonged to the second, not the first.
-# 2. It is much smaller than it looks. Orientation was recorded as needing a join against the feed,
+# 1. The effect is on the COUNT, and the direction of that effect is NOT "always more permissive".
+#    `check_candidate` gates on exactly two things: `bucket["n"] < calibration_min_n` and
+#    `mean_prob is None`. Since #26 removed `calibration_off`, a band's `mean_prob` and `hit_rate`
+#    are reviewer-facing decoration -- the gate never reads them. So the whole effect is on `n`.
+#
+#    **And `n` moves in BOTH directions, which is the correction.** It looks one-way only if you
+#    assume a band that receives both orientations gains rows. It can also LOSE them: the bands here
+#    are cut on raw `our_prob`, and `check_candidate` looks the band up with
+#    `home_oriented(kind, sm, mg, edge.our_prob)`. So a band's rows are filed on one axis and read
+#    on the other. A band holding a home 0.65 and an away 0.65 is, on the lookup axis, the 0.65
+#    band AND the 0.35 band: its `n` is counted in both, so a dominated band is inflated relative to
+#    the correctly-oriented one, while a band the dominant orientation skips entirely
+#    UNDER-counts for the other orientation's lookup. An under-counted band fails
+#    `bucket["n"] < calibration_min_n` when the predictor's own correctly-oriented record would have
+#    passed it -- so the same swap can **reject an edge it should admit**, not just admit one it
+#    should reject.
+#
+#    So the honest statement is: mixing orientations makes the hub's gate **more permissive or
+#    stricter, depending on which orientation dominates the band** -- not "more permissive, not
+#    less". The second half matters more than the first: the failure mode is **SILENT**. An edge
+#    rejected for `calibration_insufficient` reads as an absence of history, which is exactly what
+#    the cause looks like, so a wrong-answer gate produces a row that looks like honest caution.
+#    There is no diagnostic for it, which is why this is written down at all.
+#
+#    It is inert today, and that is the reason to correct the sentence now rather than later: CFB's
+#    live ledger is 42 winner / 33 spread / 32 total, every one of those under 100, so
+#    `choose_calibration` never selects `hub_calibration` and no band this module publishes is
+#    looked up by anything. A wrong assurance about a currently-inert path is free to leave in place
+#    and expensive to remove the day it stops being inert, because by then it will have been
+#    believed -- and it will be believed precisely on the day the four-bucket ruling lands, which is
+#    the day `calibration_min_n` is the only thing between a band and an admission.
+# 2. The re-cut is small. Orientation was recorded as needing a join against the feed,
 #    but the SUBJECT team is one regex away: `team_code(sm)` is `re.sub(r"\d+$", "", sm.suffix)` off
 #    the market's suffix, and `market_ticker` is a column on the settled row -- the same ticker the
 #    scan wrote. Only the AWAY team (`mg.away_code`) needs the feed, joined on the row's own
@@ -52,6 +77,10 @@ from tradehub.sports.kinds import KINDS
 #    `1 - our_prob` whenever `team_code(market_ticker) == away_code` for that `game_id`. It is a
 #    RE-CUT, not a relabel -- flipping the values in place would misfile every band a second time,
 #    and the fix has to be right in the first place or it is worse than the park.
+#
+# Do NOT attempt the re-cut in the change that discovers this. It is a parked follow-up: the scan
+# settles into hub-calibrated bands the day one kind crosses 100 settled rows, and a partial
+# migration of that record (some bands re-cut, some not) is a state with no correct reader.
 #
 # The reason it is a constant on the output rather than a paragraph here: a limitation that lives in
 # prose is invisible to whoever reads the data, and this one is the kind that gets silently inherited

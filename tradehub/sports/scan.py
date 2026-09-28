@@ -114,6 +114,14 @@ class SportScan:
     # the per-sport state: "priced and then rejected" and "never priced" are different failures and
     # the run summary has to be able to tell them apart.
     too_far: int = 0
+    # The mirror of `too_far` at the NEAR end: inside `min_hours_to_start`, so too soon to trade.
+    #
+    # Its own counter rather than a fold into `too_far` because the approved window is TWO bounds and
+    # a reader who cannot tell which one dropped a game cannot tell a scanner that is mis-reading its
+    # config from a board that is simply quiet. With one shared count, `too_far: 0` beside a stored
+    # reject carrying `starts_too_soon` is a contradiction: the reject says a near-bound game was
+    # priced, and the counter says no game was dropped at either end. Two names, one fact each.
+    too_soon: int = 0
 
 
 def _fact_pack(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s: EdgeSuggestion,
@@ -234,6 +242,35 @@ def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s:
         "start_utc": g.start_utc.isoformat(),
         "snapshotted_at": g.snapshotted_at.isoformat(),
         "model_version": g.model_version,
+        # The game's own published margin-distribution width, carried so the ranking has a producer.
+        #
+        # One sigma per GAME, not per kind, and that is the shape `edge / sigma` consumes: the feed
+        # publishes `sigma` beside `margin_mu` on the game, and every kind of that game's market is
+        # scored against it. For a SPREAD market it is exactly the width `price_market` computed the
+        # quoted probability with (`pricing.py`, `prob_in_interval(margin_mu, sigma, ...)`). For a
+        # WINNER market it is not -- that price comes from `p_home` alone -- so this records the
+        # model's published confidence in the game rather than the width of this particular quote,
+        # which is the design §4 asks for and the only reading that keeps one number comparable
+        # across kinds. Stating it here because the difference is easy to mistake for a bug and the
+        # fix is not to drop the key: a row per kind would rank spread and winner on different scales
+        # for no reason a reader could see.
+        #
+        # Without this line `kalshi_edges.raw_payload["sigma"]` is ABSENT -- not null, which is the
+        # distinction that hid it: `raw_payload` is the op dict verbatim
+        # (`core/supabase_client.py`), so a key nobody writes is not a key that reads as null. Every
+        # consumer therefore saw a feed that publishes no sigma, and `_ranking_mode` reported
+        # `raw_edge` over rows written from a game the feed had priced at sigma 0.015. A `None` here
+        # is stored as a `None`, so the key always says "what the feed published" and a null stays
+        # distinguishable from a value nobody wrote.
+        #
+        # Note the ASYMMETRY with `edge_row`, which deliberately does NOT publish sigma to the page
+        # (see the key loop there). That is not an oversight and must not be "tidied" away: the
+        # page ranks on the response's `ranking` field, and a per-row sigma the page could sort by
+        # itself is a second source of the ranking. The server sorts and the page says. The two
+        # states -- the ranking is a z-score, or the feed published no sigma -- are decided from the
+        # STORED rows, which is the only place the sigma exists.
+        # `tests/test_sports_sigma_rank.py` pins both halves: this produces it, `edge_row` withholds it.
+        "sigma": g.sigma,
         "candidate": check.ok,
         "reject_reasons": list(check.reasons),
         "calibration_bucket": check.bucket,
@@ -297,18 +334,31 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
         if mg.game.start_utc <= now:
             started += 1
             continue
-        # The far bound, from the SAME params the candidate filter uses.
+        # The window, both ends, from the SAME params the candidate filter uses.
         #
-        # There was no upper bound here, so the scan priced every upcoming game, stored it, and
-        # `check_candidate` then rejected it for `starts_too_late`. CFB week 5 sits 120-168h out
+        # There was no upper bound here at all, so the scan priced every upcoming game, stored it,
+        # and `check_candidate` then rejected it for `starts_too_late`. CFB week 5 sits 120-168h out
         # against this 72h window, which is why 86 of the 100 live rows carried that reason: they
         # were dead on arrival by construction. Bounding here means the work is never done.
         #
+        # The LOWER bound is the same argument, and it was left out: a game 0.5h out was priced,
+        # stored, and rejected for `starts_too_soon` -- so §9 approval 2 ("games outside 1-72h are
+        # never priced") was half-implemented, and the half that was implemented was the half with
+        # no observed waste behind it, which is why it read as done.
+        #
         # Read from cfg rather than hardcoded, so changing min_hours_to_start / max_hours_to_start
-        # moves this with it. tests/test_sports_scan_window.py pins the 71h/73h boundary so a future
-        # edit cannot drift it silently.
-        if (mg.game.start_utc - now).total_seconds() / 3600.0 > float(cfg.edge.params["max_hours_to_start"]):
+        # moves this with it. tests/test_sports_scan_window.py varies BOTH bounds, so a 72 or a 1
+        # written into the source instead of read from cfg fails.
+        #
+        # Strict `<` on the near end and strict `>` on the far one, matching `check_candidate`
+        # exactly: a game at precisely min_hours_to_start is priced there, so it is priced here.
+        # Diverging between the two would reintroduce a priced-then-rejected game at the boundary.
+        hours_out = (mg.game.start_utc - now).total_seconds() / 3600.0
+        if hours_out > float(cfg.edge.params["max_hours_to_start"]):
             out.too_far += 1
+            continue
+        if hours_out < float(cfg.edge.params["min_hours_to_start"]):
+            out.too_soon += 1
             continue
         for kind, markets in mg.markets.items():
             for sm in markets:
@@ -447,6 +497,25 @@ def _unrecognised_for(hub_ledger: HubLedger | None, sport: str) -> dict[str, int
     return dict(hub_ledger.unrecognised_by_engine.get(engine, {}))
 
 
+def _feed_unrecognised_for(feed: Feed | None) -> list[str] | None:
+    """The feed's own unread names, or `None` when no feed was parsed for this sport.
+
+    The `calibration` half of the ledger's `unrecognised_kinds` tally, on the same sentinel and for
+    the same reason: a payload publishing a name this build cannot read is a gap in the BUILD, and
+    every number downstream is blind to it because the affected kinds fall through to no band at
+    all, which looks exactly like a kind with nothing settled.
+
+    `None` rather than `[]` when there is no feed -- on the deadline early exit and on the 404 exit
+    there is no payload to have read, so an empty list would publish the reassuring answer to a
+    question this run never asked. The same `None` is the claim `[]` would be on a sport that never
+    scanned, which is what lets a reader read all five diagnostic keys under one convention.
+
+    A COPY, like `_unrecognised_for`: a reader that edits the report must not be able to edit the
+    measurement it reports.
+    """
+    return None if feed is None else list(feed.unrecognised_kinds)
+
+
 def _settled_by_kind_for(hub_ledger: HubLedger | None, sport: str) -> dict[str, int] | None:
     """How many settled rows of each kind the hub's own record holds for this sport, or `None`.
 
@@ -475,19 +544,25 @@ class SportsRun:
     predictions: list[dict[str, Any]]
     edges: list[dict[str, Any]]
     reports: dict[str, Any]
-    # sport -> {feed_ok, edges, series_ok, too_far, unrecognised_kinds, settled_by_kind} on the path
-    # that actually scanned, and {feed_ok, edges, unrecognised_kinds, settled_by_kind} on the three
+    # sport -> {feed_ok, edges, series_ok, too_far, too_soon, unrecognised_kinds, settled_by_kind,
+    # feed_unrecognised_kinds} on the path that actually scanned, and
+    # {feed_ok, edges, unrecognised_kinds, settled_by_kind, feed_unrecognised_kinds} on the three
     # early exits in `run_sports_scan` (deadline, feed 404, every series failed), which have no scan
     # result to count. So read these with .get().
-    # `too_far` is games the far bound dropped before pricing. It is the difference between "priced
-    # and rejected" and "never priced", which is the first question anybody asks of an empty board
-    # (see SportScan.too_far). It reaches a reader through `sports_run_summary`, not from here.
-    # `unrecognised_kinds` and `settled_by_kind` are on EVERY path, including the early exits,
-    # because both are learned when the ledger is read -- which happens before any of them -- and
-    # neither is a fact about the scan. A key that only appears on the runs that scanned is a key a
-    # reader has to wonder about on the runs where it is missing. They are `None`, not `{}`, on a run
-    # whose ledger read failed or was never handed in: see `_unrecognised_for`,
-    # `_settled_by_kind_for` and `sports_run_summary`.
+    # `too_far` and `too_soon` are the two ends of the window, dropped before pricing. Together they
+    # are the difference between "priced and rejected" and "never priced", which is the first
+    # question anybody asks of an empty board (see SportScan.too_far / SportScan.too_soon). They
+    # reach a reader through `sports_run_summary`, not from here. They reach it ONLY on a sport that
+    # scanned, so on the three early exits they are absent and read as `None` -- "not measured",
+    # which is exactly right: no window was applied to a sport whose feed never arrived.
+    # `unrecognised_kinds` and `feed_unrecognised_kinds` are the two places a kind outside
+    # `sports.kinds.KINDS` can be met, and `settled_by_kind` is the count the threshold is judged
+    # on. All three are on EVERY path, including the early exits, because all three are learned
+    # before any of them -- two when the ledger is read, one when the feed is parsed -- and none is
+    # a fact about the scan. A key that only appears on the runs that scanned is a key a reader has
+    # to wonder about on the runs where it is missing. They are `None`, not `{}`, on a run whose
+    # read failed or was never handed in: see `_unrecognised_for`, `_settled_by_kind_for` and
+    # `sports_run_summary`.
     # The write_ok flag is filled in by the caller, which is the only place that knows whether the
     # upsert landed.
     per_sport: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -506,36 +581,44 @@ class SportsRun:
 # subset of what a real run writes. Both halves are needed: a name carried that nothing writes
 # publishes `None` forever, which is the reassuring-looking "not measured" on a measurement that is
 # in fact the one that did happen.
-DIAGNOSTIC_KEYS = ("too_far", "unrecognised_kinds", "settled_by_kind")
+DIAGNOSTIC_KEYS = ("too_far", "too_soon", "unrecognised_kinds", "settled_by_kind", "feed_unrecognised_kinds")
 
 
 def sports_run_summary(run: SportsRun) -> dict[str, Any]:
     """`run.reports` with the per-sport diagnostics folded in: the summary a human receives.
 
-    Three facts live only in `per_sport`, and each is the difference between two readings that look
+    Five facts live only in `per_sport`, and each is the difference between two readings that look
     identical otherwise:
 
-    - `too_far` -- games the window's far bound dropped before pricing. Without it, a run that
-      priced two of three games is indistinguishable from a run that priced none.
-    - `unrecognised_kinds` -- settled rows naming a kind outside `sports.kinds.KINDS`, which the hub
-      record cannot hold. Without it, a kind with no band is indistinguishable from a kind this
-      deployment cannot read.
+    - `too_far` / `too_soon` -- games the window's far and near bounds dropped before pricing.
+      Without them, a run that priced two of three games is indistinguishable from a run that priced
+      none, and a reader cannot tell which end of the window did the dropping. Two keys because the
+      approved window is two bounds and one count cannot name which one fired; see `SportScan`.
+    - `unrecognised_kinds` / `feed_unrecognised_kinds` -- settled rows naming a kind outside
+      `sports.kinds.KINDS`, and names in the predictor's `calibration` this build does not know.
+      Without them, a kind with no band is indistinguishable from a kind this deployment cannot
+      read. Two keys, same question asked of two different sources, because the consequences
+      differ (evidence lost vs. judged on no band) and one number could not say which.
     - `settled_by_kind` -- settled rows of each kind the hub record does hold, per kind. Without it
       the reader has to open a band to learn how close a kind is to the threshold that decides
       whether the hub is in charge of it at all, and the aggregate they would compute from the bands
       crosses `HUB_LEDGER_MIN_SETTLED` before any single kind does.
 
-    Every sport in `per_sport` gets all three, whether or not it scanned: a sport whose report entry
+    Every sport in `per_sport` gets all five, whether or not it scanned: a sport whose report entry
     has to be synthesised is a sport whose diagnostics would otherwise be dropped by the join, and a
-    silently dropped diagnostic is the shape this exists to remove.
+    silently dropped diagnostic is the shape this exists to remove. What the per-path difference
+    costs is the VALUE, not the key's presence, and the value carries the difference: see below.
 
-    All three keys share one sentinel, and it means exactly one thing: **`None` is "not measured"**,
-    and an empty value is a real measurement. So `too_far` is `None` on a sport that never scanned --
-    "not measured", which is not the claim `0` would be, that the window dropped nothing -- and
-    `unrecognised_kinds` / `settled_by_kind` are `None` on a run whose hub ledger could not be read,
-    which is not the claim `{}` would be, that the read completed and this sport has no settled row
-    of a kind the build cannot place and none of any kind it can. One summary, one sentinel, one
-    meaning; a reader never sees a reassuring value for a measurement that did not happen.
+    All five keys share one sentinel, and it means exactly one thing: **`None` is "not measured"**,
+    and an empty value is a real measurement. So `too_far` / `too_soon` are `None` on a sport that
+    never scanned -- "not measured", which is not the claim `0` would be, that the window dropped
+    nothing. `unrecognised_kinds` / `settled_by_kind` are `None` on a run whose hub ledger could not
+    be read, which is not the claim `{}` would be, that the read completed and this sport has no
+    settled row of a kind the build cannot place and none of any kind it can.
+    `feed_unrecognised_kinds` is `None` on the two exits that never parsed a payload (deadline, feed
+    404) and a list on the other four, so the same rule decides it as decides the rest. One summary,
+    one sentinel, one meaning; a reader never sees a reassuring value for a measurement that did not
+    happen.
     """
     summary: dict[str, Any] = dict(run.reports)
     for sport, state in run.per_sport.items():
@@ -564,7 +647,11 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
             reports[sport] = {"skipped": "scan deadline reached before this sport"}
             per_sport[sport] = {"feed_ok": False, "edges": [],
                                 "unrecognised_kinds": _unrecognised_for(hub_ledger, sport),
-                                "settled_by_kind": _settled_by_kind_for(hub_ledger, sport)}
+                                "settled_by_kind": _settled_by_kind_for(hub_ledger, sport),
+                                # No payload was ever parsed on either of these two exits, so there
+                                # is nothing to have unread names in. `None`, not `[]` -- see
+                                # `_feed_unrecognised_for`.
+                                "feed_unrecognised_kinds": _feed_unrecognised_for(None)}
             continue
         cfg = load_sport_config(sport)
         try:
@@ -580,7 +667,11 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
             reports[sport] = {"feed_error": str(exc)}
             per_sport[sport] = {"feed_ok": False, "edges": [],
                                 "unrecognised_kinds": _unrecognised_for(hub_ledger, sport),
-                                "settled_by_kind": _settled_by_kind_for(hub_ledger, sport)}
+                                "settled_by_kind": _settled_by_kind_for(hub_ledger, sport),
+                                # No payload was ever parsed on either of these two exits, so there
+                                # is nothing to have unread names in. `None`, not `[]` -- see
+                                # `_feed_unrecognised_for`.
+                                "feed_unrecognised_kinds": _feed_unrecognised_for(None)}
             continue
         # open_markets is a paginated public-API call per series; one series failing must not
         # cost the sport, and must certainly not be read as "this sport has no edges".
@@ -596,7 +687,14 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
             reports[sport] = {"kalshi_error": "; ".join(f"{s}: {e}" for s, e in series_errors.items())}
             per_sport[sport] = {"feed_ok": False, "edges": [],
                                 "unrecognised_kinds": _unrecognised_for(hub_ledger, sport),
-                                "settled_by_kind": _settled_by_kind_for(hub_ledger, sport)}
+                                "settled_by_kind": _settled_by_kind_for(hub_ledger, sport),
+                                # The feed WAS parsed on this exit -- only the Kalshi side failed --
+                                # so its unread names are a real measurement and are published. This
+                                # is the one early exit where a gap in the payload is still knowable,
+                                # and dropping it here would lose the only run where a reader is
+                                # most likely to be looking: every series failed, so the board is
+                                # empty and the reason is what they came for.
+                                "feed_unrecognised_kinds": _feed_unrecognised_for(feed)}
             continue
         # Only this sport's own ledger, keyed by engine upstream. NFL and CFB are different models
         # with different records, so a shared one would hand a sport a calibration built from the
@@ -615,7 +713,7 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
             report["series_errors"] = series_errors
         reports[sport] = report
         per_sport[sport] = {"feed_ok": True, "edges": result.edges, "series_ok": not series_errors,
-                            "too_far": result.too_far,
+                            "too_far": result.too_far, "too_soon": result.too_soon,
                             # The build gap this sport's own settled rows exposed, in the run report
                             # rather than only in a log. `{}` is a real answer: this sport has no
                             # settled row of a kind the build cannot read, which is not the same as
@@ -624,6 +722,15 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
                             # is `None`. This path scanned, so `too_far` above is a real count while
                             # this may not be; the two keys are independent measurements.
                             "unrecognised_kinds": _unrecognised_for(hub_ledger, sport),
+                            # And the other half of the same question, asked of the payload rather
+                            # than of the ledger. SEPARATE keys, not a merged tally, because the two
+                            # sides are different facts with different consequences and a merged count
+                            # could not say which was which: a settled row this build cannot file is
+                            # evidence lost, while a band list this build cannot read means the
+                            # affected kinds are being judged on NO band at all. Both are build gaps,
+                            # both are silent, and a reader who saw one number could not tell which
+                            # kind of gap they were looking at.
+                            "feed_unrecognised_kinds": _feed_unrecognised_for(feed),
                             # And the per-kind counts the threshold is actually judged on, same
                             # sentinel and same shape. `HUB_LEDGER_MIN_SETTLED` is a per-kind count,
                             # so a reader watching the hub take over has to be able to see the
@@ -668,6 +775,24 @@ def sports_due(now: datetime) -> bool:
     return os.getenv("SPORTS_SCAN_EVERY_RUN") == "1" or now.astimezone(timezone.utc).hour % 3 == 0
 
 
+# NOTE (2026-09-27, whole-branch review): this and `SPORTS` above, plus
+# `api.main._SPORTS_ENGINES`, are THREE enumerations of the same two sports, and this branch made
+# the fan-out worse rather than better. `SPORTS` is the tuple `run_sports_scan` iterates, this is
+# the sport -> engine map, and `api/main.py` keeps its own copy. Three sites that agree only by
+# review is the same shape `sports/kinds.py` was created to end: that module exists precisely
+# because `hub_calibration.KINDS` and an inlined `("winner", "spread", "total")` in
+# `feed.parse_feed` were two copies, and the second turned out to be a FILTER whose exclusions were
+# silent. This one is not silent today -- an engine added here without the API copy makes the sport
+# invisible to the page rather than mis-attributed, and a sport added to `SPORTS` without this map
+# makes `.get(sport, "")` return `""` and file that sport's settled rows nowhere.
+#
+# Left as three, deliberately: the API module is a FastAPI app and the scan has no business
+# importing one (the same reason `LEDGER_PAGE` is not imported from `api/main.py` either), so the
+# fix is a shared constants module rather than a one-line import -- a change of shape, not a fix.
+# Recorded so the next reader counts four sites rather than three and knows the shape of the thing
+# being inherited. What ties `KINDS`' copies together today is an identity test in
+# `tests/test_sports_inversion.py`; there is no equivalent for this pair, and that asymmetry is the
+# real finding rather than the duplication itself.
 SPORTS_ENGINES = {"nfl": "sports_nfl", "cfb": "sports_cfb"}
 
 
