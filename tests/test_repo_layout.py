@@ -250,6 +250,122 @@ def test_deploy_workflow_builds_then_deploys_to_vps():
         assert azure not in text, f"workflow must not reference Azure ({azure})"
 
 
+def test_deploy_workflow_prunes_docker_images_before_it_pulls():
+    """The VPS ran out of disk mid-deploy, and it looked exactly like a code regression.
+
+    `b49879e` built green and failed only in `vps` with `no space left on device`, on a 99%-full
+    38G disk holding 35 images totalling 33.91GB. The *identical commit* deployed fine after a
+    manual 7.26GB prune. Every merge to `main` pulls a fresh image and leaves the superseded one
+    behind, so nothing was ever reclaiming them. Ordering is the load-bearing part of the fix:
+    reclaiming space after the layer extract has already failed is worth nothing, and a plain
+    "does the workflow prune?" check stays green through a reorder that reinstates the outage.
+    """
+    import yaml
+
+    workflow = yaml.safe_load(
+        (REPO / ".github/workflows/deploy-tradehub.yml").read_text(encoding="utf-8"))
+    runs = [str(s.get("run", "")) for s in workflow["jobs"]["vps"]["steps"]]
+
+    # The pull is not in this repo: `ssh ... deploy tradehub <sha>` invokes a stack script on the
+    # VPS that does the `docker pull`. So the pull is pinned to whichever step carries that call.
+    prune_at = [i for i, r in enumerate(runs) if "docker image prune" in r]
+    pull_at = [i for i, r in enumerate(runs) if "deploy tradehub" in r]
+    assert prune_at, f"the vps job no longer prunes anything; its steps run {runs}"
+    assert pull_at, f"the vps job no longer deploys; its steps run {runs}"
+    assert min(prune_at) < min(pull_at), (
+        f"the prune must run before the pull, but the prune is at step {prune_at} "
+        f"and the pull at step {pull_at}"
+    )
+    # `-a` is the whole point. The superseded per-SHA images are tagged, not dangling, so a plain
+    # `docker image prune` reclaims none of them and the disk creeps at the same measured ~5GB.
+    assert "docker image prune -a -f" in runs[min(prune_at)], runs[min(prune_at)]
+
+
+def test_deploy_workflow_cannot_reach_a_volume_prune():
+    """The highest-value assertion in this file: a volume prune in a deploy workflow is data loss.
+
+    All three local volumes on the VPS are in use (`kalshi_portfolio` and the bind-mounted
+    caches), so a prune that takes volumes destroys live state on the very machine the deploy
+    depends on. The `system prune` subcommand is the same hazard one indirection away, and it is
+    broad enough to be the tempting one-word "fix" for a full disk -- so it is pinned too. The
+    check is on the whole file text rather than the parsed commands, which also forbids
+    reintroducing either spelling in a comment, where it sits one uncomment away from shipping.
+    """
+    text = (REPO / ".github/workflows/deploy-tradehub.yml").read_text(encoding="utf-8")
+    assert "--volumes" not in text, "the deploy workflow must never be able to prune volumes"
+    assert "docker system prune" not in text, (
+        "`docker system prune` reclaims volumes under its volumes flag and is far broader than "
+        "this job needs; use `docker image prune -a -f` instead"
+    )
+
+
+def test_deploy_prune_fails_soft_and_reports_free_space():
+    """A cleanup step that can block a deploy reintroduces the class of failure it is fixing, and
+    a red `vps` job with no disk numbers is the diagnosis this whole change exists to prevent.
+
+    Both halves are pinned because each fails silently: dropping `continue-on-error` turns a
+    cleanup hiccup into a failed deploy, and dropping either `df` leaves a future reader with the
+    same SSH-in-and-measure-it detour that cost an hour here. The per-command `||` guards are what
+    make the failure a GitHub warning inside the step; `continue-on-error` is the backstop.
+    """
+    import yaml
+
+    workflow = yaml.safe_load(
+        (REPO / ".github/workflows/deploy-tradehub.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["vps"]["steps"]
+    prunes = [s for s in steps if "docker image prune" in str(s.get("run", ""))]
+    assert prunes, f"the vps job no longer prunes anything; its steps are {[s.get('name') for s in steps]}"
+    prune = prunes[0]
+
+    assert prune["continue-on-error"] is True, (
+        "a prune failure must not be able to fail the deploy"
+    )
+    run = prune["run"]
+    assert run.count("df -h /") == 2, f"free space must be reported before and after; got {run!r}"
+    # Build cache was 229MB with 80MB reclaimable, so this one earns its place.
+    assert "docker builder prune -f" in run, run
+    for command in ("docker image prune -a -f", "docker builder prune -f"):
+        assert f"{command} || echo" in run, f"{command} must be guarded so it fails soft: {run!r}"
+
+
+def test_deploy_prune_warnings_use_real_annotation_syntax():
+    """A guard that is not an annotation is silent-but-nonfatal, which helps nobody.
+
+    GitHub's workflow commands are a *double* colon on both sides of the keyword. The first
+    version of these guards used a single colon, which `echo` prints happily as ordinary log text:
+    no annotation, nothing in the run's checks UI, and a prune failure nobody sees. It shipped
+    through the fail-soft test, and through a report that claimed the double-colon form had been
+    verified, because the old assertion was `f"{command} || echo" in run` -- that measured that a
+    guard existed, not that the guard was an annotation. That is this repo's recurring failure
+    mode: a test that passes while measuring nothing.
+
+    So the positive side is checked per guard command rather than per file, and the negative side
+    forbids the single-colon variant outright. The naive `":warning:" not in text` cannot be used,
+    because that substring IS contained in the correct double-colon form; a negative lookbehind is
+    what actually distinguishes an annotation from log text.
+    """
+    import yaml
+
+    path = REPO / ".github/workflows/deploy-tradehub.yml"
+    text = path.read_text(encoding="utf-8")
+    steps = yaml.safe_load(text)["jobs"]["vps"]["steps"]
+    prunes = [s for s in steps if "docker image prune" in str(s.get("run", ""))]
+    assert prunes, f"the vps job no longer prunes anything; its steps are {[s.get('name') for s in steps]}"
+    run = prunes[0]["run"]
+
+    for command in ("docker image prune -a -f", "docker builder prune -f", "df -h /"):
+        assert command + ' || echo "::warning::' in run, (
+            f"every guard on {command!r} must emit a double-colon annotation; got {run!r}"
+        )
+    # Nothing anywhere in the file may use the single-colon form, which prints as plain log text.
+    # Over the whole file, so a regression cannot hide in a comment either.
+    defect = re.search(r"(?<!:):warning:", text)
+    assert defect is None, (
+        f"single-colon :warning: at offset {defect.start()} is plain log text, not an annotation; "
+        "GitHub's workflow commands need a double colon on both sides of the keyword"
+    )
+
+
 def test_ci_runs_the_frontend_suite_and_typechecker():
     """The workflow ran `python -m pytest -q` and nothing else, so all of market_sentiment_tool's
     tests never executed on any PR: 128 green tests that were not run. The Dockerfile's
