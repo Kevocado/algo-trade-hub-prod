@@ -18,6 +18,8 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from dotenv import load_dotenv
 from pathlib import Path
 
+from tradehub.markets import quote_cents
+
 root_dir = Path(__file__).parent.parent
 load_dotenv(dotenv_path=root_dir / '.env', override=True)
 
@@ -203,13 +205,18 @@ class KalshiPortfolio:
                 # Fetch live price for accurate exposure
                 m_data = self.get_market_data(ticker)
                 if m_data and m_data.get('market'):
-                    m = m_data['market']
+                    prices = quote_cents(m_data['market'])
+                    yes_ask, yes_bid = prices['yes_ask'], prices['yes_bid']
                     # Use yes_ask/yes_bid to estimate mid-market
-                    yes_ask = m.get('yes_ask', 0)
-                    yes_bid = m.get('yes_bid', 0)
-                    current_price = (yes_ask + yes_bid) / 2 if (yes_ask and yes_bid) else (yes_ask or yes_bid or 0)
-                    pos['current_price'] = current_price
-                    pos['market_exposure_dollars'] = (current_price * pos.get('position', 0)) / 100
+                    if yes_ask is not None and yes_bid is not None:
+                        current_price = (yes_ask + yes_bid) / 2
+                    else:
+                        current_price = yes_ask if yes_ask is not None else yes_bid
+                    # An unpriceable market leaves the position untouched rather
+                    # than persisting a fabricated 0c price and 0 exposure.
+                    if current_price is not None:
+                        pos['current_price'] = current_price
+                        pos['market_exposure_dollars'] = (current_price * pos.get('position', 0)) / 100
                 
                 summary['market_exposure'] += float(pos.get('market_exposure_dollars', pos.get('market_exposure', 0) / 100))
 
