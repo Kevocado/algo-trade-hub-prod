@@ -45,16 +45,39 @@ ON signal_events(domain, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_signal_events_dedupe
 ON signal_events(domain, dedupe_key, alert_kind, created_at DESC);
 
+-- Removing the OLD name from the publication. Two different failures, two different SQLSTATEs,
+-- and the guard has to name both:
+--
+--   42P01 undefined_table  -- the relation is gone. This is the one that actually fires, and it is
+--                             the case this migration creates for itself: line 1 renamed the
+--                             table, so by the time this block runs `crypto_signal_events` does
+--                             not resolve. Publications store relation OIDs, so the rename
+--                             already moved the membership to `signal_events`.
+--   42704 undefined_object -- the relation exists but is not a member of the publication.
+--                             PostgreSQL reports this as undefined_object too, not as
+--                             object_not_in_prerequisite_state, so the name is genuinely correct
+--                             here and was always needed.
+--
+-- The guard used to catch only the second. `undefined_object` is a real PL/pgSQL condition, so
+-- nothing complained; the block simply did not match the error that occurred, and the whole
+-- migration aborted with 42P01 on a database that was in exactly the state it was written for.
+-- That is the failure recorded on 2026-09-28. Fixed here, and locked in by
+-- tests/test_migration_exception_conditions.py.
 DO $$
 BEGIN
     BEGIN
         ALTER PUBLICATION supabase_realtime DROP TABLE crypto_signal_events;
     EXCEPTION
+        WHEN undefined_table THEN NULL;
         WHEN undefined_object THEN NULL;
         WHEN invalid_parameter_value THEN NULL;
     END;
 END $$;
 
+-- Adding the NEW name. `undefined_object` is CORRECT in this block and must not be "fixed": the
+-- object that can be missing here is the PUBLICATION, not the table, and a missing publication is
+-- 42704. `duplicate_object` is 42710, "table is already a member". 42P01 cannot arise -- the table
+-- was created or renamed into existence at line 1 or 3, well above this block.
 DO $$
 BEGIN
     BEGIN
