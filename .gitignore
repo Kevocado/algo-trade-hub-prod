@@ -67,6 +67,8 @@ chroma_db/
 
 # ── ML Models & Data ─────────────────────────────
 models/
+!tradehub/models/
+!tradehub/models/**
 *.pkl
 *.joblib
 *.h5

@@ -13,6 +13,7 @@ from tradehub.journal.forecasters.cpi import CpiForecaster
 from tradehub.journal.forecasters.fomc import FOMC_SERIES, FomcMapped, is_hold_market
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
 from tradehub.journal.forecasters.sentiment import SentimentMeter
+from tradehub.journal.forecasters.spy_quant import SpyQuant
 from tradehub.journal.kalshi_linked import KalshiImplied
 from tradehub.journal.spx import SpxCloses
 
@@ -34,4 +35,6 @@ FORECASTERS: list[Forecaster] = [
     QuitsDirection(_LABOR),
     # plan (d): sentiment meter (spec §6)
     SentimentMeter(_SPX),
+    # plan (e): walk-forward quant (spec §7); same target and settlement as the meter
+    SpyQuant(_SPX),
 ]
