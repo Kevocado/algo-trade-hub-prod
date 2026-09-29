@@ -91,3 +91,28 @@ def test_one_failing_forecaster_does_not_stop_the_others():
 def test_now_must_be_timezone_aware():
     with pytest.raises(ValueError, match="timezone-aware"):
         run_journal(FakeJournalDB(lambda: T0), [], datetime(2026, 10, 1, 8))  # noqa: DTZ001
+
+
+def test_the_gate_uses_the_journal_scorecard_alone_once_a_forecaster_is_on_it():
+    from tradehub.gate_status import latest_gate_statuses
+
+    db = FakeJournalDB(lambda: T0)
+    # Legacy tables say PROMOTED; the journal says SHADOW. The journal is the ledger of record.
+    db.tables["backtest_runs"].append({"engine": "cpi", "engine_version": "v1", "gate_status": "PROMOTED",
+                                       "created_at": "2026-09-01"})
+    db.tables["track_record"].append({"engine": "cpi", "engine_version": "v1", "gate_status": "PROMOTED"})
+    assert latest_gate_statuses(db, {("cpi", "v1")}) == {("cpi", "v1"): "PROMOTED"}  # not on the journal yet
+    db.tables["journal_scores"].append({"forecaster": "cpi", "forecaster_version": "v1", "gate_status": "SHADOW"})
+    assert latest_gate_statuses(db, {("cpi", "v1")}) == {("cpi", "v1"): "SHADOW"}
+
+
+def test_the_gate_falls_back_when_the_journal_table_is_not_deployed_yet():
+    from tradehub.gate_status import latest_gate_statuses
+
+    class NoJournal(FakeJournalDB):
+        def table(self, name):
+            if name == "journal_scores":
+                raise RuntimeError("Could not find the table 'public.journal_scores' in the schema cache")
+            return super().table(name)
+
+    assert latest_gate_statuses(NoJournal(lambda: T0), {("cpi", "v1")}) == {("cpi", "v1"): "SHADOW"}

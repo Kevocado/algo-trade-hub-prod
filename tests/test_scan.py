@@ -100,6 +100,8 @@ def test_latest_gate_statuses_requires_latest_backtest_and_matching_track_record
             return self
 
         def execute(self):
+            if self.name == "journal_scores":
+                return type("Result", (), {"data": []})()  # no forecaster is on the journal here
             calls.append((self.name, dict(self.filters), self.ordered, self.limit_value))
             if self.name == "backtest_runs":
                 row = backtests.get(self.filters["engine"])
