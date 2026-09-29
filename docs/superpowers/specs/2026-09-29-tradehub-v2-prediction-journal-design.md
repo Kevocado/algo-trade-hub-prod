@@ -67,9 +67,13 @@ daily directionals once per morning), not per-ticker cron spam — ported from t
 stack's load-once batch pattern. Each run executes freeze → settle → score in order.
 
 - `journal_forecasts` — immutable freeze ledger. New Supabase migration, numbered after the
-  highest migration on `main` at implementation time. RLS: insert-before-cutoff only;
-  no updates, no deletes. `rebuilt` boolean column; rows with `rebuilt=true` are excluded
-  from every stat by rule (see below).
+  highest migration on `main` at implementation time. `frozen_at` is server-generated
+  (column default `now()`; any client-supplied value is ignored) — RLS cannot trust a
+  client clock. A `journal_calendars` table maps each target to its cutoff rule, and the
+  insert policy joins it. No updates, no deletes. `rebuilt` boolean column; rows with
+  `rebuilt=true` are excluded from every stat by rule (see below). All timestamps are
+  tz-aware (`America/Chicago` for freeze/cutoff display, UTC in storage) — naive-local
+  time rotted the quarantine fixtures in #46, and the ledger must not repeat it.
 - `journal_settlements` — actuals plus per-row Brier, written only by the settle job.
 - The two existing sinks keep their meanings untouched: `kalshi_edges` (trade proposals,
   still gated) and `kalshi_quarantine_edges` (quarantined rows). The journal's quarantine
@@ -82,6 +86,9 @@ stack's load-once batch pattern. Each run executes freeze → settle → score i
 **Failure rules (all pinned by tests):** a missed freeze is a gap in the ledger, never a
 backfill — the run logs the miss and moves on. Post-event "rebuilt" rows are displayed but
 never counted. A failed settle retries on the next run; scoring is idempotent.
+
+**Retention:** freeze rows are the audit trail and are never deleted. At 24 months they
+move to partitioned archive tables — still queryable, still counted, out of the hot path.
 
 **Assumptions (already true):** both `signal_events` and quarantine migrations are applied
 in production; `/shadow` remains Alpaca-credential-gated independently of this spec;
@@ -96,21 +103,23 @@ standalone engine — the wave-1 FOMC forecaster maps the existing CPI/labor now
 to a decision probability at implementation time (small new mapping, not a new model).
 First journal content; the pipeline is proven graded before new modeling lands.
 
-**Labor.** Extended to three targets from the Tightness Paradox panel work: NFP m/m
-direction vs prior print, UNRATE direction, JOLTS quits direction — all settled against
-FRED vintages (PAYEMS, UNRATE, JTSQUL), no consensus feed required. "Surprise" is defined
-as model-nowcast vs actual, which is what the existing engines already compute. Rationale:
-a paid or scraped consensus feed would be the spec's weakest dependency; direction-vs-prior
-is self-settling and free forever.
+**Labor.** Payrolls-threshold probabilities publish as-is — the ridge nowcast in
+`labor.py` already emits them. UNRATE direction and JOLTS quits direction are new fits on
+the same ridge pattern: small new work, wave 1, same contract and tests. All three settle
+against FRED vintages (PAYEMS, UNRATE, JTSQUL); there is no consensus feed anywhere in the
+journal. "Surprise" is defined as model-nowcast vs actual. Rationale: a paid or scraped
+consensus feed would be the spec's weakest dependency; direction-vs-prior plus
+nowcast-vs-actual is self-settling and free forever.
 
 ## 6. Sentiment meter v1 (wave 1)
 
 Daily composite predicting **next-day SPY direction**, frozen at **08:00 CT** (pre-open).
-Components, all free and keyless: VIX (FRED VIXCLS), CBOE put/call (delayed), CNN Fear &
+Components, all free and keyless: VIX (FRED VIXCLS), put/call ratio (delayed; exact
+endpoint named with free-access evidence at plan time — no HTML scraping), CNN Fear &
 Greed internal JSON (cached; stale values flagged `stale=true`, never silent), HY spread
 (FRED BAMLH0A0HYM2), market breadth (Stooq advancers/decliners), GDELT DOC 2.1 news tone
-via VADER lexicon — no model downloads on the VPS (the `sentiment_filter.py` lesson stays
-learned). Each component z-scored vs its trailing-252-day history, combined by fixed
+via the `vaderSentiment` PyPI package (ships its own lexicon — no NLTK data download on
+the VPS; the `sentiment_filter.py` lesson stays learned), vendor-pinned in the repo. Each component z-scored vs its trailing-252-day history, combined by fixed
 weights documented in the repo. Deferred to v2: AAII weekly, Kalshi tail-odds positioning
 proxy, StockTwits (license unverified as of Sep 2026).
 
@@ -133,16 +142,19 @@ under the §3 contract, gated like everything else.
 ## 8. Wave 2–3 forecasters
 
 **Wave 2 (one pattern, three targets):** VIX next-day direction (direction scored; level
-shown as context), gold daily direction (Stooq GC=F daily close), EUR/USD daily direction
+shown as context), gold daily direction (Stooq XAUUSD daily close; all Stooq symbols
+verified at plan time — `GC=F` is Yahoo notation), EUR/USD daily direction
 (Stooq daily close). All freeze 08:00 CT, settle on the next close, scored identically to
 SPY. No new modeling: naive baselines (previous-day persistence + climatology) publish
-first so the journal has honest company for any later model; a fancier wave-2 model must
-beat its baseline's posted Brier to graduate from `provisional`.
+first so the journal has honest company for any later model — and baselines implement the
+full §3 contract including freeze tests, no unscored decoration. A fancier wave-2 model
+must beat its baseline's posted Brier to graduate from `provisional`.
 
 **Wave 3:** Housing — Case-Shiller national HPI m/m direction, frozen monthly on the FRED
 release calendar with the ~2-month data lag stated on the tile (no intra-month nowcasting
-in v1). Earnings — sign of (reported EPS − consensus) for a watchlist defined in repo
-config, consensus from Yahoo free, frozen pre-announcement, method a walk-forward event
+in v1). Earnings — sign of (reported EPS vs year-ago quarter) for a watchlist defined in
+repo config, self-settling from filings with no consensus feed (deliberately: §5's
+weakest-dependency rule applies here too — no Yahoo scraping). Frozen pre-announcement, method a walk-forward event
 model continuous with the BDI 513 earnings-call/event-returns work. Kalshi-vs-model —
 the market baseline scored as a pseudo-forecaster (Kalshi-implied probability entered as
 the forecast) on every market-linked target, so Brier Skill Scores are apples-to-apples
@@ -164,7 +176,8 @@ graded outputs* via their existing feed contract; the journal never re-settles g
 
 - **Display gate:** any forecaster appears from its first frozen row; headline stats
   aggregate only post-calibration forecasters.
-- **Calibration gate:** 20+ resolved samples per confidence bucket before joining headline
+- **Calibration gate:** buckets are fixed at 50–60 / 60–70 / 70–80 / 80–90 / 90–100
+  predicted probability, with 20+ resolved samples per bucket before joining headline
   aggregates or any +EV claim (ported from the sports stack). Until then the tile reads
   `provisional`.
 - **Promotion gate (unchanged rule, now evaluable):** paper-only until 200+ settled journal
@@ -186,8 +199,10 @@ excluded from all headline numbers, carrying their artefact/restatement labellin
 
 ## 12. Fees and testing spine
 
-`fills.py` gains Kalshi taker-fee + spread-cost modeling; the fee schedule lives as
-versioned constants with tests pinning it (any fee-constant mutation must fail). Every
+`fills.py` already prices taker fees (`shared.kalshi_fees`, used by `backtest/fills.py`);
+this spec pins that schedule with mutation-grade tests (any fee-constant mutation must
+fail) and adds spread-cost modeling. Until both land, edge claims stay gross-of-spread
+and say so. Every
 journal number traces to a pinned test: freeze-refusal (late write refused; mutation
 removing the cutoff fails it), settle-idempotency, no-backfill (`rebuilt=true` excluded —
 test asserts the exclusion, mutation flipping the flag fails), fee-schedule pins, and the
@@ -204,8 +219,10 @@ Cross-venue lead-lag studies as pure measurement. No OOS re-tuning, ever — pub
 
 ## 14. Open questions for Kevin
 
-1. CPI/FOMC in wave 1: included (existing engines, §5) — confirm, or labor-only launch?
-2. Labor targets defined without a consensus feed (§5) — acceptable, or is "surprise vs
-   consensus" worth a feed dependency?
-3. Earnings in wave 3 vs v1.x — keep, or defer with crypto?
-4. Watchlist names for earnings — your call at implementation time (config file, not spec).
+1. CPI/FOMC in wave 1: included (CPI existing, FOMC mapped from its inputs, §5) —
+   confirm, or labor-only launch?
+2. Earnings in wave 3 vs v1.x — keep, or defer with crypto?
+3. Watchlist names for earnings — your call at implementation time (config file, not spec).
+
+(Resolved in amendment: no consensus feed anywhere — labor and earnings are both
+self-settling. Former Q2 retired.)
