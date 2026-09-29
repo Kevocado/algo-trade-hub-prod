@@ -1,6 +1,6 @@
 # Trade Hub v2 — Prediction Journal (spec)
 
-Date: 2026-09-29. Status: draft for Kevin's review.
+Date: 2026-09-29. Status: draft for Kevin's review — amended twice (review findings, then a second pass checked against production and `main`).
 Sources: `trade-hub-critique-and-roadmap.md` (2026-09-28), `tradehub-v2-direction-draft.md`
 (Kevin, 2026-09-29), brainstorming sessions 2026-09-28/29 (scope: Phases 1+2, Approach B:
 journal pipeline first, CPI/labor first content, sentiment + quant as new forecasters on a
@@ -47,7 +47,8 @@ Every forecaster, existing or new, implements the same four-step contract:
 1. **Freeze.** Write one row per target to `journal_forecasts` — `(forecaster, target,
    horizon, probability, frozen_at, source_hash)` — strictly before the target's cutoff
    (BLS print time, FOMC decision time, 08:00 CT for daily directionals, market close for
-   Kalshi-linked). Late writes are refused by constraint, not by convention.
+   Kalshi-linked). Late writes are refused by a database trigger, not by convention and not
+   by RLS (see §4: the jobs write as the service role, which bypasses RLS).
 2. **Settle.** The settle job (§4) reconciles frozen rows against actuals into
    `journal_settlements` — `(target, realized_value, settled_at, source)`.
 3. **Score.** Brier per row; Murphy decomposition, reliability buckets, and Brier Skill
@@ -66,11 +67,30 @@ One scheduled batch run per instrument calendar (CPI monthly, payrolls monthly, 
 daily directionals once per morning), not per-ticker cron spam — ported from the sports
 stack's load-once batch pattern. Each run executes freeze → settle → score in order.
 
+- **One ledger of record.** The journal tables replace, not sit beside, the step-2
+  `predictions`/`track_record` ledger: every engine that moves onto the §3 contract stops
+  writing `predictions`, and the gate code (`tradehub/track_record.py`,
+  `tradehub/gate_status.py`) is repointed at the journal in the same wave. `predictions` stays
+  readable as pre-journal history (it is the "pre-journal context" of §2 — shown, never
+  counted). Two live ledgers with two headline numbers is the failure this rule prevents.
 - `journal_forecasts` — immutable freeze ledger. New Supabase migration, numbered after the
-  highest migration on `main` at implementation time. `frozen_at` is server-generated
-  (column default `now()`; any client-supplied value is ignored) — RLS cannot trust a
-  client clock. A `journal_calendars` table maps each target to its cutoff rule, and the
-  insert policy joins it. No updates, no deletes. `rebuilt` boolean column; rows with
+  highest migration on `main` at implementation time (currently `20260428000013`).
+  `target` is a generic key (`kalshi:<ticker>`, `fred:UNRATE:2026-10:up`,
+  `stooq:SPY:2026-09-30:up`) so non-Kalshi targets need no fake ticker; `market_prob` is
+  nullable. `frozen_at` is server-generated. A `journal_calendars` table maps each target
+  family to its cutoff rule (tz-aware). **Enforcement is by trigger, because the scan/settle
+  jobs write as the service role and the service role bypasses RLS:**
+  - `BEFORE INSERT`: overwrite `frozen_at := now()` (a client value is ignored) and
+    `RAISE EXCEPTION` when `now() >= cutoff(target)` from `journal_calendars`, or when the
+    target has no calendar row.
+  - `BEFORE UPDATE OR DELETE`: `RAISE EXCEPTION`, with the one exception of flipping
+    `rebuilt` from false to true. Also `REVOKE UPDATE, DELETE` from `anon` and
+    `authenticated`; clients get SELECT at most.
+  - The freeze-refusal, no-update and no-delete tests run against a real Postgres (a
+    throwaway `postgres:16` container, as the migration checks already do), not only
+    against the Python fakes. A trigger that exists only in a mock is not a guarantee.
+
+  No updates, no deletes. `rebuilt` boolean column; rows with
   `rebuilt=true` are excluded from every stat by rule (see below). All timestamps are
   tz-aware (`America/Chicago` for freeze/cutoff display, UTC in storage) — naive-local
   time rotted the quarantine fixtures in #46, and the ledger must not repeat it.
@@ -90,8 +110,8 @@ never counted. A failed settle retries on the next run; scoring is idempotent.
 **Retention:** freeze rows are the audit trail and are never deleted. At 24 months they
 move to partitioned archive tables — still queryable, still counted, out of the hot path.
 
-**Assumptions (already true):** both `signal_events` and quarantine migrations are applied
-in production; `/shadow` remains Alpaca-credential-gated independently of this spec;
+**Assumptions (verified 2026-09-29 against production):** both `signal_events` and
+`kalshi_quarantine_edges` exist in production; `/shadow` remains Alpaca-credential-gated independently of this spec;
 FRED key is present on the VPS.
 
 ## 5. Migrated and extended engines (wave 1)
@@ -101,6 +121,9 @@ FRED key is present on the VPS.
 contract with no model changes: its probabilities are already real. FOMC decisions have no
 standalone engine — the wave-1 FOMC forecaster maps the existing CPI/labor nowcast inputs
 to a decision probability at implementation time (small new mapping, not a new model).
+Expect it to lose: FOMC decisions are usually priced near-certain days out. So it ships
+alongside the Kalshi pseudo-forecaster (§8) from its first row, labelled experimental, and it is
+the first candidate for `retired` if it can't beat that baseline.
 First journal content; the pipeline is proven graded before new modeling lands.
 
 **Labor.** Payrolls-threshold probabilities publish as-is — the ridge nowcast in
@@ -114,20 +137,41 @@ nowcast-vs-actual is self-settling and free forever.
 ## 6. Sentiment meter v1 (wave 1)
 
 Daily composite predicting **next-day SPY direction**, frozen at **08:00 CT** (pre-open).
-Components, all free and keyless: VIX (FRED VIXCLS), put/call ratio (delayed; exact
+Components, all free (FRED needs the free key the VPS already has): VIX (FRED VIXCLS), put/call ratio (delayed; exact
 endpoint named with free-access evidence at plan time — no HTML scraping), CNN Fear &
 Greed internal JSON (cached; stale values flagged `stale=true`, never silent), HY spread
 (FRED BAMLH0A0HYM2), market breadth (Stooq advancers/decliners), GDELT DOC 2.1 news tone
 via the `vaderSentiment` PyPI package (ships its own lexicon — no NLTK data download on
 the VPS; the `sentiment_filter.py` lesson stays learned), vendor-pinned in the repo. Each component z-scored vs its trailing-252-day history, combined by fixed
-weights documented in the repo. Deferred to v2: AAII weekly, Kalshi tail-odds positioning
+weights documented in the repo.
+
+**Point-in-time rule for the 08:00 CT freeze.** Every component value carries its observation
+date *and* its publish time, and the meter uses only values published before the freeze. FRED
+series such as VIXCLS and BAMLH0A0HYM2 typically land a day late, so at 08:00 CT on day t the
+freshest value is usually t−1 or t−2. The backtest must apply the same rule via FRED
+`realtime_start` vintages, or it is scoring information the live meter never had.
+
+**Weakest-dependency rule, applied evenly.** CNN Fear & Greed's JSON is an undocumented
+internal endpoint, and Stooq "breadth" (advancers/decliners) is not a confirmed free series.
+Both are *optional* components:
+- when missing or stale, their weight is renormalised across the rest and the row records
+  which components were present;
+- the meter is required to run on the FRED components alone.
+
+Every source is reachability-checked **from the VPS** at plan time. The keyless ALFRED/FRED
+web hosts already refuse connections from it, so a source verified from a laptop is not
+verified. Deferred to v2: AAII weekly, Kalshi tail-odds positioning
 proxy, StockTwits (license unverified as of Sep 2026).
 
 Output is both score and probability: **score (−100/+100)** for display, **logistic-mapped
 probability** for scoring. Cold start: fixed prior-slope logistic with documented constants,
 probabilities labeled `provisional` until 60 settled days, then isotonic fit on walk-forward
 history — never re-fit on the scored period. Settlement: SPY daily bars (Stooq, adjusted
-close). v1 covers SPY only; no BTC forecaster until §12's lead-lag study justifies one.
+close). **Target, exactly:** `up` iff adjusted close(t) > adjusted close(t−1), where t is the
+first NYSE session opening after the freeze. There is no freeze on non-session days (NYSE
+holiday calendar in `journal_calendars`), and an unchanged close counts as not-up. Wave-2
+directionals use the same definition on their own session calendar (FX: the Stooq daily close
+convention, stated on the tile). v1 covers SPY only; no BTC forecaster until §12's lead-lag study justifies one.
 
 ## 7. Walk-forward quant replacement (wave 1)
 
@@ -158,8 +202,12 @@ weakest-dependency rule applies here too — no Yahoo scraping). Frozen pre-anno
 model continuous with the BDI 513 earnings-call/event-returns work. Kalshi-vs-model —
 the market baseline scored as a pseudo-forecaster (Kalshi-implied probability entered as
 the forecast) on every market-linked target, so Brier Skill Scores are apples-to-apples
-rather than model-vs-constant. Sports — the five existing predictors plug in as *consumed
-graded outputs* via their existing feed contract; the journal never re-settles games.
+rather than model-vs-constant. Sports — predictors plug in as *consumed graded outputs* via the
+`/api/kalshi-feed` contract; the journal never re-settles games. Today only NFL and CFB serve
+that feed (step 7a). NBA, PL and F1 join only after each ships the same frozen pre-game feed,
+so wave 3 lists NFL + CFB, and the other three are a named follow-up, not an assumption.
+PR #27's ranking, window and inversion logic is the sports consumer's input, so it is kept,
+not superseded.
 
 ## 9. Cuts
 
@@ -177,11 +225,22 @@ graded outputs* via their existing feed contract; the journal never re-settles g
 - **Display gate:** any forecaster appears from its first frozen row; headline stats
   aggregate only post-calibration forecasters.
 - **Calibration gate:** buckets are fixed at 50–60 / 60–70 / 70–80 / 80–90 / 90–100
-  predicted probability, with 20+ resolved samples per bucket before joining headline
+  *confidence* (a 0.30 forecast is 70% confidence in "no", mirrored as in the existing
+  `bucketize`), with 20+ resolved samples per bucket before joining headline
   aggregates or any +EV claim (ported from the sports stack). Until then the tile reads
   `provisional`.
-- **Promotion gate (unchanged rule, now evaluable):** paper-only until 200+ settled journal
-  rows **and** positive Brier Skill Score vs the market baseline, with edge computed net of
+- **Counting rule (from the step-2b ruling, unchanged):** counts are *targets*, not rows.
+  Repeated forecasts of one target are weighted 1/k, and every (forecaster, version) has its
+  own record.
+- **Baselines.** "Skill vs market" exists only where a market exists. Kalshi-linked targets
+  score BSS against the Kalshi-implied pseudo-forecaster. Non-market targets (SPY/FX/gold
+  direction, UNRATE/JOLTS direction, housing) score BSS against climatology, with
+  persistence shown beside it, and the tile says which baseline it uses. The headline "Brier
+  skill vs market" aggregates market-linked targets only.
+- **Promotion gate (unchanged rule, now evaluable):** paper-only until **200+ settled targets
+  for daily cadence, or 50+ for monthly/meeting cadence** (CPI, labor, FOMC, housing, the §6
+  rule of the original spec; at 200, a monthly engine would need about 16 years), **and**
+  positive Brier Skill Score vs its baseline, with edge computed net of
   Kalshi taker fees. Fee modeling in `fills.py` is in this spec (§11) precisely so the gate
   can be evaluated rather than deferred. Until it clears, all Kalshi copy stays "public
   market-data + demo API client."
@@ -223,6 +282,13 @@ Cross-venue lead-lag studies as pure measurement. No OOS re-tuning, ever — pub
    confirm, or labor-only launch?
 2. Earnings in wave 3 vs v1.x — keep, or defer with crypto?
 3. Watchlist names for earnings — your call at implementation time (config file, not spec).
+4. **Weather conflicts with your 2026-09-27 ruling.** That ruling was "try new features";
+   this spec quarantines weather (scored in public, excluded from headline stats). Both can
+   hold: quarantine is where it lives *while* a discrimination hypothesis is tried, and it
+   graduates only by beating the market. Confirm that reading, or pick one.
+5. FOMC: keep the CPI/labor-mapped model in wave 1 (labelled experimental, next to the
+   market pseudo-forecaster), or ship only the pseudo-forecaster + climatology until a real
+   rates model exists (§13)?
 
 (Resolved in amendment: no consensus feed anywhere — labor and earnings are both
 self-settling. Former Q2 retired.)
