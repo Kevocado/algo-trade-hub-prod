@@ -128,6 +128,11 @@ const EMPTY_SHADOW: ShadowPerformanceResponse = {
 function stubApi() {
   const answers: Record<string, unknown> = {
     "/api/scoreboard": EMPTY_BOARD,
+    "/api/journal": {
+      as_of: "2026-10-01T00:00:00+00:00",
+      forecasters: [],
+      headline: { forecasters: 0, calibrated: 0, settled_calibrated: 0, promoted: 0 },
+    },
     "/api/shadow-performance": EMPTY_SHADOW,
     "/api/pnl_summary": { total_pnl_cents: 0, suggest_only: true },
     "/api/positions": [],
@@ -181,6 +186,14 @@ describe("the sidebar link and the route agree", () => {
 
     expect(screen.getByRole("heading", { name: "Models", level: 1 })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /models/i })).toHaveAttribute("href", "/models");
+  });
+
+  it("resolves /journal to the prediction journal", async () => {
+    // The flagship page (v2 spec §11). Pinned like /models: a page nobody can reach answers nothing.
+    await renderAppAt("/journal");
+
+    expect(screen.getByRole("heading", { name: "Prediction Journal", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /journal/i })).toHaveAttribute("href", "/journal");
   });
 
   it("renders no models page on a path with no route", async () => {

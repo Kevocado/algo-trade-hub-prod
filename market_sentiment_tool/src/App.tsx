@@ -8,9 +8,10 @@ import Scoreboard from "@/pages/Scoreboard";
 import SportsEdges from "@/pages/SportsEdges";
 import JobsScorecard from "@/pages/JobsScorecard";
 import CpiDisplay from "@/pages/CpiDisplay";
+import Journal from "@/pages/Journal";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
-import { LayoutDashboard, Activity, Wallet, Brain, Cpu, LineChart, Scale, Trophy, Briefcase, BarChart3 } from "lucide-react";
+import { LayoutDashboard, Activity, Wallet, Brain, Cpu, LineChart, Scale, Trophy, Briefcase, BarChart3, BookOpen } from "lucide-react";
 
 const Sidebar = () => {
   const { portfolio } = usePortfolio();
@@ -54,6 +55,13 @@ const Sidebar = () => {
           className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
         >
           <LineChart className="w-5 h-5 text-amber-400" /> Crypto Shadow
+        </NavLink>
+        <NavLink
+          to="/journal"
+          className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
+        >
+          {/* The flagship (v2 spec §11): every forecaster's frozen, settled, scored record. */}
+          <BookOpen className="w-5 h-5 text-emerald-400" /> Journal
         </NavLink>
         <NavLink
           to="/models"
@@ -146,6 +154,7 @@ function App() {
               which is the same collision wearing a hat. The page says what it is and links to the
               scoreboard instead. */}
           <Route path="/shadow" element={<ShadowBacktester />} />
+          <Route path="/journal" element={<Journal />} />
           <Route path="/models" element={<Models />} />
           {/* The engine scoreboard, canonically at /scoreboard.
               `/engines` was the other candidate and was rejected: /models already lists every
