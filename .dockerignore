@@ -33,3 +33,9 @@ model
 market_sentiment_tool/dist
 market_sentiment_tool/backend/chroma_db
 market_sentiment_tool/backend/*.sqlite3*
+
+# tradehub/models is source code (the walk-forward SPY model), not a model artifact. The `models`
+# patterns above exist to keep pickles out; artifacts are *.json under TRADEHUB_MODEL_DIR at runtime.
+!tradehub/models
+!tradehub/models/**
+**/*.pkl
