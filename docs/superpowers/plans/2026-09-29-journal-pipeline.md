@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12, supabase-py (PostgREST), FastAPI, PostgreSQL 16 triggers (plpgsql), pytest, Docker (`postgres:16-alpine`, trigger tests only).
 
-**Spec:** `docs/superpowers/specs/2026-09-29-tradehub-v2-prediction-journal-design.md` (APPROVED 2026-09-29, incl. second-pass amendment and rulings Q1–Q5). Read §3 (contract), §4 (core pipeline), §10 (gates), §11 (journal UI) before starting.
+**Spec:** `docs/superpowers/specs/2026-09-29-tradehub-v2-prediction-journal-design.md` (APPROVED 2026-09-29, incl. second-pass amendment and rulings Q1–Q5). Read §3 (contract), §4 (ledger + failure rules), §5 (gates), §11 (API) before starting.
 
 > **Provenance:** every code block below was implemented and run by the reviewer in a scratch worktree off `main@2b82d93` before this plan was written: full suite **1353 passed** with `time.monotonic` forced to both `5.0` and `1e7`; new files ruff-clean; the trigger tests passed against real Postgres 16, and a mutation (deleting the cutoff check) made them fail. Copy the code as written; if something disagrees with `main` because `main` moved, fix it and say so in the PR.
 
@@ -39,7 +39,7 @@
 | `tests/test_journal_migration_pg.py` (create) | Proves the trigger rules against real Postgres (skips without Docker) |
 | `tradehub/journal/__init__.py` (create) | Package marker |
 | `tradehub/journal/contract.py` (create) | `CalendarEntry`, `Forecast`, `Settlement`, `Forecaster` protocol, `require_aware` |
-| `tradehub/journal/scoring.py` (create) | Pure scoring: Brier, BSS, reliability, Murphy, gate verdict |
+| `tradehub/journal/scoring.py` (create) | Pure scoring: Brier, BSS, reliability, Murphy, gate verdict, journal headline |
 | `tradehub/journal/store.py` (create) | Supabase reads (paged) and inserts; reports DB refusals as `False` |
 | `tradehub/journal/runner.py` (create) | freeze → settle → score per forecaster, isolated |
 | `tradehub/journal/registry.py` (create) | `FORECASTERS` list plans b–f append to |
@@ -56,13 +56,14 @@
 from tradehub.journal.contract import CalendarEntry, Forecast, Settlement, Forecaster, CADENCES, require_aware
 from tradehub.journal.registry import FORECASTERS          # append your forecaster instance here
 from tradehub.journal.scoring import MIN_SETTLED, MIN_BUCKET_TARGETS, score
-# HTTP: GET /api/journal -> list[journal_scores row]
+# HTTP: GET /api/journal -> {as_of, forecasters: [journal_scores row], headline: {forecasters, calibrated,
+#         settled_calibrated, promoted}}   (headline counts calibrated forecasters only, spec §10)
 #       GET /api/journal/feed?forecaster=&version=&limit=1..500&offset=>=0
 #         -> {forecaster, forecaster_version, generated_at, forecasts:[{target, probability, market_prob,
 #             frozen_at, rebuilt, source_hash}], calibration, gate_status, provisional}
 ```
 
-A forecaster's `targets(now)` returns `CalendarEntry` objects whose `cadence` equals the forecaster's `cadence` (others are ignored); `forecast()` returns `None` when inputs are missing (never a guess); `settle()` returns `None` until the outcome is public. Target ids are global strings of the form `<family>:<event-key>` (e.g. `cpi:2026-10:headline_mom_ge_0.3`) and are shared across forecasters so market and model forecasts of the same event line up.
+A forecaster's `targets(now)` returns `CalendarEntry` objects whose `cadence` equals the forecaster's `cadence` (others are ignored); `forecast()` returns `None` when inputs are missing (never a guess); `settle()` returns `None` until the outcome is public. Target ids are global strings `<namespace>:<event-key>` shared across forecasters, so a model and the market pseudo-forecaster on the same event line up: `kalshi:<market ticker>` (plans b–c), `labor:<unrate|quits>:<YYYY-MM>:up` (plan c), `spx:<YYYY-MM-DD>:up` (plans d–e).
 
 ---
 
@@ -803,6 +804,17 @@ def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
         "gate_status": "PROMOTED" if not reasons else "SHADOW",
         "gate_reasons": reasons,
     }
+
+
+def headline(cards: list[dict[str, Any]]) -> dict[str, int]:
+    """The journal's hero numbers (spec §10 display gate): headline counts cover calibrated forecasters only."""
+    calibrated = [c for c in cards if c.get("calibration_ready")]
+    return {
+        "forecasters": len(cards),
+        "calibrated": len(calibrated),
+        "settled_calibrated": sum(int(c.get("n_settled") or 0) for c in calibrated),
+        "promoted": sum(1 for c in cards if c.get("gate_status") == "PROMOTED"),
+    }
 ```
 
 - [ ] **Step 4: Run to verify pass**
@@ -1443,7 +1455,7 @@ git commit -m "feat(journal): gate reads journal_scores first; tolerate the tabl
 
 **Interfaces:**
 - Consumes: existing `get_supabase`, `_fetch_all`, `_table_fault`, `DEFAULT_GATE_STATUS` in `tradehub/api/main.py`.
-- Produces: `GET /api/journal`, `GET /api/journal/feed` (shapes in File Structure). Plan (f) (/journal UI) renders these; it must not recompute any number.
+- Produces: `GET /api/journal`, `GET /api/journal/feed` (shapes in File Structure). The headline is computed server-side by `tradehub.journal.scoring.headline` (Task 2's file), so the page never sums anything. Plan (f) (/journal UI) renders these; it must not recompute any number.
 
 - [ ] **Step 1: Write the failing tests** (`tests/test_journal_api.py`)
 
@@ -1470,11 +1482,18 @@ def teardown_function(_fn):
 
 def test_journal_returns_precomputed_scorecards_in_order():
     db = FakeJournalDB(lambda: T0)
-    db.tables["journal_scores"] += [{"forecaster": "labor", "forecaster_version": "v1", "gate_status": "SHADOW"},
-                                    {"forecaster": "cpi", "forecaster_version": "v1", "gate_status": "SHADOW"}]
+    db.tables["journal_scores"] += [
+        {"forecaster": "labor", "forecaster_version": "v1", "gate_status": "SHADOW", "n_settled": 9,
+         "calibration_ready": False},
+        {"forecaster": "cpi", "forecaster_version": "v1", "gate_status": "PROMOTED", "n_settled": 60,
+         "calibration_ready": True},
+    ]
     res = _client(db).get("/api/journal")
     assert res.status_code == 200
-    assert [r["forecaster"] for r in res.json()] == ["cpi", "labor"]
+    body = res.json()
+    assert [r["forecaster"] for r in body["forecasters"]] == ["cpi", "labor"]
+    # headline counts cover calibrated forecasters only (spec §10); the page renders, never sums
+    assert body["headline"] == {"forecasters": 2, "calibrated": 1, "settled_calibrated": 60, "promoted": 1}
 
 
 def test_feed_is_newest_first_with_calibration_and_provisional_flag():
@@ -1515,10 +1534,18 @@ Run: `SUPABASE_SERVICE_ROLE_KEY=x .venv/bin/python -m pytest -q -p no:cacheprovi
 
 ```diff
 diff --git a/tradehub/api/main.py b/tradehub/api/main.py
-index dd69e23..f75d94c 100644
+index dd69e23..d36f38b 100644
 --- a/tradehub/api/main.py
 +++ b/tradehub/api/main.py
-@@ -445,6 +445,58 @@ async def get_track_record(supabase=Depends(get_supabase)):
+@@ -32,6 +32,7 @@ from tradehub.engines.cpi import CPI_MIN_TRAIN, DEFAULT_CPI_ERROR
+ from tradehub.engine_catalogue import engine_catalogue
+ from tradehub.engine_health import engine_health
+ from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses
++from tradehub.journal.scoring import headline as journal_headline
+ from tradehub.quarantine import QUARANTINE_MARK, QUARANTINE_NOTE, quarantine_report
+ from tradehub.scoreboard import current_runs, market_comparison
+ from tradehub.scripts.shadow_performance import MissingCredentialError, build_shadow_timeline_response
+@@ -445,6 +446,59 @@ async def get_track_record(supabase=Depends(get_supabase)):
      return result.data or []
  
  
@@ -1531,14 +1558,15 @@ index dd69e23..f75d94c 100644
 +
 +@app.get("/api/journal", tags=["Journal"])
 +def get_journal(supabase=Depends(get_supabase)):
-+    """Every (forecaster, version) scorecard, ordered by forecaster."""
++    """Every (forecaster, version) scorecard, ordered by forecaster, plus the precomputed headline."""
 +    if supabase is None:
 +        raise HTTPException(status_code=503, detail="Supabase is not configured")
 +    try:
-+        return _fetch_all(supabase, "journal_scores", lambda q: q.select("*"),
++        rows = _fetch_all(supabase, "journal_scores", lambda q: q.select("*"),
 +                          order=("forecaster", "forecaster_version"))
 +    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
 +        raise _table_fault("journal_scores", exc) from exc
++    return {"as_of": datetime.now(timezone.utc).isoformat(), "forecasters": rows, "headline": journal_headline(rows)}
 +
 +
 +@app.get("/api/journal/feed", tags=["Journal"])
@@ -1616,6 +1644,6 @@ Expected: `All checks passed!` (the repo has pre-existing ruff debt elsewhere; d
 
 ## Self-Review (done by the plan author)
 
-- **Spec coverage:** §3 contract → Task 2; §4 ledger, triggers, failure rules (gap/retry/idempotent) → Tasks 1, 3; §10 gates (per-target minimums, BSS baseline, calibration 4×20 rule as ≥20 per populated bucket) → Task 2; one ledger of record → Task 4; §11 journal UI data → Task 5; ops (timer, migration order) → Task 6. Per-forecaster models, the /journal page and legacy-table migration are plans b–f by design.
+- **Spec coverage:** §3 contract → Task 2; §4 ledger, triggers, failure rules (gap/retry/idempotent) → Tasks 1, 3; §5 gates (per-target minimums, BSS baseline, calibration 4×20 rule as ≥20 per populated bucket) → Task 2; one ledger of record → Task 4; §11 API → Task 5; ops (timer, migration order) → Task 6. Per-forecaster models, the /journal page and legacy-table migration are plans b–f by design.
 - **Placeholders:** none; every step has the code or command.
 - **Type consistency:** `score()` keys equal `journal_scores` columns (Task 1) minus the PK and `computed_at`, which `store.upsert_score` adds; `FakeJournalDB` table names equal `store` constants; `Forecaster.cadence` values equal the migration's CHECK and `MIN_SETTLED` keys.
