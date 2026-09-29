@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from datetime import datetime as _datetime
 from pathlib import Path
 
 import pytest
@@ -252,6 +253,10 @@ def test_the_quarantine_writes_nothing_to_the_trade_sink(recording_client, monke
     monkeypatch.setattr(
         scanner, "MacroEngine", lambda: _StubbedEngine(macro_engine, macro_markets, "MACRO")
     )
+    # Frozen for the same reason `_measure` freezes: without it the weather
+    # fixtures expire and this test proves the property against zero weather
+    # rows, which is a weaker claim wearing the same green.
+    _freeze_fixture_time(monkeypatch)
     # The paper-trading tier and the notifiers are not what this test is about, and letting them
     # run would make the assertion depend on a crypto model download.
     monkeypatch.setattr(scanner, "scan_quant_ml", lambda: ([], []))
@@ -419,11 +424,45 @@ class _StubbedEngine:
         return self._engine.find_opportunities(self._markets)
 
 
+class _FrozenDatetime(_datetime):
+    """The wall clock the fixtures were captured under: 2026-09-28, midday.
+
+    `weather_engine.find_opportunities` reads `datetime.now()` twice: once to
+    drop markets whose date has passed, once to drop same-day markets after
+    18:00 local time. Both are correct behaviour against live markets and both
+    make a frozen snapshot unusable the moment the wall clock moves past it --
+    the fixtures close 2026-09-29T05:00Z, so on 2026-09-29 every one of the 30
+    weather rows is "expired", and in CI (UTC) any run after 18:00 drops them
+    the same day. That is how this file's count test passed on 2026-09-28 and
+    failed the next day with `KeyError: 'Weather'`: not a product regression,
+    a snapshot outliving the clock it was taken against.
+
+    Freezing is honest here because the fixtures ARE that date: evaluating a
+    2026-09-28 snapshot "as of" 2026-09-28 is what the measurement means. What
+    would be dishonest is refreshing the fixtures to keep an unfrozen test
+    green -- that would move the pinned numbers without saying so.
+    """
+
+    @classmethod
+    def now(cls, tz=None):
+        base = cls(2026, 9, 28, 12, 0, 0)
+        return base.replace(tzinfo=tz) if tz is not None else base
+
+
+def _freeze_fixture_time(monkeypatch) -> None:
+    """Pin the engine's clock to the fixtures' date. See `_FrozenDatetime`."""
+    monkeypatch.setattr(
+        "tradehub.engines.weather_engine.datetime", _FrozenDatetime
+    )
+
+
 def _measure(monkeypatch, weather_markets, macro_markets) -> list[dict]:
     """Run both engines the way `scan_real_edge` does, and return the marked rows."""
     from tradehub.scripts import background_scanner as scanner
     from tradehub.engines.macro_engine import MacroEngine
     from tradehub.engines.weather_engine import WeatherEngine
+
+    _freeze_fixture_time(monkeypatch)
 
     weather_engine = WeatherEngine()
     weather_engine.get_nws_forecast = lambda city: {"2026-09-28": 74, "2026-09-29": 76}
@@ -504,6 +543,34 @@ class TestTheEnginesMeasureSomething:
             "defect. If this fails the fixture has grown a legacy key and would no longer reproduce it"
         )
         assert engine.find_opportunities([]) == []
+
+    def test_the_weather_fixtures_expire_like_real_markets_do(self, monkeypatch):
+        """Why `_measure` freezes time, pinned as behaviour rather than comment.
+
+        The weather fixtures close 2026-09-29T05:00Z, and the engine drops
+        markets whose date has passed -- correctly, against live markets. So
+        with the clock past the fixtures' close the engine returns nothing,
+        and the count test above would fail with `KeyError: 'Weather'`. That is
+        what happened the day after the fixtures were captured: green on
+        2026-09-28, red on 2026-09-29, with no product change in between.
+
+        This test runs the real engine with the clock past the close and
+        asserts the empty result, so the freeze in `_measure` is load-bearing
+        and documented: fixtures have a lifetime, and the measurement is taken
+        inside it.
+        """
+        from tradehub.engines import weather_engine
+
+        class _PastTheClose(_FrozenDatetime):
+            @classmethod
+            def now(cls, tz=None):
+                base = cls(2026, 10, 5, 12, 0, 0)
+                return base.replace(tzinfo=tz) if tz is not None else base
+
+        monkeypatch.setattr(weather_engine, "datetime", _PastTheClose)
+        engine = weather_engine.WeatherEngine()
+        engine.get_nws_forecast = lambda city: {"2026-09-28": 74, "2026-09-29": 76}
+        assert engine.find_opportunities(_fixture("weather_markets.json")) == []
 
     def test_the_measured_live_run_is_pinned(self, live_rows):
         """The 2026-09-28 live measurement, as a recorded artefact, with the numbers this PR claims.
