@@ -1,0 +1,64 @@
+from datetime import UTC, datetime
+
+from fastapi.testclient import TestClient
+from journal_fakes import FakeJournalDB
+
+from tradehub.api.dependencies import get_supabase
+from tradehub.api.main import app
+
+T0 = datetime(2026, 10, 1, 13, 0, tzinfo=UTC)
+
+
+def _client(db):
+    app.dependency_overrides[get_supabase] = lambda: db
+    return TestClient(app)
+
+
+def teardown_function(_fn):
+    app.dependency_overrides.clear()
+
+
+def test_journal_returns_precomputed_scorecards_in_order():
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_scores"] += [
+        {"forecaster": "labor", "forecaster_version": "v1", "gate_status": "SHADOW", "n_settled": 9,
+         "calibration_ready": False},
+        {"forecaster": "cpi", "forecaster_version": "v1", "gate_status": "PROMOTED", "n_settled": 60,
+         "calibration_ready": True},
+    ]
+    res = _client(db).get("/api/journal")
+    assert res.status_code == 200
+    body = res.json()
+    assert [r["forecaster"] for r in body["forecasters"]] == ["cpi", "labor"]
+    # headline counts cover calibrated forecasters only (spec §10); the page renders, never sums
+    assert body["headline"] == {"forecasters": 2, "calibrated": 1, "settled_calibrated": 60, "promoted": 1}
+
+
+def test_feed_is_newest_first_with_calibration_and_provisional_flag():
+    db = FakeJournalDB(lambda: T0)
+    for i in (1, 2, 3):
+        db.tables["journal_forecasts"].append({"id": i, "forecaster": "cpi", "forecaster_version": "v1",
+                                               "target": f"t{i}", "probability": 0.6, "market_prob": 0.5,
+                                               "frozen_at": T0.isoformat(), "rebuilt": False, "source_hash": "h"})
+    db.tables["journal_scores"].append({"forecaster": "cpi", "forecaster_version": "v1", "gate_status": "SHADOW",
+                                        "reliability": [{"bucket": "60-70", "n": 3}], "calibration_ready": False})
+    body = _client(db).get("/api/journal/feed", params={"forecaster": "cpi", "version": "v1", "limit": 2}).json()
+    assert [f["target"] for f in body["forecasts"]] == ["t3", "t2"]
+    assert body["calibration"] == [{"bucket": "60-70", "n": 3}]
+    assert body["gate_status"] == "SHADOW" and body["provisional"] is True
+
+
+def test_feed_rejects_bad_paging_and_503s_without_supabase():
+    db = FakeJournalDB(lambda: T0)
+    assert _client(db).get("/api/journal/feed", params={"forecaster": "x", "version": "v1", "limit": 0}).status_code == 422
+    app.dependency_overrides[get_supabase] = lambda: None
+    assert TestClient(app).get("/api/journal").status_code == 503
+
+
+def test_a_missing_journal_table_names_the_migration():
+    class NoJournal(FakeJournalDB):
+        def table(self, name):
+            raise RuntimeError(f"Could not find the table 'public.{name}' in the schema cache")
+
+    res = _client(NoJournal(lambda: T0)).get("/api/journal")
+    assert res.status_code == 503
