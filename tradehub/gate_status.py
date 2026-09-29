@@ -25,6 +25,26 @@ log = logging.getLogger(__name__)
 DEFAULT_GATE_STATUS = "SHADOW"
 
 
+def _journal_rows(supa, engine: str, version: str) -> list[dict]:
+    """The journal scorecard row for this pair, or [] when the journal table does not exist yet.
+
+    Deploy order: code can reach production before migration 20260428000014 is applied. A missing
+    `journal_scores` table then means "no forecaster has moved onto the journal yet", which is
+    exactly what falling through to the legacy tables says. Any other error propagates, and callers
+    already treat a failed lookup as SHADOW.
+    """
+    try:
+        result = supa.table("journal_scores").select("gate_status") \
+            .eq("forecaster", engine).eq("forecaster_version", version).limit(1).execute()
+    except Exception as exc:  # noqa: BLE001 - narrowed just below
+        text = str(exc)
+        if "journal_scores" in text and ("schema cache" in text or "does not exist" in text or "PGRST205" in text):
+            log.info("gate: journal_scores not present yet; using the legacy gate tables")
+            return []
+        raise
+    return list(result.data or [])
+
+
 def latest_gate_statuses(supa, pairs: set[tuple[str, str]]) -> dict[tuple[str, str], str]:
     """{pair: "PROMOTED" | "SHADOW"} for every requested (engine, engine_version) pair.
 
@@ -33,6 +53,15 @@ def latest_gate_statuses(supa, pairs: set[tuple[str, str]]) -> dict[tuple[str, s
     """
     statuses: dict[tuple[str, str], str] = {}
     for engine, version in pairs:
+        # One ledger of record (v2 spec §4): a forecaster that publishes through the journal is
+        # gated by its journal scorecard alone. Its old `backtest_runs`/`track_record` rows are
+        # pre-journal history and must not be able to promote it.
+        journal_rows = _journal_rows(supa, engine, version)
+        if journal_rows:
+            statuses[(engine, version)] = (
+                "PROMOTED" if journal_rows[0].get("gate_status") == "PROMOTED" else DEFAULT_GATE_STATUS
+            )
+            continue
         backtest = supa.table("backtest_runs") \
             .select("engine,engine_version,gate_status,created_at") \
             .eq("engine", engine).eq("engine_version", version) \

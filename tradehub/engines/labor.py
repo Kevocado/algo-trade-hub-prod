@@ -360,8 +360,13 @@ def fit_payroll_model(
     rows: Sequence[tuple[LaborFeatures, float]],
     features: Sequence[str] = CORE_FEATURES,
     lam: float = RIDGE_LAMBDA,
+    min_sigma: float = MIN_PAYROLL_SIGMA,
 ) -> PayrollModel:
-    """Ridge on standardized features; sigma = RMS of the last SIGMA_WINDOW in-sample residuals."""
+    """Ridge on standardized features; sigma = RMS of the last SIGMA_WINDOW in-sample residuals.
+
+    `min_sigma` is in the target's units (thousands of jobs by default); the labor direction fits
+    reuse this ridge for other targets (percentage points, thousands of quits) with their own floor.
+    """
     usable = sorted((r for r in rows if is_trainable(r[0].month)), key=lambda r: r[0].month)
     if len(usable) < MIN_TRAIN_ROWS:
         raise ValueError(f"need >= {MIN_TRAIN_ROWS} training months, got {len(usable)}")
@@ -375,7 +380,7 @@ def fit_payroll_model(
     coef = np.linalg.solve(z.T @ z + lam * np.eye(z.shape[1]), z.T @ (y - intercept))
     residuals = y - (intercept + z @ coef)
     recent = residuals[-SIGMA_WINDOW:]
-    sigma = max(MIN_PAYROLL_SIGMA, float(np.sqrt(np.mean(recent ** 2))))
+    sigma = max(min_sigma, float(np.sqrt(np.mean(recent ** 2))))
     return PayrollModel(tuple(features), tuple(center.tolist()), tuple(scale.tolist()), intercept,
                         tuple(coef.tolist()), sigma, len(usable))
 

@@ -673,14 +673,15 @@ def _objects_touched(sql: str) -> set[str]:
     return names
 
 
-def test_the_follow_up_exists_and_is_numbered_after_everything_else():
+def test_the_follow_up_exists_and_is_numbered_after_what_it_completes():
+    """It must apply after the migration it finishes. Later migrations (the journal's 000014 and
+    onward) may sort after it; "newest file in the folder" was never the requirement, and asserting
+    it would have failed the moment any migration was added."""
     assert FOLLOW_UP.is_file(), f"{FOLLOW_UP.name} is missing"
-    others = [p for p in _migration_files() if p != FOLLOW_UP]
-    assert others, "no other migrations to be numbered after"
-    highest = max(others)
-    assert FOLLOW_UP.name > highest.name, (
-        f"{FOLLOW_UP.name} must sort after {highest.name}; migrations apply in name order"
-    )
+    earlier = [p for p in _migration_files() if p.name < FOLLOW_UP.name]
+    assert ORIGINAL in earlier, f"{FOLLOW_UP.name} must sort after {ORIGINAL.name}; migrations apply in name order"
+    clashes = [p.name for p in _migration_files() if p != FOLLOW_UP and p.name[:14] == FOLLOW_UP.name[:14]]
+    assert not clashes, f"another migration shares {FOLLOW_UP.name[:14]}: {clashes}"
     assert FOLLOW_UP.name.endswith("_signal_events_publication_and_rls.sql")
     assert "20260428000013" in FOLLOW_UP.name
 

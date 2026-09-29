@@ -32,6 +32,7 @@ from tradehub.engines.cpi import CPI_MIN_TRAIN, DEFAULT_CPI_ERROR
 from tradehub.engine_catalogue import engine_catalogue
 from tradehub.engine_health import engine_health
 from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses
+from tradehub.journal.scoring import headline as journal_headline
 from tradehub.quarantine import QUARANTINE_MARK, QUARANTINE_NOTE, quarantine_report
 from tradehub.scoreboard import current_runs, market_comparison
 from tradehub.scripts.shadow_performance import MissingCredentialError, build_shadow_timeline_response
@@ -443,6 +444,59 @@ async def get_track_record(supabase=Depends(get_supabase)):
         raise HTTPException(status_code=503, detail="Supabase is not configured")
     result = supabase.table("track_record").select("*").order("engine").execute()
     return result.data or []
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Prediction journal (v2 spec §3-§4, §11): precomputed scorecards and frozen forecasts.
+# The frontend renders these numbers; it never recomputes them.
+# ════════════════════════════════════════════════════════════════════════════
+JOURNAL_PAGE_MAX = 500
+
+
+@app.get("/api/journal", tags=["Journal"])
+def get_journal(supabase=Depends(get_supabase)):
+    """Every (forecaster, version) scorecard, ordered by forecaster, plus the precomputed headline."""
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase is not configured")
+    try:
+        rows = _fetch_all(supabase, "journal_scores", lambda q: q.select("*"),
+                          order=("forecaster", "forecaster_version"))
+    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
+        raise _table_fault("journal_scores", exc) from exc
+    return {"as_of": datetime.now(timezone.utc).isoformat(), "forecasters": rows, "headline": journal_headline(rows)}
+
+
+@app.get("/api/journal/feed", tags=["Journal"])
+def get_journal_feed(forecaster: str, version: str, limit: int = 100, offset: int = 0,
+                     supabase=Depends(get_supabase)):
+    """Frozen forecasts for one forecaster (newest first) plus its calibration buckets.
+
+    The `/api/kalshi-feed` shape, so downstream consumers read the journal the way the hub reads the
+    predictors: frozen snapshots and calibration, never a recomputed number.
+    """
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase is not configured")
+    if limit < 1 or limit > JOURNAL_PAGE_MAX or offset < 0:
+        raise HTTPException(status_code=422, detail=f"limit must be 1..{JOURNAL_PAGE_MAX} and offset >= 0")
+    try:
+        rows = supabase.table("journal_forecasts").select("*") \
+            .eq("forecaster", forecaster).eq("forecaster_version", version) \
+            .order("id", desc=True).range(offset, offset + limit - 1).execute().data or []
+        card = supabase.table("journal_scores").select("*") \
+            .eq("forecaster", forecaster).eq("forecaster_version", version).limit(1).execute().data or []
+    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
+        raise _table_fault("journal_forecasts", exc) from exc
+    score = card[0] if card else None
+    return {
+        "forecaster": forecaster,
+        "forecaster_version": version,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "forecasts": [{k: r.get(k) for k in ("target", "probability", "market_prob", "frozen_at", "rebuilt",
+                                             "source_hash")} for r in rows],
+        "calibration": (score or {}).get("reliability", []),
+        "gate_status": (score or {}).get("gate_status", DEFAULT_GATE_STATUS),
+        "provisional": not bool((score or {}).get("calibration_ready")),
+    }
 
 
 # ════════════════════════════════════════════════════════════════════════════
