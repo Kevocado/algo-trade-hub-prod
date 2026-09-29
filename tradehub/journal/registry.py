@@ -12,10 +12,13 @@ from tradehub.journal.contract import Forecaster
 from tradehub.journal.forecasters.cpi import CpiForecaster
 from tradehub.journal.forecasters.fomc import FOMC_SERIES, FomcMapped, is_hold_market
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
+from tradehub.journal.forecasters.sentiment import SentimentMeter
 from tradehub.journal.kalshi_linked import KalshiImplied
+from tradehub.journal.spx import SpxCloses
 
 _LIVE = KalshiLive()
 _LABOR = LaborData()
+_SPX = SpxCloses()
 
 FORECASTERS: list[Forecaster] = [
     # plan (b): CPI + FOMC, each beside its Kalshi pseudo-forecaster (spec §5, ruling Q5)
@@ -29,4 +32,6 @@ FORECASTERS: list[Forecaster] = [
     KalshiImplied("labor", ("KXPAYROLLS",), "monthly", _LIVE, fetch_market),
     UnrateDirection(_LIVE, _LABOR),
     QuitsDirection(_LABOR),
+    # plan (d): sentiment meter (spec §6)
+    SentimentMeter(_SPX),
 ]
