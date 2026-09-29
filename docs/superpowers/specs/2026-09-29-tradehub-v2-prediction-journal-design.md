@@ -290,5 +290,11 @@ Cross-venue lead-lag studies as pure measurement. No OOS re-tuning, ever — pub
    market pseudo-forecaster), or ship only the pseudo-forecaster + climatology until a real
    rates model exists (§13)?
 
+Resolved by Kevin, 2026-09-29:
+- Q4: YES. Weather stays in quarantine (scored in public, out of headline stats) while a
+  discrimination hypothesis is tried, and graduates only by beating the market.
+- Q5: YES. The CPI/labor-mapped FOMC model ships in wave 1, labelled experimental, alongside
+  the Kalshi pseudo-forecaster.
+
 (Resolved in amendment: no consensus feed anywhere — labor and earnings are both
 self-settling. Former Q2 retired.)
