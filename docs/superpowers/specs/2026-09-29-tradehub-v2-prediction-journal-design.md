@@ -1,6 +1,6 @@
 # Trade Hub v2 — Prediction Journal (spec)
 
-Date: 2026-09-29. Status: draft for Kevin's review — amended twice (review findings, then a second pass checked against production and `main`).
+Date: 2026-09-29. Status: APPROVED by Kevin 2026-09-29 — amended twice (review findings, then a second pass checked against production and `main`).
 Sources: `trade-hub-critique-and-roadmap.md` (2026-09-28), `tradehub-v2-direction-draft.md`
 (Kevin, 2026-09-29), brainstorming sessions 2026-09-28/29 (scope: Phases 1+2, Approach B:
 journal pipeline first, CPI/labor first content, sentiment + quant as new forecasters on a
@@ -30,9 +30,9 @@ verifiable. Nothing in a later wave blocks an earlier wave's deploy.
 |---|---|---|
 | 1 | Journal pipeline itself; CPI m/m (existing engine, zero new modeling); FOMC decision (mapped from existing CPI/labor nowcast inputs at implementation); labor prints (§5); sentiment meter (§6); walk-forward quant (§7) | Pipeline graded on existing models before anything new is built (Approach B) |
 | 2 | VIX direction, gold daily direction, EUR/USD daily direction | Same daily-cadence settle job as SPY; no new modeling pattern, just new targets |
-| 3 | Housing (Case-Shiller), earnings surprises, Kalshi-vs-model pseudo-forecaster, sports consumers | New settlement shapes (monthly lag, quarterly, external feeds) |
+| 3 | Housing (Case-Shiller), Kalshi-vs-model pseudo-forecaster, sports consumers | New settlement shapes (monthly lag, quarterly, external feeds) |
 
-Crypto (BTC daily direction) is deferred to v1.x pending a venue-lead-lag justification —
+Earnings is deferred to v1.x together with crypto (Kevin, 2026-09-29). Crypto (BTC daily direction) is deferred to v1.x pending a venue-lead-lag justification —
 measurement first, per the critique. Rates (10Y) is deferred to v1.x (in the domain table,
 not in the v1 ship list). A real macro-probability model is future work (§12), not built here.
 
@@ -196,7 +196,7 @@ must beat its baseline's posted Brier to graduate from `provisional`.
 
 **Wave 3:** Housing — Case-Shiller national HPI m/m direction, frozen monthly on the FRED
 release calendar with the ~2-month data lag stated on the tile (no intra-month nowcasting
-in v1). Earnings — sign of (reported EPS vs year-ago quarter) for a watchlist defined in
+in v1). Earnings (**deferred to v1.x with crypto**; kept here as the agreed design) — sign of (reported EPS vs year-ago quarter) for a watchlist defined in
 repo config, self-settling from filings with no consensus feed (deliberately: §5's
 weakest-dependency rule applies here too — no Yahoo scraping). Frozen pre-announcement, method a walk-forward event
 model continuous with the BDI 513 earnings-call/event-returns work. Kalshi-vs-model —
@@ -295,6 +295,11 @@ Resolved by Kevin, 2026-09-29:
   discrimination hypothesis is tried, and graduates only by beating the market.
 - Q5: YES. The CPI/labor-mapped FOMC model ships in wave 1, labelled experimental, alongside
   the Kalshi pseudo-forecaster.
+- Q1: wave-1 roster CONFIRMED as listed in §2.
+- Q2: earnings DEFERRED to v1.x with crypto (removed from wave 3).
+- Q3: moot until earnings is scheduled.
+
+All open questions are resolved. The spec is ready for writing-plans.
 
 (Resolved in amendment: no consensus feed anywhere — labor and earnings are both
 self-settling. Former Q2 retired.)
