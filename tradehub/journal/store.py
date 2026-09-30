@@ -26,7 +26,10 @@ def select_all(supa, table: str, build: Callable[[Any], Any], order: tuple[str, 
     rows: list[dict[str, Any]] = []
     lo = 0
     while True:
-        chunk = build(supa.table(table).select("*")).order(*order).range(lo, lo + PAGE - 1).execute().data or []
+        query = build(supa.table(table).select("*"))
+        for col in order:  # postgrest-py's order() takes ONE column per call
+            query = query.order(col)
+        chunk = query.range(lo, lo + PAGE - 1).execute().data or []
         rows.extend(chunk)
         if len(chunk) < PAGE:
             return rows

@@ -62,3 +62,16 @@ def test_a_missing_journal_table_names_the_migration():
 
     res = _client(NoJournal(lambda: T0)).get("/api/journal")
     assert res.status_code == 503
+
+
+def test_a_multi_column_order_is_chained_one_column_per_call():
+    # The real postgrest-py order() accepts a single column; the fake now rejects more, so an
+    # `.order(a, b)` regression fails here instead of in production.
+    from tradehub.journal.store import select_all
+
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_scores"] += [{"forecaster": "b", "forecaster_version": "1"},
+                                    {"forecaster": "a", "forecaster_version": "2"},
+                                    {"forecaster": "a", "forecaster_version": "1"}]
+    rows = select_all(db, "journal_scores", lambda q: q, ("forecaster", "forecaster_version"))
+    assert [(r["forecaster"], r["forecaster_version"]) for r in rows] == [("a", "1"), ("a", "2"), ("b", "1")]
