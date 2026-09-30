@@ -14,6 +14,7 @@ from tradehub.journal.forecasters.fomc import FOMC_SERIES, FomcMapped, is_hold_m
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
 from tradehub.journal.forecasters.sentiment import SentimentMeter
 from tradehub.journal.forecasters.spy_quant import SpyQuant
+from tradehub.journal.forecasters.wave2_daily import VixForecaster, GoldForecaster, EurusdForecaster
 from tradehub.journal.kalshi_linked import KalshiImplied
 from tradehub.journal.spx import SpxCloses
 
@@ -37,4 +38,9 @@ FORECASTERS: list[Forecaster] = [
     SentimentMeter(_SPX),
     # plan (e): walk-forward quant (spec §7); same target and settlement as the meter
     SpyQuant(_SPX),
+    # plan (f): /journal UI (already merged in PR #48)
+    # Wave 2: VIX, Gold, EUR/USD daily direction
+    VixForecaster(),
+    GoldForecaster(),
+    EurusdForecaster(),
 ]
