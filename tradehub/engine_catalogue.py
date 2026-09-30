@@ -63,6 +63,17 @@ from tradehub.scoreboard import (
 # statement about the CATALOGUE meeting the scoreboard, which is this module's whole job.
 STATUS_NOT_MEASURED = "not_measured"
 
+# A deleted engine does not vanish from the page: it leaves a tombstone (v2 spec §9), so the
+# truthfulness story survives the deletion. `retired` is a sixth status and, like `not_measured`, it is
+# not a verdict on the engine's accuracy. Its backtest history, if any, stays attached and visible.
+STATUS_RETIRED = "retired"
+
+# One dict per deleted engine: {"engine", "label", "removed" (ISO date), "reason", "replaced_by"}.
+# `replaced_by` names what took over, or is None when nothing did. Add an entry in the SAME PR that
+# deletes the engine; `tests/test_engine_catalogue.py` checks the shape. Empty today: nothing with a
+# scoreboard row has been deleted yet (the wave-1 cuts removed a page and a helper, not an engine).
+ENGINE_TOMBSTONES: tuple[dict[str, Any], ...] = ()
+
 # The four words a row can carry, as a set, so a hand-built or older row whose `market_verdict` is
 # missing does not silently fall through to a verdict nobody resolved. `market_verdict()` is the
 # fallback and is the SAME function the reducer used, so this stays one threshold.
@@ -253,7 +264,10 @@ def worst_brier_ratio(rows: Sequence[Mapping[str, Any]] | None) -> float | None:
     return max(ratios) if ratios else None
 
 
-def engine_catalogue(rows: Iterable[Mapping[str, Any]] | None) -> dict[str, Any]:
+def engine_catalogue(
+    rows: Iterable[Mapping[str, Any]] | None,
+    tombstones: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Every engine this product has, each joined to the scoreboard rows that measured it.
 
     Takes the rows `current_runs` produced and adds no measurement of its own. Three things come
@@ -291,18 +305,45 @@ def engine_catalogue(rows: Iterable[Mapping[str, Any]] | None) -> dict[str, Any]
         engine = declared["engine"]
         seen.add(engine)
         entries.append(_entry(declared, by_engine.get(engine, []), in_catalogue=True))
+    retired = {str(ts["engine"]): ts for ts in (ENGINE_TOMBSTONES if tombstones is None else tombstones)}
     # Anything with a run that the catalogue does not name, in the order the board produced it.
     for engine, engine_rows in by_engine.items():
-        if engine not in seen:
+        if engine not in seen and engine not in retired:
             entries.append(_entry(None, engine_rows, in_catalogue=False))
 
     measured = sum(1 for entry in entries if entry["measured"])
+    live_total = len(entries)
+    # Tombstones come last and are NOT live engines: they leave `engines_total` and the measured
+    # counts alone, and are counted in their own number. A retired engine with history keeps its rows.
+    for tombstone in retired.values():
+        entries.append(_tombstone_entry(tombstone, by_engine.get(str(tombstone["engine"]), [])))
     return {
-        "engines_total": len(entries),
+        "engines_total": live_total,
         "engines_measured": measured,
-        "engines_not_measured": len(entries) - measured,
-        "engines_unlisted": sum(1 for entry in entries if not entry["in_catalogue"]),
+        "engines_not_measured": live_total - measured,
+        "engines_unlisted": sum(1 for entry in entries if entry["status"] != STATUS_RETIRED and not entry["in_catalogue"]),
+        "engines_retired": len(retired),
         "entries": entries,
+    }
+
+
+def _tombstone_entry(tombstone: Mapping[str, Any], engine_rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """A deleted engine: what it was, when and why it went, what replaced it, and any history it left."""
+    engine = str(tombstone["engine"])
+    return {
+        "engine": engine,
+        "label": str(tombstone["label"]),
+        "claim": None,
+        "claim_note": "Retired: " + str(tombstone["reason"]),
+        "in_catalogue": False,
+        "cadence": None,
+        "measured": bool(engine_rows),
+        "measured_rows": len(engine_rows),
+        "status": STATUS_RETIRED,
+        "worst_brier_ratio": worst_brier_ratio(engine_rows),
+        "rows": list(engine_rows),
+        "retired": {"removed": str(tombstone["removed"]), "reason": str(tombstone["reason"]),
+                    "replaced_by": tombstone.get("replaced_by")},
     }
 
 

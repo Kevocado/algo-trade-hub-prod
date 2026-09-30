@@ -25,7 +25,9 @@ from tradehub.engine_catalogue import (
     CATALOGUE_ENGINES,
     CLAIM_UNLISTED,
     ENGINE_CATALOGUE,
+    ENGINE_TOMBSTONES,
     STATUS_NOT_MEASURED,
+    STATUS_RETIRED,
     catalogue_entry,
     engine_catalogue,
     engine_status,
@@ -453,3 +455,39 @@ def test_the_threshold_it_summarises_is_the_threshold_the_board_already_uses():
 
     assert str(BEHIND_THE_MARKET) not in executable
     assert "row_verdict(" in executable, "the roll-up stopped reading the reduced row's own verdict"
+
+
+_GONE = {"engine": "macro_engine", "label": "Macro engine (retired)", "removed": "2026-10-15",
+    "reason": "deleted with the legacy daemon; its quarantine ruling was superseded",
+    "replaced_by": "cpi_nowcast"}
+
+
+class TestRetiredEnginesLeaveATombstone:
+    """Deleted engines do not vanish (v2 spec §9): they stay on the page as `retired`."""
+
+    def test_no_engine_is_retired_until_a_pr_deletes_one(self):
+        assert ENGINE_TOMBSTONES == ()
+        assert engine_catalogue([_row("gas")])["engines_retired"] == 0
+
+    def test_a_tombstone_is_a_retired_entry_with_what_happened_and_what_replaced_it(self):
+        catalogue = engine_catalogue([_row("gas")], tombstones=[_GONE])
+        entry = catalogue["entries"][-1]
+        assert entry["engine"] == "macro_engine" and entry["status"] == STATUS_RETIRED
+        assert entry["retired"] == {"removed": "2026-10-15", "reason": _GONE["reason"],
+                                    "replaced_by": "cpi_nowcast"}
+        assert entry["claim"] is None and entry["claim_note"].startswith("Retired: ")
+        assert entry["measured"] is False and entry["rows"] == []
+
+    def test_retired_engines_are_not_live_engines_in_the_counts(self):
+        live = engine_catalogue([_row("gas")])
+        with_ts = engine_catalogue([_row("gas")], tombstones=[_GONE])
+        for key in ("engines_total", "engines_measured", "engines_not_measured", "engines_unlisted"):
+            assert with_ts[key] == live[key], key
+        assert with_ts["engines_retired"] == 1 and len(with_ts["entries"]) == len(live["entries"]) + 1
+
+    def test_a_retired_engine_keeps_its_backtest_history_and_is_never_also_unlisted(self):
+        catalogue = engine_catalogue([_row("gas"), _row("macro_engine", version="m-v1")], tombstones=[_GONE])
+        retired = [e for e in catalogue["entries"] if e["engine"] == "macro_engine"]
+        assert len(retired) == 1 and retired[0]["status"] == STATUS_RETIRED
+        assert retired[0]["measured"] is True and retired[0]["worst_brier_ratio"] == 4.29
+        assert catalogue["engines_unlisted"] == 0
