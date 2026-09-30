@@ -15,6 +15,7 @@ from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, Qu
 from tradehub.journal.forecasters.sentiment import SentimentMeter
 from tradehub.journal.forecasters.spy_quant import SpyQuant
 from tradehub.journal.forecasters.wave2_daily import VixForecaster, GoldForecaster, EurusdForecaster
+from tradehub.journal.forecasters.housing import HousingForecaster
 from tradehub.journal.kalshi_linked import KalshiImplied
 from tradehub.journal.spx import SpxCloses
 
