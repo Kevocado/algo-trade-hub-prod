@@ -69,9 +69,9 @@ def sha256(text: str) -> str:
 class ArtifactStore:
     """`<root>/spy_direction/<name>.json` plus `manifest.json` = {name: sha256}."""
 
-    def __init__(self, root: Path | None = None):
+    def __init__(self, root: Path | None = None, namespace: str = "spy_direction"):
         base = root or Path(os.environ.get(MODEL_DIR_ENV) or DEFAULT_MODEL_DIR)
-        self.dir = base / "spy_direction"
+        self.dir = base / namespace
 
     def _manifest(self) -> dict[str, str]:
         path = self.dir / "manifest.json"
