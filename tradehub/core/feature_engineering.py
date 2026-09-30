@@ -1,7 +1,7 @@
 """
 Feature Engineering — 3-Cluster Microstructure + Derivatives Pipeline
 
-Cluster 1: Momentum & Sentiment (RSI, MACD, Price Acceleration, FinBERT)
+Cluster 1: Momentum & Sentiment (RSI, MACD, Price Acceleration; news sentiment is neutral, see below)
 Cluster 2: Market Microstructure (Amihud, Corwin-Schultz, RVOL)
 Cluster 3: Derivatives Positioning (Black-Scholes GEX + fallback proxy)
 
@@ -56,59 +56,6 @@ def add_momentum_features(df):
         df[f'lag_ret_{lag}'] = df['Close'].pct_change(periods=lag)
 
     return df
-
-
-def add_finbert_sentiment(df, ticker="SPY"):
-    """
-    Pipes Alpaca news stream through local FinBERT model.
-    Returns hourly_news_sentiment score (-1 to +1).
-    Falls back to 0.0 if models unavailable.
-    """
-    try:
-        from tradehub.core.sentiment_filter import SentimentFilter
-        sf = SentimentFilter()
-
-        # Try fetching recent Alpaca news
-        try:
-            from alpaca.data.historical import StockHistoricalDataClient
-            from alpaca.data.requests import NewsRequest
-            import os
-
-            api_key = os.getenv("ALPACA_API_KEY", "")
-            secret_key = os.getenv("ALPACA_SECRET_KEY", "")
-
-            if api_key and secret_key:
-                client = StockHistoricalDataClient(api_key, secret_key)
-                # Fetch recent news for the ticker
-                news_req = NewsRequest(symbols=[ticker], limit=10)
-                news = client.get_news(news_req)
-
-                if news:
-                    sentiments = []
-                    for article in news:
-                        headline = article.headline if hasattr(article, 'headline') else str(article)
-                        result = sf.analyze_fed_statement(headline)
-                        # Map: positive=+1, negative=-1, neutral=0
-                        score = result.get('confidence', 0.5)
-                        if result.get('sentiment') == 'negative':
-                            score = -score
-                        elif result.get('sentiment') == 'neutral':
-                            score = 0
-                        sentiments.append(score)
-
-                    avg_sentiment = np.mean(sentiments) if sentiments else 0.0
-                    df['hourly_news_sentiment'] = avg_sentiment
-                    return df
-        except Exception:
-            pass
-
-        # Fallback: set to neutral
-        df['hourly_news_sentiment'] = 0.0
-        return df
-
-    except Exception:
-        df['hourly_news_sentiment'] = 0.0
-        return df
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -473,8 +420,9 @@ def create_features(df, ticker="SPY"):
     # Cluster 1: Momentum
     df = add_momentum_features(df)
 
-    # Cluster 1: Sentiment
-    df = add_finbert_sentiment(df, ticker)
+    # Cluster 1: Sentiment. The FinBERT news path was deleted (v2 spec §9; the sentiment meter replaced it),
+    # and the column stays so the feature contract is unchanged: there is no news source, so it is neutral.
+    df['hourly_news_sentiment'] = 0.0
 
     # Cluster 2: Microstructure
     df = add_microstructure_features(df)
