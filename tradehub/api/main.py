@@ -632,7 +632,11 @@ def _fetch_all(supa, table: str, build, *, page: int = POSTGREST_CAP, cap: int |
     lo = 0
     while True:
         # PostgREST `Range` is inclusive of the last index, so page boundaries advance by `page`.
-        chunk = build(supa.table(table)).order(*order).range(lo, lo + page - 1).execute().data or []
+        # Chain .order() calls for each column (postgrest-py >=2.x only accepts one column per call).
+        query = build(supa.table(table))
+        for col in order:
+            query = query.order(col)
+        chunk = query.range(lo, lo + page - 1).execute().data or []
         rows.extend(chunk)
         if len(chunk) < page:
             return rows[:cap] if cap is not None else rows

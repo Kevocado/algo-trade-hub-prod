@@ -33,8 +33,9 @@ class _Query:
         self.filters.append(lambda r, c=col, v=vals: r.get(c) in v)
         return self
 
-    def order(self, *cols, desc=False, **_k):
-        self.order_by, self.desc = cols, desc
+    def order(self, column, *, desc=False, **_k):  # one column per call, like postgrest-py
+        self.order_by = (*self.order_by, column)
+        self.desc = desc
         return self
 
     def range(self, lo, hi):
