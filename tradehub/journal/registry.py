@@ -12,6 +12,7 @@ from tradehub.journal.contract import Forecaster
 from tradehub.journal.forecasters.cpi import CpiForecaster
 from tradehub.journal.forecasters.daily_direction import build_wave2
 from tradehub.journal.forecasters.fomc import FOMC_SERIES, FomcMapped, is_hold_market
+from tradehub.journal.forecasters.housing import HousingForecaster
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
 from tradehub.journal.forecasters.sentiment import SentimentMeter
 from tradehub.journal.forecasters.spy_quant import SpyQuant
@@ -40,4 +41,6 @@ FORECASTERS: list[Forecaster] = [
     SpyQuant(_SPX),
     # wave 2 (spec §8): VIX, gold (GLD) and EUR/USD daily direction, same walk-forward model
     *build_wave2(),
+    # wave 3 (spec §8): Case-Shiller national HPI month-over-month direction
+    HousingForecaster(),
 ]
