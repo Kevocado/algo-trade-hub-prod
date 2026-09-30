@@ -44,9 +44,10 @@ class Artifact:
         return json.dumps(asdict(self), sort_keys=True, indent=1)
 
 
-def fit(x: list[list[float]], y: list[int], days: list[date], l2: float = L2) -> Artifact:
-    if len(y) < MIN_TRAIN:
-        raise ValueError(f"need >= {MIN_TRAIN} training sessions, got {len(y)}")
+def fit(x: list[list[float]], y: list[int], days: list[date], l2: float = L2, *,
+        features: tuple[str, ...] = FEATURES, min_train: int = MIN_TRAIN) -> Artifact:
+    if len(y) < min_train:
+        raise ValueError(f"need >= {min_train} training rows, got {len(y)}")
     xa, ya = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
     center, scale = xa.mean(axis=0), xa.std(axis=0)
     scale[scale == 0] = 1.0
@@ -58,7 +59,7 @@ def fit(x: list[list[float]], y: list[int], days: list[date], l2: float = L2) ->
         grad = z.T @ (p - ya) + penalty @ w
         hess = (z.T * (p * (1.0 - p))) @ z + penalty
         w -= np.linalg.solve(hess, grad)
-    return Artifact(FEATURES, tuple(center.tolist()), tuple(scale.tolist()), float(w[0]), tuple(w[1:].tolist()),
+    return Artifact(features, tuple(center.tolist()), tuple(scale.tolist()), float(w[0]), tuple(w[1:].tolist()),
                     min(days).isoformat(), max(days).isoformat(), len(ya))
 
 
