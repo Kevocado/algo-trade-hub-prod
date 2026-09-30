@@ -1,37 +1,38 @@
-# Step 4: Shared data layer + weather + gas engines
-# (per spec §3.1, §4)
+# Wave 2 – VIX, Gold, EUR/USD (Daily Direction)
 
-## Overview
-Build the shared data layer that powers the prediction journal:
-- **Weather**: NWS forecasts, Open-Meteo ensemble, RBOB (RB=F) via yfinance, EIA weekly retail gasoline
-- **Gas**: Daily/weekly/monthly AAA averages (via Stooq/Alpha Vantage)
-- **Edge layer**: Compute edge probabilities (entry/exit) from market data
+**Goal:** Add three new daily-direction forecasters to the prediction journal:
+1. **VIX next-day direction** – binary (up/down) for the next trading day
+2. **Gold daily direction** – binary (up/down) for the next trading day, based on Stooq XAUUSD
+3. **EUR/USD daily direction** – binary (up/down) for the next trading day, based on Stooq EURUSD
 
-## Architecture
-- `tradehub/data/` – unified data fetchers (NWS, Open-Meteo, RBOB, EIA)
-- `tradehub/engines/weather.py` – weather forecasting helpers
-- `tradehub/engines/gas.py` – gas price/volume aggregators
-- `tradehub/edge.py` – edge probability computation (entry/exit signals)
-- `tradehub/contracts/edge.py` – contract definitions for edge types
+All three share the same infrastructure:
+- Freeze at **08:00 CT** (3‑hour lead before market close)
+- Settle on the next close (market close time)
+- Scored identically to SPY (Brier score comparison)
+- Naive baseline: simple persistence + climatology (pre‑announcement period)
+- Must beat baseline's Brier to graduate from provisional
 
-## Dependencies
-- `tradehub/data/fred_daily.py` (already exists)
-- `tradehub/journal/forecasters/` (already has daily-direction forecasters)
-- `tradehub/journal/` (already has registry, targets)
+**Architecture:**
+- Plumbing: `tradehub/data/fred_daily.py` (keyed FRED current vintage), `tradehub/journal/nyse.py` (session calendar), `tradehub/journal/spx.py` (SPX-like daily close target)
+- Forecastors: `tradehub/journal/forecasters/vix.py`, `gold.py`, `eurusd.py`
+- API: `tradehub/api/main.py` adds new endpoints for each forecaster
+- Tests: `tests/test_journal_vix.py`, `tests/test_journal_gold.py`, `tests/test_journal_eurusd.py`
 
-## Implementation Plan
-1. **Weather data layer** – fetch NWS forecasts, Open-Meteo, RBOB, EIA
-2. **Gas data layer** – fetch AAA daily/weekly/monthly via Stooq/Alpha Vantage
-3. **Edge computation** – compute entry/exit probabilities from market data
-4. **Integration** – wire into journal forecasters (optional enhancement)
+**Tech Stack:** Python 3.12, FRED API (key on VPS), GDELT DOC 2.1 (keyless), pytest
 
-## Next Steps
-- Implement weather fetcher (`tradehub/data/weather.py`)
-- Implement gas fetcher (`tradehub/data/gas.py`)
-- Implement edge probability calculator (`tradehub/edge.py`)
-- Write tests for each component
+**Spec:** `docs/superpowers/specs/2026-09-29-tradehub-v2-prediction-journal-design.md` (§6 – Daily direction forecasters)
 
-## Verification
-- Each module passes its own test suite
-- Integration test: weather + gas data flows into the journal pipeline
-- Performance: < 2s latency for typical queries
+**Dependencies:** Plan (a) merged (PR #48) – journal pipeline, APIs, and scoring are ready.
+
+**Testing:**
+- Unit tests for each forecaster's `targets()` method (freeze window, calibration)
+- Integration tests for the journal API endpoints
+- Mutation tests for constants (e.g., `MIN_BUCKET_TARGETS`)
+- End-to-end smoke test: all three forecasters register, produce scores, and appear in `/journal`
+
+**Verification:**
+- All 1384 Python tests pass (including new Wave 2 tests)
+- Frontend vitest passes (462 tests)
+- Build succeeds (tsc, eslint, vitest)
+- Live API endpoints respond correctly
+- Journal UI shows new forecasters with correct gate status (SHADOW until first freeze)

@@ -43,6 +43,4 @@ FORECASTERS: list[Forecaster] = [
     VixForecaster(),
     GoldForecaster(),
     EurusdForecaster(),
-    # Wave 3: Housing (Case-Shiller HPI) + Kalshi-vs-model + Earnings
-    HousingForecaster(),
 ]
