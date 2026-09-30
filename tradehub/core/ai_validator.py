@@ -29,25 +29,12 @@ class AIValidator:
         self.client = genai.Client(api_key=api_key)
         self.model_name = 'gemini-2.5-flash'
 
-        # Add Hugging Face pre-filter
-        try:
-            from tradehub.core.sentiment_filter import SentimentFilter
-            self.sentiment_filter = SentimentFilter()
-        except Exception as e:
-            print(f"⚠️ HuggingFace SentimentFilter not available: {e}")
-            self.sentiment_filter = None
-
         # Track API usage
         self.gemini_calls = 0
-        self.hf_auto_approved = 0
 
     def validate_trade(self, opportunity, recent_news=None):
         """
-        Validate a trade using two-tier system:
-        1. First: Hugging Face sentiment filter (free, local)
-        2. Only if needed: Gemini API (paid)
-
-        This saves ~70% of Gemini API costs.
+        Validate a trade with the Gemini API.
 
         Returns:
             dict: {
@@ -55,48 +42,14 @@ class AIValidator:
                 'ai_reasoning': str,
                 'risk_factors': list,
                 'confidence': int (1-10),
-                'tier': str ('huggingface'|'gemini'|'fallback'),
+                'tier': str ('gemini'|'fallback'),
                 'ai_used': bool,
                 'error': str or None
             }
         """
 
-        # TIER 1: Hugging Face Pre-Filter (only for Macro trades)
-        if self.sentiment_filter and opportunity.get('engine') == 'Macro':
-            try:
-                pre_filter = self.sentiment_filter.pre_filter_macro_trade(
-                    opportunity,
-                    recent_news=recent_news
-                )
-
-                if pre_filter['auto_approve']:
-                    self.hf_auto_approved += 1
-                    return {
-                        'approved': True,
-                        'ai_reasoning': f"[HuggingFace] {pre_filter['reasoning']}",
-                        'risk_factors': [],
-                        'confidence': 8,
-                        'tier': 'huggingface',
-                        'ai_used': True,
-                        'error': None
-                    }
-
-                elif pre_filter['auto_reject']:
-                    return {
-                        'approved': False,
-                        'ai_reasoning': f"[HuggingFace] {pre_filter['reasoning']}",
-                        'risk_factors': ['Sentiment conflict detected'],
-                        'confidence': 2,
-                        'tier': 'huggingface',
-                        'ai_used': True,
-                        'error': None
-                    }
-
-                # If not auto-approved/rejected, fall through to Gemini
-            except Exception as e:
-                print(f"HuggingFace pre-filter error: {e}")
-
-        # TIER 2: Gemini API (for uncertain cases or non-Macro trades)
+        # Gemini API. The local HuggingFace pre-filter (Macro trades only) was deleted with the macro engine
+        # and the FinBERT path (v2 spec §9).
         self.gemini_calls += 1
 
         prompt = f"""
@@ -249,15 +202,7 @@ Rules: Block only for: exchange hack, {symbol.replace('USDT','')} regulatory act
 
     def get_stats(self):
         """Return usage statistics"""
-        total_validations = self.gemini_calls + self.hf_auto_approved
-        savings = (self.hf_auto_approved / total_validations * 100) if total_validations > 0 else 0
-
-        return {
-            'total_validations': total_validations,
-            'gemini_api_calls': self.gemini_calls,
-            'huggingface_auto_approved': self.hf_auto_approved,
-            'api_cost_savings': f"{savings:.1f}%"
-        }
+        return {'total_validations': self.gemini_calls, 'gemini_api_calls': self.gemini_calls}
 
 
     def validate_top_edges(self, top_edges):
