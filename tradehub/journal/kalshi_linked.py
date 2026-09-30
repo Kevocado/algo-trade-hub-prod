@@ -38,6 +38,11 @@ def quote_mid(lm: LiveMarket) -> float | None:
     return (lm.quote.yes_bid + lm.quote.yes_ask) / 2.0
 
 
+def quote_payload(lm: LiveMarket) -> dict[str, float | None]:
+    """The frozen top of book, recorded in every market-linked forecast so its edge can be netted of costs."""
+    return {"yes_bid": lm.quote.yes_bid, "yes_ask": lm.quote.yes_ask}
+
+
 def in_freeze_window(lm: LiveMarket, now: datetime, lead: timedelta = FREEZE_LEAD) -> bool:
     return now < lm.market.close_time <= now + lead
 
@@ -81,7 +86,7 @@ class KalshiImplied:
         if mid is None:
             return None
         return Forecast(self.name, self.version, entry.target, mid, market_prob=mid,
-                        payload={"yes_bid": lm.quote.yes_bid, "yes_ask": lm.quote.yes_ask})
+                        payload=quote_payload(lm))
 
     def settle(self, target: str, now: datetime) -> Settlement | None:
         return settle_on_kalshi(target, self._fetch_market)

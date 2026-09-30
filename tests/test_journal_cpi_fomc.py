@@ -60,6 +60,7 @@ def test_cpi_forecaster_reproduces_the_scan_probability_and_freezes_the_market_m
     assert forecast.probability == pytest.approx(0.5244, abs=1e-4)  # same number test_scan_cpi pins
     assert forecast.market_prob == pytest.approx(0.32)
     assert forecast.payload["nowcast_obs"] == "CPI:2026-08@2026-09-10"
+    assert (forecast.payload["yes_bid"], forecast.payload["yes_ask"]) == (0.30, 0.34)  # frozen for cost netting
 
 
 def test_only_markets_inside_the_freeze_lead_are_targets():

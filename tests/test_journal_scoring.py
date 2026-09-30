@@ -6,8 +6,11 @@ from tradehub.journal.contract import CalendarEntry, Forecast, Settlement
 from tradehub.journal.scoring import MIN_BUCKET_TARGETS, murphy, reliability, score, settled_pairs
 
 
-def _row(target, prob, market=None, rebuilt=False):
-    return {"target": target, "probability": prob, "market_prob": market, "rebuilt": rebuilt}
+def _row(target, prob, market=None, rebuilt=False, quote=None):
+    row = {"target": target, "probability": prob, "market_prob": market, "rebuilt": rebuilt}
+    if quote is not None:
+        row["payload"] = {"yes_bid": quote[0], "yes_ask": quote[1]}
+    return row
 
 
 def test_contract_rejects_naive_times_and_bad_values():
@@ -63,7 +66,7 @@ def test_gate_counts_monthly_at_50_and_daily_at_200():
 
 
 def test_promotion_needs_positive_skill_and_calibrated_buckets():
-    good = [_row(f"g{i}", 0.95, market=0.6) for i in range(MIN_BUCKET_TARGETS * 3)]
+    good = [_row(f"g{i}", 0.95, market=0.6, quote=(0.58, 0.62)) for i in range(MIN_BUCKET_TARGETS * 3)]
     card = score(good, {r["target"]: 1 for r in good}, {}, "monthly")
     assert card["calibration_ready"] and card["bss"] > 0
     assert card["gate_status"] == "PROMOTED", card["gate_reasons"]
@@ -81,3 +84,29 @@ def test_reliability_is_confidence_space_and_murphy_adds_up():
     brier = sum((p["probability"] - p["outcome"]) ** 2 for p in pairs) / len(pairs)
     # Binned Murphy is exact when every bin holds a single forecast value, as here.
     assert m["reliability"] - m["resolution"] + m["uncertainty"] == pytest.approx(brier, abs=1e-6)
+
+
+def test_a_market_forecaster_with_no_frozen_quotes_cannot_promote():
+    rows = [_row(f"g{i}", 0.95, market=0.6) for i in range(MIN_BUCKET_TARGETS * 3)]
+    card = score(rows, {r["target"]: 1 for r in rows}, {}, "monthly")
+    assert card["bss"] > 0 and card["gate_status"] == "SHADOW"
+    assert any("no frozen quotes" in r for r in card["gate_reasons"])
+    assert card["costs"]["n_quoted"] == 0
+
+
+def test_skill_that_fees_and_spread_eat_does_not_promote():
+    # Forecast 0.75 against a 0.60 mid, with a wide 50/70 book. At a 70% hit rate the Brier skill vs
+    # the market is positive (it beats 0.60 whenever the hit rate is above 0.675), but buying at the
+    # 70c ask plus a 2c fee needs a 72% hit rate to break even: the edge exists only before costs.
+    rows = [_row(f"t{i}", 0.75, market=0.60, quote=(0.50, 0.70)) for i in range(60)]
+    settle = {r["target"]: int(i < 42) for i, r in enumerate(rows)}
+    card = score(rows, settle, {}, "monthly")
+    assert card["bss"] > 0 and card["costs"]["n_traded"] == 60
+    assert card["costs"]["net_pnl_cents"] == pytest.approx(42 * (30 - 2) + 18 * (-70 - 2))  # -100
+    assert card["gate_status"] == "SHADOW" and any("after fees and spread" in r for r in card["gate_reasons"])
+
+
+def test_climatology_baselines_carry_no_cost_block():
+    rows = [_row(f"c{i}", 0.9) for i in range(5)]
+    card = score(rows, {r["target"]: 1 for r in rows}, {r["target"]: {"climatology_prob": 0.5} for r in rows}, "daily")
+    assert card["baseline"] == "climatology" and card["costs"] == {}

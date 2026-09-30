@@ -17,7 +17,14 @@ from tradehub.data.kalshi_live import LiveMarket
 from tradehub.engine_config import load_engine_config
 from tradehub.engines.cpi import CPI_TARGETS, CPI_TRAIN_MONTHS, cpi_prob, fit_cpi_error, latest_nowcast, training_pairs
 from tradehub.journal.contract import CalendarEntry, Forecast, Settlement
-from tradehub.journal.kalshi_linked import entry_for, in_freeze_window, kalshi_target, quote_mid, settle_on_kalshi
+from tradehub.journal.kalshi_linked import (
+    entry_for,
+    in_freeze_window,
+    kalshi_target,
+    quote_mid,
+    quote_payload,
+    settle_on_kalshi,
+)
 from tradehub.markets import event_month
 
 CPI_ENGINE = "cpi_nowcast"
@@ -58,7 +65,8 @@ class CpiForecaster:
         model = fit_cpi_error(pairs, window=self._window, use_bias=self._use_bias)
         return Forecast(self.name, self.version, entry.target, cpi_prob(lm.market, nowcast.value, model),
                         market_prob=quote_mid(lm),
-                        payload={"nowcast": nowcast.value, "nowcast_obs": nowcast.name, "bias": model.bias,
+                        payload={**quote_payload(lm), "nowcast": nowcast.value, "nowcast_obs": nowcast.name,
+                                 "bias": model.bias,
                                  "sigma": model.sigma, "n_train": len(pairs),
                                  "hours_to_close": round(horizon.total_seconds() / 3600.0, 2)})
 
