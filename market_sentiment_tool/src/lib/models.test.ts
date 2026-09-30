@@ -8,6 +8,7 @@ import {
   catalogueCounts,
   claimText,
   displayOnlyNote,
+  retirementText,
   statusTone,
   statusWord,
   worstRatioText,
@@ -249,5 +250,28 @@ describe("catalogueCounts", () => {
 
   it("says nothing about the catalogue when there is nothing to say", () => {
     expect(catalogueCounts(catalogue())).not.toMatch(/catalogue/);
+  });
+});
+
+describe("retired engines leave a tombstone", () => {
+  const retired = { removed: "2026-10-15", reason: "deleted with the legacy daemon", replaced_by: "cpi_nowcast" };
+
+  it("has its own status word, and the muted tone rather than a loss", () => {
+    expect(statusWord("retired")).toBe("Retired");
+    expect(statusTone("retired")).toBe("unknown");
+  });
+
+  it("says when, why and what replaced it; nothing for a live engine", () => {
+    expect(retirementText({ retired })).toBe(
+      "Retired 2026-10-15: deleted with the legacy daemon. Replaced by cpi_nowcast.",
+    );
+    expect(retirementText({ retired: { ...retired, replaced_by: null } })).toContain("Nothing replaced it.");
+    expect(retirementText({})).toBeNull();
+  });
+
+  it("counts retired engines beside the live ones, and is silent when there are none", () => {
+    const base = { engines_total: 7, engines_measured: 3, engines_not_measured: 4, engines_unlisted: 0, entries: [] };
+    expect(catalogueCounts({ ...base, engines_retired: 2 })).toBe("7 engines · 3 measured · 4 not measured · 2 retired");
+    expect(catalogueCounts({ ...base, engines_retired: 0 })).not.toMatch(/retired/);
   });
 });

@@ -44,7 +44,7 @@ import {
  * than a flavour of `not_comparable`. "A run exists and recorded no market Brier" and "there is no
  * run" are different facts, and collapsing them turns a gap in the evidence into a verdict.
  */
-export type EngineStatus = MarketVerdict | "not_measured";
+export type EngineStatus = MarketVerdict | "not_measured" | "retired";
 
 /** One engine, joined to the scoreboard rows that measured it. Self-contained by construction. */
 export interface CatalogueEntry {
@@ -64,6 +64,15 @@ export interface CatalogueEntry {
   worst_brier_ratio: number | null;
   /** The scoreboard's own rows, whole and unmodified. The page re-derives nothing from them. */
   rows: ScoreboardRow[];
+  /** Present only on a deleted engine's tombstone (status "retired"). */
+  retired?: Retirement | null;
+}
+
+/** What happened to a deleted engine. `replaced_by` is null when nothing took over. */
+export interface Retirement {
+  removed: string;
+  reason: string;
+  replaced_by: string | null;
 }
 
 export interface Catalogue {
@@ -72,6 +81,8 @@ export interface Catalogue {
   engines_not_measured: number;
   /** Engines with a backtest run that the catalogue has never heard of. */
   engines_unlisted: number;
+  /** Deleted engines, shown as tombstones. Not counted in `engines_total`. Absent on an older API. */
+  engines_retired?: number;
   entries: CatalogueEntry[];
 }
 
@@ -138,6 +149,8 @@ export function statusWord(status: EngineStatus): string {
       return "Level with the market";
     case "not_comparable":
       return "Not comparable";
+    case "retired":
+      return "Retired";
     default:
       return "Not measured";
   }
@@ -213,6 +226,15 @@ export function catalogueCounts(catalogue: Catalogue | null | undefined): string
     `${formatCount(catalogue.engines_not_measured)} not measured` +
     (catalogue.engines_unlisted > 0
       ? ` · ${formatCount(catalogue.engines_unlisted)} not in the catalogue`
-      : "")
+      : "") +
+    (catalogue.engines_retired ? ` · ${formatCount(catalogue.engines_retired)} retired` : "")
   );
+}
+
+/** One sentence for a tombstone: when it went, why, and what replaced it. Null for a live engine. */
+export function retirementText(entry: Pick<CatalogueEntry, "retired">): string | null {
+  const r = entry.retired;
+  if (!r) return null;
+  const successor = r.replaced_by ? `Replaced by ${r.replaced_by}.` : "Nothing replaced it.";
+  return `Retired ${r.removed}: ${r.reason}. ${successor}`;
 }
