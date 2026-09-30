@@ -12,6 +12,7 @@ import {
   brierPair,
   catalogueCounts,
   claimText,
+  retirementText,
   statusTone,
   statusWord,
   worstRatioText,
@@ -110,6 +111,9 @@ function Row({ entry }: { entry: CatalogueEntry }) {
           data rather than a string in this file -- see `@/lib/models`. */}
       <td className="py-3 pr-3 text-slate-300">
         <p className="max-w-md text-[13px] leading-snug">{claimText(entry)}</p>
+        {retirementText(entry) && (
+          <p className="mt-2 max-w-md text-[11px] leading-snug text-slate-400">{retirementText(entry)}</p>
+        )}
         {/* The display-only ruling, in the row rather than only in the page title: a model
             probability beside a market price reads as an opportunity everywhere else in finance. */}
         {displayOnly && <p className="mt-2 max-w-md text-[11px] leading-snug text-amber-300">{displayOnly}</p>}

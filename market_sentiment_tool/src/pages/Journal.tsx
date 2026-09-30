@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { buildApiUrl } from "@/lib/api";
 import { GateBadge } from "@/components/GateBadge";
+import { PreJournalContext } from "@/components/PreJournalContext";
 import { QuarantineNotice } from "@/components/QuarantineNotice";
 import { useQuarantine } from "@/hooks/useQuarantine";
 import {
@@ -193,6 +194,8 @@ export default function Journal() {
           ))}
         </section>
       )}
+
+      <PreJournalContext />
 
       <section aria-label="Quarantine">
         <h2 className="mb-2 text-lg font-semibold text-slate-200">Quarantine</h2>
