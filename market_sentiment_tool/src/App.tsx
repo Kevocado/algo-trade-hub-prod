@@ -1,7 +1,6 @@
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
 // Pages
 import Home from "@/pages/Home";
-import PredictionLab from "@/pages/PredictionLab";
 import ShadowBacktester from "@/pages/ShadowBacktester";
 import Models from "@/pages/Models";
 import Scoreboard from "@/pages/Scoreboard";
@@ -11,7 +10,7 @@ import CpiDisplay from "@/pages/CpiDisplay";
 import Journal from "@/pages/Journal";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
-import { LayoutDashboard, Activity, Wallet, Brain, Cpu, LineChart, Scale, Trophy, Briefcase, BarChart3, BookOpen } from "lucide-react";
+import { LayoutDashboard, Activity, Wallet, Cpu, LineChart, Scale, Trophy, Briefcase, BarChart3, BookOpen } from "lucide-react";
 
 const Sidebar = () => {
   const { portfolio } = usePortfolio();
@@ -37,12 +36,6 @@ const Sidebar = () => {
           className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
         >
           <LayoutDashboard className="w-5 h-5" /> Portfolio
-        </NavLink>
-        <NavLink 
-          to="/lab" 
-          className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
-        >
-          <Brain className="w-5 h-5 text-emerald-500" /> Prediction Lab
         </NavLink>
         {/* "Crypto Shadow", not "Shadow". This is the nav entry that cost the owner a page on
             2026-09-28: a list item reading "Shadow" beside one reading "Scoreboard" reads as two
@@ -147,7 +140,9 @@ function App() {
       <AppShell>
         <Routes>
           <Route path="/" element={<Home />} />
-          <Route path="/lab" element={<PredictionLab />} />
+          {/* /lab was the Prediction Lab; the journal replaced it (v2 spec §9). A redirect, not a 404, so
+              bookmarks and links keep working. */}
+          <Route path="/lab" element={<Navigate to="/journal" replace />} />
           {/* The crypto shadow-timeline backtester, which keeps the /shadow route it has always
               had. It is NOT the scoreboard and never becomes it: a redirect from here to the
               scoreboard would swap a crypto backtester for an engine scoreboard without saying so,

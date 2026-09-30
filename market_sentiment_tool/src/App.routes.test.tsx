@@ -6,7 +6,7 @@ import type { ModelsResponse } from "@/lib/models";
 import type { ShadowPerformanceResponse } from "@/lib/shadowPerformance";
 
 // `src/lib/supabase.ts` builds a real client at import time and THROWS when the publishable key is
-// absent, so importing `App` -- which pulls in `Home` and `PredictionLab` -> `useMarketEdges` --
+// absent, so importing `App` -- which pulls in `Home` -> `useMarketEdges` --
 // fails before a single assertion runs. The stub is a stand-in for a credential this test does not
 // need: neither route rendered here reads a Supabase table directly (the API does), so nothing
 // calls it. Setting a fake URL instead would be worse: it would let a test that means to prove
@@ -194,6 +194,15 @@ describe("the sidebar link and the route agree", () => {
 
     expect(screen.getByRole("heading", { name: "Prediction Journal", level: 1 })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /journal/i })).toHaveAttribute("href", "/journal");
+  });
+
+  it("redirects the retired /lab to the journal without a 404", async () => {
+    // The Prediction Lab was cut (v2 spec §9). Old links must land somewhere real, not on an empty shell.
+    await renderAppAt("/lab");
+
+    expect(screen.getByRole("heading", { name: "Prediction Journal", level: 1 })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/journal");
+    expect(screen.queryByRole("link", { name: /prediction lab/i })).not.toBeInTheDocument();
   });
 
   it("renders no models page on a path with no route", async () => {
