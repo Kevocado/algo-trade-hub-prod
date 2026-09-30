@@ -8,6 +8,7 @@ import SportsEdges from "@/pages/SportsEdges";
 import JobsScorecard from "@/pages/JobsScorecard";
 import CpiDisplay from "@/pages/CpiDisplay";
 import Journal from "@/pages/Journal";
+import { NoOrdersBanner } from "@/components/NoOrdersBanner";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
 import { LayoutDashboard, Activity, Wallet, Cpu, LineChart, Scale, Trophy, Briefcase, BarChart3, BookOpen } from "lucide-react";
@@ -128,6 +129,7 @@ const AppShell = ({ children }: { children: React.ReactNode }) => {
     <div className="flex min-h-screen bg-slate-950">
       <Sidebar />
       <main className="flex-1 min-h-screen overflow-auto bg-slate-950 text-slate-100">
+        <NoOrdersBanner />
         {children}
       </main>
     </div>

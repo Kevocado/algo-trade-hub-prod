@@ -49,9 +49,17 @@ const feed: JournalFeed = {
   provisional: true,
 };
 
+const scoreboard = {
+  as_of: "2026-10-01T13:00:00+00:00",
+  runs_read: 1,
+  engines: 1,
+  rows: [{ engine: "cpi_nowcast", engine_version: "cpi-v1", mode: "taker", date_from: "2025-01-01T00:00:00+00:00",
+           date_to: "2026-06-30T00:00:00+00:00", n_decisions: 412, brier_ours: 0.0712, brier_market: 0.0683 }],
+};
+
 function stubFetch() {
   const fn = vi.fn((url: string) => {
-    const body = url.includes("/api/journal/feed") ? feed : journal;
+    const body = url.includes("/api/journal/feed") ? feed : url.includes("/api/scoreboard") ? scoreboard : journal;
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
   });
   vi.stubGlobal("fetch", fn);
@@ -72,6 +80,16 @@ describe("Journal", () => {
     expect(within(tile).getAllByText(/^After fees and spread: no quoted prices recorded yet/).length).toBeGreaterThan(0);
     expect(within(tile).getByText("only 10 settled targets, need 50 (monthly)")).toBeInTheDocument();
     expect(within(tile).getByText(/overconfident by 15.0pp/)).toBeInTheDocument();
+  });
+
+  it("shows backtests as labelled context that is never counted in the journal's N", async () => {
+    stubFetch();
+    render(<Journal />);
+    const section = await screen.findByLabelText("Pre-journal backtests");
+    expect(await within(section).findByText(/never counted in its settled total/)).toBeInTheDocument();
+    expect(within(section).getByText("cpi_nowcast · cpi-v1 · taker")).toBeInTheDocument();
+    expect(within(section).getByText("2025-01-01 → 2026-06-30")).toBeInTheDocument();
+    expect(screen.getByLabelText("Headline")).toHaveTextContent("0 of 3 forecasters calibrated");  // untouched
   });
 
   it("says unscored in words and labels the FOMC model experimental", async () => {

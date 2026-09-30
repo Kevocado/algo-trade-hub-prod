@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 
 import App from "@/App";
 import type { ModelsResponse } from "@/lib/models";
@@ -194,6 +194,14 @@ describe("the sidebar link and the route agree", () => {
 
     expect(screen.getByRole("heading", { name: "Prediction Journal", level: 1 })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /journal/i })).toHaveAttribute("href", "/journal");
+  });
+
+  it("carries the no-orders line above every page", async () => {
+    for (const path of ["/journal", "/models", "/no-such-route"]) {
+      await renderAppAt(path);
+      expect(screen.getByRole("note")).toHaveTextContent("Places no orders — the ledger is the product.");
+      cleanup();
+    }
   });
 
   it("redirects the retired /lab to the journal without a 404", async () => {
