@@ -18,6 +18,7 @@ import pytest
 MIGRATION = Path(__file__).resolve().parents[1] / (
     "market_sentiment_tool/supabase/migrations/20260428000014_prediction_journal.sql"
 )
+COSTS_MIGRATION = MIGRATION.with_name("20260428000015_journal_costs.sql")
 
 
 def _docker_ok() -> bool:
@@ -47,9 +48,10 @@ def pg():
 
         # Supabase has these roles; a plain postgres does not.
         assert run("CREATE ROLE anon; CREATE ROLE authenticated;").returncode == 0
-        for _ in range(2):  # applied twice: the migration must be idempotent
-            applied = run(MIGRATION.read_text(encoding="utf-8"))
-            assert applied.returncode == 0, applied.stderr
+        for _ in range(2):  # applied twice: the migrations must be idempotent
+            for migration in (MIGRATION, COSTS_MIGRATION):
+                applied = run(migration.read_text(encoding="utf-8"))
+                assert applied.returncode == 0, applied.stderr
         yield run
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)  # noqa: PLW1510
@@ -130,3 +132,10 @@ def test_clients_have_no_write_privilege(pg):
     out = pg("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee IN ('anon','authenticated') "
              "AND table_name LIKE 'journal_%' AND privilege_type IN ('INSERT','UPDATE','DELETE','TRUNCATE');")
     assert out.returncode == 0 and out.stdout.strip() == "0"
+
+
+def test_the_costs_column_exists_and_defaults_to_an_empty_object(pg):
+    out = pg("INSERT INTO journal_scores (forecaster, forecaster_version, cadence, baseline) "
+             "VALUES ('c', 'v1', 'daily', 'none'); SELECT costs::text FROM journal_scores WHERE forecaster = 'c';")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().splitlines()[-1] == "{}"

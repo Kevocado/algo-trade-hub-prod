@@ -69,6 +69,7 @@ describe("Journal", () => {
     expect(within(tile).getByText("Brier skill -0.043 vs the Kalshi market")).toBeInTheDocument();
     expect(within(tile).getByText("Kalshi-implied (kalshi_implied_cpi@v1)")).toBeInTheDocument();
     expect(within(tile).getByText("provisional")).toBeInTheDocument();
+    expect(within(tile).getAllByText(/^After fees and spread: no quoted prices recorded yet/).length).toBeGreaterThan(0);
     expect(within(tile).getByText("only 10 settled targets, need 50 (monthly)")).toBeInTheDocument();
     expect(within(tile).getByText(/overconfident by 15.0pp/)).toBeInTheDocument();
   });

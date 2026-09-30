@@ -8,6 +8,7 @@ import {
   EXPERIMENTAL,
   biasReadout,
   brierText,
+  costsText,
   key,
   pct,
   settledText,
@@ -42,6 +43,7 @@ function ScoreLines({ score, label }: { score: JournalScore; label?: string }) {
         {brierText(score.brier)}
       </p>
       <p className="text-slate-300">{skillText(score)}</p>
+      {costsText(score) && <p className="text-xs text-slate-400">{costsText(score)}</p>}
       <p className="text-slate-500">{settledText(score)}</p>
     </div>
   );

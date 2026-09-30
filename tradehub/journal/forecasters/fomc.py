@@ -23,7 +23,14 @@ from tradehub.data.cleveland_fed import fetch_nowcast_history
 from tradehub.data.kalshi_live import LiveMarket
 from tradehub.engines.cpi import latest_nowcast
 from tradehub.journal.contract import CalendarEntry, Forecast, Settlement
-from tradehub.journal.kalshi_linked import entry_for, in_freeze_window, kalshi_target, quote_mid, settle_on_kalshi
+from tradehub.journal.kalshi_linked import (
+    entry_for,
+    in_freeze_window,
+    kalshi_target,
+    quote_mid,
+    quote_payload,
+    settle_on_kalshi,
+)
 
 FOMC_SERIES = "KXFEDDECISION"
 HOLD_SUFFIX = "-H0"
@@ -72,7 +79,7 @@ class FomcMapped:
             return None
         return Forecast(self.name, self.version, entry.target, hold_probability(core.value),
                         market_prob=quote_mid(lm),
-                        payload={"core_nowcast": core.value, "core_obs": core.name, "experimental": True,
+                        payload={**quote_payload(lm), "core_nowcast": core.value, "core_obs": core.name, "experimental": True,
                                  "hold_prior": HOLD_PRIOR, "slope": SLOPE, "band": BAND})
 
     def settle(self, target: str, now: datetime) -> Settlement | None:

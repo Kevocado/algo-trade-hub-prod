@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from tradehub.journal.costs import cost_summary
 from tradehub.track_record import BUCKETS, bucketize
 
 MIN_SETTLED = {"daily": 200, "monthly": 50, "meeting": 50}
@@ -119,6 +120,7 @@ def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
 
     buckets = reliability(pairs)
     calibration_ready = bool(buckets) and all(b["n"] >= MIN_BUCKET_TARGETS for b in buckets)
+    costs = cost_summary(pairs) if baseline == "market" else {}
     reasons = []
     if len(pairs) < MIN_SETTLED[cadence]:
         reasons.append(f"only {len(pairs)} settled targets, need {MIN_SETTLED[cadence]} ({cadence})")
@@ -126,6 +128,12 @@ def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
         reasons.append("no baseline to compare against")
     elif bss <= 0:
         reasons.append(f"Brier skill {bss:.4f} vs {baseline} is not positive")
+    if baseline == "market":  # spec §10: the edge must survive Kalshi's taker fee and the spread
+        if not costs["n_quoted"]:
+            reasons.append("no frozen quotes recorded, so edge cannot be netted of fees and spread")
+        elif costs["net_pnl_cents"] <= 0:
+            reasons.append(f"simulated P&L after fees and spread is {costs['net_pnl_cents']:.1f}c over "
+                           f"{costs['n_traded']} trades, not positive")
     if not calibration_ready:
         reasons.append(f"a calibration bucket has fewer than {MIN_BUCKET_TARGETS} settled targets")
     return {
@@ -138,6 +146,7 @@ def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
         "bss": round(bss, 6) if bss is not None else None,
         "reliability": buckets,
         "murphy": murphy(pairs) or {},
+        "costs": costs,
         "calibration_ready": calibration_ready,
         "gate_status": "PROMOTED" if not reasons else "SHADOW",
         "gate_reasons": reasons,

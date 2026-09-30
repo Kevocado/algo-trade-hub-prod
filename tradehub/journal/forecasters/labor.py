@@ -46,7 +46,14 @@ from tradehub.engines.labor_direction import (
     with_quits_feature,
 )
 from tradehub.journal.contract import CalendarEntry, Forecast, Settlement
-from tradehub.journal.kalshi_linked import entry_for, in_freeze_window, kalshi_target, quote_mid, settle_on_kalshi
+from tradehub.journal.kalshi_linked import (
+    entry_for,
+    in_freeze_window,
+    kalshi_target,
+    quote_mid,
+    quote_payload,
+    settle_on_kalshi,
+)
 from tradehub.markets import event_month
 
 ET = ZoneInfo("America/New_York")
@@ -163,7 +170,8 @@ class PayrollsForecaster:
             return None
         return Forecast(self.name, self.version, entry.target, payroll_prob(lm.market, nc.mu, nc.sigma),
                         market_prob=quote_mid(lm),
-                        payload={"month": month.isoformat(), "mu_k": round(nc.mu, 2), "sigma_k": round(nc.sigma, 2),
+                        payload={**quote_payload(lm), "month": month.isoformat(), "mu_k": round(nc.mu, 2),
+                                 "sigma_k": round(nc.sigma, 2),
                                  "n_train": nc.model.n_train})
 
     def settle(self, target: str, now: datetime) -> Settlement | None:

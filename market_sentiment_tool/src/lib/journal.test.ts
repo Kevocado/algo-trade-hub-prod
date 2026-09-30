@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { biasReadout, pct, skillText, tiles, type JournalScore } from "@/lib/journal";
+import { biasReadout, costsText, pct, skillText, tiles, type JournalScore } from "@/lib/journal";
 
 function score(over: Partial<JournalScore> = {}): JournalScore {
   return {
@@ -54,5 +54,19 @@ describe("wording", () => {
     ];
     expect(biasReadout(buckets)).toBe("overconfident by 10.0pp in the 60-70 bucket (n=30)");
     expect(biasReadout([])).toBeNull();
+  });
+});
+
+describe("costsText", () => {
+  it("says what survives fees and spread, in words when nothing was measured", () => {
+    expect(costsText(score({ baseline: "climatology" }))).toBeNull();
+    expect(costsText(score({ costs: {} }))).toBe("After fees and spread: no quoted prices recorded yet");
+    expect(costsText(score({ costs: { n_quoted: 9, n_traded: 0, net_pnl_cents: 0 } }))).toBe(
+      "After fees and spread: no trade would have cleared costs (9 quoted)",
+    );
+    expect(costsText(score({ costs: { n_quoted: 9, n_traded: 4, net_pnl_cents: -12.5 } }))).toBe(
+      "After fees and spread: -12.5¢ over 4 simulated trades (edge above is before costs)",
+    );
+    expect(costsText(score({ costs: { n_quoted: 9, n_traded: 4, net_pnl_cents: 30 } }))).toContain("+30.0¢");
   });
 });
