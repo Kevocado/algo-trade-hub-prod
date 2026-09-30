@@ -10,6 +10,7 @@ from tradehub.core.kalshi_feed import fetch_market
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.journal.contract import Forecaster
 from tradehub.journal.forecasters.cpi import CpiForecaster
+from tradehub.journal.forecasters.daily_direction import build_wave2
 from tradehub.journal.forecasters.fomc import FOMC_SERIES, FomcMapped, is_hold_market
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
 from tradehub.journal.forecasters.sentiment import SentimentMeter
@@ -37,4 +38,6 @@ FORECASTERS: list[Forecaster] = [
     SentimentMeter(_SPX),
     # plan (e): walk-forward quant (spec §7); same target and settlement as the meter
     SpyQuant(_SPX),
+    # wave 2 (spec §8): VIX, gold (GLD) and EUR/USD daily direction, same walk-forward model
+    *build_wave2(),
 ]
