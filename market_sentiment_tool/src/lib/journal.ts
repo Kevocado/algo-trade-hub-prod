@@ -27,10 +27,20 @@ export interface JournalScore {
   bss: number | null;
   reliability: ReliabilityBucket[];
   murphy: { reliability?: number; resolution?: number; uncertainty?: number };
+  /** Simulated one-contract taker P&L after Kalshi's fee and the spread; {} unless graded vs a market. */
+  costs?: JournalCosts;
   calibration_ready: boolean;
   gate_status: "SHADOW" | "PROMOTED";
   gate_reasons: string[];
   computed_at: string;
+}
+
+export interface JournalCosts {
+  n_quoted?: number;
+  n_traded?: number;
+  gross_pnl_cents?: number;
+  fees_cents?: number;
+  net_pnl_cents?: number;
 }
 
 export interface JournalHeadline {
@@ -146,4 +156,18 @@ export function biasReadout(buckets: ReliabilityBucket[]): string | null {
   if (Math.abs(gap) < 0.05) return `calibrated in the ${top.bucket} bucket (n=${top.n})`;
   const word = gap < 0 ? "overconfident" : "underconfident";
   return `${word} by ${Math.abs(gap).toFixed(1)}pp in the ${top.bucket} bucket (n=${top.n})`;
+}
+
+/**
+ * The edge on the tile is model minus market mid, which is BEFORE Kalshi's fee and the spread. This is
+ * the line that says what survives them. Said in words when nothing was quoted: never a bare 0.
+ */
+export function costsText(score: Pick<JournalScore, "baseline" | "costs">): string | null {
+  if (score.baseline !== "market") return null;
+  const c = score.costs;
+  if (!c || !c.n_quoted) return "After fees and spread: no quoted prices recorded yet";
+  if (!c.n_traded) return `After fees and spread: no trade would have cleared costs (${c.n_quoted} quoted)`;
+  const net = c.net_pnl_cents ?? 0;
+  const sign = net > 0 ? "+" : "";
+  return `After fees and spread: ${sign}${net.toFixed(1)}¢ over ${c.n_traded} simulated trades (edge above is before costs)`;
 }
