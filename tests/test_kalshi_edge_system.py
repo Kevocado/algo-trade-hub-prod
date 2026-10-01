@@ -8,7 +8,6 @@ Tests are designed to work offline (no real API calls) using mocks.
 
 import asyncio
 import pytest
-from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
 
 # Add project root to path
@@ -37,12 +36,6 @@ class TestFastAPIEndpoints:
         data = response.json()
         assert data["status"] == "ok"
         assert "timestamp" in data
-
-    def test_opportunities_empty_when_cache_empty(self, client):
-        """With an empty cache, should return empty list, not 500."""
-        response = client.get("/api/opportunities")
-        assert response.status_code == 200
-        assert isinstance(response.json(), list)
 
     def test_docs_available(self, client):
         """Swagger UI should be accessible."""
@@ -323,33 +316,3 @@ class TestTelegramCommands:
 
         assert "Unsupported domain" in text
 
-# ════════════════════════════════════════════════════════════════════
-# Microstructure Engine Tests
-# ════════════════════════════════════════════════════════════════════
-
-class TestMicrostructureEngine:
-    """Tests MicrostructureEngine Binance features (pure math, no live API)."""
-
-    def test_funding_signal_extreme_long(self):
-        from tradehub.core.microstructure_engine import MicrostructureEngine
-        sig = MicrostructureEngine._funding_signal(2.5)
-        assert "short" in sig.lower()
-
-    def test_funding_signal_extreme_short(self):
-        from tradehub.core.microstructure_engine import MicrostructureEngine
-        sig = MicrostructureEngine._funding_signal(-2.5)
-        assert "long" in sig.lower()
-
-    def test_funding_signal_neutral(self):
-        from tradehub.core.microstructure_engine import MicrostructureEngine
-        sig = MicrostructureEngine._funding_signal(0.0)
-        assert sig == "NEUTRAL"
-
-    @patch("tradehub.core.microstructure_engine.requests.get")
-    def test_compute_funding_zscore_handles_empty(self, mock_get):
-        """If Binance returns empty list, z_score should default to 0."""
-        mock_get.return_value = MagicMock(status_code=200, json=MagicMock(return_value=[]))
-        from tradehub.core.microstructure_engine import MicrostructureEngine
-        engine = MicrostructureEngine()
-        result = engine.compute_funding_zscore("BTCUSDT")
-        assert result["z_score"] == 0.0

@@ -26,16 +26,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Heavier deps once used by the deleted background_scanner daemon's AI/news path and HF model downloads.
-# `google-genai` is still imported by tradehub/core/ai_validator.py; the rest are candidates for removal.
+# `scanner` is the name CI and the README install with. fredapi and python-dateutil are what
+# tradehub/core/data_loader.py still imports; the AI/news/HF packages went with the deleted daemon.
 scanner = [
     "fredapi>=0.5.1",
-    "google-genai>=0.1.0",
-    "huggingface_hub",
     "python-dateutil",
-    "sentencepiece>=0.1.99",
-    "torch>=2.1.0",
-    "transformers>=4.36.0",
 ]
 research = [
     "apscheduler>=3.10.4",
