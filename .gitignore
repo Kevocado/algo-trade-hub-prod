@@ -69,6 +69,11 @@ chroma_db/
 models/
 !tradehub/models/
 !tradehub/models/**
+# ...but the negation above un-hides `__pycache__/` too (same trap the `Data/` note below
+# describes for `tradehub/data/`), so `git add tradehub/models` would commit .pyc files.
+# Re-ignore them: later rules win.
+__pycache__/
+*.py[cod]
 *.pkl
 *.joblib
 *.h5
