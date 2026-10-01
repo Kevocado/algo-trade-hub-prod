@@ -5,9 +5,9 @@ import { brierPair } from "@/lib/models";
 import type { ScoreboardResponse } from "@/lib/scoreboard";
 
 /**
- * Backtests run before the journal existed (v2 spec §2): shown as labelled context, never counted.
- * The journal's N is frozen-then-settled forecasts only; a backtest is a different kind of evidence
- * and must never add to it, so this block says so in the heading and computes nothing.
+ * Backtests run before the journal existed (v2 spec §2): context only, never counted. The caller labels
+ * it ("Past backtests (not counted)") and mounts it only when opened, so it adds no words or requests
+ * until a visitor asks for it. Computes nothing.
  */
 export function PreJournalContext() {
   const [data, setData] = useState<ScoreboardResponse | null>(null);
@@ -25,10 +25,6 @@ export function PreJournalContext() {
 
   return (
     <section aria-label="Pre-journal backtests">
-      <h2 className="mb-1 text-lg font-semibold text-slate-200">Pre-journal backtests</h2>
-      <p className="mb-2 text-sm text-slate-500">
-        Shown for context only. These ran before the journal existed and are never counted in its settled total.
-      </p>
       {error ? (
         <p className="text-sm text-rose-300">Backtest history unavailable: {error}</p>
       ) : !data ? (

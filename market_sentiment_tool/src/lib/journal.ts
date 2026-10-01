@@ -83,6 +83,8 @@ export const MARKET_PAIR: Record<string, string> = {
   cpi_nowcast: "kalshi_implied_cpi",
   fomc_mapped: "kalshi_implied_fomc",
   labor_nowcast: "kalshi_implied_labor",
+  sports_nfl: "kalshi_implied_sports_nfl",
+  sports_cfb: "kalshi_implied_sports_cfb",
 };
 
 /** Forecasters the spec labels experimental (ruling Q5). */
