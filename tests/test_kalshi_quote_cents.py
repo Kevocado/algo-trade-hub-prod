@@ -7,7 +7,6 @@ and ``my_prob - 0`` published a probability-sized "edge" at an untradeable
 price. A missing figure is never a number, so it must be None.
 """
 
-import pandas as pd
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -15,7 +14,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from tradehub.core.kalshi_feed import process_markets
 from tradehub.core.kalshi_portfolio import KalshiPortfolio
 from tradehub.markets import QUOTE_FIELDS, quote_cents
-from tradehub.scripts import background_scanner
 
 # The real market from the briefing: 62c/63c YES, 37c/38c NO.
 LIVE_T64 = {
@@ -117,84 +115,6 @@ def test_process_markets_still_reads_a_legacy_only_market():
               "yes_bid": 62, "yes_ask": 63, "no_bid": 37, "no_ask": 38}
     (row,) = process_markets([legacy], "BTC")
     assert (row["yes_bid"], row["yes_ask"], row["no_bid"], row["no_ask"]) == (62, 63, 37, 38)
-
-
-# ─── site 1 consumer: background_scanner ──────────────────────────────────────
-
-def _stub_quant(monkeypatch, markets=(), pred=0.70, raw_markets=None):
-    """Run scan_quant_ml with the model and network stubbed out.
-
-    Pass `raw_markets` to drive the real chain (raw Kalshi payload ->
-    process_markets -> scan_quant_ml) instead of prepared market dicts.
-    """
-    from tradehub.engines import quant_engine
-
-    df = pd.DataFrame({"Close": [100.0, 101.0]})
-    monkeypatch.setattr(quant_engine, "fetch_live_btc_alpaca", lambda: df)
-    monkeypatch.setattr(quant_engine, "create_walk_forward_features", lambda d: d)
-    monkeypatch.setattr(background_scanner, "load_model", lambda t: (object(), False))
-    monkeypatch.setattr(background_scanner, "predict_next_hour", lambda m, d, t: pred)
-    monkeypatch.setattr(background_scanner, "get_market_volatility", lambda d, window=24: 0.01)
-    if raw_markets is None:
-        monkeypatch.setattr(background_scanner, "get_real_kalshi_markets", lambda t: (list(markets), "Stub", {}))
-    else:
-        monkeypatch.setattr(
-            background_scanner, "get_real_kalshi_markets", lambda t: (process_markets(list(raw_markets), t), "Targeted", {})
-        )
-    return background_scanner.scan_quant_ml()
-
-
-def _market(**overrides):
-    return {"title": "Will BTC be above 100,000?", "market_id": "KXBTC-26", **overrides}
-
-
-def test_quant_engine_prices_the_edge_at_the_real_ask(monkeypatch):
-    records, opportunities = _stub_quant(monkeypatch, [_market(yes_ask=63.0, yes_bid=62.0)])
-    (record,) = records
-    assert record["market_yes_ask"] == 63.0
-    assert record["model_prob"] == 70.0
-    assert record["calculated_edge"] == pytest.approx(7.0)  # 70 - 63, not 70 - 0
-    assert record["calculated_edge"] != 70.0
-    assert record["kelly_bet"] > 0
-    assert (opportunities[0]["Edge"], opportunities[0]["Action"]) == (7.0, "BUY YES")
-
-
-@pytest.mark.parametrize("market", [
-    pytest.param(_market(), id="no price fields at all"),
-    pytest.param(_market(yes_ask=None), id="explicit None"),
-    pytest.param(_market(yes_ask=0, yes_bid=0), id="zero ask is a price of nothing"),
-])
-def test_quant_engine_never_fabricates_an_edge_without_a_price(monkeypatch, market):
-    records, opportunities = _stub_quant(monkeypatch, [market])
-    assert records == []
-    assert opportunities == []
-    assert "calculated_edge" not in {k for r in records for k in r}
-
-
-def test_quant_engine_skips_only_the_unpriced_market(monkeypatch):
-    records, opportunities = _stub_quant(
-        monkeypatch, [_market(yes_ask=None), _market(yes_ask=63.0, market_id="Priced")]
-    )
-    assert [r["market_id"] for r in records] == ["Priced"]
-    assert [o["MarketId"] for o in opportunities] == ["Priced"]
-
-
-# ─── the whole chain: raw Kalshi payload -> process_markets -> scan_quant_ml ────
-
-def test_end_to_end_prices_the_edge_from_the_dollar_quote(monkeypatch):
-    records, opportunities = _stub_quant(monkeypatch, raw_markets=[{**LIVE_T64, **_market()}])
-    (record,) = records
-    assert record["market_yes_ask"] == 63.0
-    assert record["calculated_edge"] == 7.0
-    assert record["calculated_edge"] != 70.0  # the pre-fix figure: my_prob - 0
-    assert opportunities[0]["MarketYesAsk"] == 63
-
-
-def test_end_to_end_unpriced_market_is_skipped_not_credited_with_an_edge(monkeypatch):
-    unpriced = {k: v for k, v in LIVE_T64.items() if not k.endswith("_dollars")}
-    records, opportunities = _stub_quant(monkeypatch, raw_markets=[{**unpriced, **_market()}])
-    assert records == []
-    assert opportunities == []
 
 
 # ─── site 2: kalshi_portfolio.get_portfolio_summary ────────────────────────────

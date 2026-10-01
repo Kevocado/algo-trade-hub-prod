@@ -17,6 +17,10 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+import legacy_ruling
+import pytest
+from legacy_ruling import DELETED_MODULES, STOPPED_SITES, UNWIRED_STOPPED_SITES, WIRED_STOPPED_SITES
+
 from tradehub.engine_health import (
     EDGE_TYPE_LABELS,
     EDGE_TYPES,
@@ -26,9 +30,6 @@ from tradehub.engine_health import (
     STATE_COULD_NOT_RUN,
     STATE_QUARANTINED,
     STATE_RAN,
-    STOPPED_SITES,
-    UNWIRED_STOPPED_SITES,
-    WIRED_STOPPED_SITES,
     edge_type_entry,
     edge_type_state,
     engine_health,
@@ -38,6 +39,12 @@ from tradehub.engine_health import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _legacy_ruling(monkeypatch):
+    """These tests pin the state machine; the live ruling has no wired site since the daemon was deleted."""
+    legacy_ruling.install(monkeypatch)
 
 # The reads that were the defect, per site, quoted rather than pattern-matched. Kalshi moved these
 # fields and the readers moved with it in neither case; this map is what made "the ruling is stale"
@@ -120,6 +127,8 @@ class TestStoppedEnginesReadAsBroken:
         """
         for site in STOPPED_SITES:
             assert site.module, site
+            if site.module in DELETED_MODULES:
+                continue  # a tombstone in the frozen legacy ruling: the file was deleted on purpose
             path = REPO_ROOT / site.module
             assert path.is_file(), f"{site.module} does not exist; the ruling points at nothing"
             module, _, line = site.site.partition(":")
@@ -144,6 +153,8 @@ class TestStoppedEnginesReadAsBroken:
         assert len(repaired) == 2, "both wired sites were repaired; if this is not 2 the maps below are stale"
 
         for site in repaired:
+            if site.module in DELETED_MODULES:
+                continue  # deleted with the legacy daemon; nothing left to revert
             expected = REPAIRED_READS[site.site]
             module_, _, line = site.site.partition(":")
             body = (REPO_ROOT / module_).read_text().splitlines()[int(line) - 1]
@@ -166,7 +177,7 @@ class TestStoppedEnginesReadAsBroken:
         """The copy is the claim. "Not running" beside a repaired engine is false, and a reader who
         believes it is being told to go and fix something that is already fixed."""
         for site in STOPPED_SITES:
-            if site.disposition != "repaired_quarantined":
+            if site.disposition != "repaired_quarantined" or site.module in DELETED_MODULES:
                 continue
             assert "Not running" not in site.reason, site.name
             assert "REPAIRED" in site.reason, site.name

@@ -179,7 +179,6 @@ def test_entrypoints_still_opt_into_the_local_env_file():
         "tradehub/api/main.py": "load_local_env()",
         "tradehub/scripts/scan.py": "load_local_env()",
         "tradehub/scripts/settle_predictions.py": "load_local_env()",
-        "tradehub/scripts/background_scanner.py": "load_local_env()",
         "tradehub/scripts/market_alerts.py": "load_local_env()",
         "tradehub/scripts/weather_auto_sell.py": "load_local_env()",
         "tradehub/scripts/auto_retrain_regime.py": "load_local_env()",
