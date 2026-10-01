@@ -1,0 +1,382 @@
+{
+ "_note": "The 17 spread/total rows exactly as returned. The ticker integer is rounded (PIT8 is over 7.5), so nothing may parse the line from the ticker.",
+ "_source": "GET /api/sports-edges?limit=200&offset=0 on 2026-10-01, HTTP 200, total 90",
+ "spread": [
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.29,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "spread",
+   "market_id": "KXNFLSPREAD-26OCT01PITCLE-PIT8",
+   "market_prob": 0.295,
+   "our_prob": 0.371,
+   "quote_spread": null,
+   "rank_edge_pct": 0.071,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "PIT Steelers wins by over 7.5 points?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.22,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "spread",
+   "market_id": "KXNFLSPREAD-26OCT01PITCLE-PIT11",
+   "market_prob": 0.225,
+   "our_prob": 0.289,
+   "quote_spread": null,
+   "rank_edge_pct": 0.059,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "PIT Steelers wins by over 10.5 points?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.42,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "spread",
+   "market_id": "KXNFLSPREAD-26OCT01PITCLE-PIT4",
+   "market_prob": 0.425,
+   "our_prob": 0.4893,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0593,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "PIT Steelers wins by over 3.5 points?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.25,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "spread",
+   "market_id": "KXNFLSPREAD-26OCT01PITCLE-PIT10",
+   "market_prob": 0.255,
+   "our_prob": 0.3154,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0554,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "PIT Steelers wins by over 9.5 points?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.34,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "spread",
+   "market_id": "KXNFLSPREAD-26OCT01PITCLE-PIT7",
+   "market_prob": 0.345,
+   "our_prob": 0.3999,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0499,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "PIT Steelers wins by over 6.5 points?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.4,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "spread",
+   "market_id": "KXNFLSPREAD-26OCT01PITCLE-PIT5",
+   "market_prob": 0.405,
+   "our_prob": 0.4592,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0492,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "PIT Steelers wins by over 4.5 points?"
+  }
+ ],
+ "total": [
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.47,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-39",
+   "market_prob": 0.475,
+   "our_prob": 0.566,
+   "quote_spread": null,
+   "rank_edge_pct": 0.086,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 38.5 points scored?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.41,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-41",
+   "market_prob": 0.415,
+   "our_prob": 0.5025,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0825,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 40.5 points scored?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.38,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-42",
+   "market_prob": 0.385,
+   "our_prob": 0.4705,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0805,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 41.5 points scored?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.51,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-38",
+   "market_prob": 0.515,
+   "our_prob": 0.5973,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0773,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 37.5 points scored?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.29,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-45",
+   "market_prob": 0.295,
+   "our_prob": 0.3767,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0767,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 44.5 points scored?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.45,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-40",
+   "market_prob": 0.455,
+   "our_prob": 0.5344,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0744,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 39.5 points scored?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.58,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-36",
+   "market_prob": 0.585,
+   "our_prob": 0.6578,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0678,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 35.5 points scored?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.55,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-37",
+   "market_prob": 0.555,
+   "our_prob": 0.628,
+   "quote_spread": null,
+   "rank_edge_pct": 0.068,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 36.5 points scored?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.67,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-33",
+   "market_prob": 0.675,
+   "our_prob": 0.7411,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0611,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 32.5 points scored?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.23,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-48",
+   "market_prob": 0.235,
+   "our_prob": 0.2896,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0496,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 47.5 points scored?"
+  },
+  {
+   "away": "PIT",
+   "candidate": false,
+   "edge_pct": null,
+   "entry_price": 0.76,
+   "game_id": "2026_04_PIT_CLE",
+   "home": "CLE",
+   "kind": "total",
+   "market_id": "KXNFLTOTAL-26OCT01PITCLE-30",
+   "market_prob": 0.765,
+   "our_prob": 0.8125,
+   "quote_spread": null,
+   "rank_edge_pct": 0.0425,
+   "reject_reasons": [
+    "calibration_insufficient"
+   ],
+   "side": "yes",
+   "sport": "nfl",
+   "start_utc": "2026-10-02T00:15:00+00:00",
+   "tier": "filtered",
+   "title": "Full Game: over 29.5 points scored?"
+  }
+ ]
+}
