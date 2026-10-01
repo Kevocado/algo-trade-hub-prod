@@ -11,6 +11,10 @@ export default defineConfig(({ mode }) => ({
     hmr: {
       overlay: false,
     },
+    // Local development against a deployed API without CORS: DEV_API_PROXY=https://host npm run dev
+    proxy: process.env.DEV_API_PROXY
+      ? { "/api": { target: process.env.DEV_API_PROXY, changeOrigin: true, secure: true } }
+      : undefined,
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {

@@ -3,59 +3,42 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 
 import Journal from "@/pages/Journal";
 import type { JournalFeed, JournalResponse, JournalScore } from "@/lib/journal";
-
-vi.mock("@/hooks/useQuarantine", () => ({ useQuarantine: () => ({ data: null, loading: false, error: null }) }));
+import { copyWords } from "@/test/copyWords";
 
 function score(over: Partial<JournalScore> = {}): JournalScore {
   return {
-    forecaster: "cpi_nowcast",
-    forecaster_version: "cpi-v1",
-    cadence: "monthly",
-    baseline: "market",
-    n_targets: 12,
-    n_settled: 10,
-    brier: 0.0712,
-    brier_baseline: 0.0683,
-    bss: -0.0425,
-    reliability: [{ bucket: "60-70", n: 10, predicted: 0.65, observed: 0.5 }],
-    murphy: {},
-    calibration_ready: false,
-    gate_status: "SHADOW",
-    gate_reasons: ["only 10 settled targets, need 50 (monthly)"],
-    computed_at: "2026-10-01T13:00:00+00:00",
-    ...over,
+    forecaster: "spy_quant", forecaster_version: "spy-wf-v1", cadence: "daily", baseline: "climatology", n_targets: 2,
+    n_settled: 1, brier: 0.311, brier_baseline: 0.2836, bss: -0.0966,
+    reliability: [{ bucket: "50-60", n: 1, predicted: 0.558, observed: 0 }], murphy: {}, calibration_ready: false,
+    gate_status: "SHADOW", gate_reasons: ["only 1 settled targets, need 200 (daily)"], computed_at: "2026-10-01T13:00:00+00:00", ...over,
   };
 }
+
+const waiting = (forecaster: string, version: string, over: Partial<JournalScore> = {}) =>
+  score({ forecaster, forecaster_version: version, n_settled: 0, n_targets: 0, brier: null, bss: null, baseline: "none",
+          reliability: [], gate_reasons: [], ...over });
 
 const journal: JournalResponse = {
   as_of: "2026-10-01T13:00:00+00:00",
   forecasters: [
     score(),
-    score({ forecaster: "kalshi_implied_cpi", forecaster_version: "v1", brier: 0.0683, bss: 0 }),
-    score({ forecaster: "fomc_mapped", forecaster_version: "fomc-mapped-v1", cadence: "meeting", brier: null,
-            bss: null, n_settled: 0, reliability: [], gate_reasons: ["no baseline to compare against"] }),
+    score({ forecaster: "sentiment_meter", forecaster_version: "meter-v1", brier: 0.277, bss: 0.0234 }),
+    waiting("cpi_nowcast", "cpi-v1", { cadence: "monthly" }),
+    waiting("cpi_nowcast", "cpi-core-v1", { cadence: "monthly" }),
+    waiting("kalshi_implied_cpi", "v1", { cadence: "monthly" }),
+    waiting("housing_direction", "housing-wf-v1", { cadence: "monthly" }),
   ],
-  headline: { forecasters: 3, calibrated: 0, settled_calibrated: 0, promoted: 0 },
+  headline: { forecasters: 6, calibrated: 0, settled_calibrated: 0, promoted: 0 },
 };
 
 const feed: JournalFeed = {
-  forecaster: "cpi_nowcast",
-  forecaster_version: "cpi-v1",
-  generated_at: "2026-10-01T13:00:00+00:00",
-  forecasts: [{ target: "kalshi:KXCPI-26SEP-T0.3", probability: 0.52, market_prob: null,
-                frozen_at: "2026-10-14T12:05:00+00:00", rebuilt: false, source_hash: "h" }],
-  calibration: [],
-  gate_status: "SHADOW",
-  provisional: true,
+  forecaster: "spy_quant", forecaster_version: "spy-wf-v1", generated_at: "2026-10-01T13:00:00+00:00",
+  forecasts: [{ target: "spx:2026-09-30:up", probability: 0.558, market_prob: null, frozen_at: "2026-09-30T10:17:00+00:00", rebuilt: false, source_hash: "h" }],
+  calibration: [], gate_status: "SHADOW", provisional: true,
 };
 
-const scoreboard = {
-  as_of: "2026-10-01T13:00:00+00:00",
-  runs_read: 1,
-  engines: 1,
-  rows: [{ engine: "cpi_nowcast", engine_version: "cpi-v1", mode: "taker", date_from: "2025-01-01T00:00:00+00:00",
-           date_to: "2026-06-30T00:00:00+00:00", n_decisions: 412, brier_ours: 0.0712, brier_market: 0.0683 }],
-};
+const scoreboard = { as_of: "x", runs_read: 1, engines: 1, rows: [{ engine: "cpi_nowcast", engine_version: "cpi-v1", mode: "taker",
+  date_from: "2025-01-01T00:00:00+00:00", date_to: "2026-06-30T00:00:00+00:00", n_decisions: 412, brier_ours: 0.0712, brier_market: 0.0683 }] };
 
 function stubFetch() {
   const fn = vi.fn((url: string) => {
@@ -69,52 +52,58 @@ function stubFetch() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Journal", () => {
-  it("renders the server headline and a losing forecaster as losing, beside its market", async () => {
+  it("leads with three numbers and only the forecasters that have results", async () => {
     stubFetch();
     render(<Journal />);
-    expect(await screen.findByLabelText("Headline")).toHaveTextContent("0 of 3 forecasters calibrated");
-    const tile = screen.getByText("cpi_nowcast@cpi-v1").closest("article")!;
-    expect(within(tile).getByText("Brier skill -0.043 vs the Kalshi market")).toBeInTheDocument();
-    expect(within(tile).getByText("Kalshi-implied (kalshi_implied_cpi@v1)")).toBeInTheDocument();
-    expect(within(tile).getByText("provisional")).toBeInTheDocument();
-    expect(within(tile).getAllByText(/^After fees and spread: no quoted prices recorded yet/).length).toBeGreaterThan(0);
-    expect(within(tile).getByText("only 10 settled targets, need 50 (monthly)")).toBeInTheDocument();
-    expect(within(tile).getByText(/overconfident by 15.0pp/)).toBeInTheDocument();
+    const totals = await screen.findByLabelText("Totals");
+    expect(within(totals).getByText("forecasts locked in").previousSibling).toHaveTextContent("4");
+    expect(within(totals).getByText("scored so far").previousSibling).toHaveTextContent("2");
+    expect(within(totals).getByText("promoted").previousSibling).toHaveTextContent("0");
+    const results = screen.getByLabelText("Results");
+    expect(within(results).getByText("S&P 500 tomorrow: model")).toBeInTheDocument();
+    expect(within(results).getByText("-0.10")).toBeInTheDocument();
+    expect(within(results).getAllByText("Too early").length).toBe(2);
   });
 
-  it("shows backtests as labelled context that is never counted in the journal's N", async () => {
+  it("lists forecasters with nothing scored as short chips, in plain words, with the baseline folded away", async () => {
     stubFetch();
     render(<Journal />);
-    const section = await screen.findByLabelText("Pre-journal backtests");
-    expect(await within(section).findByText(/never counted in its settled total/)).toBeInTheDocument();
-    expect(within(section).getByText("cpi_nowcast · cpi-v1 · taker")).toBeInTheDocument();
-    expect(within(section).getByText("2025-01-01 → 2026-06-30")).toBeInTheDocument();
-    expect(screen.getByLabelText("Headline")).toHaveTextContent("0 of 3 forecasters calibrated");  // untouched
+    const list = await screen.findByLabelText("Waiting");
+    expect(within(list).getByText("Inflation (CPI)")).toBeInTheDocument();
+    expect(within(list).getByText("Core inflation (CPI)")).toBeInTheDocument();
+    expect(within(list).getByText("US home prices")).toBeInTheDocument();
+    expect(within(list).queryByText(/kalshi_implied/i)).toBeNull();
   });
 
-  it("says unscored in words and labels the FOMC model experimental", async () => {
+  it("opens a forecaster's calibration and locked-in forecasts only on request", async () => {
     stubFetch();
     render(<Journal />);
-    const tile = (await screen.findByText("fomc_mapped@fomc-mapped-v1")).closest("article")!;
-    expect(within(tile).getByText("experimental")).toBeInTheDocument();
-    expect(within(tile).getByLabelText("Brier fomc_mapped@fomc-mapped-v1")).toHaveTextContent("not scored yet");
-    expect(within(tile).queryByText("0.0000")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "S&P 500 tomorrow: model" }));
+    expect(await screen.findByLabelText("Calibration spy_quant@spy-wf-v1")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("spx:2026-09-30:up")).toBeInTheDocument());
   });
 
-  it("loads a forecaster's frozen forecasts on demand and never shows a missing price as a number", async () => {
+  it("loads past backtests only when asked, and says they are not counted", async () => {
     const fetchFn = stubFetch();
     render(<Journal />);
-    const tile = (await screen.findByText("cpi_nowcast@cpi-v1")).closest("article")!;
-    fireEvent.click(within(tile).getByText("Show frozen forecasts"));
-    await waitFor(() => expect(within(tile).getByText("kalshi:KXCPI-26SEP-T0.3")).toBeInTheDocument());
-    expect(within(tile).getByText("no market price")).toBeInTheDocument();
-    expect(fetchFn.mock.calls.some(([u]) => String(u).includes("forecaster=cpi_nowcast&version=cpi-v1"))).toBe(true);
+    await screen.findByLabelText("Totals");
+    expect(fetchFn.mock.calls.some(([u]) => String(u).includes("/api/scoreboard"))).toBe(false);
+    const summary = screen.getByText("Past backtests (not counted)");
+    const details = summary.closest("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    expect(await screen.findByText("cpi_nowcast · cpi-v1 · taker")).toBeInTheDocument();
+  });
+
+  it("stays inside its word budget", async () => {
+    stubFetch();
+    const { container } = render(<Journal />);
+    await screen.findByLabelText("Totals");
+    expect(copyWords(container)).toBeLessThanOrEqual(45);
   });
 
   it("shows the API's error instead of an empty ledger", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({
-      ok: false, status: 503, json: () => Promise.resolve({ detail: "journal_scores is missing: apply 20260428000014" }),
-    })));
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({ detail: "journal_scores is missing: apply 20260428000014" }) })));
     render(<Journal />);
     expect(await screen.findByText(/apply 20260428000014/)).toBeInTheDocument();
   });
