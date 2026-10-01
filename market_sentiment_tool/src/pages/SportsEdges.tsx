@@ -1,225 +1,136 @@
 import { useEffect, useState } from "react";
 
+import { Chip } from "@/components/Chip";
+import { Stat } from "@/components/Stat";
 import { buildApiUrl } from "@/lib/api";
-import { GateBadge } from "@/components/GateBadge";
-import {
-  TIER_LABELS,
-  formatEdgePct,
-  groupByTier,
-  rankingSentence,
-  rejectReasonLabel,
-  type SportsEdge,
-  type SportsEdgesResponse,
-} from "@/lib/sportsEdges";
+import type { SportsEdge, SportsEdgesResponse } from "@/lib/sportsEdges";
+import { board, gapText, type SportsPick } from "@/lib/sportsPicks";
 
 /**
- * One sports edge row.
+ * /sports: where the NFL and college-football predictors and the Kalshi market disagree, one pick per game.
  *
- * The three numbers on the old row were each correct and none of them meant what the row implied:
- *
- *     UConn wins   YES @ 18c   78% vs 33%   +59.3 pp
- *
- * `edge_pct` is the after-fee edge against the ENTRY price on the chosen side (18c). `market_prob`
- * is the quote MID (33c). Set side by side they invite `78 - 33 = 45`, which is not the 59.3 shown.
- * And that quote is 30c wide, which is why the row carries `wide_quote` as a reject reason -- on
- * every one of the 100 live rows. The "edge" WAS the spread.
- *
- * So: a row the filter rejected shows no headline number at all, the comparison that IS being made
- * is labelled, and the quote spread is shown because it is the thing that explains the number.
+ * The reviewer decides what is featured, not the size of the gap: a pick is a "top pick" only if the
+ * reviewer passed it, and a huge gap (model far from market) is listed under "flagged" with the gap
+ * shown, never promoted. When nothing passes, the page says so instead of filling the screen.
  */
-function EdgeRow({ edge }: { edge: SportsEdge }) {
-  const spread =
-    typeof edge.quote_spread === "number" ? `${(edge.quote_spread * 100).toFixed(0)}¢` : null;
-  const wide = typeof edge.quote_spread === "number" && edge.quote_spread >= 0.05;
 
+const PAGE = 200;
+
+async function fetchAll(sport: string): Promise<SportsEdge[]> {
+  const edges: SportsEdge[] = [];
+  for (let offset = 0; ; offset += PAGE) {
+    const params = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
+    if (sport) params.set("sport", sport);
+    const response = await fetch(buildApiUrl(`/api/sports-edges?${params}`));
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.detail || `Request failed with status ${response.status}`);
+    const page = payload as SportsEdgesResponse;
+    edges.push(...page.edges);
+    if (edges.length >= page.total || page.edges.length === 0) return edges;
+  }
+}
+
+const WHEN = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+
+function PickRow({ pick }: { pick: SportsPick }) {
   return (
-    <tr className="border-t border-slate-800 align-top">
-      <th scope="row" className="py-2 pr-3 text-left font-normal">
-        <div className="font-medium text-slate-100">{edge.away} @ {edge.home}</div>
-        <div className="text-xs text-slate-500">{new Date(edge.start_utc).toLocaleString()}</div>
-      </th>
-      <td className="py-2 pr-3 text-slate-300">{edge.title}</td>
-      <td className="py-2 pr-3 uppercase text-slate-300">
-        {edge.side} @ {Math.round(edge.entry_price * 100)}¢
-        {/* The spread is the reason a wide quote can manufacture an "edge" larger than the model's
-            actual disagreement, so it sits next to the entry price it is compared against. */}
-        {spread && (
-          <div className={`text-[11px] ${wide ? "text-amber-400" : "text-slate-500"}`}>
-            {spread} spread
-          </div>
-        )}
-      </td>
-      <td className="py-2 pr-3 text-slate-300">
-        {Math.round(edge.our_prob * 100)}% model
-        <span className="block text-xs text-slate-500">
-          {Math.round(edge.market_prob * 100)}% market mid
-        </span>
-      </td>
-      <td className="py-2 pr-3">
-        {/* Withheld on a rejected row, so a spread artifact can never read as an opportunity. */}
-        {edge.edge_pct === null || edge.edge_pct === undefined ? (
-          <span className="text-slate-600" title="Withheld: the candidate filter rejected this row">
-            &mdash;
-          </span>
-        ) : (
-          <>
-            <span className="font-semibold text-emerald-400">{formatEdgePct(edge.edge_pct)}</span>
-            <span className="block text-[11px] text-slate-500">
-              after fees vs {Math.round(edge.entry_price * 100)}¢ entry
-            </span>
-          </>
-        )}
-      </td>
-      <td className="py-2 pr-3 text-xs text-slate-400">
-        {edge.review?.drivers.map((d) => <div key={d}>• {d}</div>)}
-        {edge.review?.red_flags.map((f) => <div key={f} className="text-amber-400">⚠ {f}</div>)}
-        {edge.reject_reasons.map((r) => <div key={r}>{rejectReasonLabel(r)}</div>)}
-      </td>
-      <td className="py-2 pr-3">
-        {/* Sports edges are gated per (engine, engine_version) like every other engine. */}
-        <GateBadge edge={edge} />
-        {/* A placeholder version is shown as nothing. The live page printed the bare word "unknown"
-            under all 100 rows, which reads as a bug rather than as "not reported yet". */}
-        {edge.engine_version && (
-          <div className="mt-1 text-[10px] text-slate-500" title="Predictor snapshot this edge was priced from">
-            {edge.engine_version.replace(/^feed:/, "")}
-          </div>
-        )}
-      </td>
-      <td className="py-2 text-xs">
-        <a className="text-emerald-400 hover:underline" href={edge.market_url} target="_blank" rel="noreferrer">Kalshi</a>
-        {" · "}
-        <a className="text-sky-400 hover:underline" href={edge.source_url} target="_blank" rel="noreferrer">Predictor</a>
-      </td>
-    </tr>
+    <li className="grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1 border-t border-slate-800 py-3 lg:grid-cols-[1.4fr_1fr_auto]">
+      <div>
+        <div className="font-medium text-slate-100">{pick.call}</div>
+        <div className="text-xs text-slate-500">
+          {pick.matchup} · {WHEN.format(new Date(pick.startUtc))}
+          {pick.kind !== "winner" && <span> · {pick.kind}</span>}
+        </div>
+      </div>
+      <div className="hidden text-sm tabular-nums text-slate-300 lg:block">
+        Model <b className="text-slate-100">{pick.model}%</b> <span className="text-slate-600">·</span> Market{" "}
+        <b className="text-slate-100">{pick.market}%</b>
+      </div>
+      <div className="flex items-center gap-3 justify-self-end">
+        <Chip tone={pick.largeGap ? "warn" : "good"} title={pick.largeGap ? "Model and market are unusually far apart" : "Model minus market, in points"}>
+          {gapText(pick.gap)} pts
+        </Chip>
+        <a className="text-xs text-sky-400 hover:underline" href={pick.marketUrl} target="_blank" rel="noreferrer">Kalshi</a>
+      </div>
+      <div className="text-xs tabular-nums text-slate-400 lg:hidden">
+        Model {pick.model}% · Market {pick.market}%
+      </div>
+    </li>
   );
 }
 
-const HEAD = ["Game", "Market", "Side & spread", "Probability", "Edge after fees", "Why not", "Gate", "Links"];
+function Section({ title, picks, initial = 6 }: { title: string; picks: SportsPick[]; initial?: number }) {
+  const [all, setAll] = useState(false);
+  if (picks.length === 0) return null;
+  const shown = all ? picks : picks.slice(0, initial);
+  return (
+    <section>
+      <h2 className="mb-1 text-lg font-semibold text-slate-200">
+        {title} <span className="text-slate-500">({picks.length})</span>
+      </h2>
+      <ul>{shown.map((p) => <PickRow key={p.key} pick={p} />)}</ul>
+      {picks.length > initial && (
+        <button type="button" className="mt-2 text-sm text-sky-400 hover:underline" onClick={() => setAll(!all)}>
+          {all ? "Show fewer" : `Show all ${picks.length}`}
+        </button>
+      )}
+    </section>
+  );
+}
 
 export default function SportsEdges() {
-  const [data, setData] = useState<SportsEdgesResponse | null>(null);
+  const [edges, setEdges] = useState<SportsEdge[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sport, setSport] = useState<"" | "nfl" | "cfb">("");
-  const [page, setPage] = useState(0);
-  const pageSize = 50;
 
   useEffect(() => {
-    const params = new URLSearchParams({ limit: String(pageSize), offset: String(page * pageSize) });
-    if (sport) params.set("sport", sport);
-    fetch(buildApiUrl(`/api/sports-edges?${params.toString()}`))
-      .then(async (response) => {
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload?.detail || `Request failed with status ${response.status}`);
-        setData(payload as SportsEdgesResponse);
-        setError(null);
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : "Unknown error"));
-  }, [sport, page]);
+    setEdges(null);
+    fetchAll(sport).then(setEdges).catch((e: Error) => setError(e.message));
+  }, [sport]);
 
-  if (error) return <div className="p-8 text-red-400">Sports edges unavailable: {error}</div>;
-  if (!data) return <div className="p-8 text-slate-400">Loading sports edges…</div>;
+  if (error) return <div className="p-8 text-red-400">Sports picks unavailable: {error}</div>;
+  if (!edges) return <div className="p-8 text-slate-400">Loading sports picks…</div>;
 
-  const card = data.reviewer_scorecard;
-  const shown = data.edges.length;
-  const lastPage = Math.max(0, Math.ceil(data.total / pageSize) - 1);
-  const groups = groupByTier(data.edges);
-  // From the API, over the whole filtered set. Was derived from `groups`, i.e. from the current
-  // page -- correct on page 1 by luck and wrong on every page after it, because ranking puts
-  // candidates first and so page 2+ is always the reject tail.
-  const candidateCount = data.candidate_count;
-  const noCandidates = candidateCount === 0;
-
+  const b = board(edges);
   return (
-    <div className="p-8 space-y-8">
-      <header>
-        <h1 className="text-2xl font-bold text-white">Sports edges</h1>
-        <p className="text-sm text-slate-400">
-          Suggestions only. Probabilities come from the NFL/CFB predictor sites&apos; frozen pre-game
-          snapshots; the reviewer never changes them. Reviewer check: {card.approved.n} approved vs{" "}
-          {card.rejected.n} rejected settled picks ({card.n_settled}/{card.min_settled} needed), verdict{" "}
-          <b>{card.verdict}</b>.{" "}
-          {/* Which ranking ordered the table. The sentences, and the reasoning behind their exact
-              wording, live in `rankingSentence` in @/lib/sportsEdges with their tests -- that branch
-              used to live here with nothing covering it, and getting it backwards is the failure this
-              feature exists to prevent. This is a caller, deliberately. */}
-          {rankingSentence(data.ranking)}
-        </p>
+    <div className="mx-auto max-w-5xl space-y-10 p-6 md:p-8">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-white">Sports picks</h1>
+          <p className="mt-2 text-slate-400">Where our predictors and the market disagree.</p>
+        </div>
+        <div role="group" aria-label="Sport" className="flex gap-2">
+          {([["", "All"], ["nfl", "NFL"], ["cfb", "College"]] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={sport === value}
+              onClick={() => setSport(value)}
+              className={`rounded-full border px-3 py-1 text-sm ${
+                sport === value ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-300" : "border-slate-700 text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </header>
 
-      {noCandidates && (
-        // The honest empty state. The alternative -- the default view being a wall of rejected rows --
-        // is what this page was, and it read as "nothing here" while showing 100 numbers.
-        <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-300">
-          <p className="font-semibold text-slate-100">No pick currently passes the filter.</p>
-          <p className="mt-1 text-slate-400">
-            {" "}
-            {data.total} upcoming sports markets were priced and none of the {data.total} passed. An edge
-            is only surfaced once it is tradeable (a tight quote with real size behind it), lands inside
-            the decision window, and comes from a predictor that is calibrated in that price bucket.
-            The reason each one failed is in the table below, and the gate stays in shadow until there
-            are enough settled results to judge it.
-          </p>
-        </div>
+      <section aria-label="Totals" className="grid gap-3 sm:grid-cols-3">
+        <Stat value={b.topPicks.length} label="top picks" />
+        <Stat value={b.flagged.length} label="flagged by the reviewer" />
+        <Stat value={b.unreviewed.length} label="not reviewed yet" />
+      </section>
+
+      {b.topPicks.length === 0 && (
+        <p className="rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-3 text-slate-300">No pick passed review today.</p>
       )}
 
-      <div className="flex items-center gap-3 text-sm">
-        <label className="text-slate-400" htmlFor="sports-sport">Sport</label>
-        <select
-          id="sports-sport"
-          className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-200"
-          value={sport}
-          onChange={(e) => { setSport(e.target.value as "" | "nfl" | "cfb"); setPage(0); }}
-        >
-          <option value="">All</option>
-          <option value="nfl">NFL</option>
-          <option value="cfb">CFB</option>
-        </select>
-        <span className="text-slate-500">
-          Showing {data.offset + (shown ? 1 : 0)}–{data.offset + shown} of {data.total}
-        </span>
-        <button
-          className="px-2 py-1 rounded border border-slate-700 text-slate-300 disabled:opacity-40"
-          disabled={page === 0}
-          onClick={() => setPage((p) => Math.max(0, p - 1))}
-        >
-          Previous
-        </button>
-        <button
-          className="px-2 py-1 rounded border border-slate-700 text-slate-300 disabled:opacity-40"
-          disabled={page >= lastPage}
-          onClick={() => setPage((p) => p + 1)}
-        >
-          Next
-        </button>
-      </div>
+      <Section title="Top picks" picks={b.topPicks} />
+      <Section title="Flagged by the reviewer" picks={b.flagged} />
+      <Section title="Not reviewed yet" picks={b.unreviewed} />
 
-      {groups.map((group) => (
-        <section key={group.tier}>
-          <h2 className="mb-2 text-lg font-semibold text-slate-200">{TIER_LABELS[group.tier]} ({group.edges.length})</h2>
-          <table className="w-full text-sm">
-            {/* The table had no header row at all, so every column was unnamed to a screen reader. */}
-            <caption className="sr-only">
-              Sports edges, grouped by tier. An edge is shown only once it passes the candidate filter.
-            </caption>
-            <thead>
-              <tr className="border-b border-slate-800">
-                {HEAD.map((label) => (
-                  <th
-                    key={label}
-                    scope="col"
-                    className="py-2 pr-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500"
-                  >
-                    {label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>{group.edges.map((edge) => <EdgeRow key={edge.market_id} edge={edge} />)}</tbody>
-          </table>
-        </section>
-      ))}
-      {shown === 0 && <p className="text-slate-400">No upcoming sports edges.</p>}
+      {b.noEdge > 0 && <p className="text-sm text-slate-500">{b.noEdge} more games had no usable edge.</p>}
     </div>
   );
 }

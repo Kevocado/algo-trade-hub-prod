@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-
 import { describe, expect, it } from "vitest";
 
 import {
@@ -140,30 +138,4 @@ describe("which ranking the page claims", () => {
   // this file -- see the `payload` docstring -- and the property is now stated where it is
   // testable: the `edge_sigma` sentence must NAME the fallback ("keeps the edge_sigma sentence true
   // when only some rows are scored" above), which fails the moment it claims a total order.
-
-  it("SHAPE, not render: the page is a caller of the helper and owns no literal of its own", () => {
-    // NOT a render test. This reads the page's SOURCE with `readFileSync` and a regex, so it proves
-    // the shape of the page's use of the helper, not what a user sees. It is the only way to catch a
-    // second literal in the header -- a mutation that renders perfectly and leaves the Python suite
-    // green -- so it earns its place, but it must not be read as covering the rendered output.
-    //
-    // Two consequences a future editor should know before changing either line:
-    //
-    // 1. `not.toMatch(/Ranked (by|raw)/)` is a SHAPE assertion about a prefix, and it will fail on
-    //    unrelated future copy that happens to start a line with "Ranked by ..." -- including a
-    //    correct one. If it fires, read the page: the fix is to narrow the pattern, not to delete it
-    //    and not to reword the page to satisfy a regex.
-    // 2. The two `not.toContain` checks catch a copy-pasted literal verbatim. A REWORDED hardcode
-    //    slips past them, which is exactly why the regex above is here as well; neither check alone
-    //    covers the mutation.
-    //
-    // Read relative to the package root, which is vitest's cwd -- `import.meta.url` is a dev-server
-    // URL here, not a file: one.
-    const page = readFileSync("src/pages/SportsEdges.tsx", "utf8");
-
-    expect(page).toContain("rankingSentence(data.ranking)");
-    expect(page).not.toContain(RANKING_SENTENCE.edge_sigma);
-    expect(page).not.toContain(RANKING_SENTENCE.raw_edge);
-    expect(page).not.toMatch(/Ranked (by|raw)/);
-  });
 });
