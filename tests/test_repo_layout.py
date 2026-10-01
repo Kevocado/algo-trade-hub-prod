@@ -102,8 +102,11 @@ def test_dead_code_and_retired_targets_removed():
 def test_no_fpl_or_hf_space_references_in_runtime_code():
     runtime = {f: t for f, t in tracked_python_text().items() if f != "tests/test_repo_layout.py"}
     assert [f for f, t in runtime.items() if "FPL_Optimizer" in t or "fpl_optimizations" in t] == []
-    hook = (REPO / "market_sentiment_tool/src/hooks/useSupabaseData.ts").read_text(encoding="utf-8")
-    assert "useFPLOptimizations" not in hook
+    # The hook that read `useFPLOptimizations` was deleted as unreachable (plan n, 2026-10-01), so the
+    # guard is now that nothing in the frontend mentions it.
+    frontend = [p for p in (REPO / "market_sentiment_tool/src").rglob("*.ts*")
+                if "useFPLOptimizations" in p.read_text(encoding="utf-8")]
+    assert frontend == []
 
 
 def test_old_sp500_folder_is_gone_and_package_exists():
