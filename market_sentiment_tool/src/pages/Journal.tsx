@@ -1,32 +1,25 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
-import { buildApiUrl } from "@/lib/api";
-import { GateBadge } from "@/components/GateBadge";
+import { Chip, type Tone } from "@/components/Chip";
 import { PreJournalContext } from "@/components/PreJournalContext";
-import { QuarantineNotice } from "@/components/QuarantineNotice";
-import { useQuarantine } from "@/hooks/useQuarantine";
+import { Stat } from "@/components/Stat";
+import { buildApiUrl } from "@/lib/api";
 import {
-  EXPERIMENTAL,
   biasReadout,
-  brierText,
   costsText,
-  key,
   pct,
-  settledText,
-  skillText,
-  tiles,
   type JournalFeed,
   type JournalResponse,
-  type JournalScore,
 } from "@/lib/journal";
+import { STATUS_WORDS, skillText, split, totals, viewRows, type Status, type ViewRow } from "@/lib/journalView";
 
 /**
- * /journal, the flagship (v2 spec §11): every forecaster's frozen, settled, scored record.
+ * /journal: every forecaster's locked-in, scored record, numbers first.
  *
- * Three blocks: the ledger hero (server headline, calibrated forecasters only), one tile per
- * forecaster with its Kalshi pseudo-forecaster beneath it in the same units, and the quarantine
- * section. A forecaster appears from its first frozen row (display gate); nothing here filters,
- * sorts by skill, or hides a losing forecaster, and nothing here computes a score.
+ * Three numbers, then the forecasters that have results, then a one-line list of those still waiting.
+ * Everything else (calibration, the frozen forecasts, why a gate is closed) is one click away, because
+ * the first read should be the state of the whole journal, not 19 tiles saying "not scored yet".
+ * Nothing here computes a score: the server does, and this renders it.
  */
 
 async function getJson<T>(path: string): Promise<T> {
@@ -36,80 +29,68 @@ async function getJson<T>(path: string): Promise<T> {
   return payload as T;
 }
 
-function ScoreLines({ score, label }: { score: JournalScore; label?: string }) {
-  return (
-    <div className="space-y-1 text-sm">
-      {label && <p className="text-[10px] uppercase tracking-wider text-slate-500">{label}</p>}
-      <p className="font-mono text-2xl text-white" aria-label={`Brier ${key(score)}`}>
-        {brierText(score.brier)}
-      </p>
-      <p className="text-slate-300">{skillText(score)}</p>
-      {costsText(score) && <p className="text-xs text-slate-400">{costsText(score)}</p>}
-      <p className="text-slate-500">{settledText(score)}</p>
-    </div>
-  );
-}
+const STATUS_TONE: Record<Status, Tone> = { waiting: "quiet", early: "quiet", ahead: "good", behind: "bad", promoted: "good" };
 
-function Calibration({ score }: { score: JournalScore }) {
-  if (!score.reliability.length) return <p className="text-xs text-slate-500">No settled targets yet.</p>;
-  const bias = biasReadout(score.reliability);
-  return (
-    <div className="mt-3">
-      <table className="w-full text-xs text-slate-300" aria-label={`Calibration ${key(score)}`}>
-        <thead className="text-slate-500">
-          <tr>
-            <th className="text-left font-normal">Confidence</th>
-            <th className="text-right font-normal">n</th>
-            <th className="text-right font-normal">Predicted</th>
-            <th className="text-right font-normal">Observed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {score.reliability.map((b) => (
-            <tr key={b.bucket}>
-              <td>{b.bucket}%</td>
-              <td className="text-right">{b.n}</td>
-              <td className="text-right">{pct(b.predicted)}</td>
-              <td className="text-right">{pct(b.observed)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {bias && <p className="mt-1 text-xs text-slate-400">{bias}</p>}
-    </div>
-  );
-}
-
-function Feed({ score }: { score: JournalScore }) {
+function Detail({ row }: { row: ViewRow }) {
   const [feed, setFeed] = useState<JournalFeed | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { score } = row;
   useEffect(() => {
-    const q = new URLSearchParams({ forecaster: score.forecaster, version: score.forecaster_version, limit: "20" });
+    const q = new URLSearchParams({ forecaster: score.forecaster, version: score.forecaster_version, limit: "10" });
     getJson<JournalFeed>(`/api/journal/feed?${q}`).then(setFeed).catch((e: Error) => setError(e.message));
   }, [score.forecaster, score.forecaster_version]);
-  if (error) return <p className="text-xs text-rose-300">Frozen forecasts unavailable: {error}</p>;
-  if (!feed) return <p className="text-xs text-slate-500">Loading frozen forecasts…</p>;
+
+  const bias = biasReadout(score.reliability);
+  const costs = costsText(score);
   return (
-    <table className="mt-3 w-full text-xs text-slate-300" aria-label={`Frozen forecasts ${key(score)}`}>
-      <thead className="text-slate-500">
-        <tr>
-          <th className="text-left font-normal">Target</th>
-          <th className="text-right font-normal">Model</th>
-          <th className="text-right font-normal">Market</th>
-          <th className="text-right font-normal">Frozen</th>
-        </tr>
-      </thead>
-      <tbody>
-        {feed.forecasts.map((f) => (
-          <tr key={f.target} className={f.rebuilt ? "line-through text-slate-600" : ""}>
-            <td className="font-mono">{f.target}</td>
-            <td className="text-right">{pct(f.probability)}</td>
-            <td className="text-right">{pct(f.market_prob)}</td>
-            <td className="text-right">{f.frozen_at.slice(0, 16).replace("T", " ")}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="grid gap-6 py-4 md:grid-cols-2">
+      <div>
+        <div className="mb-2 font-mono text-xs text-slate-500">{row.key}</div>
+        {row.market && (
+          <div className="mb-2 text-sm text-slate-300">
+            Kalshi price scores {row.market.brier?.toFixed(3) ?? "—"}; this scores {score.brier?.toFixed(3) ?? "—"} (lower is better).
+          </div>
+        )}
+        {costs && <div className="mb-2 text-sm text-slate-400">{costs}</div>}
+        {score.reliability.length > 0 ? (
+          <table className="w-full text-xs text-slate-300" aria-label={`Calibration ${row.key}`}>
+            <thead className="text-slate-500">
+              <tr><th className="text-left font-normal">Said</th><th className="text-right font-normal">Forecasts</th><th className="text-right font-normal">Happened</th></tr>
+            </thead>
+            <tbody>
+              {score.reliability.map((b) => (
+                <tr key={b.bucket}><td>{pct(b.predicted)}</td><td className="text-right">{b.n}</td><td className="text-right">{pct(b.observed)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="text-sm text-slate-500">Nothing scored yet.</div>
+        )}
+        {bias && <div className="mt-2 text-xs text-slate-400">{bias}</div>}
+        {score.gate_status !== "PROMOTED" && score.gate_reasons.length > 0 && (
+          <ul className="mt-3 list-disc pl-4 text-xs text-slate-500">
+            {score.gate_reasons.map((r) => <li key={r}>{r}</li>)}
+          </ul>
+        )}
+      </div>
+      <div>
+        <div className="mb-2 text-xs uppercase tracking-wider text-slate-500">Latest locked-in forecasts</div>
+        {error && <div className="text-sm text-rose-300">Unavailable: {error}</div>}
+        {!feed && !error && <div className="text-sm text-slate-500">Loading…</div>}
+        {feed && (
+          <table className="w-full text-xs text-slate-300" aria-label={`Frozen forecasts ${row.key}`}>
+            <thead className="text-slate-500">
+              <tr><th className="text-left font-normal">Event</th><th className="text-right font-normal">Ours</th><th className="text-right font-normal">Market</th></tr>
+            </thead>
+            <tbody>
+              {feed.forecasts.map((f) => (
+                <tr key={f.target}><td className="font-mono">{f.target}</td><td className="text-right">{pct(f.probability)}</td><td className="text-right">{pct(f.market_prob)}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -117,7 +98,7 @@ export default function Journal() {
   const [data, setData] = useState<JournalResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const { data: quarantine, error: quarantineError } = useQuarantine();
+  const [backtests, setBacktests] = useState(false);
 
   useEffect(() => {
     getJson<JournalResponse>("/api/journal").then(setData).catch((e: Error) => setError(e.message));
@@ -135,73 +116,81 @@ export default function Journal() {
   }
   if (!data) return <div className="p-8 text-slate-400">Loading journal…</div>;
 
-  const h = data.headline;
+  const rows = viewRows(data.forecasters);
+  const { results, waiting } = split(rows);
+  const t = totals(rows);
+
   return (
-    <div className="space-y-8 p-8">
+    <div className="mx-auto max-w-5xl space-y-10 p-6 md:p-8">
       <header>
         <h1 className="text-3xl font-bold text-white">Prediction Journal</h1>
-        <p className="mt-2 max-w-3xl text-slate-400">
-          Every forecast is frozen before its cutoff, settled against a public source, and scored against the
-          market where one exists (climatology where not). Nothing is backfilled.
-        </p>
-        <p className="mt-4 text-slate-200" aria-label="Headline">
-          {h.calibrated} of {h.forecasters} forecasters calibrated · {h.settled_calibrated} settled targets across
-          calibrated forecasters · {h.promoted} promoted
-        </p>
+        <p className="mt-2 text-slate-400">Forecasts locked in before the event, scored after.</p>
       </header>
 
-      {data.forecasters.length === 0 ? (
-        <p className="text-slate-400">No forecaster has frozen a forecast yet.</p>
-      ) : (
-        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-3" aria-label="Forecasters">
-          {tiles(data.forecasters).map(({ model, market }) => (
-            <article key={key(model)} className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <h2 className="font-mono text-sm text-slate-100">{key(model)}</h2>
-                <div className="flex items-center gap-2">
-                  {EXPERIMENTAL.has(model.forecaster) && (
-                    <span className="text-[10px] uppercase tracking-wider text-amber-300">experimental</span>
+      <section aria-label="Totals" className="grid gap-3 sm:grid-cols-3">
+        <Stat value={t.frozen} label="forecasts locked in" />
+        <Stat value={t.scored} label="scored so far" />
+        <Stat value={t.promoted} label="promoted" hint="Needs 200 scored (daily) or 50 (monthly)." />
+      </section>
+
+      {results.length > 0 && (
+        <section aria-label="Results">
+          <h2 className="mb-3 text-lg font-semibold text-slate-200">Scored so far</h2>
+          <table className="w-full text-sm">
+            <thead className="text-xs uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="py-2 text-left font-normal">Forecast</th>
+                <th className="py-2 text-right font-normal">Scored</th>
+                <th className="py-2 text-right font-normal" title="Positive means better than the baseline">Skill</th>
+                <th className="py-2 pl-4 text-left font-normal">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((row) => (
+                <Fragment key={row.key}>
+                  <tr className="border-t border-slate-800">
+                    <td className="py-3">
+                      <button
+                        type="button"
+                        aria-expanded={open === row.key}
+                        onClick={() => setOpen(open === row.key ? null : row.key)}
+                        className="text-left text-slate-100 hover:text-white"
+                      >
+                        {row.label}
+                      </button>
+                      <div className="text-xs text-slate-500">vs {row.against}</div>
+                    </td>
+                    <td className="py-3 text-right tabular-nums text-slate-300">
+                      {row.scored} <span className="text-slate-600">of {row.needed}</span>
+                    </td>
+                    <td className="py-3 text-right text-lg tabular-nums text-slate-100">{skillText(row.skill)}</td>
+                    <td className="py-3 pl-4"><Chip tone={STATUS_TONE[row.status]}>{STATUS_WORDS[row.status]}</Chip></td>
+                  </tr>
+                  {open === row.key && (
+                    <tr><td colSpan={4} className="border-t border-slate-800/60"><Detail row={row} /></td></tr>
                   )}
-                  {!model.calibration_ready && (
-                    <span className="text-[10px] uppercase tracking-wider text-slate-400">provisional</span>
-                  )}
-                  <GateBadge edge={{ gate_status: model.gate_status }} />
-                </div>
-              </div>
-              <ScoreLines score={model} />
-              {market && (
-                <div className="mt-3 border-t border-slate-800 pt-3">
-                  <ScoreLines score={market} label={`Kalshi-implied (${key(market)})`} />
-                </div>
-              )}
-              {model.gate_reasons.length > 0 && (
-                <ul className="mt-3 list-disc pl-4 text-xs text-slate-500">
-                  {model.gate_reasons.map((r) => (
-                    <li key={r}>{r}</li>
-                  ))}
-                </ul>
-              )}
-              <Calibration score={model} />
-              <button
-                type="button"
-                className="mt-3 text-xs text-sky-300 underline"
-                onClick={() => setOpen(open === key(model) ? null : key(model))}
-              >
-                {open === key(model) ? "Hide frozen forecasts" : "Show frozen forecasts"}
-              </button>
-              {open === key(model) && <Feed score={model} />}
-            </article>
-          ))}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
         </section>
       )}
 
-      <PreJournalContext />
+      {waiting.length > 0 && (
+        <section aria-label="Waiting">
+          <h2 className="mb-3 text-lg font-semibold text-slate-200">Waiting for results</h2>
+          <ul className="flex flex-wrap gap-2">
+            {waiting.map((row) => (
+              <li key={row.key}><Chip title={row.key}>{row.label}</Chip></li>
+            ))}
+          </ul>
+        </section>
+      )}
 
-      <section aria-label="Quarantine">
-        <h2 className="mb-2 text-lg font-semibold text-slate-200">Quarantine</h2>
-        <p className="mb-2 text-sm text-slate-500">Scored in public, excluded from every headline number above.</p>
-        <QuarantineNotice payload={quarantine} readError={quarantineError} />
-      </section>
+      <details onToggle={(e) => setBacktests((e.currentTarget as HTMLDetailsElement).open)}>
+        <summary className="cursor-pointer text-sm text-slate-400">Past backtests (not counted)</summary>
+        <div className="mt-3">{backtests && <PreJournalContext />}</div>
+      </details>
     </div>
   );
 }
