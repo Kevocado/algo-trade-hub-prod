@@ -7,7 +7,7 @@ Alerts:
   3. VIX Emergency: VIX > 45 → crisis-level fear
   4. Model Drift: Brier score exceeds threshold → retraining needed
 
-Called from background_scanner.py on each scan cycle.
+Legacy: was called by the deleted background_scanner.py; run by hand.
 """
 
 # The developer-local `.env` is loaded by the entrypoint, not at import time.

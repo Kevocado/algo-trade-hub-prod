@@ -12,7 +12,7 @@ Rules:
   4. Settlement: Kalshi uses 6AM-6PM daily highs from NWS
 
 Usage:
-  Called from background_scanner.py on each scan cycle.
+  Legacy: was called by the deleted background_scanner.py; run it by hand.
 """
 
 import re
@@ -168,7 +168,7 @@ def evaluate_positions(positions, nws_forecasts):
 def run_auto_sell_check():
     """
     Main entry point: fetch positions + NWS data, evaluate, send Telegram alerts.
-    Called by background_scanner.py on each scan cycle.
+    Legacy: was called by the deleted background_scanner.py; run by hand.
 
     Returns:
         list of alerts that were sent (empty if no action)

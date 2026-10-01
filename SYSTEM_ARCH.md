@@ -25,12 +25,10 @@ Algo-Trade-Hub/                          ← Root monorepo (one git repo)
 │   │   ├── supabase_client.py           ← Unified Supabase write client (upsert_opportunities)
 │   │   └── ...
 │   ├── engines/                          ← Standalone specialized edge models
-│   │   ├── quant_engine.py              ← Paper trading ML engine (Crypto/SPX)
 │   │   ├── weather_engine.py            ← NWS → Kalshi weather arbitrage
-│   │   ├── macro_engine.py              ← FRED → Kalshi CPI/macro arbitrage
 │   │   └── weather_maker.py             ← Weather market-making helper
 │   ├── scripts/                          ← Operator scripts & daemons
-│   │   └── background_scanner.py        ← Central Daemon (runs all engines, pushes to Supabase)
+│   │   └── scan.py                      ← Hourly scan (weather, gas, CPI, labor, sports), suggest-only
 │   ├── api/                              ← FastAPI service (main.py, schemas.py, dependencies.py)
 │   └── config/                           ← settings.yaml
 │
@@ -70,9 +68,9 @@ The VPS focuses entirely on running heavy machine learning inference (LightGBM/F
 
 **Key Flow:**
 1. The hourly `tradehub-scan` timer runs `python -m tradehub.scripts.scan` (weather + gas, suggest-only).
-2. The scanner initializes specific engines (`weather_engine`, `macro_engine`, `quant_engine`). TSA/EIA engines now live as parked research under `research/engines` and are not run.
+2. The scan runs the pure engines in `tradehub/engines/` (weather, gas, CPI, labor) and the sports consumers. The legacy daemon and its macro and quant engines were deleted. TSA/EIA engines now live as parked research under `research/engines` and are not run.
 3. **Threshold-Free Discovery:** Engines ingest raw data and compute mathematical edges. Instead of filtering out low-edge markets, engines return *all* strictly tracked live markets (e.g., creating a massive grid of 100+ upcoming weather markets).
-4. **Dynamic Data Tagging:** The `background_scanner` assigns a strict `edge_type` string to the payload: `'WEATHER'`, `'MACRO'`, `'CRYPTO'`, or `'SPORTS'`.
+4. **Dynamic Data Tagging:** `scan.py` assigns a strict `edge_type` string to the payload: `'WEATHER'`, `'MACRO'`, `'CRYPTO'`, or `'SPORTS'`.
 5. **Supabase Injection:** `supabase_client.py` uses the `SUPABASE_SERVICE_ROLE_KEY` to securely `UPSERT` normalized records into the `kalshi_edges` database table.
 
 ### 2. The Database Bridge (Supabase)

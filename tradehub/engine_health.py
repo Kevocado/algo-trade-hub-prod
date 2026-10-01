@@ -192,22 +192,14 @@ STOPPED_SITES: tuple[StoppedSite, ...] = (
         module="tradehub/engines/weather_engine.py",
         site="tradehub/engines/weather_engine.py:220",
         edge_type="WEATHER",
-        wired_to_a_scanner=True,
+        # False since the legacy daemon (`background_scanner.py`) was deleted: the only scanner that ran
+        # this class is gone, so it cannot be the reason the Weather board is empty or quarantined. The
+        # board is fed by `tradehub/scripts/scan.py` (the pure `engines/weather.py`). The class is still
+        # listed because `scripts/weather_auto_sell.py` calls it and it still prices against `yes_ask`.
+        wired_to_a_scanner=False,
         disposition="repaired_quarantined",
         reason=(
             "This is the Tier-1 real-edge weather engine, and it prices every market against "
-            "`yes_ask`. " + _THE_API_MOVED + _REPAIRED_AND_QUARANTINED
-        ),
-    ),
-    StoppedSite(
-        name="MacroEngine",
-        module="tradehub/engines/macro_engine.py",
-        site="tradehub/engines/macro_engine.py:459",
-        edge_type="MACRO",
-        wired_to_a_scanner=True,
-        disposition="repaired_quarantined",
-        reason=(
-            "This is the Tier-1 real-edge macro engine, and it prices every market against "
             "`yes_ask`. " + _THE_API_MOVED + _REPAIRED_AND_QUARANTINED
         ),
     ),

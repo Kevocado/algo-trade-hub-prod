@@ -2,8 +2,8 @@
 FastAPI Main — Thin API layer over the Kalshi Edge System.
 
 Does ZERO business logic — only queries Supabase or the in-memory
-scanner cache and returns typed JSON. All heavy lifting stays in the
-background_scanner.py and engine modules.
+scanner cache and returns typed JSON. All heavy lifting stays in
+the scan scripts and engine modules.
 
 Run locally:
     uvicorn api.main:app --reload --port 8000
@@ -305,7 +305,7 @@ async def get_opportunities(
 ):
     """
     Returns the latest scanner opportunities from the in-memory cache.
-    The background_scanner refreshes this every scan cycle.
+    Empty since the legacy background_scanner daemon was deleted: nothing refreshes this cache now.
     """
     opps = cache.get("opportunities", [])
     if engine:

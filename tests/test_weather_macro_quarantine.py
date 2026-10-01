@@ -927,7 +927,7 @@ class TestTheRulingIsNotStale:
         is caught by the same mechanism that caught this one.
         """
         for site in STOPPED_SITES:
-            if site.disposition != "repaired_quarantined":
+            if site.disposition != "repaired_quarantined" or site.module in legacy_ruling.DELETED_MODULES:
                 continue
             module, _, line = site.site.partition(":")
             assert module == site.module
