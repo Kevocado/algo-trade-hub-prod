@@ -32,6 +32,7 @@ from tradehub.engines.cpi import CPI_MIN_TRAIN, DEFAULT_CPI_ERROR
 from tradehub.engine_catalogue import engine_catalogue
 from tradehub.engine_health import engine_health
 from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses
+from tradehub.journal.legacy import journal_scores, merge_track_record
 from tradehub.journal.scoring import headline as journal_headline
 from tradehub.quarantine import QUARANTINE_MARK, QUARANTINE_NOTE, quarantine_report
 from tradehub.scoreboard import current_runs, market_comparison
@@ -443,7 +444,9 @@ async def get_track_record(supabase=Depends(get_supabase)):
     if supabase is None:
         raise HTTPException(status_code=503, detail="Supabase is not configured")
     result = supabase.table("track_record").select("*").order("engine").execute()
-    return result.data or []
+    # One record per engine (v2 spec §4): an engine graded by the journal is served from its journal
+    # scorecard, tagged `source: "journal"`; the rest keep their legacy rollup, tagged `source: "legacy"`.
+    return merge_track_record(result.data or [], journal_scores(supabase))
 
 
 # ════════════════════════════════════════════════════════════════════════════

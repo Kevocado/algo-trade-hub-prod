@@ -15,6 +15,7 @@ import sys
 from tradehub.core.env import load_local_env
 from tradehub.core.kalshi_feed import fetch_market
 from tradehub.core.supabase_client import get_client
+from tradehub.journal.legacy import journal_engines, journal_scores
 from tradehub.settlement import run_settlement_pass
 from tradehub.track_record import refresh_track_record
 
@@ -41,10 +42,19 @@ def main() -> int:
     supa = get_client()
     summary = run_settlement_pass(supa, fetch_market)
     refreshed = []
+    skipped = []
+    # One ledger of record (v2 spec §4): an engine with a journal scorecard is graded by the journal, so
+    # its legacy rollup is left alone. Its `predictions` rows are still settled above (the CPI display and
+    # the sports hub calibration read them); only the second headline number is retired.
+    on_journal = journal_engines(journal_scores(supa))
     for engine, cadence in ENGINES:
+        if engine in on_journal:
+            skipped.append(engine)
+            continue
         payloads = refresh_track_record(supa, engine, cadence=cadence, simulated_pnl_after_fees=None)
         refreshed.extend(f"{engine}@{p['engine_version']}" for p in payloads)
     summary["track_record_refreshed"] = refreshed
+    summary["track_record_skipped_on_journal"] = skipped
     print(json.dumps(summary))
     return 0
 

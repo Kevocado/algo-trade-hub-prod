@@ -52,6 +52,8 @@ class _Supa:
         self.query = _Query(rows)
 
     def table(self, name):
+        if name == "journal_scores":
+            return _Query([])  # no forecaster is on the journal in this test
         assert name == "track_record"
         return self.query
 
