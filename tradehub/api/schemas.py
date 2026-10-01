@@ -44,31 +44,6 @@ class PnLSummary(BaseModel):
     suggest_only: bool = True
 
 
-# ─── Scanner Opportunities ───────────────────────────────────────────────────
-
-class Opportunity(BaseModel):
-    engine: str
-    ticker: str
-    title: str
-    action: str          # "BUY YES" | "BUY NO"
-    my_prob: float
-    kalshi_price: float
-    edge_pct: float
-    kelly_bet_cents: float
-    kalshi_url: Optional[str] = None
-    reasoning: Optional[str] = None
-    detected_at: Optional[datetime] = None
-
-
-# ─── Weather ─────────────────────────────────────────────────────────────────
-
-class NWSReading(BaseModel):
-    city: str
-    date: str            # YYYY-MM-DD
-    observed_high_f: Optional[float] = None
-    forecast_high_f: Optional[float] = None
-    nws_station: Optional[str] = None
-    fetched_at: datetime
 
 
 # ─── Shadow Performance ──────────────────────────────────────────────────────

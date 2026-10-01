@@ -34,25 +34,3 @@ def get_supabase():
         print(f"⚠️  Supabase init error: {e}")
         return None
 
-
-# ─── In-memory scanner results cache ─────────────────────────────────────────
-# Nothing populates this dict since the legacy background_scanner daemon was deleted; the API reads from it
-# and serves an empty list. Kept so the endpoint's contract is unchanged until it is retired on its own.
-# This avoids hammering Supabase on every API request.
-_scanner_cache: dict = {
-    "opportunities": [],
-    "nws_readings": {},
-    "last_updated": None,
-}
-
-
-def get_scanner_cache() -> dict:
-    """Returns the live in-memory scanner result store."""
-    return _scanner_cache
-
-
-def update_scanner_cache(key: str, value) -> None:
-    """Thread-safe update of the scanner cache. Called by background_scanner."""
-    from datetime import datetime, timezone
-    _scanner_cache[key] = value
-    _scanner_cache["last_updated"] = datetime.now(timezone.utc)

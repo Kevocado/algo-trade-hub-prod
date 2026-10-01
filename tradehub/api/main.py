@@ -24,9 +24,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from tradehub.core.env import load_local_env
 from tradehub.api.schemas import (
     HealthResponse, Position, PnLSummary,
-    Opportunity, NWSReading, ShadowPerformanceResponse,
+    ShadowPerformanceResponse,
 )
-from tradehub.api.dependencies import get_supabase, get_scanner_cache
+from tradehub.api.dependencies import get_supabase
 from tradehub.api.frontend import mount_frontend
 from tradehub.engines.cpi import CPI_MIN_TRAIN, DEFAULT_CPI_ERROR
 from tradehub.engine_catalogue import engine_catalogue
@@ -295,27 +295,6 @@ async def health():
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# ENDPOINT 2: /api/opportunities
-# ════════════════════════════════════════════════════════════════════════════
-@app.get("/api/opportunities", response_model=List[Opportunity], tags=["Scanner"])
-async def get_opportunities(
-    engine: Optional[str] = Query(None, description="Filter by engine name"),
-    min_edge: float = Query(0.0, description="Minimum edge % to return"),
-    cache: dict = Depends(get_scanner_cache),
-):
-    """
-    Returns the latest scanner opportunities from the in-memory cache.
-    Empty since the legacy background_scanner daemon was deleted: nothing refreshes this cache now.
-    """
-    opps = cache.get("opportunities", [])
-    if engine:
-        opps = [o for o in opps if o.get("engine", "").lower() == engine.lower()]
-    if min_edge > 0:
-        opps = [o for o in opps if o.get("edge_pct", 0) >= min_edge]
-    return opps
-
-
-# ════════════════════════════════════════════════════════════════════════════
 # ENDPOINT 3: /api/positions
 # ════════════════════════════════════════════════════════════════════════════
 @app.get("/api/positions", response_model=List[Position], tags=["Portfolio"])
@@ -387,31 +366,8 @@ async def get_pnl_summary(supabase=Depends(get_supabase)):
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# ENDPOINT 5: /api/nws_weather
+# ENDPOINT 5: /api/nws_weather (removed: the cache-backed scanner endpoint, 2026-10-01)
 # ════════════════════════════════════════════════════════════════════════════
-@app.get("/api/nws_weather", response_model=List[NWSReading], tags=["Weather"])
-async def get_nws_weather(
-    city: Optional[str] = Query(None, description="Filter by city name"),
-    cache: dict = Depends(get_scanner_cache),
-):
-    """
-    Latest NWS temperature readings used by the weather maker engine.
-    Keyed by city name. Returns the observed/forecast highs.
-    """
-    readings = cache.get("nws_readings", {})
-    result = []
-    for city_name, data in readings.items():
-        if city and city_name.lower() != city.lower():
-            continue
-        result.append(NWSReading(
-            city=city_name,
-            date=data.get("date", ""),
-            observed_high_f=data.get("observed_high_f"),
-            forecast_high_f=data.get("forecast_high_f"),
-            nws_station=data.get("nws_station"),
-            fetched_at=data.get("fetched_at", datetime.now(timezone.utc)),
-        ))
-    return result
 
 
 # ════════════════════════════════════════════════════════════════════════════
