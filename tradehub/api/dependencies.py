@@ -36,7 +36,8 @@ def get_supabase():
 
 
 # ─── In-memory scanner results cache ─────────────────────────────────────────
-# The background_scanner writes into this dict; the API reads from it.
+# Nothing populates this dict since the legacy background_scanner daemon was deleted; the API reads from it
+# and serves an empty list. Kept so the endpoint's contract is unchanged until it is retired on its own.
 # This avoids hammering Supabase on every API request.
 _scanner_cache: dict = {
     "opportunities": [],

@@ -26,7 +26,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Heavier deps used only by tradehub.scripts.background_scanner's AI/news path and HF model downloads.
+# Heavier deps once used by the deleted background_scanner daemon's AI/news path and HF model downloads.
+# `google-genai` is still imported by tradehub/core/ai_validator.py; the rest are candidates for removal.
 scanner = [
     "fredapi>=0.5.1",
     "google-genai>=0.1.0",

@@ -10,7 +10,7 @@ A unified, production-grade Kalshi trading and analytics monorepo. The canonical
 
 Algo-Trade-Hub operates on a separated hybrid model to maximize VPS performance while delivering a lightning-fast React UI.
 
-1. **The Core Engines (VPS / Local):** Python data pipelines running on a continuous daemon (`background_scanner.py`). They pull from NWS, FRED, Kalshi, and Tiingo APIs, calculate mathematical edges, and write heavily normalized JSON data directly to a Supabase PostgreSQL database via a secure Service Role Key.
+1. **The Core Engines (VPS / Local):** Python data pipelines run as hourly systemd timers (`tradehub-scan`, `tradehub-settle`, `tradehub-journal`; the legacy continuous daemon `background_scanner.py` was deleted). They pull from NWS, FRED, Kalshi, and Tiingo APIs, calculate mathematical edges, and write heavily normalized JSON data directly to a Supabase PostgreSQL database via a secure Service Role Key.
 2. **The Terminal UI (Vercel):** A dynamic React frontend that acts as a read-only terminal dashboard. Built on modern Vite, it queries Supabase directly without relying on a continuously open Python FastAPI server, separating rendering limits from deep machine learning computation.
 
 ---
@@ -39,7 +39,7 @@ Ensure you have created a `.env` in the root mapping your API connections and `S
 uv venv .venv --python 3.12
 uv pip install --python .venv/bin/python -r pyproject.toml --extra dev --extra scanner
 .venv/bin/python -m pytest            # run from the repo root
-.venv/bin/python -m tradehub.scripts.background_scanner
+.venv/bin/python -m tradehub.scripts.scan
 ```
 
 ### 2. Launching the Frontend Dashboard (Local Dev)

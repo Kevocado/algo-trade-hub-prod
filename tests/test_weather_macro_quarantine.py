@@ -30,6 +30,9 @@ from pathlib import Path
 
 import pytest
 
+import legacy_ruling
+from legacy_ruling import STOPPED_SITES
+
 from tradehub import engine_health as health
 from tradehub.engine_health import (
     OPPORTUNITIES_NOT_COUNTED,
@@ -38,7 +41,6 @@ from tradehub.engine_health import (
     STATE_COULD_NOT_RUN,
     STATE_QUARANTINED,
     STATE_RAN,
-    STOPPED_SITES,
     edge_type_entry,
     edge_type_state,
     engine_health,
@@ -61,6 +63,14 @@ from tradehub.quarantine import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _legacy_ruling(monkeypatch):
+    """The state machine is pinned against the frozen ruling; see `tests/legacy_ruling.py`."""
+    legacy_ruling.install(monkeypatch)
+
+
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "quarantine"
 
 # ── the fixtures, and what they are for ─────────────────────────────────────────────────────
@@ -208,74 +218,6 @@ def recording_client(monkeypatch) -> _RecordingClient:
     return client
 
 
-def test_the_quarantine_writes_nothing_to_the_trade_sink(recording_client, monkeypatch, weather_markets, macro_markets):
-    """The whole safety property, as one test: repairing these engines must not publish them.
-
-    This drives the REAL publish path -- `background_scanner.run_scan`, with both engines replaced
-    by the repaired ones run against real market snapshots -- and asserts on the payloads that would
-    have gone to the database. Not a grep for a table name, not a check that a list is empty: a
-    real write, recorded.
-
-    Two independent things have to hold and both are asserted, because each alone would be a promise
-    rather than a property:
-
-      * `run_scan` never puts a quarantined row in the list it publishes, and
-      * `upsert_opportunities` drops any marked row even if handed one.
-
-    Breaking either is caught here. That is the point of having both: it takes breaking BOTH to get a
-    quarantined row into `kalshi_edges`, and a refactor that does the first is stopped by the second.
-    """
-    from tradehub.scripts import background_scanner as scanner
-    from tradehub.engines.macro_engine import MacroEngine
-    from tradehub.engines.weather_engine import WeatherEngine
-
-    weather_engine = WeatherEngine()
-    weather_engine.get_nws_forecast = lambda city: {"2026-09-28": 74, "2026-09-29": 76}
-    monkeypatch.setattr(
-        scanner, "WeatherEngine", lambda: _StubbedEngine(weather_engine, weather_markets, "WEATHER")
-    )
-
-    macro_engine = MacroEngine.__new__(MacroEngine)
-    macro_engine._cache = {}
-    macro_engine.get_latest_cpi_yoy = lambda: 3.1
-    macro_engine.get_fed_rate_prediction = lambda: 3.75
-    macro_engine.get_gdp_prediction = lambda: 1.9
-    macro_engine.get_unemployment_rate = lambda: 4.4
-    macro_engine.get_transition_penalty = lambda: {
-        "in_transition": False, "penalty": 0, "reasoning": "none"}
-    macro_engine.get_leading_inflation_signals = lambda: {
-        "signal": "neutral", "adjustment": 0, "ppi_trend": "flat", "oil_trend": "flat",
-        "reasoning": "none"}
-    macro_engine.get_tariff_shock_factor = lambda: {
-        "shock_detected": False, "multiplier": 1.0, "reasoning": "none"}
-    macro_engine.get_taylor_rule_rate = lambda: {
-        "taylor_rate": None, "divergence": 0.0, "reasoning": "none"}
-    monkeypatch.setattr(
-        scanner, "MacroEngine", lambda: _StubbedEngine(macro_engine, macro_markets, "MACRO")
-    )
-    # Frozen for the same reason `_measure` freezes: without it the weather
-    # fixtures expire and this test proves the property against zero weather
-    # rows, which is a weaker claim wearing the same green.
-    _freeze_fixture_time(monkeypatch)
-    # The paper-trading tier and the notifiers are not what this test is about, and letting them
-    # run would make the assertion depend on a crypto model download.
-    monkeypatch.setattr(scanner, "scan_quant_ml", lambda: ([], []))
-
-    scanner.run_scan()
-
-    assert "kalshi_edges" not in recording_client.tables_written(), (
-        "the quarantined path wrote to the trade-proposal sink. Everything in this PR exists so "
-        f"this cannot happen; the writes were to {sorted(recording_client.tables_written())}"
-    )
-    # And the paper tier, which is allowed to publish, proves the recorder works. Without this the
-    # assertion above would also pass on a client that recorded nothing at all -- which is the
-    # failure mode a fake makes, and the reason this line is here.
-    assert recording_client.tables_written() == {"kalshi_quarantine_edges"}, (
-        "expected the quarantine sink and nothing else; got "
-        f"{sorted(recording_client.tables_written())}"
-    )
-
-
 def test_upsert_opportunities_refuses_a_quarantined_row_even_when_handed_one(recording_client, monkeypatch):
     """Defence in depth, as its own test so a failure names which of the two mechanisms broke.
 
@@ -362,14 +304,12 @@ def test_the_quarantine_sink_is_a_different_table_from_the_trade_sink(recording_
 def test_no_source_path_leads_a_quarantined_row_to_the_trade_sink():
     """The structural claim, as a source-level fact rather than a promise.
 
-    Deliberately narrow. It does not try to prove the absence of every possible path -- a source
-    grep cannot do that, and a test that pretended to would be worse than none. What it does check is
-    the two things a future edit is most likely to get wrong: that `upsert_quarantined` names one
-    table and it is not `kalshi_edges`, and that the publish call in `run_scan` is handed something
-    that does not include the quarantine list.
+    Deliberately narrow. It checks that `upsert_quarantined` names one table and it is not
+    `kalshi_edges`. The second half of this test used to inspect the legacy daemon's `run_scan`; the
+    daemon was deleted (v2 spec §9) and with it the only producer of quarantined rows, so what is left
+    to pin is the sink itself plus `upsert_opportunities` refusing a marked row (tested separately).
     """
     from tradehub.core import supabase_client
-    from tradehub.scripts import background_scanner
 
     # The docstring says `kalshi_edges` a dozen times, on purpose -- it is the sentence explaining
     # where those rows do NOT go. So this checks the CODE, with the docstring removed, and asserts
@@ -379,30 +319,6 @@ def test_no_source_path_leads_a_quarantined_row_to_the_trade_sink():
     code = sink_source.split('"""')[0] + sink_source.rsplit('"""', 1)[-1]
     assert "kalshi_edges" not in code, "the quarantine sink must never open the trade sink"
     assert 'client.table("kalshi_quarantine_edges")' in sink_source
-
-    scan_source = inspect.getsource(background_scanner.run_scan)
-    # The publish call's argument is built from the paper tier alone. Asserted as a source fact
-    # because `run_scan` is 60 lines of orchestration and the guarantee lives in one assignment.
-    assert "all_opps = list(paper_ops)" in scan_source, scan_source
-    assert "all_opps = real_edge_ops" not in scan_source, scan_source
-    assert "all_opps = real_edge_ops + paper_ops" not in scan_source, scan_source
-
-
-def test_the_discord_alert_path_never_receives_a_quarantined_row():
-    """A push notification is the one place the marker cannot travel beside the number.
-
-    A Discord alert carries a headline and nothing else. "84-point edge" with no QUARANTINED word on
-    it is exactly the false reading this change exists to prevent, and it would arrive in someone's
-    phone where the only context is the message. So the alert call is handed an empty list, and this
-    asserts it stays that way.
-    """
-    from tradehub.scripts import background_scanner
-
-    source = inspect.getsource(background_scanner.run_scan)
-    assert "notifier.send_alert([], min_edge=30.0)" in source, (
-        "the Discord path must be handed nothing; quarantined rows are not alerted on"
-    )
-    assert "notifier.send_alert(quarantined_ops" not in source
 
 
 # ── 2. the engines now MEASURE, and the numbers are pinned ──────────────────────────────────
@@ -456,65 +372,36 @@ def _freeze_fixture_time(monkeypatch) -> None:
     )
 
 
-def _measure(monkeypatch, weather_markets, macro_markets) -> list[dict]:
-    """Run both engines the way `scan_real_edge` does, and return the marked rows."""
-    from tradehub.scripts import background_scanner as scanner
-    from tradehub.engines.macro_engine import MacroEngine
+def _measure(monkeypatch, weather_markets) -> list[dict]:
+    """Run the weather engine against the recorded snapshot and return the marked rows.
+
+    Weather only: the macro engine and the daemon that ran both were deleted (v2 spec §9). The engine
+    class is the real one; only its NWS call is replaced.
+    """
     from tradehub.engines.weather_engine import WeatherEngine
 
     _freeze_fixture_time(monkeypatch)
 
-    weather_engine = WeatherEngine()
-    weather_engine.get_nws_forecast = lambda city: {"2026-09-28": 74, "2026-09-29": 76}
-    monkeypatch.setattr(
-        scanner, "WeatherEngine", lambda: _StubbedEngine(weather_engine, weather_markets, "WEATHER")
-    )
-    macro_engine = MacroEngine.__new__(MacroEngine)
-    macro_engine._cache = {}
-    macro_engine.get_latest_cpi_yoy = lambda: 3.1
-    macro_engine.get_fed_rate_prediction = lambda: 3.75
-    macro_engine.get_gdp_prediction = lambda: 1.9
-    macro_engine.get_unemployment_rate = lambda: 4.4
-    macro_engine.get_transition_penalty = lambda: {
-        "in_transition": False, "penalty": 0, "reasoning": "none"}
-    macro_engine.get_leading_inflation_signals = lambda: {
-        "signal": "neutral", "adjustment": 0, "ppi_trend": "flat", "oil_trend": "flat",
-        "reasoning": "none"}
-    macro_engine.get_tariff_shock_factor = lambda: {
-        "shock_detected": False, "multiplier": 1.0, "reasoning": "none"}
-    macro_engine.get_taylor_rule_rate = lambda: {
-        "taylor_rate": None, "divergence": 0.0, "reasoning": "none"}
-    monkeypatch.setattr(
-        scanner, "MacroEngine", lambda: _StubbedEngine(macro_engine, macro_markets, "MACRO")
-    )
-    return scanner.scan_real_edge()
+    engine = WeatherEngine()
+    engine.get_nws_forecast = lambda city: {"2026-09-28": 74, "2026-09-29": 76}
+    return mark_quarantine(_StubbedEngine(engine, weather_markets, "WEATHER").find_opportunities())
 
 
 class TestTheEnginesMeasureSomething:
-    def test_the_repaired_engines_return_a_non_zero_count(self, monkeypatch, weather_markets, macro_markets):
-        """Not "more than zero" -- the exact figures these fixtures produce, pinned.
+    def test_the_repaired_engine_returns_a_non_zero_count(self, monkeypatch, weather_markets):
+        """Not "more than zero" -- the exact figure this fixture produces, pinned.
 
-        Previously both engines returned 0 for every market they fetched: `market.get('yes_ask', 0)`
-        read a key Kalshi stopped sending, so every price came back 0, `if yes_ask == 0: continue`
-        skipped all of them, and the scan logged "Found 0 opportunities" and exited cleanly. That is
-        the state PR #38 labelled. Pinning the exact numbers means a regression to zero fails here,
-        and a large drift fails as a NUMBER somebody has to look at rather than as a quiet change.
-
-        These are the counts for the FIXTURES, which are a trimmed economics snapshot -- 30 rows of
-        weather (all of it) and 47 of macro. The full 441-market run produced 30 and 265, and that
-        measurement is pinned separately in `test_the_measured_live_run_is_pinned` against the
-        recorded rows. Two different numbers for two different inputs, kept apart on purpose: one
-        says the repair works reproducibly, the other says what the market actually looked like.
+        Previously the engine returned 0 for every market it fetched: `market.get('yes_ask', 0)` read a
+        key Kalshi stopped sending, so every price came back 0 and `if yes_ask == 0: continue` skipped
+        all of them. Pinning the exact number means a regression to zero fails here, and a large drift
+        fails as a NUMBER somebody has to look at rather than as a quiet change. The weather fixture is
+        the complete live 30-market snapshot, so its count is the real one. (The macro half of this test
+        went with the macro engine.)
         """
-        rows = _measure(monkeypatch, weather_markets, macro_markets)
+        rows = _measure(monkeypatch, weather_markets)
 
-        by_engine: dict[str, list] = {}
-        for row in rows:
-            by_engine.setdefault(row["engine"], []).append(row)
-        assert len(by_engine["Weather"]) == FIXTURE_WEATHER_ROWS
-        assert len(by_engine["Macro"]) == FIXTURE_MACRO_ROWS
-        assert len(rows) == FIXTURE_WEATHER_ROWS + FIXTURE_MACRO_ROWS
-
+        assert len(rows) == FIXTURE_WEATHER_ROWS
+        assert all(row["engine"] == "Weather" for row in rows)
         # Every row is measured, priced, and marked. The count going to zero is a regression to a
         # known defect, not a quiet market.
         assert all(row["market_price"] for row in rows)
@@ -646,47 +533,6 @@ class TestTheEnginesMeasureSomething:
         assert measured["econ_markets_unpriceable"] == MEASURED_UNPRICEABLE_ECON
         for key, value in measured["counts"].items():
             assert partition_quarantine(live_rows).counts()[key] == value, key
-
-    def test_a_market_the_engine_cannot_price_is_skipped_and_counted(self, macro_markets):
-        """110 of the 441 live economics markets quote no tradeable YES ask. They must be SKIPPED.
-
-        The engine tests `yes_ask is None`, not a falsy check, and that distinction is the whole
-        repair on the skip side. With a falsy check, normalising alone would hand these markets
-        `None` through to `edge = model_probability - yes_ask` and raise `TypeError` on each --
-        swallowed by `scan_real_edge` back to a zero, which is the pre-repair symptom wearing a new
-        cause. With the `is None` test they are skipped, and skipping an unpriceable market is the
-        honest move: there is no price to buy at, so there is no edge to compute.
-        """
-        from tradehub.markets import quote_cents
-
-        unpriceable = [m for m in macro_markets if quote_cents(m)["yes_ask"] is None]
-        assert unpriceable, "the fixture must contain markets with no tradeable quote"
-
-        from tradehub.engines.macro_engine import MacroEngine
-
-        engine = MacroEngine.__new__(MacroEngine)
-        engine._cache = {}
-        engine.get_latest_cpi_yoy = lambda: 3.1
-        engine.get_fed_rate_prediction = lambda: 3.75
-        engine.get_gdp_prediction = lambda: 1.9
-        engine.get_unemployment_rate = lambda: 4.4
-        engine.get_transition_penalty = lambda: {
-            "in_transition": False, "penalty": 0, "reasoning": "none"}
-        engine.get_leading_inflation_signals = lambda: {
-            "signal": "neutral", "adjustment": 0, "ppi_trend": "flat", "oil_trend": "flat",
-            "reasoning": "none"}
-        engine.get_tariff_shock_factor = lambda: {
-            "shock_detected": False, "multiplier": 1.0, "reasoning": "none"}
-        engine.get_taylor_rule_rate = lambda: {
-            "taylor_rate": None, "divergence": 0.0, "reasoning": "none"}
-
-        rows = engine.find_opportunities(macro_markets)
-
-        unpriceable_tickers = {m["ticker"] for m in unpriceable}
-        assert unpriceable_tickers.isdisjoint({r["market_ticker"] for r in rows})
-        # And no row carries the fabricated zero the pre-repair read produced.
-        assert all(r["market_price"] for r in rows), "a 0c price is a missing figure, not a quote"
-
 
 # ── 3. the artefacts are distinguished from the opportunities ───────────────────────────────
 
@@ -1081,7 +927,7 @@ class TestTheRulingIsNotStale:
         is caught by the same mechanism that caught this one.
         """
         for site in STOPPED_SITES:
-            if site.disposition != "repaired_quarantined":
+            if site.disposition != "repaired_quarantined" or site.module in legacy_ruling.DELETED_MODULES:
                 continue
             module, _, line = site.site.partition(":")
             assert module == site.module
