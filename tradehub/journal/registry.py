@@ -15,6 +15,7 @@ from tradehub.journal.forecasters.fomc import FOMC_SERIES, FomcMapped, is_hold_m
 from tradehub.journal.forecasters.housing import HousingForecaster
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
 from tradehub.journal.forecasters.sentiment import SentimentMeter
+from tradehub.journal.forecasters.sports import build_sports
 from tradehub.journal.forecasters.spy_quant import SpyQuant
 from tradehub.journal.kalshi_linked import KalshiImplied
 from tradehub.journal.spx import SpxCloses
@@ -43,4 +44,6 @@ FORECASTERS: list[Forecaster] = [
     *build_wave2(),
     # wave 3 (spec §8): Case-Shiller national HPI month-over-month direction
     HousingForecaster(),
+    # wave 3 (spec §8): NFL and CFB feed consumers, each beside its Kalshi-implied baseline
+    *build_sports(),
 ]
