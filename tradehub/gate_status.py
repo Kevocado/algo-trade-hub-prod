@@ -25,6 +25,12 @@ log = logging.getLogger(__name__)
 DEFAULT_GATE_STATUS = "SHADOW"
 
 
+def table_missing(exc: Exception, table: str) -> bool:
+    """True when `exc` says `table` does not exist (PostgREST schema cache, or Postgres), not any other fault."""
+    text = str(exc)
+    return table in text and ("schema cache" in text or "does not exist" in text or "PGRST205" in text)
+
+
 def _journal_rows(supa, engine: str, version: str) -> list[dict]:
     """The journal scorecard row for this pair, or [] when the journal table does not exist yet.
 
@@ -36,9 +42,8 @@ def _journal_rows(supa, engine: str, version: str) -> list[dict]:
     try:
         result = supa.table("journal_scores").select("gate_status") \
             .eq("forecaster", engine).eq("forecaster_version", version).limit(1).execute()
-    except Exception as exc:  # noqa: BLE001 - narrowed just below
-        text = str(exc)
-        if "journal_scores" in text and ("schema cache" in text or "does not exist" in text or "PGRST205" in text):
+    except Exception as exc:
+        if table_missing(exc, "journal_scores"):
             log.info("gate: journal_scores not present yet; using the legacy gate tables")
             return []
         raise
