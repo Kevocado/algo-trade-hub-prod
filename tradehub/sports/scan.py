@@ -381,7 +381,12 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
                         raw_payload={"sport": cfg.sport, "game_id": mg.game.game_id, "kind": kind,
                                      "start_utc": mg.game.start_utc.isoformat(),
                                      "snapshotted_at": mg.game.snapshotted_at.isoformat(),
-                                     "alias_version": aliases.version, "date_shift_days": mg.date_shift_days},
+                                     "alias_version": aliases.version, "date_shift_days": mg.date_shift_days,
+                                     # The frozen top of book and the predictor's model version, so the
+                                     # journal can net an edge of fees and spread (spec §10) and keep the
+                                     # version out of its own key. Additive: nothing reads them today.
+                                     "yes_bid": q.yes_bid, "yes_ask": q.yes_ask,
+                                     "model_version": mg.game.model_version},
                     ))
                 s = evaluate_edge(sm.market.ticker, prob, q, min_edge_pct=cfg.edge.min_edge_pct,
                                   prefer_maker=cfg.edge.prefer_maker)
