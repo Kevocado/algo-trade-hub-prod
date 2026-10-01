@@ -198,11 +198,9 @@ export default function Scoreboard() {
     <div className="p-8 space-y-6">
       <header className="border-b border-slate-900 pb-4">
         <h1 className="text-2xl font-bold text-white">Engine scoreboard</h1>
-        <p className="max-w-3xl text-sm text-slate-400">
-          Each engine&apos;s Brier against the market&apos;s on the same decisions — a lower Brier is
-          better. The money column is a simulated backtest figure, not a balance: this product
-          suggests, it never places an order. Two bars, because they are two different bars: the
-          engine&apos;s own gate, and the reviewer&apos;s settled floor.
+        <p className="mt-2 text-sm text-slate-400">
+          Each engine&apos;s error next to the market&apos;s, on the same decisions. Lower is better. Money is a
+          simulated backtest, not a balance.
         </p>
       </header>
 

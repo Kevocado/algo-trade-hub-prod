@@ -32,9 +32,7 @@ export default function JobsScorecard() {
           <div className="space-y-2">
             <h1 className="text-4xl font-black uppercase italic tracking-tight text-white">Jobs Scorecard</h1>
             <p className="max-w-3xl text-sm text-slate-400">
-              Kalshi settles on the BLS first print, not the revised number. Each row compares our nowcast and the
-              Kalshi-implied estimate (one hour before the release) with the first print, then shows how the number
-              was revised afterwards.
+              Our nowcast and Kalshi&apos;s estimate, against the first number the BLS prints.
             </p>
           </div>
           <div className="flex flex-col items-end gap-3">
