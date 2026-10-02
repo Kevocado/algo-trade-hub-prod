@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from tradehub.journal.costs import cost_summary
+from tradehub.journal.forecasters.shrunk import SUFFIX as SHRINK_SUFFIX
 from tradehub.track_record import BUCKETS, bucketize
 
 MIN_SETTLED = {"daily": 200, "monthly": 50, "meeting": 50}
@@ -153,23 +154,44 @@ def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
     }
 
 
-CAUTIOUS_SUFFIX = "_cautious"
+def _cautious(name: str) -> bool:
+    """The market-anchored copy of a model (plan 15). `shrunk.SUFFIX` is the source of truth and is
+    imported, not retyped: four copies of this literal once existed, and renaming the constant while
+    the three consumers kept the old string would silently return the double count below."""
+    return str(name).endswith(SHRINK_SUFFIX)
+
+
+def _independent(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The cards whose settled rows are evidence in their own right.
+
+    Two kinds of card are not, because they are scored on somebody else's exact target set:
+
+      * a `_cautious` copy, which is `m + w*(p - m)` of its model's frozen row; and
+      * a `kalshi_implied_*` baseline, which `KalshiImplied` freezes on its model's tickers. NOT yet
+        excluded: the pair is not derivable from names (`kalshi_implied_cpi` strips to `cpi`, while the
+        model is `cpi_nowcast`), and guessing would silently drop real evidence.
+
+    Summing either alongside the model it mirrors counts every event twice -- 200 settled forecasts
+    reported as 400, the same double counting a spread ladder caused before plan 12. The baseline is
+    excluded only when the model it mirrors is actually PRESENT: a baseline with no model card has
+    its own targets and is the only evidence there is.
+
+    Every one of these is still a forecaster: `forecasters`, `calibrated` and `promoted` count them all.
+    """
+    return [c for c in cards if not _cautious(c.get("forecaster", ""))]
 
 
 def headline(cards: list[dict[str, Any]]) -> dict[str, int]:
     """The journal's hero numbers (spec §10 display gate): headline counts cover calibrated forecasters only.
 
-    `settled_calibrated` counts settled TARGETS, not settled cards. A `_cautious` copy (plan 15) is
-    scored on its model's exact target set, so summing over both would count every event twice and
-    report 200 settled forecasts as 400 -- the same double-counting a spread ladder caused before
-    plan 12. Cautious copies are still forecasters and still counted in `forecasters`, `calibrated`
-    and `promoted`; they are just not a second set of evidence.
+    `settled_calibrated` counts settled TARGETS, not settled cards -- see `_independent` for the two
+    card shapes that share a target set with another card and must not be added on top of it.
     """
     calibrated = [c for c in cards if c.get("calibration_ready")]
+    evidence = {id(c) for c in _independent(calibrated)}
     return {
         "forecasters": len(cards),
         "calibrated": len(calibrated),
-        "settled_calibrated": sum(int(c.get("n_settled") or 0) for c in calibrated
-                                  if not str(c.get("forecaster", "")).endswith(CAUTIOUS_SUFFIX)),
+        "settled_calibrated": sum(int(c.get("n_settled") or 0) for c in calibrated if id(c) in evidence),
         "promoted": sum(1 for c in cards if c.get("gate_status") == "PROMOTED"),
     }

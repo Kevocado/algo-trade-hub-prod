@@ -93,3 +93,5 @@ def test_a_cautious_copy_is_not_counted_as_a_second_set_of_evidence_in_the_headl
     body = _client(db).get("/api/journal").json()
     assert body["headline"]["settled_calibrated"] == 200, body["headline"]
     assert body["headline"]["forecasters"] == 2
+
+

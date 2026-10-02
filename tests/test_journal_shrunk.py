@@ -4,7 +4,7 @@ import pytest
 from journal_fakes import FakeJournalDB
 
 from tradehub.journal.contract import CalendarEntry, Forecast, Settlement
-from tradehub.journal.forecasters.shrunk import ALLOWED_WEIGHTS, SHRINK_WEIGHT, MarketShrunk
+from tradehub.journal.forecasters.shrunk import ALLOWED_WEIGHTS, SHRINK_WEIGHT, SUFFIX, MarketShrunk
 from tradehub.journal.runner import run_journal
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -276,3 +276,46 @@ def test_the_version_names_the_weight_that_was_applied(monkeypatch):
 
     assert MarketShrunk(Inner(), _no_store, 0.5).version == "v1+w50"
     assert MarketShrunk(Inner(), _no_store, 0.25).version == "v1+w25"
+
+
+def test_the_headline_excludes_the_cautious_copy_by_the_wrappers_own_constant():
+    """The four-copies defect: `SUFFIX` here, plus three hand-typed `"_cautious"` literals in
+    `scoring.py`, `journalView.ts` and `forecasterLabels.ts`. Renaming the constant while the consumers
+    kept the old string would return the double count that #78 fixed, with a fully green suite.
+    `headline` must consult this module's constant, so the test holds whichever way the name goes."""
+    from tradehub.journal.scoring import headline
+
+    model = {"forecaster": "cpi_nowcast", "forecaster_version": "cpi-v1", "n_settled": 60,
+             "calibration_ready": True, "gate_status": "SHADOW"}
+    copy = {"forecaster": f"cpi_nowcast{SUFFIX}", "forecaster_version": "cpi-v1+w25", "n_settled": 60,
+            "calibration_ready": True, "gate_status": "SHADOW"}
+
+    assert headline([model, copy])["settled_calibrated"] == 60
+    assert headline([model])["settled_calibrated"] == 60
+
+
+def test_the_consumers_import_the_suffix_instead_of_retyping_it():
+    """Runtime tests cannot catch this one: retyping the literal produces the same string and the same
+    behaviour, so every assertion still passes. The defect only appears later, when someone renames
+    `SUFFIX` -- at which point the consumers keep matching the old string and stop excluding copies.
+    So this reads the source instead: each consumer must import the constant, and none may carry its
+    own copy of the string.
+
+    The frontend pair is checked by reading the two files as text; `tradehub/` by import."""
+    import pathlib
+
+    from tradehub.journal import scoring
+    from tradehub.journal.forecasters import shrunk
+
+    assert scoring._cautious(f"x{SUFFIX}") and not scoring._cautious("x")
+    assert shrunk.SUFFIX == SUFFIX, "the test and the module disagree about the constant"
+
+    # The TypeScript side is a separate build, so it needs its own constant -- but exactly ONE, which
+    # lives in forecasterLabels (the same module the labels come from). journalView imports it rather
+    # than retyping it, so a rename is one edit in two languages instead of four scattered ones.
+    repo = pathlib.Path(__file__).resolve().parents[1] / "market_sentiment_tool" / "src"
+    labels = (repo / "lib/forecasterLabels.ts").read_text()
+    view = (repo / "lib/journalView.ts").read_text()
+    assert f'CAUTIOUS_SUFFIX = "{SUFFIX}"' in labels, "forecasterLabels no longer defines the suffix"
+    assert SUFFIX not in view, "journalView retypes the literal instead of importing it"
+    assert "CAUTIOUS_SUFFIX" in view and "forecasterLabels" in view, "journalView must import it"
