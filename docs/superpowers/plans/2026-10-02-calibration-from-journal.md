@@ -246,6 +246,33 @@ Expected: both runs all-pass (reviewer baseline on the final stack: see the road
 
 ---
 
+## Amendment (2026-10-02): the ledger covers winner markets only
+
+**This plan's code is no longer what shipped.** PR #75 implemented it as written; a review of that work
+then found a problem the plan did not anticipate, and Kevin ruled on it.
+
+`journal_settled_ledger` as written iterates `kinds.KINDS`, so it filed settled spread and total pairs
+into `HubLedger`. That is wrong, because of how plan 11 chose what to freeze: `one_rung` freezes only the
+rung whose Kalshi mid is nearest a coin flip, so the settled spread/total probabilities cluster around 0.5
+**by construction**. Calibration bands cut from that describe only the middle of the price range, and the
+scan then applies them to every edge of the kind -- including the 0.9-priced rungs that no settled row can
+ever represent. It fails closed, so nothing is mis-admitted, but it drops the highest-conviction edges while
+the run report shows a settled record and nothing that would warn a reader.
+
+**The ruling:** the hub's own settled record applies to **winner markets only**. For spread and total the
+scan keeps the predictor's published calibration, whatever the journal ledger holds. The journal's
+spread/total records still score and still appear on the page; they are simply not authoritative for
+calibration.
+
+**What shipped instead** (PR #79): `tradehub/sports/journal_ledger.py` gained
+
+```python
+HUB_LEDGER_KINDS = ("winner",)
+```
+
+and iterates that. **Revisit** when a season of settled rungs covers the whole price range -- and measure
+before widening the tuple, because widening it is the entire fix.
+
 ## Self-Review
 
 - **Reads what the journal writes:** one test seeds forecasts and settlements through the journal's own fake database and asserts the per-kind pairs, including that the baseline forecaster, another version, an unsettled forecast and a stranger are excluded.
