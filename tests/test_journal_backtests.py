@@ -94,3 +94,28 @@ def test_a_missing_table_is_an_empty_answer_not_a_500():
     finally:
         api_main.app.dependency_overrides.clear()
     assert r.status_code == 200 and r.json()["backtests"] == []
+
+def test_every_family_is_replayed_on_the_calendar_its_live_forecaster_uses():
+    """`SOURCES` fetches each family's closes; the live forecasters additionally gate on a calendar
+    (`DailySource.is_session`). The replay must use the SAME predicate, or it scores days the live
+    journal would never trade -- VIXCLS publishes across NYSE holidays, so ungated it graded 775 days
+    when only 754 are sessions. Each family carries its own calendar, so each is checked."""
+    from tradehub.journal.forecasters.daily_direction import eurusd_source, gold_source, vix_source
+
+    expected = {"spy_quant": "is_session", "vix_direction": "is_session",
+                "gold_direction": "is_session", "eurusd_direction": "is_target_day"}
+    for (forecaster, _version), (_fetch, predicate) in bd.CALENDARS.items():
+        assert predicate.__name__ == expected[forecaster], (forecaster, predicate.__name__)
+
+    # three share NYSE, EUR/USD alone is TARGET: the predicate is per family, not one global
+    assert vix_source().is_session is not eurusd_source().is_session
+    assert gold_source().is_session is vix_source().is_session
+
+
+def test_run_gates_each_family_on_its_own_calendar():
+    closes = _closes()
+    only_mondays = lambda d: d.weekday() == 0
+    sources = {("a", "a-v1"): (lambda start: (closes, "America/New_York"), only_mondays)}
+    out = bd.run(datetime(2023, 1, 1, tzinfo=UTC), 1, sources=sources)
+    every_day = sum(1 for d in closes if date(2022, 1, 2) <= d <= date(2022, 12, 31))
+    assert 0 < out[0]["n"] < every_day, (out[0]["n"], every_day)
