@@ -91,3 +91,40 @@ def test_the_cron_reads_the_journal_not_the_predictions_table(monkeypatch):
     monkeypatch.setattr(scan_mod, "SupabaseReviewStore", lambda supa: None)
     scan_mod.run_sports_for_cron(NOW, db)
     assert seen["ledger"].pairs_by_engine == {"sports_nfl": {"winner": [(0.7, True)]}}
+
+def test_the_ledger_asks_for_exactly_the_forecasters_the_journal_writes():
+    """The reader composes forecaster names from `SPORTS_ENGINES` and `kinds.KINDS`; the writer
+    composes them from its own copies in `journal.forecasters.sports`. Nothing else joins them, and
+    a name that does not exist reads back zero rows rather than raising -- so drift would publish
+    `settled_by_kind: {}`, which is the shape of "the read completed and there is nothing in it",
+    for a wire that is permanently broken. This test is the join."""
+    from tradehub.journal.forecasters.sports import build_sports
+    from tradehub.sports.journal_ledger import _forecaster
+    from tradehub.sports.kinds import KINDS
+    from tradehub.sports.scan import SPORTS_ENGINES
+
+    asked = {_forecaster(sport, kind) for sport in SPORTS_ENGINES for kind in KINDS}
+    written = {f.name for f in build_sports()
+               if f.version == FEED_VERSION and not f.name.startswith("kalshi_implied_")}
+
+    assert asked == written
+
+
+def test_a_read_failure_of_any_kind_is_not_measured_not_empty():
+    """The promise is `except Exception`, and the other failure test in this file raises
+    `RuntimeError` -- so narrowing that clause to `except RuntimeError` would leave every test here
+    green while a client passed by mistake (no `.table`, an `AttributeError`) or a malformed
+    probability (`TypeError`) escaped and took the whole scan down instead of falling back to the
+    predictor's published calibration."""
+    class NoTableAttribute:
+        table = None  # a client that is not a Supabase stub at all
+
+        def __getattr__(self, _name):
+            raise AttributeError("'NoTableAttribute' object has no attribute 'table'")
+
+    class MalformedRow:
+        def table(self, _name):
+            raise TypeError("a forecast row whose probability is not a number")
+
+    assert journal_settled_ledger(NoTableAttribute()) == scan_mod.HubLedger(read_failed=True)
+    assert journal_settled_ledger(MalformedRow()).read_failed is True
