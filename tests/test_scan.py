@@ -402,7 +402,6 @@ def test_scan_calibration_uses_smallest_forecast_lead_published_by_as_of():
 
 def test_scan_weather_calibration_fetches_only_the_last_90_days_once_per_city():
     city = scan.WEATHER_CITIES["KXHIGHNY"]
-    target = date(2026, 9, 25)
     now = NOW
     actuals = [
         Observation(
