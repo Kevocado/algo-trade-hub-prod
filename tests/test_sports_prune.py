@@ -76,7 +76,6 @@ def test_started_sports_rows_are_deleted_using_start_utc():
     two days AFTER kickoff — so the delete did not fire until long after the game started. The
     predicate is now the indexed game start.
     """
-    deleted = []
 
     class Q:
         def __init__(self, store):

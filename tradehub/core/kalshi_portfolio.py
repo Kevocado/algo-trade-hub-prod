@@ -265,7 +265,7 @@ if __name__ == "__main__":
         print(f"   Wins: {summary['wins']} | Losses: {summary['losses']}")
 
         if summary['positions']:
-            print(f"\n── Open Positions ──")
+            print("\n── Open Positions ──")
             for p in summary['positions'][:10]:
                 print(f"  {p.get('ticker', 'Unknown')}: qty={p.get('total_traded', 0)}, "
                       f"avg={p.get('average_price', 0)}¢")

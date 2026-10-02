@@ -174,7 +174,7 @@ def test_a_deadline_exhausted_sports_step_reports_and_does_not_raise(monkeypatch
 
 def test_sports_failure_is_logged_with_a_traceback(monkeypatch, caplog):
     import logging
-    calls = _base(monkeypatch)
+    _base(monkeypatch)   # the stubbing is the point; this test reads the log, not the call order
 
     def boom(now, supa, **kw):
         raise RuntimeError("kalshi down")
