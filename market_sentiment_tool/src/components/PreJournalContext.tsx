@@ -2,7 +2,17 @@ import { useEffect, useState } from "react";
 
 import { buildApiUrl } from "@/lib/api";
 import { brierPair } from "@/lib/models";
+import { forecasterLabel } from "@/lib/forecasterLabels";
 import type { ScoreboardResponse } from "@/lib/scoreboard";
+
+export interface ReplayRow {
+  forecaster: string;
+  forecaster_version: string;
+  date_from: string;
+  date_to: string;
+  n: number;
+  bss: number | null;
+}
 
 /**
  * Backtests run before the journal existed (v2 spec §2): context only, never counted. The caller labels
@@ -12,6 +22,15 @@ import type { ScoreboardResponse } from "@/lib/scoreboard";
 export function PreJournalContext() {
   const [data, setData] = useState<ScoreboardResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [replays, setReplays] = useState<ReplayRow[]>([]);
+
+  useEffect(() => {
+    // Optional context: a failure here must not hide the backtest table below.
+    fetch(buildApiUrl("/api/journal/backtests"))
+      .then((response) => response.json())
+      .then((payload) => setReplays(Array.isArray(payload?.backtests) ? payload.backtests : []))
+      .catch(() => setReplays([]));
+  }, []);
 
   useEffect(() => {
     fetch(buildApiUrl("/api/scoreboard"))
@@ -25,6 +44,28 @@ export function PreJournalContext() {
 
   return (
     <section aria-label="Pre-journal backtests">
+      {replays.length > 0 && (
+        <table className="mb-6 w-full text-xs text-slate-300" aria-label="Daily models replayed over history">
+          <thead className="text-slate-500">
+            <tr>
+              <th className="text-left font-normal">Replayed over history</th>
+              <th className="text-left font-normal">Window</th>
+              <th className="text-right font-normal">Sessions</th>
+              <th className="text-right font-normal" title="Positive means better than the usual up-rate">Skill</th>
+            </tr>
+          </thead>
+          <tbody>
+            {replays.map((r) => (
+              <tr key={`${r.forecaster}@${r.forecaster_version}`}>
+                <td>{forecasterLabel(r.forecaster, r.forecaster_version)}</td>
+                <td>{r.date_from} → {r.date_to}</td>
+                <td className="text-right">{r.n}</td>
+                <td className="text-right font-mono">{r.bss === null ? "—" : `${r.bss > 0 ? "+" : ""}${r.bss.toFixed(3)}`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
       {error ? (
         <p className="text-sm text-rose-300">Backtest history unavailable: {error}</p>
       ) : !data ? (
