@@ -334,6 +334,35 @@ Expected: both runs all-pass (reviewer baseline on the final stack: see the road
 
 ---
 
+## Amendment (2026-10-02): frozen-row derivation, and one allowed weight
+
+**This plan's code is no longer what shipped.** PR #73 implemented it as written; a review of that work
+found two defects in `MarketShrunk`, and Kevin ruled on both.
+
+**1. A cautious row is a pure function of the model's FROZEN row.** As written, `forecast()` called
+`self.inner.forecast(entry, now)` -- and `run_journal` also drove the inner for its own row. So the inner
+ran **twice per run, at two different instants**, and `raw_probability` in the cautious payload could
+disagree with the row an auditor would compare it against. `CpiForecaster` and `PayrollsForecaster` reset
+their cached history in `targets()`, and Kalshi quotes move, so this was reachable in production. The
+plan's own end-to-end test could not catch it: its stub returns the same value on both calls.
+
+**2. The weight is not free.** `f"{inner.version}+w{round(weight * 100)}"` put any two weights within 0.005
+of each other on the **same** scorecard key, while the docstring and this plan both promise "a different
+weight is a different forecaster ... a change starts a new scorecard instead of rewriting history". With
+`UNIQUE (forecaster, forecaster_version, target)` the second wrapper's freezes would be refused while both
+models' rows blended into **one** scorecard.
+
+**The rulings:** (1) `MarketShrunk` takes the store and, for a target, reads the inner forecaster's frozen
+row -- same name, same version, same target -- applying `m + w * (p - m)` to **those** numbers. No frozen
+row yet is a **gap** (`forecast()` returns `None`, retried next run), never a guess. `raw_probability`
+equals the inner's frozen probability exactly. The registry's existing order already runs the inner first,
+so the row exists. (2) Exactly one weight is allowed, `ALLOWED_WEIGHTS = (0.25,)`; any other raises
+`ValueError` at construction, and the version string is built from that constant rather than from
+`round(weight * 100)`.
+
+**What shipped instead** (PR #81): see `tradehub/journal/forecasters/shrunk.py`. Note the store is passed as
+a **callable**, because `registry.py` is imported by tests and tooling that hold no credentials.
+
 ## Self-Review
 
 - **The pure model is never replaced:** the end-to-end test freezes both on one target and scores both; the cautious one is its own scorecard.
