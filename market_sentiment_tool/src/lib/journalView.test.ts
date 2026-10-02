@@ -72,6 +72,14 @@ describe("view", () => {
     expect(rows.every((r) => r.market !== null)).toBe(true);
   });
 
+  it("counts one set of evidence when a model and its cautious copy share a target set", () => {
+    const rows = viewRows([
+      score({ forecaster: "cpi_nowcast", forecaster_version: "cpi-v1", baseline: "market", n_targets: 200, n_settled: 200 }),
+      score({ forecaster: "cpi_nowcast_cautious", forecaster_version: "cpi-v1+w25", baseline: "market", n_targets: 200, n_settled: 200 }),
+    ]);
+    expect(totals(rows)).toEqual({ forecasters: 2, frozen: 200, scored: 200, promoted: 0 });
+  });
+
   it("counts what the page headlines, and a monthly forecaster needs 50 not 200", () => {
     const rows = viewRows(scores);
     expect(totals(rows)).toEqual({ forecasters: 3, frozen: 12, scored: 4, promoted: 0 });
