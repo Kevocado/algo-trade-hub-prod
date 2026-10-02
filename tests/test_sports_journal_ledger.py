@@ -4,7 +4,8 @@ from journal_fakes import FakeJournalDB
 
 from tradehub.journal.forecasters.sports import FEED_VERSION
 from tradehub.sports import scan as scan_mod
-from tradehub.sports.journal_ledger import HUB_FEED_VERSION, journal_settled_ledger
+from tradehub.sports.journal_ledger import HUB_FEED_VERSION, HUB_LEDGER_KINDS, journal_settled_ledger
+from tradehub.sports.kinds import KINDS
 
 NOW = datetime(2026, 9, 27, 2, 0, tzinfo=UTC)
 
@@ -95,21 +96,72 @@ def test_the_cron_reads_the_journal_not_the_predictions_table(monkeypatch):
     assert seen["ledger"].pairs_by_engine == {"sports_nfl": {"winner": [(0.7, True)]}}
 
 def test_the_ledger_asks_for_exactly_the_forecasters_the_journal_writes():
-    """The reader composes forecaster names from `SPORTS_ENGINES` and `kinds.KINDS`; the writer
+    """The reader composes forecaster names from `SPORTS_ENGINES` and `HUB_LEDGER_KINDS`; the writer
     composes them from its own copies in `journal.forecasters.sports`. Nothing else joins them, and
     a name that does not exist reads back zero rows rather than raising -- so drift would publish
-    `settled_by_kind: {}`, which is the shape of "the read completed and there is nothing in it",
-    for a wire that is permanently broken. This test is the join."""
+    `settled_by_kind: {}`, which is the shape of "the read completed and there is nothing in it", for
+    a wire that is permanently broken. This test is the join.
+
+    It must pin what the LEDGER asks for, not what `KINDS` would compose: an earlier version built the
+    expected set from `kinds.KINDS` while the reader iterated the narrower `HUB_LEDGER_KINDS` (ruling
+    2026-10-02, winner only), so it pinned a SUPERSET and would have stayed green if the reader had
+    stopped asking for spread and total entirely.
+    """
     from tradehub.journal.forecasters.sports import build_sports
     from tradehub.sports.journal_ledger import _forecaster
-    from tradehub.sports.kinds import KINDS
     from tradehub.sports.scan import SPORTS_ENGINES
 
-    asked = {_forecaster(sport, kind) for sport in SPORTS_ENGINES for kind in KINDS}
+    asked = {_forecaster(sport, kind) for sport in SPORTS_ENGINES for kind in HUB_LEDGER_KINDS}
     written = {f.name for f in build_sports()
                if f.version == FEED_VERSION and not f.name.startswith("kalshi_implied_")}
 
-    assert asked == written
+    assert asked, "the ledger asks for nothing, so the test pins nothing"
+    assert asked <= written, f"the ledger asks for forecasters the journal never writes: {asked - written}"
+
+    # and the ruling: the ledger is narrower than the full kind set ON PURPOSE, because the settled
+    # spread/total rungs cluster near 0.5 (one_rung) and cannot describe the 0.9-priced rungs the
+    # bands would then be applied to. Widening this is deliberate and must be measured first.
+    assert HUB_LEDGER_KINDS == ("winner",)
+    assert set(HUB_LEDGER_KINDS) < set(KINDS), "if this is no longer a narrowing, update the ruling"
+
+    # the reader really does ask for exactly `asked`, not merely a subset of the written names
+    queried = []
+
+    class Recording:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def table(self, name):
+            self.inner.tables[name] = self.inner.tables.get(name, [])
+            return _Passthrough(self.inner)
+
+    class _Passthrough:
+        def __init__(self, db):
+            self.db = db
+
+        def select(self, *_a, **kw):
+            return self
+
+        def eq(self, k, v):
+            if k == "forecaster":
+                queried.append(v)
+            return self
+
+        def order(self, *_a):
+            return self
+
+        def limit(self, *_a):
+            return self
+
+        def range(self, *_a):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": []})()
+
+    db = _db()
+    journal_settled_ledger(Recording(db))
+    assert set(queried) == asked, (sorted(set(queried)), sorted(asked))
 
 
 def test_a_read_failure_of_any_kind_is_not_measured_not_empty():
@@ -119,10 +171,7 @@ def test_a_read_failure_of_any_kind_is_not_measured_not_empty():
     probability (`TypeError`) escaped and took the whole scan down instead of falling back to the
     predictor's published calibration."""
     class NoTableAttribute:
-        table = None  # a client that is not a Supabase stub at all
-
-        def __getattr__(self, _name):
-            raise AttributeError("'NoTableAttribute' object has no attribute 'table'")
+        table = None   # a client that is not a Supabase stub: calling `.table` raises TypeError
 
     class MalformedRow:
         def table(self, _name):
