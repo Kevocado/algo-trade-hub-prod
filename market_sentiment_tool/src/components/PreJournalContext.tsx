@@ -12,7 +12,24 @@ export interface ReplayRow {
   date_to: string;
   n: number;
   bss: number | null;
+  /** The model's own Brier and the climatology baseline it is measured against. Both are served by
+   *  /api/journal/backtests and were being thrown away. Printed together they make the size of the
+   *  difference visible without any statistics: skill +0.010 is 0.24533 against 0.24779, and a reader
+   *  can see at once that the gap is ~1% of the scale rather than a result. */
+  brier: number | null;
+  brier_baseline: number | null;
+  /** When this replay ran. A re-run replaces the numbers, so without this the reader cannot tell how
+   *  old they are. */
+  created_at?: string | null;
   by_year?: Record<string, { n: number; bss: number | null }>;
+}
+
+/** "0.2469 vs 0.2470" -- the effect in Brier points; "—" when either side was not recorded. */
+function replayBrierPair(row: ReplayRow): string {
+  if (row.brier === null || row.brier === undefined || row.brier_baseline === null || row.brier_baseline === undefined) {
+    return "—";
+  }
+  return `${row.brier.toFixed(4)} vs ${row.brier_baseline.toFixed(4)}`;
 }
 
 /**
@@ -51,13 +68,21 @@ export function PreJournalContext() {
   const [data, setData] = useState<ScoreboardResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [replays, setReplays] = useState<ReplayRow[]>([]);
+  const [replayError, setReplayError] = useState<string | null>(null);
+  const [replayLoaded, setReplayLoaded] = useState(false);
 
   useEffect(() => {
-    // Optional context: a failure here must not hide the backtest table below.
+    // Optional context: a failure here must not hide the backtest table below. But it must also SAY
+    // it failed -- an empty list is indistinguishable from "no replay has ever been run", which is a
+    // claim about the world rather than about this page.
     fetch(buildApiUrl("/api/journal/backtests"))
-      .then((response) => response.json())
-      .then((payload) => setReplays(Array.isArray(payload?.backtests) ? payload.backtests : []))
-      .catch(() => setReplays([]));
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload?.detail || `Request failed with status ${response.status}`);
+        setReplays(Array.isArray(payload?.backtests) ? payload.backtests : []);
+      })
+      .catch((e: Error) => setReplayError(e.message))
+      .finally(() => setReplayLoaded(true));
   }, []);
 
   useEffect(() => {
@@ -72,6 +97,12 @@ export function PreJournalContext() {
 
   return (
     <section aria-label="Pre-journal backtests">
+      {replayError && (
+        <p className="mb-4 text-sm text-rose-300">Daily-model replays unavailable: {replayError}</p>
+      )}
+      {!replayError && replayLoaded && replays.length === 0 && (
+        <p className="mb-4 text-sm text-slate-500">No daily-model replay has been run yet.</p>
+      )}
       {replays.length > 0 && (
         <table className="mb-6 w-full text-xs text-slate-300" aria-label="Daily models replayed over history">
           <thead className="text-slate-500">
@@ -80,15 +111,22 @@ export function PreJournalContext() {
               <th className="text-left font-normal">Window</th>
               <th className="text-right font-normal">Sessions</th>
               <th className="text-right font-normal" title="Positive means better than the usual up-rate, pooled across every year below">Skill</th>
+              <th className="text-right font-normal" title="Our Brier score against the climatology baseline, so the size of the difference is visible">Brier, ours vs usual</th>
             </tr>
           </thead>
           <tbody>
             {replays.map((r) => (
               <tr key={`${r.forecaster}@${r.forecaster_version}`}>
                 <td>{forecasterLabel(r.forecaster, r.forecaster_version)}</td>
-                <td>{r.date_from} → {r.date_to}</td>
+                <td>
+                  {r.date_from} → {r.date_to}
+                  {r.created_at ? (
+                    <div className="text-slate-500">replayed {r.created_at.slice(0, 10)}</div>
+                  ) : null}
+                </td>
                 <td className="text-right">{r.n}</td>
                 <td className="text-right font-mono">{r.bss === null ? "—" : signedSkill(r.bss)}</td>
+                <td className="text-right font-mono">{replayBrierPair(r)}</td>
               </tr>
             ))}
             {replays.map((r) => {
@@ -98,6 +136,7 @@ export function PreJournalContext() {
                 <tr key={`${r.forecaster}@${r.forecaster_version}-years`} className="text-slate-500">
                   <td colSpan={2} className="pl-4">By year</td>
                   <td className="text-right pl-4 font-mono">{split}</td>
+                  <td />
                   <td />
                 </tr>
               );
