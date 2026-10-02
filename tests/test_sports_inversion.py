@@ -1660,22 +1660,43 @@ def test_the_feeds_gap_survives_a_run_where_the_ledger_read_failed():
 def test_the_cron_path_actually_hands_the_ledger_to_the_scan(monkeypatch):
     """The last link in the chain, and the one most easily left disconnected: the read above proves
     the query, but nothing else would notice if the cron path stopped passing the result on, and the
-    feature would simply never switch over with every test still green."""
+    feature would simply never switch over with every test still green.
+
+    Plan 12 moved the cron from `scan._hub_settled_ledger` (every settled `predictions` row) to
+    `journal_ledger.journal_settled_ledger` (one frozen, Kalshi-settled forecast per game and kind), so
+    the ledger handed on is now the journal's. `tests/test_sports_journal_ledger.py` proves that reader;
+    this test still owns the wiring, so it watches the journal reader be called and its exact result be
+    passed through -- and that the old `predictions` reader is not called at all."""
+    import tradehub.sports.journal_ledger as jl
+
     rows = [_row("sports_nfl", 0.28, "yes", "winner"), _row("sports_nfl", 0.28, "no", "winner")]
     monkeypatch.setattr(scan_mod, "SportsKalshi", lambda **_kw: "kalshi")
     monkeypatch.setattr(scan_mod, "SupabaseReviewStore", lambda _supa: "store")
     monkeypatch.setattr(scan_mod, "OpenRouterReviewer", lambda *_a, **_kw: None)
     monkeypatch.setattr(scan_mod, "unrecorded", lambda _supa, rows: rows)
     seen: dict = {}
+    journal = _hub({"sports_nfl": {"winner": [(0.28, True), (0.28, False)]}})
+    called: list = []
+
+    def fake_journal_ledger(supa):
+        called.append(supa)
+        return journal
+
+    def fail_if_called(_supa):
+        raise AssertionError("the cron still reads _hub_settled_ledger; plan 12 moved it to the journal")
+
+    monkeypatch.setattr(jl, "journal_settled_ledger", fake_journal_ledger)
+    monkeypatch.setattr(scan_mod, "_hub_settled_ledger", fail_if_called)
 
     def fake_scan(_now, _kalshi, **kwargs):
         seen.update(kwargs)
         return scan_mod.SportsRun([], [], {}, {})
 
     monkeypatch.setattr(scan_mod, "run_sports_scan", fake_scan)
-    scan_mod.run_sports_for_cron(NOW, _Supa(rows))
+    supa = _Supa(rows)
+    scan_mod.run_sports_for_cron(NOW, supa)
 
-    assert seen["hub_ledger"] == _hub({"sports_nfl": {"winner": [(0.28, True), (0.28, False)]}})
+    assert called == [supa] and seen["hub_ledger"] == journal
 
 
 # ── the diagnostics a reader actually receives ────────────────────────────────────────────────

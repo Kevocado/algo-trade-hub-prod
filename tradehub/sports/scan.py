@@ -996,6 +996,8 @@ def _hub_settled_ledger(supa) -> HubLedger:
 
 
 def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -> SportsRun:
+    from tradehub.sports.journal_ledger import journal_settled_ledger  # here: it imports this module
+
     cfg = load_reviewer_config()
     key = os.getenv("OPENROUTER_API_KEY")
     reviewer = OpenRouterReviewer(key, cfg.model, cfg.timeout_seconds, deadline=deadline) if key else None
@@ -1003,7 +1005,7 @@ def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -
     # series and must not be able to overrun the hourly timer and overlap the next run.
     run = run_sports_scan(now, SportsKalshi(deadline=deadline), store=SupabaseReviewStore(supa), reviewer=reviewer,
                           budget=cfg.daily_budget, deadline=deadline,
-                          hub_ledger=_hub_settled_ledger(supa))
+                          hub_ledger=journal_settled_ledger(supa))
     return SportsRun(unrecorded(supa, run.predictions), run.edges, run.reports, run.per_sport)
 
 
