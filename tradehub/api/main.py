@@ -30,7 +30,7 @@ from tradehub.api.dependencies import get_supabase
 from tradehub.api.frontend import mount_frontend
 from tradehub.engine_catalogue import engine_catalogue
 from tradehub.engine_health import engine_health
-from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses
+from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses, table_missing
 from tradehub.journal.legacy import journal_scores, merge_track_record
 from tradehub.journal.scoring import headline as journal_headline
 from tradehub.quarantine import QUARANTINE_MARK, QUARANTINE_NOTE, quarantine_report
@@ -455,6 +455,31 @@ def get_journal_feed(forecaster: str, version: str, limit: int = 100, offset: in
         "gate_status": (score or {}).get("gate_status", DEFAULT_GATE_STATUS),
         "provisional": not bool((score or {}).get("calibration_ready")),
     }
+
+
+@app.get("/api/journal/backtests", tags=["Journal"])
+def get_journal_backtests(supabase=Depends(get_supabase)):
+    """The latest walk-forward replay of each daily model: context, never counted toward a gate.
+
+    A missing table (the migration is not applied yet) is an empty answer, the same rule the journal's
+    other reads follow, because "no replay yet" is the true statement.
+    """
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase is not configured")
+    try:
+        rows = _fetch_all(supabase, "journal_backtests", lambda q: q.select("*"), order=("id",))
+    except Exception as exc:  # noqa: BLE001 - classified below
+        if table_missing(exc, "journal_backtests"):
+            rows = []
+        else:
+            raise _table_fault("journal_backtests", exc) from exc
+    latest: dict[tuple[str, str], dict] = {}
+    for row in rows:  # ascending id, so the last row per pair is the newest
+        latest[(row["forecaster"], row["forecaster_version"])] = row
+    keep = ("forecaster", "forecaster_version", "date_from", "date_to", "n", "brier", "brier_baseline", "bss",
+            "by_year", "created_at")
+    return {"as_of": datetime.now(timezone.utc).isoformat(), "counted": False,
+            "backtests": [{k: r.get(k) for k in keep} for r in latest.values()]}
 
 
 # ════════════════════════════════════════════════════════════════════════════
