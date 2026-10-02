@@ -26,7 +26,7 @@ from tradehub.sports.deadline import (
 )
 from tradehub.sports.feed import Feed, FeedUnavailable, fetch_feed
 from tradehub.sports.hub_calibration import settled_buckets
-from tradehub.sports.kalshi import SportsKalshi, SportsMarket
+from tradehub.sports.kalshi import SportsKalshi, SportsMarket, team_code
 from tradehub.sports.kinds import KINDS
 from tradehub.sports.mapping import MatchedGame, load_aliases, match_games
 from tradehub.sports.pricing import price_market
@@ -122,6 +122,14 @@ class SportScan:
     # reject carrying `starts_too_soon` is a contradiction: the reject says a near-bound game was
     # priced, and the counter says no game was dropped at either end. Two names, one fact each.
     too_soon: int = 0
+
+
+def _orientation(sm: SportsMarket, mg: MatchedGame) -> dict[str, Any]:
+    """Which way YES points: the strike, the team the ticker names, and both teams. Read defensively so a
+    market object without a suffix or strike (a hand-built one) records nulls instead of failing the scan."""
+    return {"strike": getattr(sm.market, "floor_strike", None),
+            "team": team_code(sm) if hasattr(sm, "suffix") else None,
+            "home": getattr(mg, "home_code", None), "away": getattr(mg, "away_code", None)}
 
 
 def _fact_pack(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s: EdgeSuggestion,
@@ -386,7 +394,10 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
                                      # journal can net an edge of fees and spread (spec §10) and keep the
                                      # version out of its own key. Additive: nothing reads them today.
                                      "yes_bid": q.yes_bid, "yes_ask": q.yes_ask,
-                                     "model_version": mg.game.model_version},
+                                     "model_version": mg.game.model_version,
+                                     # Which way YES points, so a spread or total consumer can never
+                                     # flip a sign: the strike, the team the ticker names, and both teams.
+                                     **_orientation(sm, mg)},
                     ))
                 s = evaluate_edge(sm.market.ticker, prob, q, min_edge_pct=cfg.edge.min_edge_pct,
                                   prefer_maker=cfg.edge.prefer_maker)
