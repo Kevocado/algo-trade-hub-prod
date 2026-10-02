@@ -129,29 +129,6 @@ def test_the_prediction_carries_no_gate_status_and_could_not_read_as_promoted():
     assert not [e for e in _scan()[1] if e.get("gate_status") == "PROMOTED"]
 
 
-def test_the_display_row_fails_closed_for_a_cpi_row():
-    """What the display endpoint actually publishes for this row.
-
-    This replaced an assertion on the SCAN output -- `row.get("gate_status", "SHADOW") == "SHADOW"`
-    -- which could not fail: the default *is* the asserted value, so it said nothing at all. The real
-    property lives on the other side of the endpoint, where the constants are set unconditionally,
-    so that is what is asserted here. The claim it protects is unchanged: a CPI row cannot reach a
-    reader as promoted.
-
-    Note the endpoint does NOT take the `_attach_gate_status` fallback this test used to describe.
-    CPI's rows carry no `gate_status` at all (see the test above), so the display endpoint publishes
-    `CPI_GATE_STATUS` outright and pairs it with `gate_checked: False` -- because "SHADOW" on its own
-    is the gate's own vocabulary and reads as a verdict that was reached."""
-    from tradehub.api.main import CPI_GATE_STATUS, _cpi_display_row
-
-    out = _cpi_display_row(_scan()[0][0])
-
-    assert out["gate_status"] == CPI_GATE_STATUS == "SHADOW"
-    # The stronger half, and the one a reader actually sees: no gate was consulted.
-    assert out["gate_checked"] is False
-    assert out["gate_status"] != "PROMOTED"
-
-
 def test_the_prediction_records_no_edge_figure():
     """A prediction row must not carry an edge. If one ever did, a reader could compute one, and
     the display view would have an edge number to show on an engine that has none."""

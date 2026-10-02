@@ -98,7 +98,7 @@ class _Query:
             else:
                 rows = [r for r in rows if r.get(key) == value]
         # ISO-8601 with a uniform offset, so a lexicographic comparison agrees with a chronological
-        # one -- the same simplification tests/test_cpi_display.py's own fake makes.
+        # one -- the same simplification the CPI display's fake used to make.
         for key, value in self.gt_bounds.items():
             rows = [r for r in rows if str(r.get(key) or "") > str(value)]
         if self.row_limit is not None:

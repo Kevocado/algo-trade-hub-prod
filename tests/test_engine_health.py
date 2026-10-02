@@ -561,7 +561,7 @@ class TestEngineHealthEndpoint:
         this endpoint would answer with the app shell.
 
         The property itself is pinned for EVERY route by
-        `tests/test_cpi_display.py::test_every_api_route_is_registered_before_the_spa_catch_all`,
+        `tests/test_api_route_order.py::test_every_api_route_is_registered_before_the_spa_catch_all`,
         which drives a temp dist so the mount happens whether or not this machine has ever run
         `npm run build`. Asserting the order here as well would be a second copy of one rule that
         only runs in some environments -- and the version that ran in the fewest environments is
