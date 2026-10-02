@@ -19,7 +19,7 @@ reads and publishes.
 
 **Unrecognised kinds are reported, not dropped.** Both places that can meet a kind this build does
 not know -- the payload's calibration keys (`parse_feed`) and a settled row's `raw_payload.kind`
-(`_hub_settled_ledger`) -- count what they cannot use, because "nothing of that kind settled" and
+(`scan._hub_settled_ledger`) -- count what they cannot use, because "nothing of that kind settled" and
 "that kind is one this build cannot read" look identical from every downstream number and are not
 the same fact: the first is an absence of evidence, the second is a gap in the build. Both read as a
 band with `n: 0`, so the distinction has to be carried rather than inferred.
@@ -59,17 +59,21 @@ from typing import Iterable
 
 # The kinds the predictors publish, and therefore the kinds the hub has to be able to answer for.
 #
-# `parse_feed` reads exactly these off the payload, `_hub_settled_ledger` keeps exactly these out of
-# the settled rows, `settled_buckets` publishes exactly these, and `check_candidate` looks the
-# calibration up by the kind it is filtering -- so publishing fewer than all of them does not narrow
-# the record, it makes every spread and total edge `calibration_insufficient` the day the inversion
-# fires, and dropping a settled row of a kind that is NOT here does not narrow it either, it deletes
-# evidence (see the module docstring).
+# `parse_feed` reads exactly these off the payload, `settled_buckets` publishes exactly these, and
+# `check_candidate` looks the calibration up by the kind it is filtering -- so a kind MISSING from here
+# does not narrow the record, it makes every edge of that kind `calibration_insufficient` the day the
+# inversion fires.
 #
-# This was `("winner",)` on a superseded ruling whose premise was "kind cannot be read off a settled
-# row". The premise is false: `sports/scan.py` writes `"kind": kind` into the sports `predictions`
-# row's own `raw_payload`, so the kind is a fact the hub itself recorded, and the hub's scan is the
-# only thing that can have written it. A kind the hub cannot read is a kind the hub never wrote.
+# This was once `("winner",)` on a ruling whose premise was "kind cannot be read off a settled row".
+# That premise is false: the hub's scan writes `"kind": kind` into the row's own `raw_payload`, so the
+# kind is a fact the hub itself recorded.
+#
+# **There is a second, unrelated `("winner",)` and it is NOT this one.** `journal_ledger.py`'s
+# `HUB_LEDGER_KINDS` narrows what the hub's own settled RECORD holds, for a reason that has nothing to
+# do with readability: `one_rung` freezes only the rung priced nearest a coin flip, so settled spread and
+# total probabilities cluster near 0.5 and bands cut from them cannot describe the 0.9-priced rungs they
+# would be applied to. The kinds above are still fully supported; the ledger is deliberately behind.
+# Read `journal_ledger.py` before touching `HUB_LEDGER_KINDS`, and measure before widening it.
 KINDS: tuple[str, ...] = ("winner", "spread", "total")
 
 
