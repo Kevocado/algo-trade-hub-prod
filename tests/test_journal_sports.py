@@ -116,4 +116,4 @@ def test_the_registry_runs_both_sports_with_unique_keys():
     for expected in (("sports_nfl", "feed-v1"), ("kalshi_implied_sports_nfl", "v1"),
                      ("sports_cfb", "feed-v1"), ("kalshi_implied_sports_cfb", "v1")):
         assert expected in keys
-    assert len(set(keys)) == len(keys) and len(build_sports()) == 4
+    assert len(set(keys)) == len(keys) and len(build_sports()) == 12

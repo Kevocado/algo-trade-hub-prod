@@ -85,6 +85,10 @@ export const MARKET_PAIR: Record<string, string> = {
   labor_nowcast: "kalshi_implied_labor",
   sports_nfl: "kalshi_implied_sports_nfl",
   sports_cfb: "kalshi_implied_sports_cfb",
+  sports_nfl_spread: "kalshi_implied_sports_nfl_spread",
+  sports_nfl_total: "kalshi_implied_sports_nfl_total",
+  sports_cfb_spread: "kalshi_implied_sports_cfb_spread",
+  sports_cfb_total: "kalshi_implied_sports_cfb_total",
 };
 
 /** Forecasters the spec labels experimental (ruling Q5). */
