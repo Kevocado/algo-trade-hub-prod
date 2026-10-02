@@ -6,44 +6,70 @@ model can lose to the market by at most that fraction of the disagreement, and i
 model really knows something. It cannot create skill. It tells us whether any exists, and it stops the
 overconfidence from costing 4x the market's error.
 
-The weight is set here, once, before any result is looked at, and never tuned on journal results. A
-different weight is a different forecaster: it is part of the version string (`v1+w25`), so a change
-starts a new scorecard instead of rewriting history.
+The weight is set here, once, before any result is looked at, and never tuned on journal results.
 
-The wrapper is its own forecaster beside the pure model, which keeps scoring exactly as it was. It adds no
-settlement of its own: it settles on whatever the wrapped forecaster settles on. With no market price there
-is nothing to shrink toward, so that is a gap, never a guess.
+A cautious row is a PURE FUNCTION of the pure model's FROZEN row: it reads that row out of the store and
+applies `m + w * (p - m)` to those numbers. It does not re-run the model. That is what makes the copy
+auditable -- `raw_probability` is exactly the probability the model's own row froze, so anyone can
+recompute the cautious row from two stored numbers -- and it is what stops the copy from being evidence
+about a different instant than the model it is grading. The runner runs the model before the wrapper
+(registry order), so the row exists; when it does not, the cautious target is a gap, retried next run,
+never a guess. A missing market price is a gap for the same reason.
+
+`store` is a CALLABLE returning the journal client, not the client itself: the registry is imported by
+tests and by tooling that hold no credentials, and building a client there would raise on import.
+
+There is no settlement of its own: it settles on whatever the wrapped forecaster settles on.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 from tradehub.journal.contract import CalendarEntry, Forecast, Forecaster, Settlement
+from tradehub.journal.store import fetch_forecasts
 
 SHRINK_WEIGHT = 0.25
 SUFFIX = "_cautious"
 
+# Exactly one weight, by ruling (2026-10-02). It is not a tunable: the weight is part of the version
+# string, and `round(weight * 100)` put any two weights within 0.005 of each other on the SAME key --
+# and with UNIQUE (forecaster, forecaster_version, target) that meant the second wrapper's freezes were
+# refused while both models' rows blended into one scorecard. Adding a weight here is a deliberate act
+# that starts a new scorecard, not a value someone passes at a call site.
+ALLOWED_WEIGHTS = (SHRINK_WEIGHT,)
+
 
 class MarketShrunk:
-    def __init__(self, inner: Forecaster, weight: float = SHRINK_WEIGHT):
-        if not 0.0 < weight < 1.0:
-            raise ValueError("weight must be strictly between 0 and 1")
-        self.inner, self.weight = inner, weight
+    def __init__(self, inner: Forecaster, store: Callable[[], Any], weight: float = SHRINK_WEIGHT):
+        if weight not in ALLOWED_WEIGHTS:
+            raise ValueError(f"weight must be one of {ALLOWED_WEIGHTS}, not {weight!r}: the weight names a "
+                             "scorecard, so it cannot be chosen freely")
+        self.inner, self.store, self.weight = inner, store, weight
         self.name = f"{inner.name}{SUFFIX}"
-        self.version = f"{inner.version}+w{round(weight * 100)}"
+        self.version = f"{inner.version}+w{round(ALLOWED_WEIGHTS[0] * 100)}"
         self.cadence = inner.cadence
 
     def targets(self, now: datetime) -> list[CalendarEntry]:
         return [e for e in self.inner.targets(now) if e.market_linked]
 
+    def _frozen(self, target: str) -> dict | None:
+        """The inner forecaster's own frozen row for this target, or None while there is none."""
+        rows = {r["target"]: r for r in fetch_forecasts(self.store(), self.inner.name, self.inner.version)}
+        return rows.get(target)
+
     def forecast(self, entry: CalendarEntry, now: datetime) -> Forecast | None:
-        raw = self.inner.forecast(entry, now)
-        if raw is None or raw.market_prob is None:
-            return None
-        probability = raw.market_prob + self.weight * (raw.probability - raw.market_prob)
-        return Forecast(self.name, self.version, entry.target, probability, market_prob=raw.market_prob,
-                        payload={**raw.payload, "raw_probability": raw.probability, "weight": self.weight})
+        row = self._frozen(entry.target)
+        if row is None:
+            return None   # the model has not frozen yet: a gap, retried next run, never a guess
+        market_prob = row.get("market_prob")
+        if market_prob is None:
+            return None   # nothing to shrink toward: a gap, same rule
+        probability = float(market_prob) + self.weight * (float(row["probability"]) - float(market_prob))
+        return Forecast(self.name, self.version, entry.target, probability, market_prob=float(market_prob),
+                        payload={"raw_probability": float(row["probability"]), "weight": self.weight})
 
     def settle(self, target: str, now: datetime) -> Settlement | None:
         return self.inner.settle(target, now)
