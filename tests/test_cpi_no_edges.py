@@ -286,23 +286,18 @@ def test_the_cpi_delete_is_run_on_every_scan_which_is_what_bounds_the_retention_
 
 # ── the end-to-end claim: what the scan actually wrote ───────────────────────────────────────────
 
-def test_a_full_scan_writes_the_prediction_and_upserts_no_cpi_edge(monkeypatch, capsys):
+def test_a_full_scan_writes_no_cpi_prediction_row_and_upserts_no_cpi_edge(monkeypatch, capsys):
     """The end-to-end version, and the one that would catch an edge built by any route.
 
     Drives `scan.main()` with the REAL `scan_cpi` (not a stub) and a recording Supabase stub, then
-    asserts on the rows that reached the writer. A second edge route -- a new `edges.append`, a
-    different engine name, a row assembled in `main()` -- lands in the same recording and fails
-    here, which a test of `scan_cpi`'s return value alone would not catch.
+    asserts on the rows that reached the writer. CPI is a journal engine (plan 14): the journal owns its
+    forecasts, so no `predictions` row is written for it, and it still never reaches `kalshi_edges`.
     """
     client, upserted, pruned = _run_main(monkeypatch)
 
-    cpi_predictions = [r for r in client.inserted if r.get("engine") == "cpi_nowcast"]
-    assert cpi_predictions, f"the CPI prediction must still be written; got {client.inserted}"
-    row = cpi_predictions[0]
-    assert 0.0 <= row["our_prob"] <= 1.0
-    assert 0.0 <= row["market_prob"] <= 1.0
-    assert row["raw_payload"]["nowcast"] is not None
-    assert row["raw_payload"]["sigma"] > 0
+    assert not [r for r in client.inserted if r.get("engine") == "cpi_nowcast"], (
+        f"CPI is a journal engine and must not write predictions; got {client.inserted}"
+    )
 
     assert not [r for r in upserted if r.get("engine") == "cpi_nowcast"], (
         f"CPI must not reach kalshi_edges; got {upserted}"
@@ -334,7 +329,7 @@ def test_a_full_scan_does_not_prune_the_cpi_rows_the_absent_writer_leaves_behind
     assert not prune_deletes, (
         f"the absent writer deleted the historical CPI edges through main(): {prune_deletes}"
     )
-    assert client.inserted, "and the measurement was still written"
+    assert not [r for r in client.inserted if r.get("engine") == "cpi_nowcast"], "CPI writes no predictions now"
 
 
 # ── stubs ───────────────────────────────────────────────────────────────────────────────────────
