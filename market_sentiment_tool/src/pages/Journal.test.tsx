@@ -40,9 +40,13 @@ const feed: JournalFeed = {
 const scoreboard = { as_of: "x", runs_read: 1, engines: 1, rows: [{ engine: "cpi_nowcast", engine_version: "cpi-v1", mode: "taker",
   date_from: "2025-01-01T00:00:00+00:00", date_to: "2026-06-30T00:00:00+00:00", n_decisions: 412, brier_ours: 0.0712, brier_market: 0.0683 }] };
 
+const backtests = { as_of: "x", counted: false, backtests: [{ forecaster: "gold_direction", forecaster_version: "gold-wf-v1",
+  date_from: "2023-10-01", date_to: "2026-09-30", n: 752, bss: 0.0006, brier: 0.2468, brier_baseline: 0.247, by_year: {} }] };
+
 function stubFetch() {
   const fn = vi.fn((url: string) => {
-    const body = url.includes("/api/journal/feed") ? feed : url.includes("/api/scoreboard") ? scoreboard : journal;
+    const body = url.includes("/api/journal/feed") ? feed : url.includes("/api/scoreboard") ? scoreboard
+      : url.includes("/api/journal/backtests") ? backtests : journal;
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
   });
   vi.stubGlobal("fetch", fn);
@@ -93,6 +97,10 @@ describe("Journal", () => {
     details.open = true;
     fireEvent(details, new Event("toggle"));
     expect(await screen.findByText("cpi_nowcast · cpi-v1 · taker")).toBeInTheDocument();
+    const replay = await screen.findByLabelText("Daily models replayed over history");
+    expect(within(replay).getByText("Gold tomorrow")).toBeInTheDocument();
+    expect(within(replay).getByText("752")).toBeInTheDocument();
+    expect(within(replay).getByText("+0.001")).toBeInTheDocument();
   });
 
   it("stays inside its word budget", async () => {
