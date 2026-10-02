@@ -73,11 +73,18 @@ export interface Totals {
   promoted: number;
 }
 
+/** Plan 15: a market-anchored copy, scored on its model's exact target set. */
+const CAUTIOUS_SUFFIX = "_cautious";
+
 export function totals(rows: ViewRow[]): Totals {
+  // A cautious copy is a forecaster, so it appears in the list and in `forecasters` -- but it shares
+  // its model's targets, so counting both would report 200 locked-in forecasts as 400. The hero
+  // numbers count evidence, and this is the same row twice.
+  const evidence = (r: ViewRow) => !r.key.replace(/@.*$/, "").endsWith(CAUTIOUS_SUFFIX);
   return {
     forecasters: rows.length,
-    frozen: rows.reduce((n, r) => n + r.frozen, 0),
-    scored: rows.reduce((n, r) => n + r.scored, 0),
+    frozen: rows.filter(evidence).reduce((n, r) => n + r.frozen, 0),
+    scored: rows.filter(evidence).reduce((n, r) => n + r.scored, 0),
     promoted: rows.filter((r) => r.status === "promoted").length,
   };
 }

@@ -75,3 +75,21 @@ def test_a_multi_column_order_is_chained_one_column_per_call():
                                     {"forecaster": "a", "forecaster_version": "1"}]
     rows = select_all(db, "journal_scores", lambda q: q, ("forecaster", "forecaster_version"))
     assert [(r["forecaster"], r["forecaster_version"]) for r in rows] == [("a", "1"), ("a", "2"), ("b", "1")]
+
+
+def test_a_cautious_copy_is_not_counted_as_a_second_set_of_evidence_in_the_headline():
+    """Plan 15 registers `<model>_cautious` beside each market-linked model, scored on the model's
+    EXACT target set. Summing `n_settled` over every card therefore counted each event twice: 200
+    settled forecasts displayed as 400, in the one number the journal headlines. This asserts the
+    sum runs over each target once -- the cautious copy still counts as a forecaster, because it is
+    one."""
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_scores"] += [
+        {"forecaster": "cpi_nowcast", "forecaster_version": "cpi-v1", "gate_status": "PROMOTED",
+         "n_settled": 200, "calibration_ready": True},
+        {"forecaster": "cpi_nowcast_cautious", "forecaster_version": "cpi-v1+w25", "gate_status": "PROMOTED",
+         "n_settled": 200, "calibration_ready": True},
+    ]
+    body = _client(db).get("/api/journal").json()
+    assert body["headline"]["settled_calibrated"] == 200, body["headline"]
+    assert body["headline"]["forecasters"] == 2

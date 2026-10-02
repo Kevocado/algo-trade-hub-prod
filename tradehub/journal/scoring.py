@@ -153,12 +153,23 @@ def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
     }
 
 
+CAUTIOUS_SUFFIX = "_cautious"
+
+
 def headline(cards: list[dict[str, Any]]) -> dict[str, int]:
-    """The journal's hero numbers (spec §10 display gate): headline counts cover calibrated forecasters only."""
+    """The journal's hero numbers (spec §10 display gate): headline counts cover calibrated forecasters only.
+
+    `settled_calibrated` counts settled TARGETS, not settled cards. A `_cautious` copy (plan 15) is
+    scored on its model's exact target set, so summing over both would count every event twice and
+    report 200 settled forecasts as 400 -- the same double-counting a spread ladder caused before
+    plan 12. Cautious copies are still forecasters and still counted in `forecasters`, `calibrated`
+    and `promoted`; they are just not a second set of evidence.
+    """
     calibrated = [c for c in cards if c.get("calibration_ready")]
     return {
         "forecasters": len(cards),
         "calibrated": len(calibrated),
-        "settled_calibrated": sum(int(c.get("n_settled") or 0) for c in calibrated),
+        "settled_calibrated": sum(int(c.get("n_settled") or 0) for c in calibrated
+                                  if not str(c.get("forecaster", "")).endswith(CAUTIOUS_SUFFIX)),
         "promoted": sum(1 for c in cards if c.get("gate_status") == "PROMOTED"),
     }
