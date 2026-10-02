@@ -62,6 +62,11 @@ from tradehub.sports.scan import (
 )
 
 
+# Engines whose forecasts live in the prediction journal. Their `predictions` rows are no longer written:
+# the journal freezes, settles and scores them, and a second per-scan copy is a second record to disagree.
+# Their edges, cleanup and gate lookups are unchanged. Weather, gas and sports still write `predictions`.
+JOURNAL_ONLY_ENGINES = frozenset({"cpi_nowcast", "labor_nowcast"})
+
 log = logging.getLogger(__name__)
 SCAN_DEADLINE_SECONDS = 15 * 60
 CPI_SCAN_HOURS_ET = (8, 12, 16)  # 08:05 ET is the last run before the 08:25 ET release-day close
@@ -707,8 +712,11 @@ def main(
                 edge_writes[name] = "skipped"
                 continue
             try:
-                record_predictions(client, predictions)
-                prediction_writes[name] = "ok"
+                if name in JOURNAL_ONLY_ENGINES:
+                    prediction_writes[name] = "journal"
+                else:
+                    record_predictions(client, predictions)
+                    prediction_writes[name] = "ok"
             except Exception as exc:
                 message = f"{name}.predictions: {type(exc).__name__}: {exc}"
                 failures.append(message)
@@ -791,13 +799,7 @@ def main(
                             log.exception("scan labor gate-status lookup failed")
                             labor_statuses = {}
                         apply_gate_statuses(labor_edges, labor_statuses)
-                        try:
-                            record_predictions(client, labor_predictions)
-                            writes["predictions"]["labor_nowcast"] = "ok"
-                        except Exception as exc:
-                            failures.append(f"labor_nowcast.predictions: {type(exc).__name__}: {exc}")
-                            writes["predictions"]["labor_nowcast"] = "failed"
-                            log.exception("scan labor prediction write failed")
+                        writes["predictions"]["labor_nowcast"] = "journal"   # see JOURNAL_ONLY_ENGINES
                         try:
                             upsert_opportunities(labor_edges)
                             writes["edges"]["labor_nowcast"] = "ok"
