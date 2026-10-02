@@ -47,11 +47,13 @@ const backtests = { as_of: "x", counted: false, backtests: [
   { forecaster: "gold_direction", forecaster_version: "gold-wf-v1", date_from: "2023-10-02",
     date_to: "2026-10-01", n: 753, bss: 0.000482, brier: 0.246852, brier_baseline: 0.246971,
     by_year: { "2023": { n: 63, bss: 0.003971 }, "2024": { n: 252, bss: 0.003995 },
-               "2025": { n: 250, bss: 0.010636 }, "2026": { n: 188, bss: -0.018619 } } },
+               "2025": { n: 250, bss: 0.010636 }, "2026": { n: 188, bss: -0.018619 } },
+    created_at: "2026-10-02T15:00:56.328768+00:00" },
   { forecaster: "eurusd_direction", forecaster_version: "eurusd-wf-v1", date_from: "2023-10-02",
     date_to: "2026-10-01", n: 766, bss: 0.000557, brier: 0.249885, brier_baseline: 0.250024,
     by_year: { "2023": { n: 63, bss: -0.008608 }, "2024": { n: 256, bss: -0.002479 },
-               "2025": { n: 255, bss: -0.004821 }, "2026": { n: 192, bss: 0.014861 } } },
+               "2025": { n: 255, bss: -0.004821 }, "2026": { n: 192, bss: 0.014861 } },
+    created_at: "2026-10-02T15:00:56.328768+00:00" },
 ] };
 
 function stubFetch() {
@@ -167,3 +169,63 @@ describe("Journal", () => {
     expect(await screen.findByText(/apply 20260428000014/)).toBeInTheDocument();
   });
 });
+
+  it("says so when the replay cannot be read, instead of showing nothing", async () => {
+    // `.catch(() => setReplays([]))` plus `length > 0` made a 500, a network error and an unapplied
+    // migration all render exactly like "no replays have ever run". The reader cannot tell absence of
+    // evidence from absence of the table.
+    // The scoreboard body must still resolve or the component throws on `data.rows` and the section
+    // never mounts -- which is how a missing replay table can look like an unrelated crash.
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (String(url).includes("/api/journal/backtests")) {
+        return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({ detail: "journal_backtests is missing" }) });
+      }
+      if (String(url).includes("/api/scoreboard")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(scoreboard) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(journal) });
+    }));
+    vi.stubGlobal("fetch", vi.fn((url: string) => {
+      if (String(url).includes("/api/journal/backtests")) {
+        return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({ detail: "journal_backtests is missing" }) });
+      }
+      if (String(url).includes("/api/scoreboard")) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(scoreboard) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(journal) });
+    }));
+    render(<Journal />);
+    await screen.findByLabelText("Totals");
+    const summary = screen.getByText("Past backtests (not counted)");
+    const details = summary.closest("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    expect(await screen.findByText(/Daily-model replays unavailable: journal_backtests is missing/)).toBeInTheDocument();
+  });
+
+  it("shows the effect size in Brier points, so the skill number can be judged", async () => {
+    // Skill +0.010 is 1.1 standard errors over 775 sessions -- a coin flip that reads as a result.
+    // The Brier pair beside it makes the size of the difference visible without any statistics:
+    // 0.24533 against a 0.24779 climatology baseline.
+    stubFetch();
+    render(<Journal />);
+    await screen.findByLabelText("Totals");
+    const summary = screen.getByText("Past backtests (not counted)");
+    const details = summary.closest("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    const replay = await screen.findByLabelText("Daily models replayed over history");
+    expect(replay.textContent).toContain("0.2469 vs 0.2470");   // gold, rounded Brier pair
+  });
+
+  it("dates the replays, because a re-run silently replaces the numbers", async () => {
+    stubFetch();
+    render(<Journal />);
+    await screen.findByLabelText("Totals");
+    const summary = screen.getByText("Past backtests (not counted)");
+    const details = summary.closest("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    const replay = await screen.findByLabelText("Daily models replayed over history");
+    expect(replay.textContent).toContain("replayed");
+  });
