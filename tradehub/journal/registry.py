@@ -15,6 +15,7 @@ from tradehub.journal.forecasters.fomc import FOMC_SERIES, FomcMapped, is_hold_m
 from tradehub.journal.forecasters.housing import HousingForecaster
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
 from tradehub.journal.forecasters.sentiment import SentimentMeter
+from tradehub.journal.forecasters.shrunk import MarketShrunk
 from tradehub.journal.forecasters.sports import build_sports
 from tradehub.journal.forecasters.spy_quant import SpyQuant
 from tradehub.journal.kalshi_linked import KalshiImplied
@@ -47,3 +48,9 @@ FORECASTERS: list[Forecaster] = [
     # wave 3 (spec §8): NFL and CFB feed consumers, each beside its Kalshi-implied baseline
     *build_sports(),
 ]
+
+# plan 15: the market-linked models again, each pulled toward the Kalshi price (see forecasters/shrunk.py).
+# Their own scorecards, beside the pure models', which are untouched.
+_SHRINKABLE = {"cpi_nowcast", "fomc_mapped", "labor_nowcast"}
+FORECASTERS += [MarketShrunk(f) for f in list(FORECASTERS)
+                if f.name in _SHRINKABLE or f.name.startswith("sports_")]

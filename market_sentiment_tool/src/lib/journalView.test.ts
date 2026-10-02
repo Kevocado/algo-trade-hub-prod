@@ -61,6 +61,17 @@ describe("view", () => {
     expect(rows.find((r) => r.label === "NFL game totals")?.market).toBeNull();
   });
 
+  it("names a cautious copy after its model and grades it against the same Kalshi baseline", () => {
+    const rows = viewRows([
+      score({ forecaster: "cpi_nowcast_cautious", forecaster_version: "cpi-core-v1+w25", baseline: "market", n_targets: 3 }),
+      score({ forecaster: "sports_nfl_spread_cautious", forecaster_version: "feed-v1+w25", baseline: "market", n_targets: 2 }),
+      score({ forecaster: "kalshi_implied_cpi", forecaster_version: "v1", n_targets: 3 }),
+      score({ forecaster: "kalshi_implied_sports_nfl_spread", forecaster_version: "v1", n_targets: 2 }),
+    ]);
+    expect(rows.map((r) => r.label).sort()).toEqual(["Core inflation (CPI) (cautious)", "NFL point spreads (cautious)"]);
+    expect(rows.every((r) => r.market !== null)).toBe(true);
+  });
+
   it("counts what the page headlines, and a monthly forecaster needs 50 not 200", () => {
     const rows = viewRows(scores);
     expect(totals(rows)).toEqual({ forecasters: 3, frozen: 12, scored: 4, promoted: 0 });

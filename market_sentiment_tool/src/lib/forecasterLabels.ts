@@ -25,7 +25,14 @@ const VERSIONED: Record<string, string> = {
   "cpi_nowcast@cpi-core-v1": "Core inflation (CPI)",
 };
 
+/** Plan 15: a market-anchored copy of a model, graded beside it. Named after the model it shadows. */
+export const CAUTIOUS_SUFFIX = "_cautious";
+
 export function forecasterLabel(forecaster: string, version?: string): string {
+  if (forecaster.endsWith(CAUTIOUS_SUFFIX)) {
+    const base = version?.replace(/\+w\d+$/, "");
+    return `${forecasterLabel(forecaster.slice(0, -CAUTIOUS_SUFFIX.length), base)} (cautious)`;
+  }
   if (version && VERSIONED[`${forecaster}@${version}`]) return VERSIONED[`${forecaster}@${version}`];
   if (BASE[forecaster]) return BASE[forecaster];
   const text = forecaster.replace(/_/g, " ");
