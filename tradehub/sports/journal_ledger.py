@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 
 from tradehub.journal.store import FORECASTS, fetch_settlements, select_all
-from tradehub.sports.kinds import KINDS
 from tradehub.sports.scan import SPORTS_ENGINES, HubLedger
 
 log = logging.getLogger(__name__)
@@ -24,6 +23,19 @@ log = logging.getLogger(__name__)
 # Spelled out, not imported: `journal.forecasters.sports` imports `sports.scan`, so importing it back
 # would be a cycle. A test pins this to the journal's own constant.
 HUB_FEED_VERSION = "feed-v1"
+
+# Winner markets only, by ruling. A game has a ladder of spread and total strikes and `one_rung`
+# (journal.forecasters.sports) freezes only the rung the market prices nearest a coin flip, so the
+# settled spread/total probabilities cluster around 0.5 by construction. Calibration bands cut from
+# that describe only the middle of the range, and the scan then applies them to every edge of the
+# kind -- including the 0.9-priced rungs no settled row can ever represent. It fails closed, but it
+# drops the highest-conviction edges while the run report shows a settled record and nothing to
+# warn a reader. So the hub's record covers winners, and spread/total keep the predictor's published
+# calibration however much the journal holds.
+#
+# Revisit when a season of settled rungs covers the whole price range, and then measure it before
+# widening this: the fix is to widen this tuple.
+HUB_LEDGER_KINDS = ("winner",)
 
 
 def _forecaster(sport: str, kind: str) -> str:
@@ -35,7 +47,7 @@ def journal_settled_ledger(supa) -> HubLedger:
     pairs: dict[str, dict[str, list[tuple[float, bool]]]] = {}
     try:
         for sport, engine in SPORTS_ENGINES.items():
-            for kind in KINDS:
+            for kind in HUB_LEDGER_KINDS:
                 name = _forecaster(sport, kind)
                 forecasts = select_all(
                     supa, FORECASTS,
