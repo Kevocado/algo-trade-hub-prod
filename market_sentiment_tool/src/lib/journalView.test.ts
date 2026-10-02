@@ -50,6 +50,17 @@ describe("view", () => {
     expect(waiting.map((r) => r.label)).toEqual(["S&P 500 tomorrow: model", "US home prices"]);
   });
 
+  it("pairs a spread or total forecaster with its own Kalshi baseline and names it in plain words", () => {
+    const rows = viewRows([
+      score({ forecaster: "sports_nfl_spread", forecaster_version: "feed-v1", baseline: "market", n_settled: 3, n_targets: 5 }),
+      score({ forecaster: "kalshi_implied_sports_nfl_spread", forecaster_version: "v1", n_settled: 3, n_targets: 5 }),
+      score({ forecaster: "sports_nfl_total", forecaster_version: "feed-v1", n_targets: 2 }),
+    ]);
+    const spread = rows.find((r) => r.label === "NFL point spreads");
+    expect(spread?.market?.forecaster).toBe("kalshi_implied_sports_nfl_spread");
+    expect(rows.find((r) => r.label === "NFL game totals")?.market).toBeNull();
+  });
+
   it("counts what the page headlines, and a monthly forecaster needs 50 not 200", () => {
     const rows = viewRows(scores);
     expect(totals(rows)).toEqual({ forecasters: 3, frozen: 12, scored: 4, promoted: 0 });

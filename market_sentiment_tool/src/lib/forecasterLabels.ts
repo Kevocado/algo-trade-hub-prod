@@ -15,6 +15,10 @@ const BASE: Record<string, string> = {
   housing_direction: "US home prices",
   sports_nfl: "NFL winners",
   sports_cfb: "College football winners",
+  sports_nfl_spread: "NFL point spreads",
+  sports_nfl_total: "NFL game totals",
+  sports_cfb_spread: "College football point spreads",
+  sports_cfb_total: "College football game totals",
 };
 
 const VERSIONED: Record<string, string> = {
