@@ -422,6 +422,12 @@ def _run_main(monkeypatch):
     # asserted on. Stubbing it out is what made the "it still writes" claim untestable.
     # `scan_cpi` is likewise NOT stubbed: the point is the real engine against a stubbed client.
     monkeypatch.setattr(scan, "fetch_nowcast_history", lambda kind: parse_nowcast_month(PAYLOAD, kind))
+    # `scan.main` calls `load_local_env()` at run time, so a garbage `.env` in the repo root puts its
+    # keys into this process and the ALFRED fetches then see `FRED_API_KEY=not-a-real-key...`. That is
+    # a genuine order-dependency -- the results depend on which test ran first -- and stubbing the
+    # loader removes it without touching what this file is asserting.
+    import tradehub.core.env as core_env
+    monkeypatch.setattr(core_env, "load_local_env", lambda *a, **k: False)
 
     assert scan.main(now=NOW, live=FakeLive([_lm()]), client=client) == 0
     return client, upserted, pruned
