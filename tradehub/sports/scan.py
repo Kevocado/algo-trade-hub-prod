@@ -905,6 +905,12 @@ def _hub_settled_ledger(supa) -> HubLedger:
     said winner-only, on the premise that a wrong kind attribution is worse than an absent one; the
     premise was false, because the hub is the only writer of this field.
 
+    **This function no longer holds the hub's live settled record.** `journal_ledger.journal_settled_`
+    `ledger` replaced it in the cron path; this is kept because it documents the old rule and nothing in
+    production calls it. Its reader reports all three kinds and `journal_ledger` deliberately does not --
+    for a reason about band coverage, not readability, stated in `journal_ledger.py` and in
+    `sports.kinds.KINDS`. Do not read the paragraph above as an argument against that narrowing.
+
     The kinds come from `sports.kinds.KINDS` -- the same object `parse_feed` reads the payload
     against -- because this filter is what makes an omission here a deletion of evidence rather than
     a narrower view of it. A row of a kind outside KINDS is not `continue`d in silence: it is tallied
