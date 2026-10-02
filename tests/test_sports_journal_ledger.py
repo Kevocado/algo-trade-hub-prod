@@ -47,9 +47,11 @@ def test_each_kind_is_read_from_its_own_forecaster_and_filed_under_the_hub_engin
     _seed(db, "sports_nfl", "kalshi:W5", 0.55, None)
     _seed(db, "spy_quant", "kalshi:X", 0.5, 1)
     ledger = journal_settled_ledger(db)
+    # spread and total are seeded here to prove they are read and then NOT filed: see
+    # test_spread_and_total_never_enter_the_hub_record, which states the ruling.
     assert ledger.pairs_by_engine == {
-        "sports_nfl": {"winner": [(0.65, True), (0.62, False)], "spread": [(0.30, False)]},
-        "sports_cfb": {"winner": [(0.40, False)], "total": [(0.72, True)]},
+        "sports_nfl": {"winner": [(0.65, True), (0.62, False)]},
+        "sports_cfb": {"winner": [(0.40, False)]},
     }
     assert ledger.unrecognised_by_engine == {} and ledger.read_failed is False
 
@@ -128,3 +130,35 @@ def test_a_read_failure_of_any_kind_is_not_measured_not_empty():
 
     assert journal_settled_ledger(NoTableAttribute()) == scan_mod.HubLedger(read_failed=True)
     assert journal_settled_ledger(MalformedRow()).read_failed is True
+
+
+def test_spread_and_total_never_enter_the_hub_record():
+    """Kevin's ruling: the hub's own settled record applies to WINNER markets only.
+
+    `one_rung` freezes only the rung whose Kalshi mid is nearest 0.5, so the settled spread/total
+    probabilities cluster there by construction. Bands cut from that cannot describe the 0.9-priced
+    rungs they would then be applied to, so the scan keeps the predictor's published calibration
+    for those two kinds however much the journal holds. Revisit once a season of settled rungs
+    covers the whole price range.
+    """
+    db = _db()
+    _seed(db, "sports_nfl", "kalshi:W1", 0.65, 1)
+    _seed(db, "sports_nfl_spread", "kalshi:S1", 0.51, 1)
+    _seed(db, "sports_nfl_total", "kalshi:T1", 0.49, 0)
+    ledger = journal_settled_ledger(db)
+
+    assert ledger.pairs_by_engine == {"sports_nfl": {"winner": [(0.65, True)]}}
+    assert ledger.read_failed is False
+
+
+def test_a_spread_edge_is_still_judged_on_the_predictors_calibration_not_the_journals():
+    """The ruling is about what the ledger holds, so this asserts the consequence: with a settled
+    spread record present, the scan still gets no hub pairs for `spread` and keeps the feed's own."""
+    db = _db()
+    _seed(db, "sports_nfl", "kalshi:W1", 0.65, 1)
+    _seed(db, "sports_nfl_spread", "kalshi:S1", 0.51, 1)
+    ledger = journal_settled_ledger(db)
+
+    assert "spread" not in ledger.pairs_by_engine.get("sports_nfl", {})
+    # the band builder reads per kind, so a missing kind is the whole of the fallback condition
+    assert ledger.pairs_by_engine["sports_nfl"].get("spread") is None
