@@ -6,7 +6,7 @@ import Models from "@/pages/Models";
 import Scoreboard from "@/pages/Scoreboard";
 import SportsEdges from "@/pages/SportsEdges";
 import JobsScorecard from "@/pages/JobsScorecard";
-import CpiDisplay from "@/pages/CpiDisplay";
+import Cpi from "@/pages/Cpi";
 import Journal from "@/pages/Journal";
 import { NoOrdersBanner } from "@/components/NoOrdersBanner";
 import { usePortfolio } from "@/hooks/usePortfolio";
@@ -173,7 +173,7 @@ function App() {
           <Route path="/shadow-scoreboard" element={<Navigate to="/scoreboard" replace />} />
           <Route path="/sports" element={<SportsEdges />} />
           <Route path="/jobs" element={<JobsScorecard />} />
-          <Route path="/cpi" element={<CpiDisplay />} />
+          <Route path="/cpi" element={<Cpi />} />
         </Routes>
       </AppShell>
     </BrowserRouter>
