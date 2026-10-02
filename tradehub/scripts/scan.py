@@ -440,9 +440,14 @@ def cpi_scan_due(now: datetime) -> bool:
 
 def scan_cpi(
     live, now: datetime, cfg: EngineConfig, *,
-    nowcast_fn: Callable[[str], dict] = fetch_nowcast_history,
+    nowcast_fn: Callable[[str], dict] | None = None,
     targets: dict[str, tuple[str, str]] = CPI_TARGETS,
 ) -> tuple[list[dict], list[dict]]:
+    # Resolved in the body, not as a default: a default argument is bound at IMPORT time, so a test
+    # that rebinds `scan.fetch_nowcast_history` was patching a name this function never looked up. The
+    # stub silently did nothing and the scan fetched Cleveland Fed nowcasts over the live network --
+    # 7.6 MB, three times, inside a test that was supposed to be hermetic.
+    nowcast_fn = nowcast_fn or fetch_nowcast_history
     window = int(cfg.params.get("train_months", CPI_TRAIN_MONTHS))
     use_bias = bool(cfg.params.get("use_bias", 0.0))
     predictions: list[dict] = []
