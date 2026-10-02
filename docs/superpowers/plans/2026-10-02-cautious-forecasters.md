@@ -360,7 +360,7 @@ so the row exists. (2) Exactly one weight is allowed, `ALLOWED_WEIGHTS = (0.25,)
 `ValueError` at construction, and the version string is built from that constant rather than from
 `round(weight * 100)`.
 
-**What shipped instead** (PR #80): see `tradehub/journal/forecasters/shrunk.py`. Note the store is passed as
+**What shipped instead** (PR #81): see `tradehub/journal/forecasters/shrunk.py`. Note the store is passed as
 a **callable**, because `registry.py` is imported by tests and tooling that hold no credentials.
 
 ## Self-Review
