@@ -12,6 +12,34 @@ export interface ReplayRow {
   date_to: string;
   n: number;
   bss: number | null;
+  by_year?: Record<string, { n: number; bss: number | null }>;
+}
+
+/**
+ * A signed skill that never prints a bare zero.
+ *
+ * Every live figure is smaller than three places (gold pools to +0.000482, EUR/USD to +0.000557), so
+ * `toFixed(3)` printed "+0.000" -- a signed zero, which reads as "no skill measured" when the number is
+ * positive and was measured from 753 sessions. `skillText` on /journal already refuses to print a bare
+ * 0 for null; this is the same rule for a value too small for its own display precision. Digits are
+ * added until the number survives.
+ */
+function signedSkill(value: number): string {
+  const sign = value > 0 ? "+" : "";
+  for (const places of [3, 4, 5, 6]) {
+    const text = value.toFixed(places);
+    if (Number(text) !== 0) return `${sign}${text}`;
+  }
+  return `${sign}${value.toPrecision(3)}`;
+}
+
+/** "2023 +0.004 · 2024 +0.004 · 2025 +0.011 · 2026 -0.019" -- the split the replay was built for. */
+function yearSplit(row: ReplayRow): string | null {
+  const years = Object.entries(row.by_year ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  if (!years.length) return null;
+  return years
+    .map(([year, v]) => `${year} ${v.bss === null ? "—" : signedSkill(v.bss)}`)
+    .join(" · ");
 }
 
 /**
@@ -51,7 +79,7 @@ export function PreJournalContext() {
               <th className="text-left font-normal">Replayed over history</th>
               <th className="text-left font-normal">Window</th>
               <th className="text-right font-normal">Sessions</th>
-              <th className="text-right font-normal" title="Positive means better than the usual up-rate">Skill</th>
+              <th className="text-right font-normal" title="Positive means better than the usual up-rate, pooled across every year below">Skill</th>
             </tr>
           </thead>
           <tbody>
@@ -60,9 +88,20 @@ export function PreJournalContext() {
                 <td>{forecasterLabel(r.forecaster, r.forecaster_version)}</td>
                 <td>{r.date_from} → {r.date_to}</td>
                 <td className="text-right">{r.n}</td>
-                <td className="text-right font-mono">{r.bss === null ? "—" : `${r.bss > 0 ? "+" : ""}${r.bss.toFixed(3)}`}</td>
+                <td className="text-right font-mono">{r.bss === null ? "—" : signedSkill(r.bss)}</td>
               </tr>
             ))}
+            {replays.map((r) => {
+              const split = yearSplit(r);
+              if (!split) return null;
+              return (
+                <tr key={`${r.forecaster}@${r.forecaster_version}-years`} className="text-slate-500">
+                  <td colSpan={2} className="pl-4">By year</td>
+                  <td className="text-right pl-4 font-mono">{split}</td>
+                  <td />
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
