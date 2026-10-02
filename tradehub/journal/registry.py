@@ -7,6 +7,7 @@ runner calls `targets`/`forecast`/`settle`.
 from __future__ import annotations
 
 from tradehub.core.kalshi_feed import fetch_market
+from tradehub.core.supabase_client import get_client
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.journal.contract import Forecaster
 from tradehub.journal.forecasters.cpi import CpiForecaster
@@ -52,5 +53,8 @@ FORECASTERS: list[Forecaster] = [
 # plan 15: the market-linked models again, each pulled toward the Kalshi price (see forecasters/shrunk.py).
 # Their own scorecards, beside the pure models', which are untouched.
 _SHRINKABLE = {"cpi_nowcast", "fomc_mapped", "labor_nowcast"}
-FORECASTERS += [MarketShrunk(f) for f in list(FORECASTERS)
+# Order matters and is relied on: `run_journal` walks the list, so each wrapper finds the model's own
+# frozen row already in the store (see forecasters/shrunk.py). The store is passed as a callable
+# because this module is imported with no credentials in hand.
+FORECASTERS += [MarketShrunk(f, get_client) for f in list(FORECASTERS)
                 if f.name in _SHRINKABLE or f.name.startswith("sports_")]
