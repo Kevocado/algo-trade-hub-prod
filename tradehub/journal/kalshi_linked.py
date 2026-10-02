@@ -18,6 +18,9 @@ from tradehub.settlement import SETTLED, parse_market_result
 
 FREEZE_LEAD = timedelta(hours=24)
 TARGET_PREFIX = "kalshi:"
+# The name a market pseudo-forecaster carries, as opposed to `TARGET_PREFIX` which is the name of a
+# single contract's target. Spelled out once so the journal can tell a baseline from a model.
+MARKET_PREFIX = "kalshi_implied_"
 SETTLEMENT_SOURCE = "kalshi:market_result"
 
 
@@ -70,7 +73,7 @@ class KalshiImplied:
 
     def __init__(self, family: str, series: tuple[str, ...], cadence: str, live, fetch_market: Callable[[str], Any],
                  *, keep: Callable[[LiveMarket], bool] = lambda lm: True):
-        self.name = f"kalshi_implied_{family}"
+        self.name = f"{MARKET_PREFIX}{family}"
         self.family, self.series, self.cadence = family, series, cadence
         self._live, self._fetch_market, self._keep = live, fetch_market, keep
         self._open: dict[str, LiveMarket] = {}

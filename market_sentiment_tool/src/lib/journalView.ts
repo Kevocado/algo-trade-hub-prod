@@ -1,4 +1,4 @@
-import { baselineName, forecasterLabel } from "@/lib/forecasterLabels";
+import { baselineName, CAUTIOUS_SUFFIX, forecasterLabel } from "@/lib/forecasterLabels";
 import { tiles, type Baseline, type JournalScore } from "@/lib/journal";
 
 /**
@@ -72,9 +72,6 @@ export interface Totals {
   scored: number;
   promoted: number;
 }
-
-/** Plan 15: a market-anchored copy, scored on its model's exact target set. */
-const CAUTIOUS_SUFFIX = "_cautious";
 
 export function totals(rows: ViewRow[]): Totals {
   // A cautious copy is a forecaster, so it appears in the list and in `forecasters` -- but it shares
