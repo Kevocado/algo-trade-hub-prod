@@ -40,8 +40,19 @@ const feed: JournalFeed = {
 const scoreboard = { as_of: "x", runs_read: 1, engines: 1, rows: [{ engine: "cpi_nowcast", engine_version: "cpi-v1", mode: "taker",
   date_from: "2025-01-01T00:00:00+00:00", date_to: "2026-06-30T00:00:00+00:00", n_decisions: 412, brier_ours: 0.0712, brier_market: 0.0683 }] };
 
-const backtests = { as_of: "x", counted: false, backtests: [{ forecaster: "gold_direction", forecaster_version: "gold-wf-v1",
-  date_from: "2023-10-01", date_to: "2026-09-30", n: 752, bss: 0.0006, brier: 0.2468, brier_baseline: 0.247, by_year: {} }] };
+// The real 2026-10-02 replay rows, trimmed to the fields the table reads. `by_year` is not invented:
+// gold's pooled skill is positive while its most recent year is clearly negative, and a reader shown
+// only the pooled number cannot see that.
+const backtests = { as_of: "x", counted: false, backtests: [
+  { forecaster: "gold_direction", forecaster_version: "gold-wf-v1", date_from: "2023-10-02",
+    date_to: "2026-10-01", n: 753, bss: 0.000482, brier: 0.246852, brier_baseline: 0.246971,
+    by_year: { "2023": { n: 63, bss: 0.003971 }, "2024": { n: 252, bss: 0.003995 },
+               "2025": { n: 250, bss: 0.010636 }, "2026": { n: 188, bss: -0.018619 } } },
+  { forecaster: "eurusd_direction", forecaster_version: "eurusd-wf-v1", date_from: "2023-10-02",
+    date_to: "2026-10-01", n: 766, bss: 0.000557, brier: 0.249885, brier_baseline: 0.250024,
+    by_year: { "2023": { n: 63, bss: -0.008608 }, "2024": { n: 256, bss: -0.002479 },
+               "2025": { n: 255, bss: -0.004821 }, "2026": { n: 192, bss: 0.014861 } } },
+] };
 
 function stubFetch() {
   const fn = vi.fn((url: string) => {
@@ -99,8 +110,48 @@ describe("Journal", () => {
     expect(await screen.findByText("cpi_nowcast · cpi-v1 · taker")).toBeInTheDocument();
     const replay = await screen.findByLabelText("Daily models replayed over history");
     expect(within(replay).getByText("Gold tomorrow")).toBeInTheDocument();
-    expect(within(replay).getByText("752")).toBeInTheDocument();
-    expect(within(replay).getByText("+0.001")).toBeInTheDocument();
+    expect(within(replay).getByText("753")).toBeInTheDocument();
+  });
+
+  it("never renders a skill as a signed bare zero, however small", async () => {
+    // Gold's live pooled skill is +0.000482. `toFixed(3)` renders that "+0.000", which reads as
+    // exactly zero skill when the number is positive and measured -- the same thing `skillText` on
+    // /journal refuses to do for null. And a small negative would render "-0.000".
+    stubFetch();
+    render(<Journal />);
+    await screen.findByLabelText("Totals");
+    const summary = screen.getByText("Past backtests (not counted)");
+    const details = summary.closest("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    const replay = await screen.findByLabelText("Daily models replayed over history");
+    // Every signed figure the table prints, pooled and per-year: none may be a bare zero.
+    const cells = [...replay.querySelectorAll("td")].map((td) => td.textContent ?? "");
+    const signed = cells.flatMap((c) => c.match(/[+-]\d+\.\d+/g) ?? []);
+    expect(signed.length).toBeGreaterThan(8);
+    for (const text of signed) expect(Number(text)).not.toBe(0);
+    // gold pools to +0.000482, so it must not print the three-place form
+    expect(cells.some((c) => c.includes("+0.0005") || c.includes("+0.00048"))).toBe(true);
+  });
+
+  it("shows the year split, because a pooled number hides a sign flip", async () => {
+    // EUR/USD pools to +0.001 while three of its four years are negative. The replay was split by
+    // year for exactly this reason; a reader shown only the pooled row cannot see it.
+    stubFetch();
+    render(<Journal />);
+    await screen.findByLabelText("Totals");
+    const summary = screen.getByText("Past backtests (not counted)");
+    const details = summary.closest("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    const replay = await screen.findByLabelText("Daily models replayed over history");
+    const text = replay.textContent ?? "";
+    // gold: pooled positive, most recent year clearly negative -- the sign flip the split exists for
+    expect(text).toContain("2026 -0.019");
+    // EUR/USD: pools positive, three of four years negative
+    expect(text).toContain("2025 -0.005");
+    expect(text).toContain("2023 -0.009");
+    expect(replay.querySelectorAll("tbody tr")).toHaveLength(4);   // 2 models + 1 year row each
   });
 
   it("stays inside its word budget", async () => {

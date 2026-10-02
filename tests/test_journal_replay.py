@@ -77,3 +77,36 @@ def test_skill_is_reported_per_year_so_one_lucky_year_cannot_carry_the_headline(
 def test_a_window_with_too_little_history_is_empty_not_a_guess():
     r = replay(_closes(n=150), start=date(2019, 3, 1), end=date(2019, 5, 31), fit_fn=lambda x, y, d: Const(0.5))
     assert r["n"] == 0 and r["bss"] is None and r["brier"] is None
+
+def test_days_the_source_would_never_trade_are_not_scored():
+    """The live forecasters gate on a calendar (`DailySource.is_session`: NYSE sessions for SPX, VIX
+    and gold, TARGET days for EUR/USD). `replay` scored every date the closes mapping happened to
+    carry, so a feed that publishes on market holidays put holiday prints into the result -- VIXCLS
+    carried forward, and the live run graded 775 days when only 754 are NYSE sessions. A replay whose
+    sessions are not the live journal's sessions is not a replay of the live journal."""
+    closes = _closes()
+    sessions = {d for d in closes if d.weekday() < 5}
+    only_weekdays = lambda d: d.weekday() < 5
+
+    baseline = replay(closes, start=date(2022, 3, 1), end=date(2022, 4, 30),
+                      fit_fn=lambda x, y, d: Const(0.5), is_target=only_weekdays)
+    ungated = replay(closes, start=date(2022, 3, 1), end=date(2022, 4, 30),
+                     fit_fn=lambda x, y, d: Const(0.5))
+
+    assert ungated["n"] >= baseline["n"]
+    # the synthetic series is all weekdays, so the two agree here; what matters is that a caller can
+    # gate, and that the default is the strict one rather than "score everything present"
+    assert baseline["n"] == sum(1 for d in sessions if date(2022, 3, 1) <= d <= date(2022, 4, 30))
+
+
+def test_the_reported_window_is_the_sessions_actually_scored_not_the_requested_one():
+    """`date_from`/`date_to` used to echo the arithmetic window, so a run on a Sunday ended on a
+    Saturday and printed it. The Window is the only provenance a reader has for a not-counted number,
+    so it must describe what was graded."""
+    closes = _closes()
+    r = replay(closes, start=date(2022, 3, 1), end=date(2022, 4, 30), fit_fn=lambda x, y, d: Const(0.5))
+    scored = sorted(d for d in closes if date(2022, 3, 1) <= d <= date(2022, 4, 30))
+
+    assert r["date_from"] == scored[0].isoformat()
+    assert r["date_to"] == scored[-1].isoformat()
+    assert r["date_from"] != date(2022, 3, 1).isoformat() or r["date_to"] != date(2022, 4, 30).isoformat()

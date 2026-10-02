@@ -9,6 +9,16 @@ is graded against the usual climatology rate on that session.
 A replay is never a journal row. It is stored apart (`journal_backtests`), shown labelled "backtest, not
 counted", and has no path into `journal_forecasts`, `journal_scores` or any gate: history cannot be frozen
 before the fact, and the hindsight in choosing the model is real even when the fit is clean.
+
+`is_target` is the live forecaster's own calendar predicate -- NYSE sessions for SPX, VIX and gold, TARGET
+days for EUR/USD, as `DailySource.is_session` already carries it. Scoring every date a feed happens to
+publish instead is not a replay of the live journal: VIXCLS carries a print forward across market holidays,
+and ungated that graded 21 days the market was shut, against 754 real sessions. A replay whose sessions are
+not the journal's sessions measures something else.
+
+`date_from`/`date_to` report the sessions actually scored, not the arithmetic window asked for: the window
+is derived by subtracting days from the run date, so it can start or end on a Saturday, and it is the only
+provenance a reader has for a number the page says is not counted.
 """
 
 from __future__ import annotations
@@ -43,7 +53,8 @@ def _summary(rows: list[tuple[float, float, int]]) -> dict[str, Any]:
 
 
 def replay(closes: Mapping[date, float], *, start: date, end: date,
-           fit_fn: Callable[..., Predictor] = fit) -> dict[str, Any]:
+           fit_fn: Callable[..., Predictor] = fit,
+           is_target: Callable[[date], bool] | None = None) -> dict[str, Any]:
     ordered = sorted(closes)
     previous = dict(zip(ordered[1:], ordered[:-1], strict=True))
     models: dict[tuple[int, int], Predictor] = {}
@@ -51,6 +62,8 @@ def replay(closes: Mapping[date, float], *, start: date, end: date,
     by_year: dict[str, list[tuple[float, float, int]]] = defaultdict(list)
     for day in ordered:
         if not start <= day <= end or day not in previous:
+            continue
+        if is_target is not None and not is_target(day):
             continue
         found, clim = features_for(closes, day), climatology_up(closes, day)
         if found is None or clim is None:
@@ -63,5 +76,9 @@ def replay(closes: Mapping[date, float], *, start: date, end: date,
         outcome = int(closes[day] > closes[previous[day]])
         rows.append((probability, clim, outcome))
         by_year[str(day.year)].append((probability, clim, outcome))
-    return {**_summary(rows), "date_from": start.isoformat(), "date_to": end.isoformat(),
+    scored = [day for day in ordered if (start <= day <= end) and day in previous
+              and (is_target is None or is_target(day))]
+    return {**_summary(rows),
+            "date_from": (scored[0].isoformat() if scored else start.isoformat()),
+            "date_to": (scored[-1].isoformat() if scored else end.isoformat()),
             "by_year": {year: _summary(group) for year, group in sorted(by_year.items())}}
