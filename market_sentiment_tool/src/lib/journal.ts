@@ -118,7 +118,7 @@ export function tiles(scores: JournalScore[]): Tile[] {
   const used = new Set<string>();
   const out: Tile[] = [];
   for (const model of scores.filter((s) => !isMarket(s))) {
-    const pair = MARKET_PAIR[model.forecaster];
+    const pair = MARKET_PAIR[model.forecaster.replace(/_cautious$/, "")];
     const market = pair ? markets.get(pair) ?? null : null;
     if (market) used.add(market.forecaster);
     out.push({ model, market });
