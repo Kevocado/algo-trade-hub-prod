@@ -42,24 +42,28 @@ const scoreboard = { as_of: "x", runs_read: 1, engines: 1, rows: [{ engine: "cpi
 
 // The real 2026-10-02 replay rows, trimmed to the fields the table reads. `by_year` is not invented:
 // gold's pooled skill is positive while its most recent year is clearly negative, and a reader shown
-// only the pooled number cannot see that.
+// only the pooled number cannot see that. `brier_diff`/`brier_diff_se` are the gap between our squared
+// error and the climatology's on the same session, with the standard error of that gap: -0.000119 against
+// an SE of 0.0022 is 0.05 standard errors, which is the whole reason the interval is printed at all.
 const backtests = { as_of: "x", counted: false, backtests: [
   { forecaster: "gold_direction", forecaster_version: "gold-wf-v1", date_from: "2023-10-02",
     date_to: "2026-10-01", n: 753, bss: 0.000482, brier: 0.246852, brier_baseline: 0.246971,
+    brier_diff: -0.000119, brier_diff_se: 0.0022,
     by_year: { "2023": { n: 63, bss: 0.003971 }, "2024": { n: 252, bss: 0.003995 },
                "2025": { n: 250, bss: 0.010636 }, "2026": { n: 188, bss: -0.018619 } },
     created_at: "2026-10-02T15:00:56.328768+00:00" },
   { forecaster: "eurusd_direction", forecaster_version: "eurusd-wf-v1", date_from: "2023-10-02",
     date_to: "2026-10-01", n: 766, bss: 0.000557, brier: 0.249885, brier_baseline: 0.250024,
+    brier_diff: -0.000139, brier_diff_se: 0.0021,
     by_year: { "2023": { n: 63, bss: -0.008608 }, "2024": { n: 256, bss: -0.002479 },
                "2025": { n: 255, bss: -0.004821 }, "2026": { n: 192, bss: 0.014861 } },
     created_at: "2026-10-02T15:00:56.328768+00:00" },
 ] };
 
-function stubFetch() {
+function stubFetch(replays: unknown = backtests) {
   const fn = vi.fn((url: string) => {
     const body = url.includes("/api/journal/feed") ? feed : url.includes("/api/scoreboard") ? scoreboard
-      : url.includes("/api/journal/backtests") ? backtests : journal;
+      : url.includes("/api/journal/backtests") ? replays : journal;
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
   });
   vi.stubGlobal("fetch", fn);
@@ -216,6 +220,52 @@ describe("Journal", () => {
     fireEvent(details, new Event("toggle"));
     const replay = await screen.findByLabelText("Daily models replayed over history");
     expect(replay.textContent).toContain("0.2469 vs 0.2470");   // gold, rounded Brier pair
+  });
+
+  it("prints the gap and its standard error, because a bare number reads as a result", async () => {
+    // The audit that produced this: over ~760 sessions every replayed skill sits within 0.01 of
+    // climatology and VIX's +0.0099 is 1.1 standard errors. `-0.0001 ± 0.0022` says the same thing in one
+    // line -- and it is on the Brier gap, not on the skill, because the standard error of a difference is
+    // measurable and the standard error of a ratio is not this number.
+    stubFetch();
+    render(<Journal />);
+    await screen.findByLabelText("Totals");
+    const summary = screen.getByText("Past backtests (not counted)");
+    const details = summary.closest("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    const replay = await screen.findByLabelText("Daily models replayed over history");
+    const gold = replay.textContent ?? "";
+    expect(gold).toContain("0.2469 vs 0.2470 (-0.0001 ± 0.0022)");
+    // and EUR/USD's, so the interval is not one hand-typed row's decoration
+    expect(gold).toContain("0.2499 vs 0.2500 (-0.0001 ± 0.0021)");
+    // the gap is small enough to vanish at three places, and must not print a signed zero
+    expect(gold).not.toContain("-0.0000");
+  });
+
+  it("omits the interval entirely when the migration has not been applied", async () => {
+    // `brier_diff_se: null` is what /api/journal/backtests serves while migration 017 is unapplied. The
+    // Brier pair is still true, so it stays; the interval is not measured, so it is not printed -- and
+    // certainly not printed as `± 0`, which would claim a precision nobody measured.
+    stubFetch({ as_of: "x", counted: false, backtests: [
+      { forecaster: "gold_direction", forecaster_version: "gold-wf-v1", date_from: "2023-10-02",
+        date_to: "2026-10-01", n: 753, bss: 0.000482, brier: 0.246852, brier_baseline: 0.246971,
+        brier_diff: -0.000119, brier_diff_se: null,
+        by_year: { "2026": { n: 188, bss: -0.018619 } }, created_at: "2026-10-02T15:00:56.328768+00:00" },
+    ] });
+    render(<Journal />);
+    await screen.findByLabelText("Totals");
+    const summary = screen.getByText("Past backtests (not counted)");
+    const details = summary.closest("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    const replay = await screen.findByLabelText("Daily models replayed over history");
+    const cells = [...replay.querySelectorAll("td")].map((td) => td.textContent ?? "");
+
+    expect(cells.some((c) => c.includes("0.2469 vs 0.2470"))).toBe(true);   // the pair survives
+    expect(replay.textContent).not.toContain("±");                          // the interval does not
+    expect(replay.textContent).not.toContain("-0.0001");
+    expect(cells.some((c) => c.includes("± 0"))).toBe(false);               // never a fake zero
   });
 
   it("dates the replays, because a re-run silently replaces the numbers", async () => {

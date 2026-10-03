@@ -1,0 +1,31 @@
+-- The interval on the replay's Brier gap, so the page stops printing a bare skill.
+--
+-- An audit of the first replays found all four daily models within 0.01 of climatology over roughly 760
+-- sessions, the best of them about 1.1 standard errors from zero: indistinguishable from noise, printed
+-- as "+0.010". A number with no interval reads as a result. So each replay row now also carries
+--
+--   brier_diff     our mean squared error minus climatology's, session by session (negative = better)
+--   brier_diff_se  the standard error of that mean: sample_sd(per-session gap) / sqrt(n)
+--
+-- which together say "better or worse than the usual rate by X ± SE, over N sessions" -- a claim a
+-- reader can check, and the only form of this number that is a measurement rather than an assertion.
+--
+-- Deliberately NOT here: an interval on `bss`. BSS is a ratio of two means, so its standard error is
+-- neither the gap's nor anything this migration can measure; a delta-method approximation of it is easy
+-- to write and would be a number nobody measured printed as though it were one. The gap above carries the
+-- uncertainty, and `bss` is `-brier_diff / brier_baseline` by definition, so a reader who wants skill
+-- with an interval can derive it from a measured quantity.
+--
+-- Per-year figures need no column: `by_year` is jsonb and already carries each year's own summary, so
+-- the interval is in there too.
+--
+-- Additive and nullable, like everything this table has. A row written before this migration keeps its
+-- brier_diff/brier_diff_se as NULL, which /api/journal/backtests serves as null and the page renders as
+-- "no interval" rather than as a zero. Both ALTERs are IF NOT EXISTS, so re-running is a no-op.
+--
+-- Written by the service role only (tradehub.scripts.backtest_daily); clients read through
+-- /api/journal/backtests. No privilege change here: 016 already revoked write access from anon and
+-- authenticated, and adding a column does not widen that.
+
+ALTER TABLE journal_backtests ADD COLUMN IF NOT EXISTS brier_diff double precision;
+ALTER TABLE journal_backtests ADD COLUMN IF NOT EXISTS brier_diff_se double precision;

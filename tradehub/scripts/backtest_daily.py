@@ -4,7 +4,8 @@
     python -m tradehub.scripts.backtest_daily --years 3               # also write `journal_backtests`
 
 Never touches the journal tables. Each run adds one row per forecaster, so the page can show how the answer
-moves over time; nothing here is counted toward a gate.
+moves over time; nothing here is counted toward a gate. Each stored row carries the Brier gap and its
+standard error beside the skill, because a skill printed with no interval reads as a result.
 """
 
 from __future__ import annotations
@@ -81,9 +82,18 @@ def run(now: datetime, years: int, *, sources=None, calendars=None) -> list[dict
 
 
 def record(supa, results: list[dict], now: datetime) -> int:
+    # `brier_diff`/`brier_diff_se` are written, not recomputed here and not left to be inferred from the
+    # Brier pair: the interval is the point of the row (see journal/replay.py), and a stored point
+    # estimate with no error bar would be the same defect one column along. `by_year` already carries its
+    # own per-year summaries, jsonb, so it needs no column of its own here.
+    #
+    # This write needs migration 20260428000017 applied -- it names the two columns, and PostgREST refuses
+    # an insert that mentions a column the table does not have. That is the direction we want: a loud
+    # failure rather than a row that quietly stores a gap with no way to tell how sure anyone is of it.
     rows = [{"forecaster": r["forecaster"], "forecaster_version": r["forecaster_version"],
              "date_from": r["date_from"], "date_to": r["date_to"], "n": r["n"], "brier": r["brier"],
-             "brier_baseline": r["brier_baseline"], "bss": r["bss"], "by_year": r["by_year"],
+             "brier_baseline": r["brier_baseline"], "bss": r["bss"], "brier_diff": r["brier_diff"],
+             "brier_diff_se": r["brier_diff_se"], "by_year": r["by_year"],
              "created_at": now.isoformat()} for r in results if "error" not in r and r["n"]]
     if rows:
         supa.table(BACKTESTS).insert(rows).execute()

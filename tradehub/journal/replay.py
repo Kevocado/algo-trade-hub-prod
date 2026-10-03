@@ -19,10 +19,17 @@ not the journal's sessions measures something else.
 `date_from`/`date_to` report the sessions actually scored, not the arithmetic window asked for: the window
 is derived by subtracting days from the run date, so it can start or end on a Saturday, and it is the only
 provenance a reader has for a number the page says is not counted.
+
+An audit of the first replays found all four models within ±0.01 of climatology over ~760 sessions, with
+the best of them about 1.1 standard errors from zero -- indistinguishable from noise, printed as `+0.010`.
+A number with no interval reads as a result, so every summary also carries `brier_diff` (our squared error
+minus the climatology's, session by session) and `brier_diff_se` (its standard error). "Better or worse
+than the usual rate by X ± SE, over N sessions" is a claim a reader can check; a bare skill is not.
 """
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from datetime import date
@@ -41,15 +48,44 @@ def _skill(brier: float | None, base: float | None) -> float | None:
     return None if brier is None or not base else 1.0 - brier / base
 
 
+def _paired_se(gaps: list[float]) -> float | None:
+    """The standard error of the mean per-session gap, `sample_sd(gaps) / sqrt(n)`.
+
+    The gap is taken on the SAME session for both scores -- `(p_i - y_i)^2 - (c_i - y_i)^2` -- and not by
+    differencing the two averages afterwards. That is the whole reason this statistic exists: the
+    session-to-session swing in a squared error is enormous (a miss near 0.5 costs 0.25, a confident
+    correct call 0.0001) and it is almost all shared, because both scores are graded on the same
+    outcome. Pairing cancels it, leaving the spread of the part that is actually about skill.
+
+    `None` below two sessions, never 0. A sample standard deviation needs `n - 1` in the denominator, and
+    a single observation has no spread: reporting 0 there would claim perfect precision from one session,
+    which is the failure this number was added to stop.
+    """
+    if len(gaps) < 2:
+        return None
+    mean = sum(gaps) / len(gaps)
+    variance = sum((g - mean) ** 2 for g in gaps) / (len(gaps) - 1)
+    return math.sqrt(variance) / math.sqrt(len(gaps))
+
+
 def _summary(rows: list[tuple[float, float, int]]) -> dict[str, Any]:
     """rows: (probability, climatology, outcome)."""
     if not rows:
-        return {"n": 0, "brier": None, "brier_baseline": None, "bss": None, "up_rate": None}
+        return {"n": 0, "brier": None, "brier_baseline": None, "bss": None, "up_rate": None,
+                "brier_diff": None, "brier_diff_se": None}
     n = len(rows)
     brier = sum((p - y) ** 2 for p, _c, y in rows) / n
     base = sum((c - y) ** 2 for _p, c, y in rows) / n
+    gaps = [(p - y) ** 2 - (c - y) ** 2 for p, c, y in rows]
+    se = _paired_se(gaps)
+    # `bss` stays a bare ratio on purpose. Its standard error is not `brier_diff_se`: a delta-method
+    # approximation of SE(bss) exists and is easy to write, but publishing one here would print a
+    # number nobody measured as though it were the same kind of thing as the interval beside it. A
+    # reader who wants skill with an interval divides the gap by the baseline -- `bss` is
+    # `-brier_diff / brier_baseline`, by definition -- and the gap's own interval bounds it.
     return {"n": n, "brier": round(brier, 6), "brier_baseline": round(base, 6),
-            "bss": round(_skill(brier, base), 6) if base else None, "up_rate": round(sum(y for *_r, y in rows) / n, 6)}
+            "bss": round(_skill(brier, base), 6) if base else None, "up_rate": round(sum(y for *_r, y in rows) / n, 6),
+            "brier_diff": round(sum(gaps) / n, 6), "brier_diff_se": None if se is None else round(se, 6)}
 
 
 def replay(closes: Mapping[date, float], *, start: date, end: date,
