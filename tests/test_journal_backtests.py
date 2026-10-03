@@ -309,8 +309,8 @@ def test_a_window_larger_than_the_fetched_history_asks_for_enough_history():
     assert asked[0] <= now.date() - timedelta(days=max(HISTORY_DAYS, (end - start).days + HISTORY_DAYS))
     assert asked[0] <= start, "the fetch started after the window it had to cover"
 
-    # and a window wider than the data must report what was scored, not what was asked for
-    wide = _closes(n=1400)
-    out = bd.run(now, 20, sources={("a", "a-v1"): (lambda _s: (wide, "America/New_York"), None)})[0]
-    if out.get("n"):
-        assert out["date_from"] >= min(wide).isoformat()
+    # A window wider than the data must report what was SCORED. That property is asserted
+    # unconditionally in tests/test_journal_replay.py, against a fixture with enough history to score;
+    # it used to live here behind `if out.get("n")`, which silently skipped itself whenever the fake
+    # could not produce a session. CodeRabbit caught that on #94, and it stayed here after the fix
+    # landed in the other file.
