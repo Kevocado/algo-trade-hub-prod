@@ -62,8 +62,8 @@ class Feed:
     # scalar, sorted. `[]` when there were none, which is a measurement; see the note below.
     #
     # Carried as data rather than left to the `log.warning` that was the whole report, because a log
-    # line in this codebase is demonstrably not an observed channel (`_hub_settled_ledger`'s docstring
-    # spells out how: this repo upserted to four tables that never existed with bare `print()`s for
+    # line in this codebase is demonstrably not an observed channel (`sports/kinds.py` spells out
+    # how: this repo upserted to four tables that never existed with bare `print()`s for
     # the life of the system). The ledger side of the same problem already rides a `per_sport` key,
     # and a build gap that is reported in one place and logged in the other is a gap a reader learns
     # to distrust. This one is the worse of the two: an unreadable kind on the FEED side means every

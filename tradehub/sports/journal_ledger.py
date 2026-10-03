@@ -1,6 +1,6 @@
 """The hub's own settled record for sports, read from the prediction journal.
 
-`scan._hub_settled_ledger` used to build this from every settled `predictions` row, which counted all the
+`scan.py` used to build this from every settled `predictions` row, which counted all the
 rungs of a spread or total ladder as separate evidence. The journal journals one market per game and kind
 (`tradehub.journal.forecasters.sports`), frozen before kickoff and settled on Kalshi's own result, so this
 record is the same facts without the double counting. The shape it returns, `HubLedger`, is unchanged:
