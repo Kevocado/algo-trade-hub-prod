@@ -253,3 +253,64 @@ def test_the_backtest_read_selects_star_because_that_is_what_survives_a_missing_
 
     assert r.status_code == 200
     assert r.json()["backtests"][0]["brier_diff_se"] is None
+
+
+def test_the_latest_replay_is_the_newest_run_time_not_the_last_row_inserted():
+    """CodeRabbit (Major, on #74): the endpoint kept the last row per pair in `id` order. An older run
+    that FINISHES LAST gets the larger id, so the stale replay would be published as the latest — and
+    since #83 prints `replayed <created_at>`, the page would show a stale date as if it were current."""
+    db = FakeJournalDB(lambda: NOW)
+    db.tables["journal_backtests"] = [
+        # an OLD run (earlier created_at) that finished LAST, so it has the bigger id
+        {"id": 9, "forecaster": "gold_direction", "forecaster_version": "gold-wf-v1", "n": 700,
+         "bss": 0.001, "brier": 0.2469, "brier_baseline": 0.2470,
+         "date_from": "2023-10-01", "date_to": "2026-09-30", "by_year": {},
+         "created_at": "2026-09-30T00:00:00+00:00"},
+        # the NEWEST run by its own run time, inserted first
+        {"id": 4, "forecaster": "gold_direction", "forecaster_version": "gold-wf-v1", "n": 752,
+         "bss": 0.0006, "brier": 0.2468, "brier_baseline": 0.2470,
+         "date_from": "2023-10-01", "date_to": "2026-09-30", "by_year": {},
+         "created_at": "2026-10-01T00:00:00+00:00"},
+    ]
+    api_main.app.dependency_overrides[api_main.get_supabase] = lambda: db
+    try:
+        body = TestClient(api_main.app).get("/api/journal/backtests").json()
+    finally:
+        api_main.app.dependency_overrides.clear()
+    assert [r["n"] for r in body["backtests"]] == [752], "the stale run was published as the latest"
+    assert body["backtests"][0]["created_at"].startswith("2026-10-01")
+
+
+def test_a_window_larger_than_the_fetched_history_asks_for_enough_history():
+    """CodeRabbit (Major, on #74): `HISTORY_DAYS` is 3700, which covers `--years 3`. A larger `--years`
+    starts before the fetched data, so the replay would score only the part it has while still storing
+    the full requested window -- claiming history that was never scored.
+
+    Asserts on what the fetch ASKED FOR, which is the property directly. Asserting on the scored window
+    instead needs >500 training rows of fixture to produce a single scored session, and then only
+    measures the consequence rather than the cause.
+    """
+    from tradehub.journal.spx import HISTORY_DAYS
+
+    closes = _closes(n=1400)
+    asked: list[date] = []
+
+    def fetch(start):
+        asked.append(start)
+        return closes, "America/New_York"
+
+    now = datetime(2021, 6, 1, tzinfo=UTC)
+    end = now.date() - timedelta(days=1)
+    start = end - timedelta(days=365 * 3)
+    bd.run(now, 3, sources={("a", "a-v1"): (fetch, None)})
+
+    assert asked, "the source was never called"
+    # enough for the requested window PLUS the training/climatology history the replay needs
+    assert asked[0] <= now.date() - timedelta(days=max(HISTORY_DAYS, (end - start).days + HISTORY_DAYS))
+    assert asked[0] <= start, "the fetch started after the window it had to cover"
+
+    # and a window wider than the data must report what was scored, not what was asked for
+    wide = _closes(n=1400)
+    out = bd.run(now, 20, sources={("a", "a-v1"): (lambda _s: (wide, "America/New_York"), None)})[0]
+    if out.get("n"):
+        assert out["date_from"] >= min(wide).isoformat()

@@ -171,7 +171,12 @@ def test_a_read_failure_of_any_kind_is_not_measured_not_empty():
     probability (`TypeError`) escaped and took the whole scan down instead of falling back to the
     predictor's published calibration."""
     class NoTableAttribute:
-        table = None   # a client that is not a Supabase stub: calling `.table` raises TypeError
+        # NO `table = None` here: a class attribute shadows `__getattr__`, so the reader would get a
+        # TypeError from calling None rather than the AttributeError this case exists to cover --
+        # CodeRabbit caught that on #77, and both cases then tested the same exception type. With the
+        # attribute gone, this one raises AttributeError and `MalformedRow` raises TypeError.
+        def __getattr__(self, _name):
+            raise AttributeError("'NoTableAttribute' object has no attribute 'table'")
 
     class MalformedRow:
         def table(self, _name):
