@@ -6,8 +6,8 @@ It used to be written down twice, and nothing tied the two copies together:
 - an inlined `("winner", "spread", "total")` inside `feed.parse_feed` -- the kinds it reads off the
   predictor's payload.
 
-and a third site agreed with both only by review: `sports/scan.py` FILTERS settled rows down to
-these kinds, so the two copies were not two views of one list -- the second one was a filter, and
+and a third site agreed with both only by review: a settled-ledger reader FILTERS settled rows down
+to these kinds, so the two copies were not two views of one list -- the second one was a filter, and
 anything it left out left the ledger silently. Add a fourth kind to the feed and every settled row
 of that kind disappears with nothing logged, while the feed's own band list for it is read and
 judged: the record on one side, the evidence on the other, and no word about the gap.
@@ -18,11 +18,14 @@ a site that has drifted from this list is a site that stopped importing it -- wh
 reads and publishes.
 
 **Unrecognised kinds are reported, not dropped.** Both places that can meet a kind this build does
-not know -- the payload's calibration keys (`parse_feed`) and a settled row's `raw_payload.kind`
-(`scan._hub_settled_ledger`) -- count what they cannot use, because "nothing of that kind settled" and
-"that kind is one this build cannot read" look identical from every downstream number and are not
-the same fact: the first is an absence of evidence, the second is a gap in the build. Both read as a
-band with `n: 0`, so the distinction has to be carried rather than inferred.
+not know -- the payload's calibration keys (`parse_feed`) and a settled ledger's kinds
+(`HubLedger.unrecognised_by_engine`, filled in by whichever reader built it) -- count what they cannot
+use, because "nothing of that kind settled" and "that kind is one this build cannot read" look
+identical from every downstream number and are not the same fact: the first is an absence of evidence,
+the second is a gap in the build. Both read as a band with `n: 0`, so the distinction has to be
+carried rather than inferred. The live reader, `journal_ledger.journal_settled_ledger`, asks only for
+forecaster names it composes itself and so always reports `{}`; the reporting channel is kept because
+`_unrecognised_for` publishes whatever it is given.
 
 **All three of those reports reach a human as a `per_sport` key, and none of them is only a log
 line.** The feed's rides at `feed_unrecognised_kinds` (`Feed.unrecognised_kinds`), the ledger's at
@@ -41,14 +44,14 @@ the ledger's filter are the same membership test against the same value, and a s
 importing it is a site the identity test in `tests/test_sports_inversion.py` fails on.
 
 `unrecognised()` is the reporting helper for a caller that has already found names it cannot use and
-has to say so, which is the feed: a payload is a set of keys, so the whole answer exists at once.
-The ledger's rows arrive one at a time, so that side tallies as it goes and reports the tally in the
-run report -- see `scan.HubLedger`.
+has to say so, which is the feed: a payload is a set of keys, so the whole answer exists at once. A
+ledger's rows arrive one at a time, so that side tallies as it goes and reports the tally in the run
+report -- see `scan.HubLedger`.
 
 The feed's answer is a LIST of names and the ledger's is a COUNT per name, and the difference is not
 a stylistic one. The payload is a single object read once, so the set of names is fully known
-immediately; the ledger is a paged stream, so a count can only be finished after the last page, and
-a count taken from a read that never completed is a count nobody can trust (which is why a failed
+immediately; a ledger is read in pages, so a count can only be finished after the last one, and a
+count taken from a read that never completed is a count nobody can trust (which is why a failed
 ledger read returns `read_failed=True` rather than a cheerful `{}`). Both shapes are the convention
 for "a real measurement of a build gap", and neither is the same as an absent key.
 """

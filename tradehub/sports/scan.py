@@ -37,11 +37,6 @@ from tradehub.sports.reviewer import (
 
 SPORTS = ("nfl", "cfb")
 LEDGER_CHUNK = 100
-# PostgREST's default max rows per response, so a read that has to see more pages with .range().
-# Same number and same reason as `POSTGREST_CAP` in api/main.py and `PAGE_SIZE` in
-# settlement.py / track_record.py; not imported from the API module because that module is a FastAPI
-# app and the sports scan has no business importing one.
-LEDGER_PAGE = 1000
 
 log = logging.getLogger(__name__)
 
@@ -454,7 +449,9 @@ class HubLedger:
     - `pairs_by_engine` is the record the hub calibrates on: `engine -> kind -> [(our_prob, hit)]`.
     - `unrecognised_by_engine` counts the settled rows this build had to keep OUT of that record
       because they named a kind outside `sports.kinds.KINDS`, keyed the same way:
-      `engine -> kind -> rows`.
+      `engine -> kind -> rows`. `journal_ledger.journal_settled_ledger`, the live reader, asks only
+      for forecaster names it composes itself and so always hands back `{}`; the field stays because
+      `_unrecognised_for` publishes it either way.
     - `read_failed` says the read did not complete, so nothing above was measured.
 
     Without the second, "this kind has no hub record" reads identically whether nothing of that kind
@@ -803,7 +800,7 @@ def sports_due(now: datetime) -> bool:
 # makes `.get(sport, "")` return `""` and file that sport's settled rows nowhere.
 #
 # Left as three, deliberately: the API module is a FastAPI app and the scan has no business
-# importing one (the same reason `LEDGER_PAGE` is not imported from `api/main.py` either), so the
+# importing one (the same reason no constant is imported from `api/main.py`), so the
 # fix is a shared constants module rather than a one-line import -- a change of shape, not a fix.
 # Recorded so the next reader counts four sites rather than three and knows the shape of the thing
 # being inherited. What ties `KINDS`' copies together today is an identity test in
@@ -884,121 +881,6 @@ def prune_sports_if_healthy(
             errors.append(f"{engine}.cleanup: {type(exc).__name__}: {exc}")
             log.exception("scan stale-edge cleanup failed engine=%s", engine)
     return errors
-
-
-def _hub_settled_ledger(supa) -> HubLedger:
-    """The hub's own settled sports record: `engine -> kind -> [(our_prob, hit), ...]`, plus the
-    settled rows this build could not place.
-
-    Read here, by the cron entry point, because `run_sports_scan` has no database access: it takes
-    kalshi, fetch, store and reviewer, and no supa. The scan is given the answer rather than a way to
-    look it up, which is also what keeps it testable without a database.
-
-    Three things about the shape, each of which was a real hole in the first version:
-
-    **BY KIND.** A row's kind is `raw_payload.kind`, and that is a fact the hub's own scan wrote
-    (`build_prediction_row(... raw_payload={"kind": kind ...})` above), not an inference. A row that
-    names a kind is filed under it; a row that names none is filed as a winner, which is what the
-    scan has always written for a winner market. So the ledger speaks for all three kinds, and
-    publishing only some of them is not a narrowing of the record -- it is every spread and total
-    edge becoming `calibration_insufficient` the day the hub crosses the threshold. An earlier ruling
-    said winner-only, on the premise that a wrong kind attribution is worse than an absent one; the
-    premise was false, because the hub is the only writer of this field.
-
-    **This function no longer holds the hub's live settled record.** `journal_ledger.journal_settled_`
-    `ledger` replaced it in the cron path; this is kept because it documents the old rule and nothing in
-    production calls it. Its reader reports all three kinds and `journal_ledger` deliberately does not --
-    for a reason about band coverage, not readability, stated in `journal_ledger.py` and in
-    `sports.kinds.KINDS`. Do not read the paragraph above as an argument against that narrowing.
-
-    The kinds come from `sports.kinds.KINDS` -- the same object `parse_feed` reads the payload
-    against -- because this filter is what makes an omission here a deletion of evidence rather than
-    a narrower view of it. A row of a kind outside KINDS is not `continue`d in silence: it is tallied
-    per engine onto `HubLedger.unrecognised_by_engine`, which `run_sports_scan` publishes in the run
-    report at `per_sport[sport]["unrecognised_kinds"]`. That is the channel, and it is the only
-    durable one: a log line in this codebase is demonstrably not an observed channel -- `core/
-    supabase_client.py` upserts to four tables that never existed with bare `print()`s, and nobody
-    found out for the life of the system (hence the migration guard in PR #20). A guard whose
-    evidence is a log line is the same failure as `feed:unknown` sitting on 100 live rows: the fact
-    is true, recorded, and in a place nobody reads. "This build cannot read that kind" and "nothing
-    of that kind has settled" are different failures and every number downstream is blind to the
-    difference, because both produce a band with `n: 0`. The log line below is kept as the immediate
-    half of the report; it is not the half the finding depends on.
-
-    **BY ENGINE.** One ledger shared across both sports would put NFL's rows into CFB's bands and the
-    reverse. They are different models with different records (NFL 0 settled, CFB ~61), so a sport
-    that reached the threshold would be handing out a calibration built from another sport's history.
-    Keyed by engine so `run_sports_scan` can give each `scan_sport` only its own sport's pairs, and
-    so the unrecognised tally is attributable to the sport that owns the rows. A row with no engine
-    is skipped entirely: it cannot be filed, and it cannot be attributed to a sport either, so
-    counting it would report a gap against a sport it does not belong to. (Unreachable from the
-    database -- the query filters `engine` to the two sports -- but a row is a row.)
-
-    **PAGED, ORDERED, ON `id`.** A single `.execute()` returns at most PostgREST's 1000-row cap, so
-    past that point the component that is supposed to BE the authority would be deciding on whatever
-    1000 rows the query plan happened to return -- a silent wrong answer, not a visible failure. The
-    `.order("id")` is not decoration either: without it, page 1 and page 2 can overlap or skip rows.
-    `id` is the only column on this table that is unique and immutable. The cap is a long way off,
-    not a season away: the filter is `engine IN (sports_nfl, sports_cfb) AND status = SETTLED`, so
-    this read sees only settled SPORTS rows -- low hundreds a season at the outside, against NFL's
-    zero today and CFB's per-kind counts quoted in `candidates.choose_calibration` -- rather than a
-    `predictions` table anywhere near 1000 rows. The machinery is cheap and the failure it prevents
-    is the silent kind, so it stays; the urgency in the original note was several times out of
-    proportion to the volume, and a reader should not come away believing a wrong answer is imminent.
-
-    A failed read returns nothing rather than raising: this is a new failure mode on the sports path
-    and it must not be able to cost a scan that works perfectly well on the published calibration.
-    A failed read also discards the unrecognised-kind tally, because a count taken from a ledger
-    that was never complete is a count nobody can trust -- and it returns `read_failed=True` so the
-    run report says "not measured" rather than "measured, nothing found". The `log.exception` is the
-    immediate half of that report; the flag is the half the summary can carry.
-    """
-    pairs: dict[str, dict[str, list[tuple[float, bool]]]] = {}
-    unknown: dict[str, dict[str, int]] = {}
-    start = 0
-    while True:
-        try:
-            page = (
-                supa.table("predictions").select("engine,our_prob,result,raw_payload")
-                .in_("engine", sorted(SPORTS_ENGINES.values())).eq("status", "SETTLED")
-                .order("id").range(start, start + LEDGER_PAGE - 1).execute().data or []
-            )
-        except Exception:
-            log.exception("sports scan: hub settled-ledger read failed; using the predictor's calibration")
-            # Empty, because a partial ledger is not a record -- but SAYING it is empty. The two
-            # mappings are the failure's cause and the flag is its report: without it a failed read
-            # publishes `unrecognised_kinds: {}`, which is the reassuring answer to a question this
-            # run never asked, and `log.exception` above is the only other witness.
-            return HubLedger(read_failed=True)
-        for row in page:
-            prob, result = row.get("our_prob"), row.get("result")
-            if not isinstance(prob, (int, float)) or result not in ("yes", "no"):
-                continue
-            engine = row.get("engine")
-            if not engine:
-                continue
-            # Absent or null kind is a winner row: that is what the scan writes for a winner market.
-            kind = (row.get("raw_payload") or {}).get("kind") or "winner"
-            if kind not in KINDS:
-                tally = unknown.setdefault(engine, {})
-                tally[kind] = tally.get(kind, 0) + 1
-                continue
-            pairs.setdefault(engine, {}).setdefault(kind, []).append((float(prob), result == "yes"))
-        if len(page) < LEDGER_PAGE:
-            for engine, tally in sorted(unknown.items()):
-                log.warning(
-                    "sports scan: engine %s has %d settled row(s) of %d kind(s) this build does not "
-                    "recognise (%s). Those rows are NOT in the ledger, so those kinds stay on the "
-                    "predictor's published calibration, or on no record at all -- a build that does "
-                    "not know the kind, not a kind with nothing settled. Adding it to "
-                    "tradehub/sports/kinds.py is the fix. This is the same tally the run report "
-                    "publishes as per_sport[...]['unrecognised_kinds'].",
-                    engine, sum(tally.values()), len(tally),
-                    ", ".join(f"{kind}={n}" for kind, n in sorted(tally.items())),
-                )
-            return HubLedger(pairs, {e: {k: n for k, n in sorted(t.items())}
-                                     for e, t in sorted(unknown.items())})
-        start += LEDGER_PAGE
 
 
 def run_sports_for_cron(now: datetime, supa, *, deadline: float | None = None) -> SportsRun:

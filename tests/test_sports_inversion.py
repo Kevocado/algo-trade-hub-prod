@@ -28,11 +28,9 @@ Three things this file also pins, because each was a live hole rather than a dec
 
 And three more, from the second fix round, each the same shape of hole found one increment later:
 
-- **A failed page-two read throws page one away.** The fake reaches page two and the test says so;
-  a fake that failed on page one proved nothing, because nothing had accumulated to lose.
-- **One list of kinds, and the rows it cannot hold are reported.** The triple was written twice --
-  `hub_calibration.KINDS` and an inlined copy in `parse_feed` -- and `scan.py` FILTERS settled rows
-  down to it, so a second copy is not a second view of the list, it is a filter whose exclusions
+- **One list of kinds, and the names it cannot hold are reported.** The triple was written twice --
+  `hub_calibration.KINDS` and an inlined copy in `parse_feed` -- and a settled-ledger reader FILTERS
+  rows down to it, so a second copy is not a second view of the list, it is a filter whose exclusions
   were silent. A fourth kind would have deleted every settled row of itself with nothing logged.
 - **The review cache key names the calibration source.** The same market is judged on the
   predictor's record until the hub has enough settled rows of its kind and on the hub's own record
@@ -62,6 +60,7 @@ from tradehub.sports import scan as scan_mod
 from tradehub.sports.candidates import HUB_LEDGER_MIN_SETTLED, check_candidate, choose_calibration
 from tradehub.sports.feed import FeedGame, parse_feed
 from tradehub.sports.hub_calibration import HUB_ORIENTATION, KINDS, settled_buckets
+from tradehub.sports.journal_ledger import journal_settled_ledger
 from tradehub.sports.kalshi import SportsMarket
 from tradehub.sports.mapping import MatchedGame
 from tradehub.sports.reviewer import SYSTEM_PROMPT, MemoryReviewStore, Review, cache_key
@@ -939,64 +938,12 @@ def test_a_verdict_reasoned_over_the_predictor_is_not_served_for_the_hubs_record
     )
 
 
-# ── the ledger read: per kind, per engine, paged ─────────────────────────────────────────────
-
-
-class _Query:
-    """A PostgREST-shaped builder that records what it was asked for, in the style of
-    test_sports_scan.py's `unrecorded` fake, and that CAPS a response the way PostgREST does."""
-
-    def __init__(self, supa):
-        self.supa = supa
-
-    def select(self, *columns):
-        self.supa.asked["select"] = [c.strip() for c in ",".join(columns).split(",")]
-        return self
-
-    def in_(self, column, values):
-        self.supa.asked["engine"] = (column, sorted(values))
-        return self
-
-    def eq(self, column, value):
-        self.supa.asked["eq"] = (column, value)
-        return self
-
-    def order(self, column):
-        self.supa.asked.setdefault("order", []).append(column)
-        return self
-
-    def range(self, lo, hi):
-        self.supa.ranges.append((lo, hi))
-        return self
-
-    def execute(self):
-        rows = self.supa.rows
-        if self.supa.ranges:
-            lo, hi = self.supa.ranges[-1]
-            # PostgREST `Range: lo-hi` is INCLUSIVE of hi, and a paged read with no `.order()` is a
-            # bug here: without a stable order two pages can repeat a row and skip another.
-            if not self.supa.asked.get("order"):
-                raise AssertionError("the ledger was paged with .range() and no .order()")
-            rows = rows[lo:hi + 1]
-        return type("R", (), {"data": rows[:self.supa.cap]})()
-
-
-class _Supa:
-    def __init__(self, rows, cap=1000):
-        self.rows, self.cap = rows, cap
-        self.asked: dict = {}
-        self.ranges: list = []
-
-    def table(self, name):
-        self.asked["table"] = name
-        return _Query(self)
-
-
-def _ledger(rows, cap=1000):
-    """The whole `HubLedger`, not just its pairs: these tests read both halves of it, and a helper
-    that unpacked the pairs for them would hide the shape change from every one of them."""
-    supa = _Supa(rows, cap=cap)
-    return scan_mod._hub_settled_ledger(supa), supa
+# ── the ledger the scan is handed ──────────────────────────────────────────────────────────────
+#
+# The `predictions`-table reader is gone; `journal_ledger.journal_settled_ledger` is the live one and
+# `tests/test_sports_journal_ledger.py` proves it. What stays here is what is true of the ledger the
+# scan is HANDED: a read that failed leaves the predictor's calibration in charge, and the two
+# diagnostics in the run summary say "not measured" rather than the reassuring empty answer.
 
 
 def _hub(pairs_by_engine, unrecognised_by_engine=None):
@@ -1004,148 +951,17 @@ def _hub(pairs_by_engine, unrecognised_by_engine=None):
     return scan_mod.HubLedger(pairs_by_engine, unrecognised_by_engine or {})
 
 
-def _row(engine, prob, result, kind=None, **extra):
-    payload = dict(extra)
-    if kind is not None:
-        payload["kind"] = kind
-    return {"engine": engine, "our_prob": prob, "result": result, "raw_payload": payload,
-            "id": extra.get("id", 0)}
-
-
-def test_the_ledger_read_files_every_kind_under_its_own_name():
-    """Kind is `raw_payload.kind`, and `sports/scan.py` writes it -- the hub is the only writer of
-    that field, so reading it is not a guess. A row naming a kind is filed under it; a row naming none
-    is filed as a winner, which is what the scan has always written for a winner market.
-
-    The spread and total rows are the point. Delete the kind read and they land in `winner`, every
-    winner band is contaminated with another kind's history, and this test fails -- which is what
-    makes the corrected ruling covered rather than merely implemented.
-    """
-    rows = [
-        _row("sports_nfl", 0.65, "yes", "winner"),
-        _row("sports_nfl", 0.62, "no", "winner"),
-        # No kind at all: what the scan has always written for a winner market, so it is a winner.
-        _row("sports_cfb", 0.40, "no"),
-        _row("sports_nfl", 0.30, "no", "spread"),
-        _row("sports_nfl", 0.30, "yes", "spread"),
-        _row("sports_cfb", 0.72, "yes", "total"),
-        # Not settled, or not a graded binary: no win/loss signal to learn from.
-        _row("sports_nfl", 0.55, None, "winner"),
-        _row("sports_nfl", None, "yes", "winner"),
-        # A kind nothing in this codebase writes. Not guessed into another kind's bands.
-        _row("sports_nfl", 0.51, "yes", "moneyline"),
-    ]
-    ledger, supa = _ledger(rows)
-
-    assert ledger.pairs_by_engine == {
-        "sports_nfl": {"winner": [(0.65, True), (0.62, False)],
-                       "spread": [(0.30, False), (0.30, True)]},
-        "sports_cfb": {"winner": [(0.40, False)], "total": [(0.72, True)]},
-    }
-    # The kind nothing writes is not in the record, and it is not nowhere either: it is counted
-    # under the engine that owns the row. Attribution is the half that is easy to get wrong, and a
-    # flat tally would report an NFL gap against CFB as well.
-    assert ledger.unrecognised_by_engine == {"sports_nfl": {"moneyline": 1}}
-    assert supa.asked["table"] == "predictions"
-    assert supa.asked["eq"] == ("status", "SETTLED")
-    assert supa.asked["engine"] == ("engine", ["sports_cfb", "sports_nfl"])
-    # Without raw_payload in the select there is no kind to honour, and the filter would be reading
-    # a kind it never looked at.
-    assert "raw_payload" in supa.asked["select"]
-
-
-def test_the_kinds_the_scan_writes_come_back_out_of_the_ledger_under_those_names():
-    """The loop, closed. The two halves of the kind contract were pinned separately and never
-    together: the reader asserts that a row naming a kind is filed under it, and the producer is
-    asserted -- for ONE of the three kinds -- in `test_sports_scan.py`, on a hand-built row. Nothing
-    connected the two, so the guarantee "the kind on a settled row is the kind of the market it was
-    written for" rested entirely on review noticing both.
-
-    The failure that leaves open is specific and entirely silent. `scan.py` writes
-    `raw_payload={"kind": kind, ...}` for every market, and `_hub_settled_ledger` reads
-    `(row.get("raw_payload") or {}).get("kind") or "winner"`. A producer that stopped writing `kind`
-    for SPREAD and TOTAL -- a copy-paste, a payload key renamed for two of three branches -- would
-    file every one of those rows as a winner. Not as an error, and not as a gap:
-    `unrecognised_kinds` would be `{}`, because "winner" IS in `sports.kinds.KINDS`. The whole
-    corrected ruling -- every kind judged on its own settled record, no kind borrowing another's
-    count -- would be silently undone, and no test in the suite would notice. That is the
-    overturned winner-only ruling returning through the producer instead of through the reader.
-
-    So this takes the rows the scan ACTUALLY wrote -- not a hand-built row naming a kind -- and
-    reads them back with the production reader. The expectation is derived from those same rows, so
-    the two halves cannot drift: a row written with no kind at all is counted under `None` and fails
-    the first assertion by name, rather than being quietly read back as the winner it will be filed
-    as.
-    """
-    result = _scan(_recorded_feed())
-
-    written: dict[str | None, int] = {}
-    for row in result.predictions:
-        kind = (row["raw_payload"] or {}).get("kind")
-        written[kind] = written.get(kind, 0) + 1
-    assert set(written) == set(KINDS), (
-        f"the scan wrote kinds {sorted(str(k) for k in written)}; the recorded feed has markets for "
-        f"all three, and a row written with no kind is filed as a winner by the reader"
-    )
-    assert all(count for count in written.values()), written
-
-    # Settled. The read keys on `result` and `our_prob`; a prediction row carries both as the scan
-    # wrote them, so this is the same shape the database hands back.
-    settled, _supa = _ledger([{**row, "result": "yes"} for row in result.predictions])
-    filed = {kind: len(pairs) for kind, pairs in settled.pairs_by_engine["sports_nfl"].items()}
-
-    assert filed == written, (
-        f"the scan wrote {written} and the ledger filed {filed}: a kind the reader cannot read back "
-        f"is a kind whose evidence is in the wrong bands"
-    )
-    # The silent half, pinned so it is a fact and not a hope: the fallback means a lost kind shows
-    # up as a FILING, never as a build gap, so the run report cannot be the thing that catches it.
-    assert settled.unrecognised_by_engine == {}, (
-        "a row that lost its kind is filed as a winner rather than reported, so `unrecognised_kinds` "
-        "stays empty and cannot be the guard here"
-    )
-    # And the bands the ledger then cuts are per kind, so the mixed record would also have inflated
-    # the winner counts the hub's own threshold is judged on.
-    bands = scan_mod._hub_calibration(_recorded_feed(), settled.pairs_by_engine["sports_nfl"])
-    assert set(bands) == set(KINDS)
-    assert sum(band["n"] for bands_of in bands.values() for band in bands_of) == sum(written.values())
-
-
-def test_the_ledger_read_pages_the_whole_table_in_a_stable_order():
-    """A single `.execute()` past PostgREST's 1000-row cap does not fail -- it silently returns
-    whatever 1000 rows the plan produced, and the gate that is supposed to BE the authority decides
-    on them. That is a wrong answer with no error attached.
-
-    The cap is a long way from this read's own volume: the query filters the two sports engines and
-    `status = SETTLED`, so it sees low hundreds of rows a season and not a `predictions` table near
-    1000. The machinery is cheap and the failure is silent, so it stays -- but the test is here
-    because the day the cap is crossed the answer is wrong, not loud, and nothing else here would
-    notice.
-
-    The order is load-bearing for the same reason: without ORDER BY, page 1 and page 2 can repeat a
-    row and skip another. `id` is the only column here that is unique and immutable. The fake below
-    raises rather than paging unordered, so this test cannot pass by accident.
-    """
-    rows = [_row("sports_nfl", 0.10 + i / 2000, "yes" if i % 2 else "no", "winner", id=i)
-            for i in range(1250)]
-    ledger, supa = _ledger(rows)
-
-    assert supa.ranges == [(0, 999), (1000, 1999)], "one 1000-row page, then the remainder"
-    assert set(supa.asked["order"]) == {"id"}, "every page ordered, on the one immutable column"
-    assert len(supa.asked["order"]) == len(supa.ranges)
-    pairs = ledger.pairs_by_engine["sports_nfl"]["winner"]
-    assert len(pairs) == 1250, f"a 1250-row ledger was read as {len(pairs)} rows"
-    assert pairs[0] == (0.10, False) and pairs[-1] == (0.10 + 1249 / 2000, True)
-
-
 def test_a_ledger_read_that_fails_leaves_the_predictors_calibration_in_charge():
-    """The ledger read is a new failure mode on the sports path, and it must not be able to cost the
-    scan: the pre-change behaviour is a working scan on the published calibration."""
+    """The ledger read is a failure mode on the sports path, and it must not be able to cost the
+    scan: the pre-change behaviour is a working scan on the published calibration.
+
+    Driven at `journal_ledger.journal_settled_ledger`, the reader the cron path uses. It used to be
+    driven at the deleted `predictions` reader; the property is the scan's, not that reader's."""
     class Broken:
         def table(self, _name):
             raise RuntimeError("postgrest 500")
 
-    ledger = scan_mod._hub_settled_ledger(Broken())
+    ledger = journal_settled_ledger(Broken())
 
     # An empty ledger, not a `{}`-shaped one that happens to compare equal: the tally is empty too,
     # because a count taken from a read that failed is not a count. What it is NOT allowed to be is
@@ -1158,76 +974,18 @@ def test_a_ledger_read_that_fails_leaves_the_predictors_calibration_in_charge():
     )
 
 
-def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_truncated_record():
-    """A partial ledger is worse than none: it is a real measurement with rows silently missing, and
-    the hub would be in charge of bands that do not say how thin they are. So a failure on page two
-    discards page one too.
-
-    "Mid-paging" is the whole claim, so the fake has to be there. The first version of this test
-    raised on its first call while claiming to fail on the second: nothing had been accumulated, page
-    one was never read, and `== {}` then held whether the implementation threw the partial away or
-    returned it. `return ledger` on the failure path left the whole 831-test suite green.
-    """
-    class Flaky:
-        """Serves page one -- a FULL page, or the loop stops and never reaches the failure -- and
-        then dies. `served` keeps the first page's fake so the test can see what it asked for."""
-
-        def __init__(self, rows):
-            self.rows, self.calls, self.served = rows, 0, []
-
-        def table(self, _name):
-            self.calls += 1
-            supa = _Supa(self.rows)
-            self.served.append(supa)
-            if self.calls > 1:
-                raise RuntimeError(f"postgrest 500 on page {self.calls}")
-            return _Query(supa)
-
-    rows = [_row("sports_nfl", 0.5, "yes", "winner", id=i) for i in range(scan_mod.LEDGER_PAGE + 200)]
-    # One row of a kind this build cannot read, inside the full first page. Without it the tally
-    # assertion below would hold on an empty tally, and "the failure path discards the tally too"
-    # would be a claim about nothing.
-    rows[0] = _row("sports_nfl", 0.5, "yes", "moneyline", id=0)
-    flaky = Flaky(rows)
-
-    assert len(rows) > scan_mod.LEDGER_PAGE, (
-        "page one has to be FULL: a short page ends the read and the failure is never reached"
-    )
-    ledger = scan_mod._hub_settled_ledger(flaky)
-
-    # It demonstrably got to page two. Without these the assertion below proves nothing, because a
-    # read that failed on page one would also read as empty and for the wrong reason.
-    assert flaky.calls == 2, f"the read must fail on page two; it made {flaky.calls} call(s)"
-    assert flaky.served[0].ranges == [(0, scan_mod.LEDGER_PAGE - 1)], "page one was paged and full"
-
-    # And page one was not empty, so the assertions below are a claim about discarding a partial
-    # record rather than a claim that there was nothing to discard.
-    healthy, _supa = _ledger(rows)
-    assert len(healthy.pairs_by_engine["sports_nfl"]["winner"]) > scan_mod.LEDGER_PAGE, (
-        "the same read with nothing broken keeps page one's rows, so the flaky one had some to lose"
-    )
-    assert healthy.unrecognised_by_engine == {"sports_nfl": {"moneyline": 1}}, (
-        "the healthy read has a tally to lose too, or the next assertion is vacuous"
-    )
-    assert ledger == scan_mod.HubLedger(read_failed=True), (
-        f"a failure on page two must discard page one's {scan_mod.LEDGER_PAGE} rows and its tally "
-        f"too, not hand back a truncated record: {list(ledger.pairs_by_engine)} / "
-        f"{ledger.unrecognised_by_engine}"
-    )
-
-
 # ── one list of kinds, and what happens to a kind that is not on it ────────────────────────────
 #
 # The triple was written down twice -- `hub_calibration.KINDS` and an inlined copy inside
 # `parse_feed` -- and nothing tied the two together. It was not two views of one list, though. It was
-# a list and a FILTER: `scan._hub_settled_ledger` keeps only the kinds on it, so the inlined copy
+# a list and a FILTER: a settled-ledger reader keeps only the kinds on it, so the inlined copy
 # decided which settled evidence the hub was allowed to have. Add a fourth kind to the predictors
 # and every settled row of that kind would have been deleted with nothing logged, while the feed's
 # own band list for the same kind was read and judged -- the record on one side, the evidence on the
 # other, and no word about the gap.
 #
 # So the list now lives in `tradehub/sports/kinds.py` and is imported by every site that has to
-# agree with it, and a kind outside it is reported rather than dropped. Both reports now reach a
+# agree with it, and a kind outside it is reported rather than dropped. Both reports reach a
 # human as a `per_sport` key in the run summary, and NEITHER is a log line alone:
 #
 #   - `parse_feed` records the payload's unread names on `Feed.unrecognised_kinds`, and
@@ -1236,12 +994,14 @@ def test_a_ledger_read_that_fails_mid_paging_reads_as_nothing_rather_than_a_trun
 #     returns -- which used to be the argument for the log being the only place it could go. It is
 #     not: the caller is handed the whole `Feed`, so the list rides along exactly as
 #     `Feed.n_buckets` already did.
-#   - `_hub_settled_ledger` returns the tally on `HubLedger.unrecognised_by_engine`, and
+#   - a reader tallies what it could not file onto `HubLedger.unrecognised_by_engine`, and
 #     `run_sports_scan` publishes it as `per_sport[sport]["unrecognised_kinds"]`. Its rows arrive one
 #     at a time and it runs once in the cron entry point, so the report it has to reach is the one
 #     the caller builds. A log line here would be evidence nobody reads -- this codebase upserts to
 #     four tables that never existed, with bare `print()`s, for its whole life without anyone
-#     noticing (the migration guard in PR #20).
+#     noticing (the migration guard in PR #20). The live reader asks only for forecaster names it
+#     composes itself, so in practice it tallies `{}`; the channel stays because `_unrecognised_for`
+#     publishes whatever it is handed, and the tests below hand it a tally.
 #
 # The two are SEPARATE keys rather than one merged tally, because the consequences differ and a
 # single number could not say which was which: a settled row this build cannot file is evidence
@@ -1317,54 +1077,6 @@ def test_a_feed_that_publishes_no_unknown_kind_says_nothing(caplog):
         parse_feed(json.loads((FIXTURES / "nfl_kalshi_feed.json").read_text()))
 
     assert "recognise" not in caplog.text, caplog.text
-
-
-def test_settled_rows_of_a_kind_this_build_cannot_read_are_reported_not_dropped(caplog):
-    """The ledger half, and the rows are the reason it matters: these are real settled results with
-    a recorded hit, and keeping them out of the record is a deletion rather than a narrower view of
-    it. The behaviour is unchanged -- the rows are still not filed anywhere -- and what the report
-    carries is the count, so "the hub has no record of this kind" can be read as the gap in the
-    build that it is instead of as an absence of evidence.
-
-    Two channels, because they are not substitutes. The log is the immediate one: the read happens
-    once in the cron entry point, so this line is what an operator sees during the run. The tally on
-    the returned `HubLedger` is the durable one, and it is the one `run_sports_scan` puts in the run
-    report, because a log line here is a place nobody reads."""
-    rows = [_row("sports_nfl", 0.65, "yes", "winner"),
-            _row("sports_nfl", 0.51, "yes", "moneyline"),
-            _row("sports_nfl", 0.52, "no", "moneyline"),
-            _row("sports_cfb", 0.53, "yes", "prop")]
-
-    with caplog.at_level(logging.WARNING, logger="tradehub.sports.scan"):
-        ledger, _supa = _ledger(rows)
-
-    assert ledger.pairs_by_engine == {"sports_nfl": {"winner": [(0.65, True)]}}
-    assert ledger.unrecognised_by_engine == {"sports_nfl": {"moneyline": 2}, "sports_cfb": {"prop": 1}}
-    assert "does not recognise" in caplog.text
-    assert "moneyline=2" in caplog.text and "prop=1" in caplog.text, caplog.text
-    # Each engine's own line carries its own count, so a reader learns which sport has the gap and
-    # not merely that somewhere in the table one does.
-    assert "engine sports_nfl has 2 settled row(s)" in caplog.text, caplog.text
-    assert "engine sports_cfb has 1 settled row(s)" in caplog.text, caplog.text
-    # And the line has to be about the BUILD, or a reader takes the missing kind for a fact about
-    # the market rather than a fact about this deployment.
-    assert "not a kind with nothing settled" in caplog.text
-
-
-def test_a_ledger_of_only_known_kinds_says_nothing_about_unrecognised_ones(caplog):
-    """The inverse guard, for the same reason: a report that fires on a normal read is noise, and
-    noise is how the real one stops being read. Asserted on the tally as well as the log, because a
-    key that is present and empty is a different claim from one that is absent -- the reader has to
-    be able to see "nothing here" rather than guess it."""
-    rows = [_row("sports_nfl", 0.65, "yes", "winner"), _row("sports_nfl", 0.30, "no", "spread")]
-
-    with caplog.at_level(logging.WARNING, logger="tradehub.sports.scan"):
-        ledger, _supa = _ledger(rows)
-
-    assert ledger.pairs_by_engine == {"sports_nfl": {"winner": [(0.65, True)],
-                                                     "spread": [(0.30, False)]}}
-    assert ledger.unrecognised_by_engine == {}
-    assert "does not recognise" not in caplog.text
 
 
 # ── one ledger per sport, all the way through `run_sports_scan` ───────────────────────────────
@@ -1467,12 +1179,14 @@ def test_the_run_report_carries_a_settled_kind_this_build_cannot_read():
 
     CFB is the control, and without it the first assertion would be satisfied by a key that is
     simply never empty. Both facts have to be readable, and neither is inferable from the other.
+
+    Hand-built ledger rather than a read: the live reader (`journal_ledger`) asks only for forecaster
+    names it composes itself, so it can never hand back a tally, and this is about what `run_sports_scan`
+    does with one it is given.
     """
-    rows = [_row("sports_nfl", 0.65, "yes", "winner"),
-            _row("sports_nfl", 0.51, "yes", "moneyline"),
-            _row("sports_nfl", 0.52, "no", "moneyline"),
-            _row("sports_cfb", 0.72, "yes", "total")]
-    ledger, _supa = _ledger(rows)
+    ledger = _hub({"sports_nfl": {"winner": [(0.65, True)]},
+                   "sports_cfb": {"total": [(0.72, True)]}},
+                  {"sports_nfl": {"moneyline": 2}})
     run = _both_sports(ledger)
 
     # The gap, per sport, in the run summary beside the rest of the run's state.
@@ -1662,14 +1376,12 @@ def test_the_cron_path_actually_hands_the_ledger_to_the_scan(monkeypatch):
     the query, but nothing else would notice if the cron path stopped passing the result on, and the
     feature would simply never switch over with every test still green.
 
-    Plan 12 moved the cron from `scan._hub_settled_ledger` (every settled `predictions` row) to
-    `journal_ledger.journal_settled_ledger` (one frozen, Kalshi-settled forecast per game and kind), so
-    the ledger handed on is now the journal's. `tests/test_sports_journal_ledger.py` proves that reader;
-    this test still owns the wiring, so it watches the journal reader be called and its exact result be
-    passed through -- and that the old `predictions` reader is not called at all."""
+    Plan 12 moved the cron to `journal_ledger.journal_settled_ledger` (one frozen, Kalshi-settled
+    forecast per game and kind). `tests/test_sports_journal_ledger.py` proves that reader; this test
+    still owns the wiring, so it watches the journal reader be called with the cron entry point's own
+    client and its exact result be passed through to the scan."""
     import tradehub.sports.journal_ledger as jl
 
-    rows = [_row("sports_nfl", 0.28, "yes", "winner"), _row("sports_nfl", 0.28, "no", "winner")]
     monkeypatch.setattr(scan_mod, "SportsKalshi", lambda **_kw: "kalshi")
     monkeypatch.setattr(scan_mod, "SupabaseReviewStore", lambda _supa: "store")
     monkeypatch.setattr(scan_mod, "OpenRouterReviewer", lambda *_a, **_kw: None)
@@ -1682,18 +1394,14 @@ def test_the_cron_path_actually_hands_the_ledger_to_the_scan(monkeypatch):
         called.append(supa)
         return journal
 
-    def fail_if_called(_supa):
-        raise AssertionError("the cron still reads _hub_settled_ledger; plan 12 moved it to the journal")
-
     monkeypatch.setattr(jl, "journal_settled_ledger", fake_journal_ledger)
-    monkeypatch.setattr(scan_mod, "_hub_settled_ledger", fail_if_called)
 
     def fake_scan(_now, _kalshi, **kwargs):
         seen.update(kwargs)
         return scan_mod.SportsRun([], [], {}, {})
 
     monkeypatch.setattr(scan_mod, "run_sports_scan", fake_scan)
-    supa = _Supa(rows)
+    supa = object()
     scan_mod.run_sports_for_cron(NOW, supa)
 
     assert called == [supa] and seen["hub_ledger"] == journal
@@ -1756,13 +1464,11 @@ def _cfb_run_three_days_early():
     Temple@Army is then 56h out and priced; Stanford@Georgia Tech is 86.5h out, past
     `max_hours_to_start`, so exactly one game is dropped before it is ever priced -- which is what
     `too_far` counts, and what makes this run's short board different from a run that priced
-    nothing. The ledger carries two settled rows naming a kind outside `sports.kinds.KINDS`, so
-    that kind has no band anywhere and the run has to say the kind is one this build cannot read
-    rather than one with nothing settled.
+    nothing. The ledger carries a tally naming a kind outside `sports.kinds.KINDS`, so that kind
+    has no band anywhere and the run has to say the kind is one this build cannot read rather than
+    one with nothing settled. Hand-built, because the live reader cannot produce a tally.
     """
-    ledger, _supa = _ledger([_row("sports_cfb", 0.72, "yes", "winner"),
-                             _row("sports_cfb", 0.51, "yes", "moneyline"),
-                             _row("sports_cfb", 0.52, "no", "moneyline")])
+    ledger = _hub({"sports_cfb": {"winner": [(0.72, True)]}}, {"sports_cfb": {"moneyline": 2}})
     return scan_mod.run_sports_scan(
         NOW - timedelta(days=3), _Kalshi(_recorded_markets("cfb")),
         fetch=lambda url, **_kw: _recorded_feed("cfb"), hub_ledger=ledger, sports=("cfb",),
@@ -1773,8 +1479,8 @@ def test_the_summary_a_reader_receives_carries_both_diagnostic_facts(monkeypatch
     """The property, end to end, through the surface a human actually reads.
 
     Both facts are real, not synthesised: the scan genuinely drops one game at the window's far
-    bound, and the ledger read genuinely finds settled rows it cannot file. And both are asserted
-    on the cron entry point's printed JSON, because that print is the whole surface.
+    bound, and the ledger carries two settled rows of a kind this build cannot file. And both are
+    asserted on the cron entry point's printed JSON, because that print is the whole surface.
     """
     run = _cfb_run_three_days_early()
     # The facts exist, and they are the ones claimed: one game past the bound, two unreadable rows.
@@ -1840,13 +1546,13 @@ def test_the_run_report_counts_the_settled_rows_the_hub_holds_of_each_kind():
     NFL has winner and spread rows, CFB has total only, and one kind nothing in this build writes.
     So all four of the readings a reader needs are here at once, and none of them is inferable from
     another: CFB's one kind is present with its count, NFL's absent kind is absent, the unreadable
-    kind is named by the other key, and each sport's numbers are its own."""
-    ledger, _supa = _ledger([_row("sports_nfl", 0.65, "yes", "winner"),
-                             _row("sports_nfl", 0.64, "no", "winner"),
-                             _row("sports_nfl", 0.30, "yes", "spread"),
-                             _row("sports_nfl", 0.51, "yes", "moneyline"),
-                             _row("sports_cfb", 0.72, "yes", "total"),
-                             _row("sports_cfb", 0.73, "yes", "total")])
+    kind is named by the other key, and each sport's numbers are its own.
+
+    The ledger is hand-built: what this owns is what `run_sports_scan` publishes, and the live reader
+    cannot hand back a tally."""
+    ledger = _hub({"sports_nfl": {"winner": [(0.65, True), (0.64, False)], "spread": [(0.30, True)]},
+                   "sports_cfb": {"total": [(0.72, True), (0.73, True)]}},
+                  {"sports_nfl": {"moneyline": 1}})
     run = _both_sports(ledger)
 
     assert run.per_sport["nfl"]["settled_by_kind"] == {"winner": 2, "spread": 1}, run.per_sport["nfl"]
@@ -1879,7 +1585,7 @@ def test_a_kind_with_nothing_settled_is_absent_from_the_tally_rather_than_zero()
     The other reason not to enumerate: a `{"winner": .., "spread": .., "total": ..}` shape would be a
     second copy of `sports.kinds.KINDS` in this module, and a second copy of that triple is the exact
     defect `kinds.py` exists to end."""
-    ledger, _supa = _ledger([_row("sports_nfl", 0.65, "yes", "winner")])
+    ledger = _hub({"sports_nfl": {"winner": [(0.65, True)]}})
     run = _both_sports(ledger)
 
     assert run.per_sport["nfl"]["settled_by_kind"] == {"winner": 1}, run.per_sport["nfl"]
@@ -1899,11 +1605,18 @@ def test_the_per_kind_tally_shows_the_how_far_short_of_the_threshold_each_kind_i
     This is the diagnostic the four-bucket flip would have been read through. Admitting an edge
     through the hub needs every bucket to clear `calibration_min_n`, so a wider band makes admission
     STRICTER, not looser, and a run that says "107 settled" while every kind is far short of 100 is
-    exactly the run an operator has to be able to see through."""
-    rows = ([_row("sports_cfb", 0.60 + i / 100, "yes" if i % 2 else "no", "winner") for i in range(42)]
-            + [_row("sports_cfb", 0.30 + i / 100, "yes" if i % 2 else "no", "spread") for i in range(33)]
-            + [_row("sports_cfb", 0.50 + i / 100, "yes" if i % 2 else "no", "total") for i in range(32)])
-    ledger, _supa = _ledger(rows)
+    exactly the run an operator has to be able to see through.
+
+    The ledger is hand-built, and it has to be: `journal_ledger` reads winner rows only (see
+    `HUB_LEDGER_KINDS`), so no read of the live reader can produce a three-kind tally like this one.
+    What is asserted here is what `run_sports_scan` publishes and what the gate then does with it.
+    """
+    def settled(count, base):
+        return [(base + i / 100, bool(i % 2)) for i in range(count)]
+
+    ledger = _hub({"sports_cfb": {"winner": settled(42, 0.60),
+                                  "spread": settled(33, 0.30),
+                                  "total": settled(32, 0.50)}})
     run = scan_mod.run_sports_scan(
         NOW - timedelta(days=3), _Kalshi(_recorded_markets("cfb")),
         fetch=lambda url, **_kw: _recorded_feed("cfb"), hub_ledger=ledger, sports=("cfb",),
@@ -2039,7 +1752,7 @@ def test_a_sport_the_reports_never_mentioned_still_gets_its_facts():
 # `unrecognised_kinds` chose `{}` deliberately: an empty tally is the POSITIVE answer, "the read
 # completed and this sport has no settled row of a kind this build cannot place", and a reader has
 # to be able to see that the distinction from "nothing of that kind has settled" is being made on
-# purpose. But `_hub_settled_ledger` returned a bare `HubLedger()` when the read FAILED -- empty
+# purpose. But the settled-ledger reader returned a bare `HubLedger()` when the read FAILED -- empty
 # mappings, because a partial record must not calibrate anything -- and so a failed read published
 # the reassuring value for a measurement nobody took:
 #
@@ -2078,14 +1791,17 @@ def test_a_failed_ledger_read_publishes_not_measured_where_a_clean_one_publishes
         monkeypatch, capsys):
     """The property, on the surface a reader reads, for the case that produced it.
 
-    Two runs of the same real CFB scan, differing in one input: the ledger. One is read from a
-    database that answers, the other from one that does not. The assertion that matters is that the
-    two summaries DIFFER, and that the failed one is not a value a reader would take as a completed
-    measurement.
+    Two runs of the same real CFB scan, differing in one input: the ledger. One is measured, the other
+    is the failed read. The assertion that matters is that the two summaries DIFFER, and that the
+    failed one is not a value a reader would take as a completed measurement.
+
+    The failed ledger is the LIVE reader's, off a client that fails: the property is that a real
+    journal read going wrong cannot be told apart from a real journal read that found nothing. The
+    measured one is hand-built, because the live reader reads winner rows only and this control needs
+    a two-kind record (`HUB_LEDGER_KINDS`).
     """
-    clean, _supa = _ledger([_row("sports_cfb", 0.72, "yes", "winner"),
-                            _row("sports_cfb", 0.51, "no", "spread")])
-    failed = scan_mod._hub_settled_ledger(_DeadSupabase())
+    clean = _hub({"sports_cfb": {"winner": [(0.72, True)], "spread": [(0.51, False)]}})
+    failed = journal_settled_ledger(_DeadSupabase())
     printed_clean = _cron_summary_for(monkeypatch, capsys, _cfb_run_with(clean))
     printed_failed = _cron_summary_for(monkeypatch, capsys, _cfb_run_with(failed))
 
@@ -2101,12 +1817,12 @@ def test_a_failed_ledger_read_publishes_not_measured_where_a_clean_one_publishes
 
     # The guards that make those two claims mean something, after the claims.
     #
-    # The control is a real read of rows that exist, so its `{}` is EARNED -- "read it, this sport
-    # has no settled row of a kind the build cannot place" -- and not the same nothing the failed
-    # read publishes. Without this the difference asserted above could be a difference between "no
-    # rows" and "no rows", which is what the bug was.
+    # The control holds rows that exist, so its `{}` is EARNED -- "read it, this sport has no settled
+    # row of a kind the build cannot place" -- and not the same nothing the failed read publishes.
+    # Without this the difference asserted above could be a difference between "no rows" and "no
+    # rows", which is what the bug was.
     assert clean.pairs_by_engine["sports_cfb"]["winner"], (
-        "the control read real settled rows, so its empty tally is a measurement and not an absence"
+        "the control held real settled rows, so its empty tally is a measurement and not an absence"
     )
     assert clean.unrecognised_by_engine == {}, "the control has no build gap, by construction"
     assert failed.read_failed is True and clean.read_failed is False
@@ -2195,11 +1911,11 @@ def test_the_two_ledger_diagnostics_never_disagree_about_whether_the_read_happen
     the read, so a scanned sport has one and a sport that did not has the other. `None` still means
     one thing across all three -- not measured -- which is the only property they share.
     """
-    measured, _supa = _ledger([_row("sports_cfb", 0.72, "yes", "winner")])
-    for ledger in (measured, scan_mod._hub_settled_ledger(_DeadSupabase()), None):
+    measured = _hub({"sports_cfb": {"winner": [(0.72, True)]}})
+    for ledger in (measured, journal_settled_ledger(_DeadSupabase()), None):
         run = _cfb_run_with(ledger)
         state = run.per_sport["cfb"]
-        # All three inputs, all three outcomes: a real ledger, a failed read, and none at all.
+        # All three inputs, all three outcomes: a measured ledger, a failed read, and none at all.
         assert (state["unrecognised_kinds"] is None) == (state["settled_by_kind"] is None), (
             f"the two ledger diagnostics disagree about whether the read happened: {state}"
         )
