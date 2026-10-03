@@ -3,13 +3,18 @@
 Rules: New Year's Day (Saturday -> not observed; Sunday -> Monday), MLK Day, Washington's Birthday,
 Good Friday, Memorial Day, Juneteenth (from 2022), Independence Day, Labor Day, Thanksgiving,
 Christmas (Saturday -> Friday, Sunday -> Monday). Unscheduled closures (e.g. a national day of
-mourning) are not predictable; such a day simply never settles, because it has no close.
+mourning) are not predictable by rule, so the ones that actually happened are listed in
+`_UNSCHEDULED`: a closed day has no close, and the journal must never freeze against one.
 """
 
 from __future__ import annotations
 
 from datetime import date, timedelta
 from functools import lru_cache
+
+# One-off closures inside this calendar's coverage, which no rule derives. 2025-01-09 was the national
+# day of mourning for Jimmy Carter (funeral 2025-01-07): the NYSE and Nasdaq both shut all day.
+_UNSCHEDULED = frozenset({date(2025, 1, 9)})
 
 
 def _easter(year: int) -> date:
@@ -52,6 +57,7 @@ def holidays(year: int) -> frozenset[date]:
         out.add(_observed(new_year))
     if year >= 2022:
         out.add(_observed(date(year, 6, 19)))
+    out |= {day for day in _UNSCHEDULED if day.year == year}
     return frozenset(out)
 
 
