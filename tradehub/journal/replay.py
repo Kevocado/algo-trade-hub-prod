@@ -95,6 +95,7 @@ def replay(closes: Mapping[date, float], *, start: date, end: date,
     previous = dict(zip(ordered[1:], ordered[:-1], strict=True))
     models: dict[tuple[int, int], Predictor] = {}
     rows: list[tuple[float, float, int]] = []
+    scored_days: list[date] = []
     by_year: dict[str, list[tuple[float, float, int]]] = defaultdict(list)
     for day in ordered:
         if not start <= day <= end or day not in previous:
@@ -111,10 +112,12 @@ def replay(closes: Mapping[date, float], *, start: date, end: date,
         probability = models[month].predict(found[0])
         outcome = int(closes[day] > closes[previous[day]])
         rows.append((probability, clim, outcome))
+        scored_days.append(day)
         by_year[str(day.year)].append((probability, clim, outcome))
-    scored = [day for day in ordered if (start <= day <= end) and day in previous
-              and (is_target is None or is_target(day))]
+    # The days that actually produced a row -- NOT every candidate day. A day can be inside the window,
+    # have a previous close and pass the calendar, and still yield nothing: no features, no climatology,
+    # or no model fit. Reporting one of those as `date_from` claims history that was never scored.
     return {**_summary(rows),
-            "date_from": (scored[0].isoformat() if scored else start.isoformat()),
-            "date_to": (scored[-1].isoformat() if scored else end.isoformat()),
+            "date_from": (scored_days[0].isoformat() if scored_days else start.isoformat()),
+            "date_to": (scored_days[-1].isoformat() if scored_days else end.isoformat()),
             "by_year": {year: _summary(group) for year, group in sorted(by_year.items())}}

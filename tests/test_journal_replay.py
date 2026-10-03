@@ -228,3 +228,17 @@ def test_the_year_split_carries_the_gap_and_its_standard_error_too():
         assert {"brier_diff", "brier_diff_se"} <= set(v), year
         assert v["brier_diff"] == pytest.approx(v["brier"] - v["brier_baseline"], abs=1e-6)
         assert v["brier_diff_se"] is not None and v["brier_diff_se"] > 0
+
+
+def test_the_reported_window_is_days_that_produced_a_row_not_merely_eligible_days():
+    """CodeRabbit, on #94: `date_from` was built from every day inside the window that had a previous
+    close and passed the calendar. A day can satisfy all of that and still score nothing -- no features,
+    no climatology, no model fit -- so the window named history that was never scored."""
+    closes = _closes(n=1200)
+    r = replay(closes, start=date(2019, 1, 2), end=date(2023, 8, 7),
+               fit_fn=lambda x, y, d: Const(0.5))
+    assert r["n"] > 0
+    # every reported boundary must be a day the summary actually counted, never a bare window edge
+    assert r["date_from"] > date(2019, 1, 2).isoformat(), r["date_from"]
+    assert r["date_to"] <= date(2023, 8, 7).isoformat(), r["date_to"]
+    assert sum(v["n"] for v in r["by_year"].values()) == r["n"]
