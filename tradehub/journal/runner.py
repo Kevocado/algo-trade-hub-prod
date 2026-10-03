@@ -18,6 +18,11 @@ log = logging.getLogger(__name__)
 
 
 def run_forecaster(supa, fc: Forecaster, now: datetime) -> dict[str, Any]:
+    # A wrapper that reads the store (MarketShrunk) must read THIS run's client, not the singleton its
+    # constructor was wired to. Optional, so a plain forecaster is unaffected.
+    bind = getattr(fc, "bind_store", None)
+    if callable(bind):
+        bind(supa)
     summary: dict[str, Any] = {"registered": 0, "frozen": 0, "missed": 0, "settled": 0, "gate_status": None}
     entries = [e for e in fc.targets(now) if e.cadence == fc.cadence]
     summary["registered"] = store.register_calendar(supa, entries, now)
