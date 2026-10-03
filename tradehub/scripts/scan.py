@@ -1,4 +1,4 @@
-"""One-shot scan (suggest-only): predict every open weather/gas/CPI market, flag trade-worthy edges.
+"""One-shot scan (suggest-only): predict every open weather/gas market, flag trade-worthy edges.
 
 Writes every prediction to the predictions ledger and upserts edges (with Kalshi deep links)
 into kalshi_edges. Never places orders. Cron-ready: runs once and exits.
@@ -16,7 +16,6 @@ from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
 from tradehub.core.kalshi_feed import fetch_market
-from tradehub.data.cleveland_fed import fetch_nowcast_history
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.data.labor_inputs import load_labor_inputs, payroll_nowcasts
 from tradehub.data.rbob import front_month_roll_dates, rbob_closes
@@ -31,14 +30,6 @@ from tradehub.data.weather import (
 from tradehub.edges import EdgeSuggestion, evaluate_edge
 from tradehub.engine_config import EngineConfig, load_engine_config
 from tradehub.gate_status import latest_gate_statuses
-from tradehub.engines.cpi import (
-    CPI_TARGETS,
-    CPI_TRAIN_MONTHS,
-    cpi_prob,
-    fit_cpi_error,
-    latest_nowcast,
-    training_pairs,
-)
 from tradehub.engines.gas import GAS_ENGINE_VERSION, GAS_SERIES, fit_gas_model, gas_prob, gas_training_pairs, rbob_change
 from tradehub.engines.labor import (
     LABOR_ENGINE_VERSION,
@@ -69,7 +60,6 @@ JOURNAL_ONLY_ENGINES = frozenset({"cpi_nowcast", "labor_nowcast"})
 
 log = logging.getLogger(__name__)
 SCAN_DEADLINE_SECONDS = 15 * 60
-CPI_SCAN_HOURS_ET = (8, 12, 16)  # 08:05 ET is the last run before the 08:25 ET release-day close
 # How many still-open cpi_nowcast rows `cpi_markets_not_open` may ask Kalshi about in one scan. A
 # bound on the request count, not a claim a reader ever sees, so it is a bare limit with no copy
 # attached: the only thing it can cost is one more hour of cleanup for the rows past it.
@@ -244,12 +234,13 @@ def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
 
     `cpi_nowcast` is deliberately NOT in the allowlist. CPI was approved display-only on 2026-09-27
     (spec 5a, section 9 approval 3, quoted verbatim from the spec: "DISPLAY ONLY. Show the nowcast
-    against the market for context; not an edge engine."), so `scan_cpi` now returns an empty
-    produced set -- and a prune keyed on that set would read "this engine produced nothing" and
-    delete EVERY historical cpi_nowcast edge row on the next due scan. That would be a silent delete
-    by omission, which is exactly what the ruling rules out: an edge row is a record of what the
-    scan did, and what changes is that the read no longer presents those rows as opportunities (see
-    `useMarketEdges`, which relabels the engine as display-only rather than dropping it silently).
+    against the market for context; not an edge engine."), so the scan has no CPI step and CPI's
+    produced set is empty -- and a prune keyed on that set would read "this engine produced
+    nothing" and delete EVERY historical cpi_nowcast edge row on the next scan. That would be a
+    silent delete by omission, which is exactly what the ruling rules out: an edge row is a record
+    of what the scan did, and what changes is that the read no longer presents those rows as
+    opportunities (see `useMarketEdges`, which relabels the engine as display-only rather than
+    dropping it silently).
 
     The rows have to survive for that standing rule to mean anything -- a filter over rows that
     have already been deleted passes vacuously. What bounds that claim is the closed-market
@@ -433,71 +424,6 @@ def scan_gas(
     return predictions, edges
 
 
-def cpi_scan_due(now: datetime) -> bool:
-    """The nowcast moves at most once a day, so CPI runs on three of the hourly scans, not all 24."""
-    return now.astimezone(_ET).hour in CPI_SCAN_HOURS_ET
-
-
-def scan_cpi(
-    live, now: datetime, cfg: EngineConfig, *,
-    nowcast_fn: Callable[[str], dict] | None = None,
-    targets: dict[str, tuple[str, str]] = CPI_TARGETS,
-) -> tuple[list[dict], list[dict]]:
-    # Resolved in the body, not as a default: a default argument is bound at IMPORT time, so a test
-    # that rebinds `scan.fetch_nowcast_history` was patching a name this function never looked up. The
-    # stub silently did nothing and the scan fetched Cleveland Fed nowcasts over the live network --
-    # 7.6 MB, three times, inside a test that was supposed to be hermetic.
-    # `is None`, never `or`: a caller may legitimately pass a callable that is falsy (a class
-    # defining __bool__/__len__ returning false, or a Mock configured that way). `or` would discard it
-    # and run the LIVE NETWORK fetcher -- the exact failure this seam exists to prevent.
-    if nowcast_fn is None:
-        nowcast_fn = fetch_nowcast_history
-    window = int(cfg.params.get("train_months", CPI_TRAIN_MONTHS))
-    use_bias = bool(cfg.params.get("use_bias", 0.0))
-    predictions: list[dict] = []
-    # Always empty, and that is the contract rather than an accident: CPI is a display engine
-    # (spec 5a, section 9 approval 3). The return shape is unchanged so main() needs no edit and
-    # the signature stays honest about what it produces. Nothing reads this list for CPI any more --
-    # see the allowlist in remove_stale_edges for why the empty set must NOT be allowed to prune.
-    edges: list[dict] = []
-    for series, (kind, version) in targets.items():
-        markets = live.open_markets(series)
-        if not markets:
-            continue
-        history = nowcast_fn(kind)
-        for lm in markets:
-            try:
-                nowcast = latest_nowcast(history.get(event_month(lm.market.event_ticker)), now)
-                horizon = lm.market.close_time - now
-                if nowcast is None or horizon <= timedelta(0):
-                    continue
-                pairs = training_pairs(history, now, horizon)[-window:]
-                model = fit_cpi_error(pairs, window=window, use_bias=use_bias)
-                prob = cpi_prob(lm.market, nowcast.value, model)
-                predictions.append(build_prediction_row(
-                    market_ticker=lm.market.ticker, our_prob=prob, market_prob=_mid(lm.quote), engine="cpi_nowcast",
-                    as_of=now, engine_version=version,
-                    raw_payload={"nowcast": nowcast.value, "nowcast_obs": nowcast.name, "bias": model.bias,
-                                 "sigma": model.sigma, "n_train": len(pairs),
-                                 "hours_to_close": round(horizon.total_seconds() / 3600.0, 2)},
-                ))
-                # No edge row, deliberately. Approved DISPLAY ONLY on 2026-09-27 (spec 5a, and
-                # approval 3 in section 9). The prediction above is the product: it carries the
-                # nowcast, our probability and the market mid, which is exactly the context the
-                # display view reads, and it is what keeps the oracle-bound analysis in 5a
-                # reproducible from the ledger. An `edges` row is the thing that tells a reader
-                # "here is an opportunity", and that claim is not supported: the market's Brier at
-                # 5 days out (0.0710) is barely worse than at 25 minutes (0.0677), so Kalshi is
-                # not pricing off the nowcast and deciding early buys nothing. We are 1.33-1.43x
-                # behind at every lead, with negative P&L at every lead.
-                #
-                # `cfg.min_edge_pct` and `cfg.prefer_maker` are no longer read here. `cfg` itself
-                # still is, above, for the fit window (`train_months`, `use_bias`).
-            except Exception:
-                log.exception("scan engine=cpi_nowcast market=%s failed; skipping", lm.market.ticker)
-    return predictions, edges
-
-
 def scan_labor(
     live, now: datetime, cfg: EngineConfig, *, inputs_fn: Callable[..., Any] = load_labor_inputs,
     deadline: float | None = None,
@@ -629,10 +555,8 @@ def main(
                     historical_forecast_range_fn=historical_forecast_with_deadline,
                     failures=city_failures,
                 )
-            elif name == "gas":
-                predictions, edges = scan_gas(live, now, cfg, rbob_fn=rbob_with_deadline)
             else:
-                predictions, edges = scan_cpi(live, now, cfg)
+                predictions, edges = scan_gas(live, now, cfg, rbob_fn=rbob_with_deadline)
             _ensure_scan_deadline(deadline)
         except Exception as exc:
             message = f"{name}: {type(exc).__name__}: {exc}"
@@ -657,16 +581,8 @@ def main(
 
     weather_predictions, weather_edges = run_engine("weather")
     gas_predictions, gas_edges = run_engine("gas")
-    cpi_predictions: list[dict] = []
-    cpi_edges: list[dict] = []
-    if cpi_scan_due(now):
-        cpi_predictions, cpi_edges = run_engine("cpi_nowcast")
-    else:
-        engine_states["cpi_nowcast"] = {
-            "predictions": [], "edges": [], "errors": [], "complete": True, "ran": False,
-        }
 
-    # labor_nowcast is declared here but RUNS LATER, after the weather/gas/CPI writes: its failure
+    # labor_nowcast is declared here but RUNS LATER, after the weather/gas writes: its failure
     # mode is an ALFRED outage, and a hung predictor request must not delay or endanger another
     # engine's writes. Its own gated write and cleanup live in the labor block below, ahead of
     # sports (which still runs last of all).
@@ -697,7 +613,7 @@ def main(
         except Exception as exc:
             failures.append(f"cpi_nowcast.closed_cleanup: {type(exc).__name__}: {exc}")
             log.exception("scan closed CPI edge cleanup failed")
-        all_edges = weather_edges + gas_edges + cpi_edges
+        all_edges = weather_edges + gas_edges
         pairs = {(row["engine"], row.get("engine_version", "v0")) for row in all_edges}
         try:
             statuses = latest_gate_statuses(client, pairs)
@@ -706,7 +622,7 @@ def main(
             failures.append(message)
             statuses = {}
             log.exception("scan gate-status lookup failed")
-        for edges in (weather_edges, gas_edges, cpi_edges):
+        for edges in (weather_edges, gas_edges):
             apply_gate_statuses(edges, statuses)
 
         prediction_writes: dict[str, str] = {}
@@ -714,7 +630,6 @@ def main(
         for name, predictions, edges in (
             ("weather", weather_predictions, weather_edges),
             ("gas", gas_predictions, gas_edges),
-            ("cpi_nowcast", cpi_predictions, cpi_edges),
         ):
             if not engine_states[name]["ran"]:
                 prediction_writes[name] = "skipped"
@@ -743,10 +658,6 @@ def main(
         for name, edges in (
             ("weather", weather_edges),
             ("gas", gas_edges),
-            # Still offered to the prune, and still a no-op: `remove_stale_edges` keeps
-            # cpi_nowcast out of its allowlist precisely because this produced set is now empty.
-            # Do not "simplify" this entry away -- see that function's docstring.
-            ("cpi_nowcast", cpi_edges),
         ):
             if not engine_states[name]["complete"] or edge_writes.get(name) != "ok":
                 continue
@@ -760,7 +671,7 @@ def main(
         writes = {"predictions": prediction_writes, "edges": edge_writes}
 
         # ── labor_nowcast ────────────────────────────────────────────────────────────────
-        # After the weather/gas/CPI gate lookup, upserts and cleanups, so an ALFRED hang cannot
+        # After the weather/gas gate lookup, upserts and cleanups, so an ALFRED hang cannot
         # push those back; before sports, which still runs last. Gated and written separately
         # for the same reason sports is: its edges are keyed on their own (engine,
         # engine_version) pair, and its inputs are a third-party HTTP service.
@@ -836,7 +747,7 @@ def main(
 
 
         # ── Sports LAST ────────────────────────────────────────────────────────────────
-        # The weather/gas/CPI gate lookup, upserts and cleanups above are already done, so a
+        # The weather/gas gate lookup, upserts and cleanups above are already done, so a
         # slow sports run can no longer delay them or put them at risk. Sports is gated and
         # written separately because its edges are keyed on their own (engine, engine_version)
         # pairs and it has its own pruning rules.
@@ -900,13 +811,6 @@ def main(
         sports_summary = {"status": "skipped: no Supabase client"}
         labor_status = "skipped: no Supabase client"
 
-    cpi_state = engine_states["cpi_nowcast"]
-    cpi_errors = cpi_state["errors"]
-    cpi_status = (
-        "error: " + "; ".join(error.split(": ", 1)[-1] for error in cpi_errors) if cpi_errors
-        else "skipped" if not cpi_state["ran"]
-        else "ok"
-    )
     summary = {
         "as_of": now.isoformat(),
         "status": "partial_failure" if failures else "ok",
@@ -927,12 +831,6 @@ def main(
             "predictions": len(gas_predictions),
             "edges": len(gas_edges),
             "errors": engine_states["gas"]["errors"],
-        },
-        "cpi_nowcast": {
-            "status": cpi_status,
-            "predictions": len(cpi_predictions),
-            "edges": len(cpi_edges),
-            "errors": cpi_errors,
         },
         "labor_nowcast": {
             "status": labor_status,

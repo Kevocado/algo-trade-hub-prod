@@ -139,7 +139,6 @@ def _stub_everything(monkeypatch, calls, labor_scan=None, *, labor_due=True):
     monkeypatch.setattr(mod, "KalshiLive", lambda *a, **k: object())
     monkeypatch.setattr(mod, "scan_weather", lambda *a, **k: calls.append("weather") or ([], []))
     monkeypatch.setattr(mod, "scan_gas", lambda *a, **k: ([], []))
-    monkeypatch.setattr(mod, "cpi_scan_due", lambda now: False)
     monkeypatch.setattr(mod, "latest_gate_statuses", lambda *a: {})
     monkeypatch.setattr(mod, "remove_stale_edges", lambda *a, **k: None)
     monkeypatch.setattr(mod, "remove_started_sports_edges", lambda *a, **k: [])

@@ -54,7 +54,6 @@ def _run_main(monkeypatch, *, sports_due=True, sports_result=SPORT_RESULT,
     monkeypatch.setattr(scan_mod, "KalshiLive", lambda *a, **k: object())
     monkeypatch.setattr(scan_mod, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "scan_gas", lambda *a, **k: ([], []))
-    monkeypatch.setattr(scan_mod, "cpi_scan_due", lambda now: False)
     # labor_nowcast runs at 07/12/17 ET, so a suite that executes in one of
     # those hours would otherwise drive the real scan against the stub client.
     monkeypatch.setattr(scan_mod, "labor_scan_due", lambda now: False)
