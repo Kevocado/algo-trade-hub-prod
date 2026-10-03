@@ -18,32 +18,59 @@ export interface ReplayRow {
    *  can see at once that the gap is ~1% of the scale rather than a result. */
   brier: number | null;
   brier_baseline: number | null;
+  /** Our mean squared error minus the climatology's, measured on the same session (negative = better),
+   *  and the standard error of that mean. This is what makes the skill column above readable: an audit
+   *  of the first replays found every model within 0.01 of the usual rate over ~760 sessions, the best
+   *  of them ~1.1 standard errors from zero, and `+0.010` with no interval reads as a result.
+   *
+   *  Both are null while migration 20260428000017 is unapplied, and null is what the page must render as
+   *  -- the pair without an interval. There is no CI here on `bss` and there must not be one: bss is a
+   *  ratio, SE(bss) is not this number, and a delta-method approximation would be a guess printed as a
+   *  measurement. A reader who wants skill with an interval divides the gap by the baseline, which is
+   *  the definition of bss (`-brier_diff / brier_baseline`) and inherits a measured uncertainty. */
+  brier_diff: number | null;
+  brier_diff_se: number | null;
   /** When this replay ran. A re-run replaces the numbers, so without this the reader cannot tell how
    *  old they are. */
   created_at?: string | null;
   by_year?: Record<string, { n: number; bss: number | null }>;
 }
 
-/** "0.2469 vs 0.2470" -- the effect in Brier points; "—" when either side was not recorded. */
+/**
+ * "0.2469 vs 0.2470 (-0.0001 ± 0.0022)" -- the effect in Brier points, with how sure we are of it.
+ * "—" when either side of the pair was not recorded, and the bare pair when the interval is not: a null
+ * SE means the migration has not been applied, so the interval was never measured. Printing "± 0" there
+ * would claim a precision nobody measured, which is the failure this column exists to prevent.
+ */
 function replayBrierPair(row: ReplayRow): string {
   if (row.brier === null || row.brier === undefined || row.brier_baseline === null || row.brier_baseline === undefined) {
     return "—";
   }
-  return `${row.brier.toFixed(4)} vs ${row.brier_baseline.toFixed(4)}`;
+  const pair = `${row.brier.toFixed(4)} vs ${row.brier_baseline.toFixed(4)}`;
+  const diff = row.brier_diff;
+  const se = row.brier_diff_se;
+  if (diff === null || diff === undefined || se === null || se === undefined) return pair;
+  // A standard error is a magnitude, so the "+" `signedNumber` puts on a positive number is stripped --
+  // the same `.replace` the nowcast sigma uses on /jobs. The formatter still formats it, because its
+  // never-print-a-bare-zero rule has to hold for a 0.000004 standard error too.
+  return `${pair} (${signedNumber(diff, 4)} ± ${signedNumber(se, 4).replace("+", "")})`;
 }
 
 /**
- * A signed skill that never prints a bare zero.
+ * A signed number that never prints a bare zero, starting at `from` decimal places.
  *
  * Every live figure is smaller than three places (gold pools to +0.000482, EUR/USD to +0.000557), so
  * `toFixed(3)` printed "+0.000" -- a signed zero, which reads as "no skill measured" when the number is
  * positive and was measured from 753 sessions. `skillText` on /journal already refuses to print a bare
  * 0 for null; this is the same rule for a value too small for its own display precision. Digits are
  * added until the number survives.
+ *
+ * `from` exists because this also formats the Brier gap and its standard error, which sit beside a
+ * four-place Brier pair and start at four places so the two halves of the interval are comparable.
  */
-function signedSkill(value: number): string {
+function signedNumber(value: number, from = 3): string {
   const sign = value > 0 ? "+" : "";
-  for (const places of [3, 4, 5, 6]) {
+  for (const places of [from, from + 1, from + 2, from + 3]) {
     const text = value.toFixed(places);
     if (Number(text) !== 0) return `${sign}${text}`;
   }
@@ -55,7 +82,7 @@ function yearSplit(row: ReplayRow): string | null {
   const years = Object.entries(row.by_year ?? {}).sort(([a], [b]) => a.localeCompare(b));
   if (!years.length) return null;
   return years
-    .map(([year, v]) => `${year} ${v.bss === null ? "—" : signedSkill(v.bss)}`)
+    .map(([year, v]) => `${year} ${v.bss === null ? "—" : signedNumber(v.bss)}`)
     .join(" · ");
 }
 
@@ -110,8 +137,8 @@ export function PreJournalContext() {
               <th className="text-left font-normal">Replayed over history</th>
               <th className="text-left font-normal">Window</th>
               <th className="text-right font-normal">Sessions</th>
-              <th className="text-right font-normal" title="Positive means better than the usual up-rate, pooled across every year below">Skill</th>
-              <th className="text-right font-normal" title="Our Brier score against the climatology baseline, so the size of the difference is visible">Brier, ours vs usual</th>
+              <th className="text-right font-normal" title="Positive means better than the usual up-rate, pooled across every year below. No error bar on this one: a skill is a ratio, and its standard error is not the number beside it — the interval is on the Brier gap, which is a measurement">Skill</th>
+              <th className="text-right font-normal" title="Our Brier score against the climatology baseline, then the gap with its standard error: better or worse than the usual rate by X ± SE, over the sessions in the row">Brier, ours vs usual</th>
             </tr>
           </thead>
           <tbody>
@@ -125,7 +152,7 @@ export function PreJournalContext() {
                   ) : null}
                 </td>
                 <td className="text-right">{r.n}</td>
-                <td className="text-right font-mono">{r.bss === null ? "—" : signedSkill(r.bss)}</td>
+                <td className="text-right font-mono">{r.bss === null ? "—" : signedNumber(r.bss)}</td>
                 <td className="text-right font-mono">{replayBrierPair(r)}</td>
               </tr>
             ))}

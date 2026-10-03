@@ -462,7 +462,12 @@ def get_journal_backtests(supabase=Depends(get_supabase)):
     """The latest walk-forward replay of each daily model: context, never counted toward a gate.
 
     A missing table (the migration is not applied yet) is an empty answer, the same rule the journal's
-    other reads follow, because "no replay yet" is the true statement.
+    other reads follow, because "no replay yet" is the true statement. The same is true one column in:
+    `brier_diff`/`brier_diff_se` arrive with migration 017, which Kevin applies by hand, so a deployment
+    can be serving this route for a while without them. The read asks for `*` and the response is built
+    with `.get()`, which is what makes that degrade -- `*` is the only select shape PostgREST can answer
+    without the column existing (naming it is a PGRST204 and the whole /journal page goes down over a
+    missing error bar), and `.get()` turns the absent key into null, so the row still reads.
     """
     if supabase is None:
         raise HTTPException(status_code=503, detail="Supabase is not configured")
@@ -476,8 +481,12 @@ def get_journal_backtests(supabase=Depends(get_supabase)):
     latest: dict[tuple[str, str], dict] = {}
     for row in rows:  # ascending id, so the last row per pair is the newest
         latest[(row["forecaster"], row["forecaster_version"])] = row
-    keep = ("forecaster", "forecaster_version", "date_from", "date_to", "n", "brier", "brier_baseline", "bss",
-            "by_year", "created_at")
+    # The interval rides along with the Brier pair it belongs to, so a reader sees "we are better or
+    # worse than the usual rate by X ± SE" rather than a skill with no error bar. It is deliberately not
+    # an interval on `bss`: bss is a ratio, SE(bss) is not this number, and approximating one would be
+    # publishing a guess as a measurement.
+    keep = ("forecaster", "forecaster_version", "date_from", "date_to", "n", "brier", "brier_baseline",
+            "brier_diff", "brier_diff_se", "bss", "by_year", "created_at")
     return {"as_of": datetime.now(timezone.utc).isoformat(), "counted": False,
             "backtests": [{k: r.get(k) for k in keep} for r in latest.values()]}
 
