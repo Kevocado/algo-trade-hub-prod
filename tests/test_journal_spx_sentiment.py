@@ -33,6 +33,18 @@ def test_nyse_rules_match_the_published_2026_and_2027_calendars():
     assert next_session(date(2026, 11, 26)) == date(2026, 11, 27)
 
 
+def test_the_unscheduled_2025_01_09_day_of_mourning_is_not_a_session():
+    """The NYSE and Nasdaq shut all day on 2025-01-09 in honour of Jimmy Carter (funeral 2025-01-07).
+    No rule predicts a one-off, so the date is listed. It matters because the live journal freezes only
+    on sessions: a day with no close would otherwise be graded as a tradable day. The days either side
+    are ordinary sessions, and the real 2025 closures are untouched."""
+    assert is_session(date(2025, 1, 9)) is False
+    assert date(2025, 1, 9) in holidays(2025)
+    assert not is_session(date(2025, 1, 1)) and not is_session(date(2025, 1, 20))  # by rule: NYD, MLK
+    assert is_session(date(2025, 1, 8)) and is_session(date(2025, 1, 10))  # Wed, Fri: still open
+    assert next_session(date(2025, 1, 9)) == date(2025, 1, 10)
+
+
 def test_the_target_is_the_next_session_whose_freeze_is_still_ahead():
     assert next_target_day(CT_0700) == date(2026, 10, 1)
     assert next_target_day(CT_0700 - timedelta(hours=3)) is None  # 04:00 CT: outside the 3h lead
