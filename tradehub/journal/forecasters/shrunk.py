@@ -75,6 +75,11 @@ class MarketShrunk:
         before driving us, so the cautious row is a function of the same store the pure row came from.
         """
         self._store_factory = lambda: supa
+        # Drop the cache: it belongs to the client we were just swapped off. Keyed on the hour only,
+        # so without this a second run in the same hour against a different store would read the FIRST
+        # store's frozen rows and freeze a cautious row from another database's history.
+        self._rows = None
+        self._read_at = None
 
     @property
     def store(self):

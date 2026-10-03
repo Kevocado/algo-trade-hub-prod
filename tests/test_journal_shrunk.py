@@ -348,3 +348,51 @@ def test_the_cautious_row_reads_the_clients_the_run_was_given_not_the_singleton(
     frozen = {r["forecaster"]: r for r in run_db.tables["journal_forecasts"]}
     assert frozen["model_x_cautious"]["payload"]["raw_probability"] == pytest.approx(0.70)
     assert not other_db.tables["journal_forecasts"], "the cautious row was frozen into the other store"
+
+
+def test_rebinding_to_another_store_drops_the_rows_cached_from_the_first():
+    """`bind_store` swaps the client; the per-hour cache is keyed on the hour, so it would otherwise
+    survive the swap and the second run would read the FIRST store's history. CodeRabbit caught this
+    on the PR that introduced `bind_store`."""
+    first = FakeJournalDB(lambda: NOW)
+    second = FakeJournalDB(lambda: NOW)
+    inner = Inner(prob=0.70, market=0.50)
+    wrapper = MarketShrunk(inner, lambda: first)
+
+    run_journal(first, [inner, wrapper], NOW)                    # populates the cache from `first`
+    later = NOW + timedelta(hours=1)
+    run_journal(second, [inner, wrapper], later)                 # same hour bucket boundary aside
+
+    cautious = [r for r in second.tables["journal_forecasts"] if r["forecaster"] == "model_x_cautious"]
+    assert cautious, "the cautious row never reached the second store"
+    assert cautious[0]["payload"]["raw_probability"] == pytest.approx(0.70)
+
+
+def test_a_same_hour_rebind_also_drops_the_cache():
+    """The case an hour-keyed cache cannot see, and the one that actually bites.
+
+    The second store must hold a DIFFERENT frozen row, or the stale cache is invisible: identical data
+    reads the same. So the inner returns 0.70 into the first store and 0.95 into the second, and the
+    cautious row must be built from whichever store it was actually run against.
+    """
+    class Moving(Inner):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def forecast(self, entry, now):
+            self.calls += 1
+            return Forecast(self.name, self.version, entry.target,
+                            0.70 if self.calls == 1 else 0.95, market_prob=0.50, payload={})
+
+    first = FakeJournalDB(lambda: NOW)
+    second = FakeJournalDB(lambda: NOW)
+    inner = Moving()
+    wrapper = MarketShrunk(inner, lambda: first)
+
+    run_journal(first, [inner, wrapper], NOW)     # freezes 0.70, and fills the wrapper's cache
+    run_journal(second, [inner, wrapper], NOW)    # SAME `now`: the hour key cannot notice the swap
+
+    cautious = next(r for r in second.tables["journal_forecasts"] if r["forecaster"] == "model_x_cautious")
+    assert cautious["payload"]["raw_probability"] == pytest.approx(0.95), (
+        "the cautious row was built from the FIRST store's cached history")
