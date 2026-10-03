@@ -472,14 +472,19 @@ def get_journal_backtests(supabase=Depends(get_supabase)):
     if supabase is None:
         raise HTTPException(status_code=503, detail="Supabase is not configured")
     try:
-        rows = _fetch_all(supabase, "journal_backtests", lambda q: q.select("*"), order=("id",))
+        # `created_at` first, `id` only to break a tie: `created_at` is the RUN'S OWN time, while `id`
+        # is insertion order. Two runs that overlap can finish out of order, so the larger id can belong
+        # to the older run -- and since the page prints `replayed <created_at>`, publishing that as the
+        # latest would show stale numbers with a stale date as if both were current.
+        rows = _fetch_all(supabase, "journal_backtests", lambda q: q.select("*"),
+                          order=("created_at", "id"))
     except Exception as exc:  # noqa: BLE001 - classified below
         if table_missing(exc, "journal_backtests"):
             rows = []
         else:
             raise _table_fault("journal_backtests", exc) from exc
     latest: dict[tuple[str, str], dict] = {}
-    for row in rows:  # ascending id, so the last row per pair is the newest
+    for row in rows:  # ascending created_at, so the last row per pair is the newest run
         latest[(row["forecaster"], row["forecaster_version"])] = row
     # The interval rides along with the Brier pair it belongs to, so a reader sees "we are better or
     # worse than the usual rate by X ± SE" rather than a skill with no error bar. It is deliberately not

@@ -68,10 +68,15 @@ def run(now: datetime, years: int, *, sources=None, calendars=None) -> list[dict
                 calendars[key] = (value, None)
     end = now.date() - timedelta(days=1)
     start = end - timedelta(days=365 * years)
+    # Fetch back far enough for the REQUESTED window plus the training and climatology history the
+    # replay needs. `HISTORY_DAYS` alone covers `--years 3`; a larger `--years` would otherwise start
+    # before the fetched data, and the replay would score only the part it has while still storing the
+    # full requested window -- claiming history that was never scored.
+    history_days = max(HISTORY_DAYS, (end - start).days + HISTORY_DAYS)
     out = []
     for (forecaster, version), (fetch, is_target) in calendars.items():
         try:
-            closes, tz = fetch(now.date() - timedelta(days=HISTORY_DAYS))
+            closes, tz = fetch(now.date() - timedelta(days=history_days))
             result = replay(closed_only(closes, tz, now), start=start, end=end, is_target=is_target)
         except Exception as exc:  # noqa: BLE001 - one family failing must not hide the others
             out.append({"forecaster": forecaster, "forecaster_version": version,
