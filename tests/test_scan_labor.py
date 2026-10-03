@@ -127,7 +127,6 @@ def _base(monkeypatch, *, labor_due=True, labor_scan=None, upserted=None, cleane
     monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
     monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
-    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_stale_edges",
                         lambda client, produced: cleaned.append(produced) if cleaned is not None else None)
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)

@@ -1442,7 +1442,6 @@ def _cron_summary_for(monkeypatch, capsys, run):
     monkeypatch.setattr(cron, "KalshiLive", lambda *_a, **_k: object())
     monkeypatch.setattr(cron, "scan_weather", lambda *_a, **_k: ([], []))
     monkeypatch.setattr(cron, "scan_gas", lambda *_a, **_k: ([], []))
-    monkeypatch.setattr(cron, "cpi_scan_due", lambda _now: False)
     monkeypatch.setattr(cron, "labor_scan_due", lambda _now: False)
     monkeypatch.setattr(cron, "sports_due", lambda _now: True)
     monkeypatch.setattr(cron, "latest_gate_statuses", lambda *_a, **_k: {})

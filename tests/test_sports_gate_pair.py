@@ -68,7 +68,6 @@ def test_sports_gate_lookup_promotes_only_the_promoted_feed_version(monkeypatch)
     monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
     monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
-    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: False)
     # labor_nowcast runs at 07/12/17 ET, so a suite that executes in one of
     # those hours would otherwise drive the real scan against the stub client.
     monkeypatch.setattr(scan, "labor_scan_due", lambda now: False)
@@ -112,7 +111,6 @@ def test_an_unmatched_sports_edge_version_stays_shadow(monkeypatch):
     monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
     monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
-    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: False)
     # labor_nowcast runs at 07/12/17 ET, so a suite that executes in one of
     # those hours would otherwise drive the real scan against the stub client.
     monkeypatch.setattr(scan, "labor_scan_due", lambda now: False)

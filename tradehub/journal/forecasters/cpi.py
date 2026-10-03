@@ -1,6 +1,6 @@
 """CPI m/m through the journal (v2 spec §5): the existing nowcast engine, no model changes.
 
-Same math as `tradehub.scripts.scan.scan_cpi` (Cleveland Fed nowcast, `Normal(nowcast + bias, sigma)`
+Same math as `tradehub.engines.cpi` (Cleveland Fed nowcast, `Normal(nowcast + bias, sigma)`
 fit at the decision horizon, KXCPI/KXCPICORE bucket mapping) and the same `engine_version`s, so the
 journal grades the engine the site already shows. Headline and core are separate forecasters because
 they are separate track records.

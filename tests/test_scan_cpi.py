@@ -1,128 +1,36 @@
-import json
+"""What still has to hold for CPI in `tradehub/scripts/scan.py` once the CPI scan step is gone.
+
+The step itself was removed: CPI is a journal engine, so the nowcast fetch, the fit and every
+prediction row it built went to a table nothing reads any more. The journal is now the only producer
+of a CPI forecast, and `tests/test_journal_cpi_fomc.py` pins the number it produces -- including the
+same probability this file used to pin against the scan.
+
+Two things were never about producing anything and stay: the engine config the journal forecaster
+reads its fit parameters from, and `remove_closed_cpi_edges`, the lifecycle cleanup for rows whose
+market is no longer open.
+"""
 from datetime import datetime, timezone
-from pathlib import Path
 
-import pytest
-
-from tradehub.data.cleveland_fed import parse_nowcast_month
-from tradehub.data.kalshi_live import LiveMarket
-from tradehub.edges import Quote
-from tradehub.engine_config import EngineConfig, load_engine_config
-from tradehub.markets import parse_cpi_market
+from tradehub.engine_config import load_engine_config
 from tradehub.scripts import scan
-
-PAYLOAD = json.loads((Path(__file__).parent / "fixtures" / "cleveland_nowcast_month_trimmed.json").read_text(encoding="utf-8"))
-NOW = datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc)  # 08:05 EDT on the Aug-2026 release morning
-CFG = EngineConfig(min_edge_pct=5.0, prefer_maker=True, params={"train_months": 24.0, "use_bias": 0.0})
-
-
-def _lm(series, strike, month="26AUG", close="2026-09-11T12:25:00Z", bid=0.30, ask=0.34):
-    event = f"{series}-{month}"
-    market = parse_cpi_market({"ticker": f"{event}-T{strike}", "event_ticker": event, "strike_type": "greater",
-                               "floor_strike": strike, "open_time": "2026-07-23T21:00:00Z", "close_time": close,
-                               "title": f"{series} {strike}"})
-    return LiveMarket(market, Quote(yes_bid=bid, yes_ask=ask, yes_bid_size=50.0, yes_ask_size=50.0))
-
-
-class FakeLive:
-    def __init__(self, markets):
-        self.markets = markets
-
-    def open_markets(self, series):
-        return [lm for lm in self.markets if lm.market.series_ticker == series]
-
-
-def _nowcast_fn(calls):
-    def fn(kind):
-        calls.append(kind)
-        return parse_nowcast_month(PAYLOAD, kind)
-    return fn
-
-
-def test_scan_cpi_predicts_headline_and_core_with_their_versions():
-    calls = []
-    live = FakeLive([_lm("KXCPI", 0.3), _lm("KXCPI", 0.4), _lm("KXCPICORE", 0.2)])
-    preds, edges = scan.scan_cpi(live, NOW, CFG, nowcast_fn=_nowcast_fn(calls))
-    assert calls == ["headline", "core"]
-    by_ticker = {p["market_ticker"]: p for p in preds}
-    assert set(by_ticker) == {"KXCPI-26AUG-T0.3", "KXCPI-26AUG-T0.4", "KXCPICORE-26AUG-T0.2"}
-    assert all(p["engine"] == "cpi_nowcast" for p in preds)
-    assert by_ticker["KXCPI-26AUG-T0.3"]["engine_version"] == "cpi-v1"
-    assert by_ticker["KXCPICORE-26AUG-T0.2"]["engine_version"] == "cpi-core-v1"
-    headline = by_ticker["KXCPI-26AUG-T0.3"]["raw_payload"]
-    # The Sep-10 value (0.3592) became usable at 00:00 ET Sep 11; too few released months -> default sigma.
-    assert headline["nowcast_obs"] == "CPI:2026-08@2026-09-10"
-    assert headline["nowcast"] == pytest.approx(0.359180537639179)
-    assert headline["sigma"] == pytest.approx(0.15) and headline["n_train"] == 1
-    assert by_ticker["KXCPI-26AUG-T0.3"]["our_prob"] == pytest.approx(0.5244, abs=1e-4)  # P(N(0.3592, 0.15) > 0.35)
-    # CPI writes no edges, deliberately: approved DISPLAY ONLY 2026-09-27 (spec 5a, section 9
-    # approval 3). The measurement above is unchanged and is the product; the `edges` row was the
-    # thing claiming an opportunity, and that claim is not supported. See tests/test_cpi_no_edges.py
-    # for the regression, which asserts on what the scan tried to write rather than on this return.
-    assert edges == [], f"CPI is display-only and must write no edges, got {len(edges)}"
-
-
-def test_scan_cpi_skips_months_without_a_nowcast_and_closed_markets():
-    live = FakeLive([_lm("KXCPI", 0.3, month="26OCT", close="2026-11-10T13:25:00Z"),
-                     _lm("KXCPI", 0.3, close="2026-09-11T12:00:00Z")])
-    assert scan.scan_cpi(live, NOW, CFG, nowcast_fn=_nowcast_fn([])) == ([], [])
-
-
-def test_scan_cpi_does_not_fetch_the_nowcast_without_open_markets():
-    calls = []
-    assert scan.scan_cpi(FakeLive([]), NOW, CFG, nowcast_fn=_nowcast_fn(calls)) == ([], [])
-    assert calls == []
-
-
-def test_cpi_scan_due_hours_are_eastern():
-    assert scan.cpi_scan_due(datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc))      # 08:05 EDT
-    assert scan.cpi_scan_due(datetime(2026, 12, 10, 13, 5, tzinfo=timezone.utc))     # 08:05 EST
-    assert not scan.cpi_scan_due(datetime(2026, 9, 11, 13, 5, tzinfo=timezone.utc))  # 09:05 EDT
 
 
 def test_repo_config_has_cpi_nowcast():
+    """Not a scan concern any more: `CpiForecaster` reads its fit window and bias off this config,
+    so a dropped or renamed key here silently changes the journal's model rather than failing."""
     cfg = load_engine_config("cpi_nowcast")
     assert cfg.min_edge_pct > 0 and cfg.prefer_maker is True
     assert cfg.params == {"train_months": 24.0, "use_bias": 0.0}
 
 
-def test_main_isolates_a_cpi_failure(monkeypatch, capsys):
-    from tradehub import predictions
-    from tradehub.core import supabase_client
+def test_main_gates_edges_per_engine_version_pair(monkeypatch):
+    """Re-pointed off CPI, which was the only engine emitting two engine_versions in one scan.
 
-    prediction_writes = []
-    edge_writes = []
-    monkeypatch.setattr(supabase_client, "get_client", lambda: "client")
-    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: edge_writes.append(rows))
-    monkeypatch.setattr(predictions, "record_predictions", lambda supa, rows: prediction_writes.append(rows))
-    monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan, "scan_weather", lambda live, now, cfg, **kwargs: ([{"w": 1}], []))
-    monkeypatch.setattr(scan, "scan_gas", lambda live, now, cfg, **kwargs: ([{"g": 1}], [{"e": 1, "engine": "gas"}]))
-    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
-    monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
-    monkeypatch.setattr(scan, "sports_due", lambda now: False)
-    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
-    monkeypatch.setattr(scan, "sports_due", lambda now: False)
-    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
-    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
-    # This test calls scan.main() with no `now`, so it runs on the wall clock. labor_nowcast is due
-    # at 07/12/17 ET, and in those hours the real scan_labor would run against the stub client and
-    # turn this into a labor failure. Same trap as cpi_scan_due, wider window.
-    monkeypatch.setattr(scan, "labor_scan_due", lambda now: False)
-
-    def boom(live, now, cfg):
-        raise RuntimeError("cleveland fed down")
-
-    monkeypatch.setattr(scan, "scan_cpi", boom)
-    assert scan.main() == 1
-    assert [{"w": 1}] in prediction_writes and [{"g": 1}] in prediction_writes
-    assert [{"e": 1, "engine": "gas", "gate_status": "SHADOW"}] in edge_writes
-    summary = json.loads(capsys.readouterr().out)
-    assert summary["cpi_nowcast"]["status"].startswith("error: RuntimeError")
-    assert summary["cpi_nowcast"]["predictions"] == 0
-
-
-def test_main_gates_cpi_edges_per_engine_version(monkeypatch):
+    CPI was the accidental vehicle for this, so with the scan step gone the pair has to be shown on
+    the engines that remain. The claim is unchanged and is now checked in both directions at once:
+    the PROMOTED pair reaches the row it belongs to, and an engine with no verdict of its own in the
+    same lookup fails closed to SHADOW rather than inheriting it.
+    """
     from tradehub.core import supabase_client
     from tradehub import predictions
 
@@ -131,60 +39,26 @@ def test_main_gates_cpi_edges_per_engine_version(monkeypatch):
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
     monkeypatch.setattr(predictions, "record_predictions", lambda *args: None)
     monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
-    monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
-    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: True)
+    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], [
+        {"market_ticker": "W", "engine": "weather", "engine_version": scan.WEATHER_ENGINE_VERSION},
+    ]))
+    monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], [
+        {"market_ticker": "G", "engine": "gas", "engine_version": scan.GAS_ENGINE_VERSION},
+    ]))
     monkeypatch.setattr(scan, "remove_stale_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "sports_due", lambda now: False)
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *a, **k: None)
+    # A PROMOTED verdict exists only for this exact pair, and the weather pair has none at all.
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {
-        ("cpi_nowcast", "cpi-core-v1"): "PROMOTED",
+        ("gas", scan.GAS_ENGINE_VERSION): "PROMOTED",
     })
-    monkeypatch.setattr(scan, "scan_cpi", lambda *a, **k: ([], [
-        {"market_ticker": "A", "engine": "cpi_nowcast", "engine_version": "cpi-v1"},
-        {"market_ticker": "B", "engine": "cpi_nowcast", "engine_version": "cpi-core-v1"},
-    ]))
 
     assert scan.main(now=datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc), live=object(), client=object()) == 0
-    assert {row["engine_version"]: row["gate_status"] for row in upserted} == {
-        "cpi-v1": "SHADOW", "cpi-core-v1": "PROMOTED",
+    assert {row["engine"]: row["gate_status"] for row in upserted} == {
+        "gas": "PROMOTED", "weather": "SHADOW",
     }
-
-
-@pytest.mark.parametrize("due", [True, False])
-def test_cpi_cleanup_runs_only_on_a_due_hour(monkeypatch, due):
-    from tradehub.core import supabase_client
-    from tradehub import predictions
-    cleaned = []
-    monkeypatch.setattr(supabase_client, "get_client", lambda: object())
-    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: None)
-    monkeypatch.setattr(predictions, "record_predictions", lambda *args: None)
-    monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
-    monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
-    monkeypatch.setattr(scan, "cpi_scan_due", lambda now: due)
-    monkeypatch.setattr(scan, "latest_gate_statuses", lambda *a: {})
-    monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: cleaned.append(produced))
-    monkeypatch.setattr(scan, "sports_due", lambda now: False)
-    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
-    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
-    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *a, **k: None)
-    edge = {"market_ticker": "CPI", "engine": "cpi_nowcast", "engine_version": "cpi-v1"}
-    monkeypatch.setattr(scan, "scan_cpi", lambda *a, **k: ([], [edge] if due else []))
-
-    assert scan.main(now=datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc), live=object(), client=object()) == 0
-    cpi_cleaned = [produced for call in cleaned for name, produced in call.items() if name == "cpi_nowcast"]
-    assert bool(cpi_cleaned) is due
-
-
-def test_scan_cpi_skips_one_malformed_market(monkeypatch):
-    from dataclasses import replace
-    good = _lm("KXCPI", 0.3)
-    bad = replace(good, market=replace(good.market, event_ticker="not-a-month"))
-    preds, _ = scan.scan_cpi(FakeLive([bad, good]), NOW, CFG, nowcast_fn=_nowcast_fn([]))
-    assert [p["market_ticker"] for p in preds] == ["KXCPI-26AUG-T0.3"]
 
 
 class _RecordingQuery:
@@ -262,21 +136,3 @@ def test_remove_closed_cpi_edges_sends_a_comparable_expiry_bound():
     bound = client.deleted[0]["expires_at"]
     assert bound.endswith("+00:00")
     assert datetime.fromisoformat(bound) == now
-
-
-def test_a_falsy_nowcast_fn_is_used_rather_than_swapped_for_the_live_fetcher():
-    """`nowcast_fn or fetch_nowcast_history` would discard a callable that is legitimately falsy and
-    run the real network fetcher -- the exact failure the seam exists to prevent. A Mock configured
-    with `__bool__` False is the cheapest stand-in for that shape."""
-    from unittest.mock import MagicMock
-
-    falsy = MagicMock()
-    falsy.__bool__ = lambda: False
-    calls = []
-    falsy.side_effect = lambda kind: calls.append(kind) or {"2026-10": {"value": 0.3, "as_of": None}}
-
-    predictions, _edges = scan.scan_cpi(FakeLive([_lm("KXCPI", 310)]), NOW, CFG, nowcast_fn=falsy)
-
-    # The property under test is only that OUR callable was consulted. Whether this stub's nowcast
-    # shape happens to yield a prediction is a separate concern the other tests in this file cover.
-    assert calls, "the falsy callable was discarded and the live fetcher ran instead"

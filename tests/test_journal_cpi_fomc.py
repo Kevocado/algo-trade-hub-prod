@@ -57,7 +57,7 @@ def test_cpi_forecaster_reproduces_the_scan_probability_and_freezes_the_market_m
     assert entry.target == "kalshi:KXCPI-26AUG-T0.3" and entry.market_linked and entry.cadence == "monthly"
     forecast = fc.forecast(entry, NOW)
     assert (fc.name, fc.version) == ("cpi_nowcast", "cpi-v1")
-    assert forecast.probability == pytest.approx(0.5244, abs=1e-4)  # same number test_scan_cpi pins
+    assert forecast.probability == pytest.approx(0.5244, abs=1e-4)  # the number the CPI scan step produced before it was removed
     assert forecast.market_prob == pytest.approx(0.32)
     assert forecast.payload["nowcast_obs"] == "CPI:2026-08@2026-09-10"
     assert (forecast.payload["yes_bid"], forecast.payload["yes_ask"]) == (0.30, 0.34)  # frozen for cost netting
