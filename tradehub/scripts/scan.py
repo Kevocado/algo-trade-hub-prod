@@ -447,7 +447,11 @@ def scan_cpi(
     # that rebinds `scan.fetch_nowcast_history` was patching a name this function never looked up. The
     # stub silently did nothing and the scan fetched Cleveland Fed nowcasts over the live network --
     # 7.6 MB, three times, inside a test that was supposed to be hermetic.
-    nowcast_fn = nowcast_fn or fetch_nowcast_history
+    # `is None`, never `or`: a caller may legitimately pass a callable that is falsy (a class
+    # defining __bool__/__len__ returning false, or a Mock configured that way). `or` would discard it
+    # and run the LIVE NETWORK fetcher -- the exact failure this seam exists to prevent.
+    if nowcast_fn is None:
+        nowcast_fn = fetch_nowcast_history
     window = int(cfg.params.get("train_months", CPI_TRAIN_MONTHS))
     use_bias = bool(cfg.params.get("use_bias", 0.0))
     predictions: list[dict] = []

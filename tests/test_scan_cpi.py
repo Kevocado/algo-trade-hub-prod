@@ -262,3 +262,21 @@ def test_remove_closed_cpi_edges_sends_a_comparable_expiry_bound():
     bound = client.deleted[0]["expires_at"]
     assert bound.endswith("+00:00")
     assert datetime.fromisoformat(bound) == now
+
+
+def test_a_falsy_nowcast_fn_is_used_rather_than_swapped_for_the_live_fetcher():
+    """`nowcast_fn or fetch_nowcast_history` would discard a callable that is legitimately falsy and
+    run the real network fetcher -- the exact failure the seam exists to prevent. A Mock configured
+    with `__bool__` False is the cheapest stand-in for that shape."""
+    from unittest.mock import MagicMock
+
+    falsy = MagicMock()
+    falsy.__bool__ = lambda: False
+    calls = []
+    falsy.side_effect = lambda kind: calls.append(kind) or {"2026-10": {"value": 0.3, "as_of": None}}
+
+    predictions, _edges = scan.scan_cpi(FakeLive([_lm("KXCPI", 310)]), NOW, CFG, nowcast_fn=falsy)
+
+    # The property under test is only that OUR callable was consulted. Whether this stub's nowcast
+    # shape happens to yield a prediction is a separate concern the other tests in this file cover.
+    assert calls, "the falsy callable was discarded and the live fetcher ran instead"
