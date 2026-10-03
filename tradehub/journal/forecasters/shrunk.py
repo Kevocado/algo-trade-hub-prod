@@ -56,7 +56,7 @@ class MarketShrunk:
         if not callable(store):
             raise TypeError(f"store must be a callable returning the journal client, got {type(store).__name__}: "
                             "passing a client here would build one at import time, where there are no credentials")
-        self.inner, self.store, self.weight = inner, store, weight
+        self.inner, self._store_factory, self.weight = inner, store, weight
         self.name = f"{inner.name}{SUFFIX}"
         # From `self.weight`, not from the allowlist's first entry: a version naming a weight other than
         # the one applied is the F3 collision all over again, wearing a different number.
@@ -64,6 +64,26 @@ class MarketShrunk:
         self.cadence = inner.cadence
         self._rows: dict[str, dict] | None = None
         self._read_at: datetime | None = None
+
+    def bind_store(self, supa) -> None:
+        """Adopt the client the run was actually given.
+
+        The constructor takes a FACTORY because the registry is imported with no credentials, so a
+        client cannot be built there. But a factory wired to the singleton is the wrong client for any
+        run that was handed a different one: the pure row would freeze into `supa` while the cautious row
+        read production, and the two would score different stores under one name. The runner calls this
+        before driving us, so the cautious row is a function of the same store the pure row came from.
+        """
+        self._store_factory = lambda: supa
+        # Drop the cache: it belongs to the client we were just swapped off. Keyed on the hour only,
+        # so without this a second run in the same hour against a different store would read the FIRST
+        # store's frozen rows and freeze a cautious row from another database's history.
+        self._rows = None
+        self._read_at = None
+
+    @property
+    def store(self):
+        return self._store_factory
 
     def targets(self, now: datetime) -> list[CalendarEntry]:
         return [e for e in self.inner.targets(now) if e.market_linked]
