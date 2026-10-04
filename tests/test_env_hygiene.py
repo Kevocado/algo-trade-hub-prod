@@ -253,15 +253,23 @@ def test_api_app_loads_env_in_lifespan_not_at_import():
 
 # ── Hermeticity of the suite itself ───────────────────────────────────────────
 
-def _run_alfred_and_no_edges() -> str:
-    """Pass/fail counts only -- the wall-clock suffix is not part of the result."""
+def _run_alfred_and_no_edges(cwd: Path | None = None) -> str:
+    """Pass/fail counts only -- the wall-clock suffix is not part of the result.
+
+    `cwd` defaults to the repo root, which is where a real `.env` would be found. Callers that create
+    a `.env` should pass a scratch directory instead, so the file they create is the one in scope and
+    the repo is never written to.
+    """
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONPATH"] = str(REPO)
     env["SUPABASE_SERVICE_ROLE_KEY"] = "dummy-baseline-placeholder"
-    # The two files that the leaked FRED_API_KEY used to steer differently.
+    where = cwd or REPO
+    # The two files that the leaked FRED_API_KEY used to steer differently. Absolute, because `where`
+    # is not the repo root.
     out = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "tests/test_alfred_vintages.py", "tests/test_cpi_no_edges.py"],
-        capture_output=True, text=True, env=env, cwd=REPO,
+        [sys.executable, "-m", "pytest", "-q",
+         str(REPO / "tests/test_alfred_vintages.py"), str(REPO / "tests/test_cpi_no_edges.py")],
+        capture_output=True, text=True, env=env, cwd=where,
     )
     last = out.stdout.strip().splitlines()[-1] if out.stdout.strip() else out.stderr[-2000:]
     # "36 passed in 19.71s" -> "36 passed"
@@ -277,17 +285,14 @@ def test_alfred_results_do_not_depend_on_a_present_env_file(tmp_path):
     tests' two-argument fake servers -- a `TypeError`, i.e. the "pre-existing
     order-dependent failure" that several engineers saw on one commit.
     """
-    env_file = REPO / ".env"
-    if env_file.exists():
-        # Never read, move, or overwrite a developer's real `.env` -- that file is
-        # the thing being protected, and this test must not be the thing that
-        # destroys it. CI checks out without one, so the assertion runs there on
-        # every push; on a workstation it is verified with the real file moved
-        # aside by hand (see .superpowers/sdd/2026-09-28-cpi-display/
-        # dotenv-at-import-report.md).
-        pytest.skip("a real .env is present in this working tree; refusing to touch it")
+    # The `.env` this test creates lives in `tmp_path`, NOT at the repo root. It used to be written
+    # beside the code and unlinked afterwards, which bit three separate runs: an interrupted run left
+    # a stray `.env` in the working tree, and a concurrent run could unlink a developer's real one.
+    # The assertion is unchanged -- a `.env` in the process's working directory must not change the
+    # ALFRED/CPI results -- and it is now impossible to damage the repo to make it.
+    env_file = tmp_path / ".env"
 
-    baseline = _run_alfred_and_no_edges()
+    baseline = _run_alfred_and_no_edges(cwd=tmp_path)
 
     env_file.write_text(_garbage_env(), encoding="utf-8")
     try:
