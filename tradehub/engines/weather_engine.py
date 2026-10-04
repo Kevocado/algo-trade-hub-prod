@@ -161,7 +161,7 @@ class WeatherEngine:
         Compare NWS forecasts to Kalshi temperature markets.
         Uses get_weather_markets() from kalshi_feed.py to get real market data.
 
-        Returns list of opportunities with edge > 10%.
+        Returns one row per priced market, with no minimum edge: a market comes back however small the gap.
         """
         # Fetch Kalshi weather markets directly by series ticker
         if kalshi_markets is None:

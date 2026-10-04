@@ -65,6 +65,31 @@ describe("the board", () => {
     expect(LARGE_GAP_POINTS).toBe(25);
   });
 
+  it("keeps a real pick when a bigger-gap row for the same game failed the candidate filter", () => {
+    // A winner market exists for both teams, so one game arrives here twice: both rows carry the
+    // same game_id and kind, and the fold keeps the larger gap. The doomed row is listed FIRST and
+    // carries the bigger gap, so nothing but the order of filter and fold can save the pick under it.
+    const b = board([
+      edge({
+        game_id: "x", market_id: "x-no", tier: "filtered", candidate: false, edge_pct: null,
+        our_prob: 0.9, market_prob: 0.4,
+      }),
+      edge({ game_id: "x", market_id: "x-yes", tier: "top_pick", our_prob: 0.6, market_prob: 0.5 }),
+      // Two more rows for a second game, SMALLER gap first: so "keep the largest gap" is checked
+      // against first-seen (+10) and not just against the +50 the fold must never pick.
+      edge({ game_id: "y", market_id: "y-a", tier: "unreviewed", our_prob: 0.6, market_prob: 0.5 }),
+      edge({ game_id: "y", market_id: "y-b", tier: "flagged", our_prob: 0.7, market_prob: 0.55 }),
+    ]);
+    // Gap +50 and dropped vs gap +10 and shown: folding before filtering lost the game entirely.
+    expect(b.topPicks.map((p) => p.gameId)).toEqual(["x"]);
+    expect(b.topPicks.map((p) => p.model)).toEqual([60]);
+    // ...and it counted the game as having no edge at all, the other half of the same loss.
+    expect(b.noEdge).toBe(0);
+    // The fold still ranks what it keeps: +15 (70) over +10 (60), not first-seen and not the +50.
+    expect(b.flagged.map((p) => [p.gameId, p.model])).toEqual([["y", 70]]);
+    expect(b.unreviewed).toEqual([]);
+  });
+
   it("says there is nothing to feature when nothing passed review, rather than inventing a list", () => {
     const b = board([edge({ tier: "flagged" })]);
     expect(b.topPicks).toEqual([]);

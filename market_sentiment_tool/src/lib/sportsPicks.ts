@@ -82,16 +82,23 @@ function toPick(edge: SportsEdge): SportsPick {
   };
 }
 
+/** The fold's unit: one row per game and bet type. */
+const pickKey = (edge: SportsEdge) => `${edge.game_id}|${edge.kind}`;
+
 /**
  * One row per game and bet type. A winner market exists for BOTH teams, so "UConn wins YES" and
  * "Syracuse wins NO" are the same bet; keeping both is what made the board look twice as long and
  * twice as sure. The row with the larger gap is kept (ties: the first seen).
+ *
+ * A plain fold over the rows it is handed, so the caller decides which rows are in play BEFORE this
+ * runs: whoever filters last is the one whose losers decide the board. `board` drops the `filtered`
+ * rows first for exactly that reason.
  */
 export function toPicks(edges: SportsEdge[]): SportsPick[] {
   const best = new Map<string, SportsPick>();
   for (const edge of edges) {
     const pick = toPick(edge);
-    const key = `${edge.game_id}|${edge.kind}`;
+    const key = pickKey(edge);
     const held = best.get(key);
     if (!held || pick.gap > held.gap) best.set(key, pick);
   }
@@ -107,14 +114,19 @@ export interface Board {
 }
 
 export function board(edges: SportsEdge[]): Board {
-  const all = toPicks(edges);
-  const shown = all.filter((p) => p.tier !== "filtered");
+  // Discard, THEN fold. Folding first let a `filtered` row win the slot -- it keeps the larger gap
+  // like any other -- and the next line dropped it, taking a real pick for that game with it and
+  // counting the game as having no edge. A row that will never be displayed must never beat a row
+  // that will, and the only way to hold that is to have thrown the rows away before ranking them.
+  const shown = toPicks(edges.filter((e) => e.tier !== "filtered"));
   return {
     // A top pick must also be a plausible one: a large gap is a reason to doubt, not to feature.
     topPicks: shown.filter((p) => p.tier === "top_pick" && !p.largeGap),
     flagged: shown.filter((p) => p.tier === "flagged" || (p.tier === "top_pick" && p.largeGap)),
     unreviewed: shown.filter((p) => p.tier === "unreviewed"),
-    noEdge: all.length - shown.length,
+    // Games with nothing left to show, counted as whole keys rather than as rows: one pick per
+    // surviving key, so the difference is exactly the games whose every row was filtered out.
+    noEdge: new Set(edges.map(pickKey)).size - shown.length,
   };
 }
 
