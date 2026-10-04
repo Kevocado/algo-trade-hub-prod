@@ -58,9 +58,14 @@ export default function Journal() {
         <p className="mt-2 text-slate-400">Forecasts locked in before the event, scored after.</p>
       </header>
 
-      <section aria-label="Totals" className="grid gap-3 sm:grid-cols-3">
+      <section aria-label="Totals" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat value={h.frozen_calibrated} label="forecasts locked in" />
         <Stat value={h.settled_calibrated} label="scored so far" />
+        {/* Spec §1: the hero leads with settled-ledger stats including "Brier skill vs market".
+            Pooled server-side over market-linked cards only (§10); `skillText` prints an em dash
+            for null, so an unmeasured skill never renders as 0.00. */}
+        <Stat value={skillText(h.market_skill?.bss ?? null)} label="Brier skill vs market"
+              hint="Against the Kalshi price, on market-linked calls only." />
         <Stat value={h.promoted} label="promoted" hint="Needs 200 scored (daily) or 50 (monthly)." />
       </section>
 

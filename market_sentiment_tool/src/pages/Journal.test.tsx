@@ -28,7 +28,7 @@ const journal: JournalResponse = {
     waiting("kalshi_implied_cpi", "v1", { cadence: "monthly" }),
     waiting("housing_direction", "housing-wf-v1", { cadence: "monthly" }),
   ],
-  headline: { forecasters: 6, calibrated: 0, frozen_calibrated: 0, settled_calibrated: 0, promoted: 0 },
+  headline: { forecasters: 6, calibrated: 0, frozen_calibrated: 0, settled_calibrated: 0, promoted: 0, market_skill: null },
 };
 
 const feed: JournalFeed = {

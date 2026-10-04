@@ -50,6 +50,11 @@ export interface JournalHeadline {
   frozen_calibrated: number;
   settled_calibrated: number;
   promoted: number;
+  /**
+   * Spec §1/§10/§11's "Brier skill vs market", pooled over market-linked cards only. `null` when
+   * nothing is market-linked yet -- never `0`, which would read as "measured, no skill".
+   */
+  market_skill: { n: number; brier: number; brier_baseline: number; bss: number | null } | null;
 }
 
 export interface JournalResponse {

@@ -181,7 +181,42 @@ def _independent(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [c for c in cards if not _cautious(c.get("forecaster", ""))]
 
 
-def headline(cards: list[dict[str, Any]]) -> dict[str, int]:
+def market_skill(cards: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The pooled "Brier skill vs market" the hero leads with, or None when there is none to give.
+
+    Spec §1, §10 and §11 all promise this number and it did not exist. §10: it "aggregates
+    market-linked targets only", so cards graded against climatology are out -- they have no market to
+    be better than. Cards that are not their own evidence are out for the reason `_independent`
+    explains: a cautious copy is scored on its model's exact target set, so pooling both would count
+    every event twice. Uncalibrated cards are out for the same reason the rest of the headline is.
+
+    Pooling is weighted by each card's own `n_settled`, because a card carrying 300 settled targets
+    and a card carrying 3 are not equally informative. Weighting by card COUNT -- the obvious
+    mistake -- produces a different, less honest number, and the test pins the weighted one.
+
+    This is an aggregate of each card's stored Brier scores, not a re-scoring of the pooled sample:
+    `bss = 1 - brier/brier_baseline` over averaged scores is not identical to the BSS of the
+    concatenated pairs. It is the same aggregation the hero's other numbers use, and it is computed
+    from the same cards, so it cannot disagree with them. `None` rather than `0.0` when there is no
+    market-linked evidence -- a hero reading 0.00 for "we have not measured this" is a fabricated
+    number, which is the failure this repo keeps fixing.
+    """
+    eligible = [
+        c for c in _independent([c for c in cards
+                                 if c.get("calibration_ready") and c.get("baseline") == "market"])
+        if c.get("brier") is not None and c.get("brier_baseline") is not None
+        and int(c.get("n_settled") or 0) > 0
+    ]
+    total = sum(int(c["n_settled"]) for c in eligible)
+    if not total:
+        return None
+    brier = sum(int(c["n_settled"]) * float(c["brier"]) for c in eligible) / total
+    baseline = sum(int(c["n_settled"]) * float(c["brier_baseline"]) for c in eligible) / total
+    return {"n": total, "brier": brier, "brier_baseline": baseline,
+            "bss": (1 - brier / baseline) if baseline > 0 else None}
+
+
+def headline(cards: list[dict[str, Any]]) -> dict[str, Any]:
     """The journal's hero numbers (spec §10 display gate): headline counts cover calibrated forecasters only.
 
     `settled_calibrated` counts settled TARGETS, not settled cards -- see `_independent` for the two
@@ -195,4 +230,5 @@ def headline(cards: list[dict[str, Any]]) -> dict[str, int]:
         "frozen_calibrated": sum(int(c.get("n_targets") or 0) for c in calibrated if id(c) in evidence),
         "settled_calibrated": sum(int(c.get("n_settled") or 0) for c in calibrated if id(c) in evidence),
         "promoted": sum(1 for c in cards if c.get("gate_status") == "PROMOTED"),
+        "market_skill": market_skill(cards),
     }
