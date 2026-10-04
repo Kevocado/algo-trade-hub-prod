@@ -27,7 +27,12 @@ def journal_scores(supa) -> list[dict[str, Any]]:
     and its engine fell back to the legacy tables as if it had never moved onto the journal.
     """
     try:
-        return select_all(supa, "journal_scores", lambda q: q.select("*"), ("forecaster",))
+        # Both keys, not just `forecaster`: the pair is the table's PRIMARY KEY, so it is a TOTAL order.
+        # One key is not -- two versions of one forecaster have undefined relative order, and
+        # `select_all` pages with a separate `.range()` per page, so a version could be duplicated
+        # across pages or dropped, and a dropped version vanishes from `merge_track_record()`.
+        return select_all(supa, "journal_scores", lambda q: q.select("*"),
+                          ("forecaster", "forecaster_version"))
     except Exception as exc:
         if table_missing(exc, "journal_scores"):
             return []

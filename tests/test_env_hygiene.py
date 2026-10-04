@@ -397,3 +397,79 @@ def test_journal_scores_reads_every_page_not_the_first_thousand_rows():
     read = legacy.journal_scores(Capped())
     assert len(read) == total, (
         f"read {len(read)} of {total}; every engine past the cap would fall back to the legacy tables")
+
+
+def test_scorecard_paging_uses_a_total_order_so_a_version_is_never_split_across_pages():
+    """CodeRabbit (Major, on #97): `journal_scores` was ordered by `forecaster` alone, which is not a
+    total order. Two versions of one forecaster straddling a page boundary have undefined relative
+    order, and `select_all` issues a separate `.range()` per page -- so a version could appear TWICE or
+    be omitted, and an omitted version then vanishes from `merge_track_record()`.
+
+    `journal_scores` has `PRIMARY KEY (forecaster, forecaster_version)`, so that pair is total. The fake
+    models the server: it applies whatever ORDER BY was requested and pages with the SAME page size the
+    pager uses, so a boundary lands inside one forecaster's versions. Paging by a page size the pager
+    does not use would read one page and prove nothing.
+    """
+    from tradehub.journal import legacy
+    from tradehub.journal.store import PAGE
+
+    rows = [{"forecaster": f, "forecaster_version": v}
+            for f in ("a", "b", "c") for v in ("v1", "v2")]     # 6 rows, PAGE is 1000
+
+    class Server:
+        """PostgREST: applies the requested ORDER BY, and `.range()` follows that order."""
+
+        def __init__(self):
+            self.order: list[str] = []
+            self.window = (0, 0)
+            self.pages: list[list[tuple[str, str]]] = []
+
+        def read(self, rows):
+            ordered = sorted(rows, key=lambda r: tuple(r[k] for k in self.order))
+            lo, hi = self.window
+            page = ordered[lo:hi + 1]
+            self.pages.append([(r["forecaster"], r["forecaster_version"]) for r in page])
+            return page
+
+    class Q:
+        def __init__(self, server):
+            self.server = server
+
+        def select(self, *_a):
+            return self
+
+        def order(self, col):
+            self.server.order.append(col)
+            return self
+
+        def range(self, lo, hi):
+            self.server.window = (lo, hi)
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": self.server.read(rows)})()
+
+    class Store:
+        def __init__(self):
+            self.server = Server()
+
+        def table(self, _name):
+            return Q(self.server)
+
+    # PAGE is 1000 and there are 6 rows, so force the boundary to fall inside `b`'s versions by
+    # making the pager's page size small for this test only.
+    import tradehub.journal.store as store_mod
+    original, store_mod.PAGE = store_mod.PAGE, 4
+    try:
+        store = Store()
+        read = legacy.journal_scores(store)
+        pages = store.server.pages
+    finally:
+        store_mod.PAGE = original
+
+    assert set(store.server.order) == {"forecaster", "forecaster_version"}, (
+        f"a one-key order is not total across versions: {store.server.order}")
+    assert len(pages) > 1, f"the fixture never paged, so nothing was proven: {pages}"
+    pairs = [(r["forecaster"], r["forecaster_version"]) for r in read]
+    assert len(pairs) == len(set(pairs)), f"a version was duplicated across pages: {pages}"
+    assert len(read) == len(rows), f"lost rows across pages: {pages}"
