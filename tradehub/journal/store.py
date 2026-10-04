@@ -73,8 +73,18 @@ _HORIZON_DEPLOYED: bool | None = None
 
 
 def _missing_horizon_column(exc: Exception) -> bool:
+    """True when `exc` is PostgREST (or Postgres) saying the horizon column is not there.
+
+    Both wordings matter, and the PostgREST one is the one that actually occurs. PostgREST does not
+    usually say "does not exist": it answers an unknown column with `PGRST204` and a JSON body naming
+    it ("Could not find the 'horizon_seconds' column of 'journal_forecasts' in the schema cache").
+    Matching only the Postgres wording left the fallback unreachable in production -- the one branch
+    standing between an unapplied migration and a ledger that records nothing.
+    """
     text = str(exc)
-    return "horizon_seconds" in text and "does not exist" in text
+    if "horizon_seconds" not in text:
+        return False
+    return "PGRST204" in text or "does not exist" in text or "schema cache" in text
 
 
 def freeze(supa, forecast: Forecast) -> bool:

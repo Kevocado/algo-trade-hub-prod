@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
@@ -95,5 +98,27 @@ describe("calibration shows its reference points", () => {
     fireEvent.click(await screen.findByRole("button", { name: /S&P 500 tomorrow: model/ }));
     expect(await screen.findByText("Nothing scored yet.")).toBeInTheDocument();
     expect(document.querySelector('[aria-label^="Calibration curve"]')).toBeNull();
+  });
+});
+
+describe("the curve's x axis is numeric, not categorical", () => {
+  it("declares a numeric x axis, so distance means probability", async () => {
+    // CodeRabbit Major on #104: `XAxis` defaults to a CATEGORY axis, so buckets were spaced equally
+    // regardless of their numeric values and `domain={[0, 1]}` was ignored -- the curve and the
+    // perfect-calibration diagonal were not on a shared probability scale, which is the diagram's only
+    // job.
+    //
+    // Asserted on the source, not the rendered SVG. I tried the rendered axis first: under jsdom the
+    // container has no usable width, so recharts emits one tick whether the axis is numeric or
+    // categorical, and the assertion tested the mock rather than the code. A prop check is weaker but
+    // honest about what it proves; this is the same trade I made in #102 and I would rather name it
+    // than dress a flaky DOM assertion up as coverage.
+    stubJournal();
+    render(<Journal />);
+    fireEvent.click(await screen.findByRole("button", { name: /S&P 500 tomorrow: model/ }));
+    await screen.findByLabelText(/^Calibration curve /);
+
+    const source = readFileSync(resolve(process.cwd(), "src/components/JournalDetail.tsx"), "utf8");
+    expect(source).toMatch(/<XAxis type="number" dataKey="predicted"/);
   });
 });
