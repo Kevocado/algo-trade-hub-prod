@@ -5,6 +5,24 @@ import { baselineName } from "@/lib/forecasterLabels";
 import type { JournalScore } from "@/lib/journal";
 import { EARLY_N, skillText, split, statusOf, totals, viewRows } from "@/lib/journalView";
 
+/**
+ * Every naive baseline the registry publishes, with the plain-language label it must render as. Asserted
+ * in full: a wrong word in any ONE of them (mutation: gold persistence relabelled "the usual rate") is a
+ * visitor reading the wrong baseline on the tile, and nothing else would notice.
+ */
+const BASELINE_LABELS: Record<string, string> = {
+  baseline_persistence_spx: "S&P 500 tomorrow: yesterday again (baseline)",
+  baseline_climatology_spx: "S&P 500 tomorrow: the usual rate (baseline)",
+  baseline_persistence_vix: "Volatility (VIX) tomorrow: yesterday again (baseline)",
+  baseline_climatology_vix: "Volatility (VIX) tomorrow: the usual rate (baseline)",
+  baseline_persistence_gold: "Gold tomorrow: yesterday again (baseline)",
+  baseline_climatology_gold: "Gold tomorrow: the usual rate (baseline)",
+  baseline_persistence_eurusd: "Euro vs dollar tomorrow: yesterday again (baseline)",
+  baseline_climatology_eurusd: "Euro vs dollar tomorrow: the usual rate (baseline)",
+  baseline_persistence_housing: "US home prices: last month again (baseline)",
+  baseline_climatology_housing: "US home prices: the usual rate (baseline)",
+};
+
 function score(over: Partial<JournalScore> = {}): JournalScore {
   return {
     forecaster: "spy_quant", forecaster_version: "spy-wf-v1", cadence: "daily", baseline: "climatology",
@@ -20,6 +38,19 @@ describe("labels", () => {
     expect(forecasterLabel("cpi_nowcast", "cpi-v1")).toBe("Inflation (CPI)");
     expect(forecasterLabel("new_thing")).toBe("New thing");
     expect(baselineName("market")).toBe("the Kalshi price");
+  });
+
+  // Spec §8: a baseline "must not read as a prediction". The fallback would render
+  // `baseline_persistence_vix` as "Baseline persistence vix", which reads like a forecaster name.
+  it("says a naive baseline is a baseline, and never gives it the model's label", () => {
+    for (const [name, label] of Object.entries(BASELINE_LABELS)) {
+      expect(forecasterLabel(name)).toBe(label);
+      expect(label).toContain("(baseline)");
+    }
+    // Distinct from every model it sits beside, and distinct from its sibling kind.
+    expect(forecasterLabel("baseline_persistence_spx")).not.toBe(forecasterLabel("spy_quant"));
+    expect(forecasterLabel("baseline_persistence_spx")).not.toBe(forecasterLabel("baseline_climatology_spx"));
+    expect(forecasterLabel("baseline_persistence_vix")).not.toBe(forecasterLabel("vix_direction"));
   });
 });
 

@@ -10,8 +10,9 @@ from tradehub.core.kalshi_feed import fetch_market
 from tradehub.core.supabase_client import get_client
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.journal.contract import Forecaster
+from tradehub.journal.forecasters.baselines import build_baselines
 from tradehub.journal.forecasters.cpi import CpiForecaster
-from tradehub.journal.forecasters.daily_direction import build_wave2
+from tradehub.journal.forecasters.daily_direction import build_wave2, wave2_closes
 from tradehub.journal.forecasters.fomc import FOMC_SERIES, FomcMapped, is_hold_market
 from tradehub.journal.forecasters.housing import HousingForecaster
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
@@ -25,6 +26,10 @@ from tradehub.journal.spx import SpxCloses
 _LIVE = KalshiLive()
 _LABOR = LaborData()
 _SPX = SpxCloses()
+_HOUSING = HousingForecaster()
+# One closes object per wave-2 family, given to BOTH the model and its naive baselines (see
+# `baselines.py`: the climatology a baseline freezes has to be the one the calendar carries).
+_WAVE2 = wave2_closes()
 
 FORECASTERS: list[Forecaster] = [
     # plan (b): CPI + FOMC, each beside its Kalshi pseudo-forecaster (spec §5, ruling Q5)
@@ -43,9 +48,13 @@ FORECASTERS: list[Forecaster] = [
     # plan (e): walk-forward quant (spec §7); same target and settlement as the meter
     SpyQuant(_SPX),
     # wave 2 (spec §8): VIX, gold (GLD) and EUR/USD daily direction, same walk-forward model
-    *build_wave2(),
+    *build_wave2(_WAVE2),
     # wave 3 (spec §8): Case-Shiller national HPI month-over-month direction
-    HousingForecaster(),
+    _HOUSING,
+    # spec §8/§10: the naive baselines -- persistence and climatology for every non-market direction
+    # family, each beside the model whose targets it prices, on the same closes and its own calendar.
+    # Never promoted and never counted as evidence: see `forecasters/baselines.py` and `scoring.py`.
+    *build_baselines(_SPX, _WAVE2, _HOUSING),
     # wave 3 (spec §8): NFL and CFB feed consumers, each beside its Kalshi-implied baseline
     *build_sports(),
 ]

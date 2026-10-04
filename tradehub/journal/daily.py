@@ -42,6 +42,15 @@ def next_session(day: date, is_session: Callable[[date], bool]) -> date:
     return day
 
 
+def previous_session(day: date, is_session: Callable[[date], bool]) -> date:
+    """The session STRICTLY before `day`. Its own walk, because `next_session` walks forward from its
+    argument and so returns `day` itself -- the target, whose close has not printed yet."""
+    day -= timedelta(days=1)
+    while not is_session(day):
+        day -= timedelta(days=1)
+    return day
+
+
 def next_target_day(now: datetime, is_session: Callable[[date], bool]) -> date | None:
     day = next_session(now.astimezone(CT).date(), is_session)
     if freeze_at(day) <= now:
