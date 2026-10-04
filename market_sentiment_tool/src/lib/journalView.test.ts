@@ -139,3 +139,27 @@ describe("view", () => {
     expect(skillText(null)).toBe("—");
   });
 });
+
+describe("skill never prints as zero when it is not zero", () => {
+  it("keeps a small measured skill visible instead of rounding it to +0.00", () => {
+    // CodeRabbit Minor on #105: `skillText` formats to two decimals, so a BSS of 0.000482 renders
+    // "+0.00" -- a measured result displayed as exactly zero. This is the same defect the whole
+    // readable-UI effort exists to prevent, and it is worst in the hero, where a real (if tiny)
+    // measurement is the number a reader came for.
+    //
+    // The gold replay measured +0.0006 and the page showed "+0.00". Gold has no skill; saying so
+    // with a number that reads as a clean zero is not the same claim as "we could not tell".
+    expect(skillText(0.000482)).not.toBe("+0.00");
+    expect(skillText(0.000482)).toBe("+0.0005");
+    expect(skillText(-0.0006)).toBe("-0.0006");
+  });
+
+  it("still says nothing measured as an em dash, and keeps ordinary magnitudes readable", () => {
+    // The guard on the guard: extra precision must not turn "we have no measurement" into a number,
+    // and the common cases must not become unreadable strings.
+    expect(skillText(null)).toBe("—");
+    expect(skillText(0.23)).toBe("+0.23");
+    expect(skillText(-0.1)).toBe("-0.10");
+    expect(skillText(0)).toBe("0.00");
+  });
+});
