@@ -1,5 +1,5 @@
 import { baselineName, CAUTIOUS_SUFFIX, forecasterLabel } from "@/lib/forecasterLabels";
-import { tiles, type Baseline, type JournalScore } from "@/lib/journal";
+import { EXPERIMENTAL, tiles, type Baseline, type JournalScore } from "@/lib/journal";
 
 /**
  * The /journal page's view of the scorecards: one row per forecaster, ordered by how much evidence it has.
@@ -19,6 +19,8 @@ export interface ViewRow {
   label: string;
   /** The bare forecaster name, so the tile can look up a note without re-splitting `key`. */
   forecaster: string;
+  /** Spec §5: `fomc_mapped` ships "labelled experimental" from its first row. */
+  experimental: boolean;
   frozen: number;
   scored: number;
   needed: number;
@@ -50,6 +52,7 @@ export function viewRows(scores: JournalScore[]): ViewRow[] {
     key: `${model.forecaster}@${model.forecaster_version}`,
     label: forecasterLabel(model.forecaster, model.forecaster_version),
     forecaster: model.forecaster,
+    experimental: EXPERIMENTAL.has(model.forecaster),
     frozen: model.n_targets,
     scored: model.n_settled,
     needed: NEEDED[model.cadence] ?? NEEDED.daily,
