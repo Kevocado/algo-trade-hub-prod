@@ -407,6 +407,48 @@ class TestTheEnginesMeasureSomething:
         assert all(row["market_price"] for row in rows)
         assert all(row[QUARANTINE_FLAG] is True for row in rows)
 
+    def test_the_engine_applies_no_minimum_edge(self, monkeypatch, weather_markets):
+        """Sixteen of thirty rows come back under the 10 points the docstring used to promise.
+
+        The behavioural half of the stale-docstring pair: whatever the sentence says, this pins what
+        the engine does. `find_opportunities` used to end `if edge is not None and abs(edge) > 10:`;
+        a0fc404 ("remove math thresholds") dropped the second half and left the sentence describing
+        it, so 16 of the 30 fixture markets come back at or below a point the docstring said could
+        not appear -- the smallest at 1 point. Green before the docstring fix and green after it,
+        because the fix is text only; it is here so a threshold coming BACK fails as a moved number
+        rather than as a sentence that has quietly stopped being true again.
+        """
+        from tradehub.engines.weather_engine import WeatherEngine
+
+        _freeze_fixture_time(monkeypatch)
+        engine = WeatherEngine()
+        engine.get_nws_forecast = lambda city: {"2026-09-28": 74, "2026-09-29": 76}
+        rows = engine.find_opportunities(weather_markets)
+
+        at_or_below_ten = [r for r in rows if r["edge"] <= 10]
+        # Every priced market comes back, not just the ones past a floor: 30 in, 30 out.
+        assert len(rows) == len(weather_markets) == FIXTURE_WEATHER_ROWS == 30
+        assert len(at_or_below_ten) == 16, [r["edge"] for r in at_or_below_ten]
+        assert min(r["edge"] for r in at_or_below_ten) == pytest.approx(1.0)
+        # The other side, so the two numbers differ and the count above is not a tautology: the
+        # other 14 rows clear the old floor, so it was a filter and not a constant.
+        assert len(rows) - len(at_or_below_ten) == 14
+
+    def test_the_docstring_does_not_promise_an_edge_threshold_anymore(self):
+        """The sentence and the code, asserted to agree -- which they did not.
+
+        `find_opportunities` read "Returns list of opportunities with edge > 10%" for months after
+        a0fc404 removed the `abs(edge) > 10` test that sentence describes. It is a claim about the
+        engine's output sitting in the one place a caller reads before trusting the count, and the
+        test above is the evidence it was false. Asserted on the text because the fix is text: a
+        behaviour-only test cannot see this at all.
+        """
+        from tradehub.engines.weather_engine import WeatherEngine
+
+        doc = WeatherEngine.find_opportunities.__doc__
+        assert "edge > 10%" not in doc, doc
+        assert "no minimum edge" in doc, doc
+
     def test_a_regression_to_the_pre_repair_state_fails_loudly(self):
         """The failure the pinned counts exist for, asserted directly rather than left implicit.
 
