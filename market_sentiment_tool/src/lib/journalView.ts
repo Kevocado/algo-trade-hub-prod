@@ -98,7 +98,20 @@ export function totals(rows: ViewRow[]): Totals {
 }
 
 /** Signed to three places, never a bare 0 for "not measured". */
+/**
+ * A Brier skill score, in words a reader can act on.
+ *
+ * Two decimals for an ordinary magnitude, four for a small one. Two alone is a lie at the small end:
+ * the gold replay measured +0.0006, which printed as "+0.00" -- a real measurement rendered as a clean
+ * zero, in the one number the hero leads with. A reader cannot tell that apart from "exactly no
+ * skill", and those are different claims.
+ *
+ * A true zero still prints "0.00", because that IS the measurement. And `null` still prints an em
+ * dash: "we could not tell" must never look like a number, however small.
+ */
 export function skillText(skill: number | null): string {
   if (skill === null) return "—";
-  return `${skill > 0 ? "+" : ""}${skill.toFixed(2)}`;
+  const sign = skill > 0 ? "+" : "";
+  const digits = skill !== 0 && Math.abs(skill) < 0.005 ? 4 : 2;
+  return `${sign}${skill.toFixed(digits)}`;
 }
