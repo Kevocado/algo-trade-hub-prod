@@ -26,8 +26,18 @@ DEFAULT_GATE_STATUS = "SHADOW"
 
 
 def table_missing(exc: Exception, table: str) -> bool:
-    """True when `exc` says `table` does not exist (PostgREST schema cache, or Postgres), not any other fault."""
+    """True when `exc` says `table` does not exist -- the table itself, not one of its columns.
+
+    The distinction is load-bearing. Callers use this to decide "this feature has not been deployed yet",
+    and fall back to legacy behaviour when it is True. A table that EXISTS but lacks a queried column
+    produces its own message -- "column journal_scores.forecaster does not exist" -- which contains both
+    the table name and "does not exist". Matching on those alone reported a half-migrated table as absent,
+    so the read fell through to legacy records and served them as current: silent wrong data rather than
+    a visible failure. So a `column ... does not exist` message is explicitly NOT a missing table.
+    """
     text = str(exc)
+    if "column " in text and "does not exist" in text:
+        return False
     return table in text and ("schema cache" in text or "does not exist" in text or "PGRST205" in text)
 
 

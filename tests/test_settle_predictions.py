@@ -16,6 +16,12 @@ class _FakeSupa:
     def order(self, *_a, **_k):
         return self
 
+    def range(self, *_a, **_k):
+        # `journal_scores` pages through `select_all`; PostgREST has always supported `.range()`, and
+        # this fake modelled the pre-paging chain instead. Without it the reader raised AttributeError
+        # and three tests failed for a client shape production never uses.
+        return self
+
     def execute(self):
         return type("R", (), {"data": []})()
 

@@ -15,13 +15,19 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
+from tradehub.journal.store import select_all
 from tradehub.gate_status import table_missing
 
 
 def journal_scores(supa) -> list[dict[str, Any]]:
-    """Every journal scorecard, or [] when the journal table has not been deployed yet."""
+    """Every journal scorecard, or [] when the journal table has not been deployed yet.
+
+    Paged, because `journal_engines` built from this decides which engines are journal-backed: an
+    unpaged read stops at PostgREST's 1,000-row default, so every scorecard past the cap was invisible
+    and its engine fell back to the legacy tables as if it had never moved onto the journal.
+    """
     try:
-        return list(supa.table("journal_scores").select("*").order("forecaster").execute().data or [])
+        return select_all(supa, "journal_scores", lambda q: q.select("*"), ("forecaster",))
     except Exception as exc:
         if table_missing(exc, "journal_scores"):
             return []
