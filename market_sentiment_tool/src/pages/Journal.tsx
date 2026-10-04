@@ -7,6 +7,7 @@ import { PreJournalContext } from "@/components/PreJournalContext";
 import { Stat } from "@/components/Stat";
 import type { JournalResponse } from "@/lib/journal";
 import { STATUS_WORDS, skillText, split, totals, viewRows, type Status, type ViewRow } from "@/lib/journalView";
+import { tileNote } from "@/lib/forecasterLabels";
 
 /**
  * /journal: every forecaster's locked-in, scored record, numbers first.
@@ -84,6 +85,9 @@ export default function Journal() {
                         {row.label}
                       </button>
                       <div className="text-xs text-slate-500">vs {row.against}</div>
+                      {tileNote(row.forecaster) && (
+                        <div className="text-xs text-slate-500" data-tile-note="">{tileNote(row.forecaster)}</div>
+                      )}
                     </td>
                     <td className="py-3 text-right tabular-nums text-slate-300">
                       {row.scored} <span className="text-slate-600">of {row.needed}</span>

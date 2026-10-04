@@ -17,6 +17,8 @@ export type Status = "waiting" | "early" | "ahead" | "behind" | "promoted";
 export interface ViewRow {
   key: string;
   label: string;
+  /** The bare forecaster name, so the tile can look up a note without re-splitting `key`. */
+  forecaster: string;
   frozen: number;
   scored: number;
   needed: number;
@@ -47,6 +49,7 @@ export function viewRows(scores: JournalScore[]): ViewRow[] {
   return tiles(scores).map(({ model, market }) => ({
     key: `${model.forecaster}@${model.forecaster_version}`,
     label: forecasterLabel(model.forecaster, model.forecaster_version),
+    forecaster: model.forecaster,
     frozen: model.n_targets,
     scored: model.n_settled,
     needed: NEEDED[model.cadence] ?? NEEDED.daily,
