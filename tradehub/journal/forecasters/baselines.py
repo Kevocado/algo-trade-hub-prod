@@ -166,11 +166,11 @@ class MonthlyBaseline:
 
     ORDERING PRECONDITION (CodeRabbit, on #108): this shares the model's cached `_levels` for one run,
     which is the point -- one HTTP call instead of two. The consequence is that the baseline sees
-    whatever the model last fetched. `HousingForecaster.refresh()` clears that cache ("refetched once per
-    run"), so the supported order is: refresh the model FIRST, then run the baselines against it. A
-    caller that runs `MonthlyBaseline` before the model in the same pass, or omits the model on a later
-    pass, will read the PREVIOUS pass's levels -- a stale target month and a stale climatology, both
-    wrong and neither loud. `registry.py` builds the baselines from the same instance the runner walks,
+    whatever the model last fetched. `HousingForecaster.targets()` clears that cache
+    ("refetched once per run"), so the supported order is: let the model's `targets()` run FIRST, then
+    run the baselines against it. A caller that runs `MonthlyBaseline` before the model's `targets()` in
+    the same pass, or never runs the model in a later pass, will read the PREVIOUS pass's levels -- a
+    stale target month and a stale climatology, both wrong and neither loud. `registry.py` builds the baselines from the same instance the runner walks,
     so the shipped path satisfies this; the constraint is recorded here because the class is public.
     """
 

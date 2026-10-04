@@ -31,7 +31,7 @@ function CalibrationCurve({ points, label }: { points: { predicted: number; obse
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={points} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-          <XAxis dataKey="predicted" domain={[0, 1]} tick={{ fill: "#94a3b8", fontSize: 10 }} tickLine={false} axisLine={false} />
+          <XAxis type="number" dataKey="predicted" domain={[0, 1]} tick={{ fill: "#94a3b8", fontSize: 10 }} tickLine={false} axisLine={false} />
           <YAxis domain={[0, 1]} tick={{ fill: "#94a3b8", fontSize: 10 }} tickLine={false} axisLine={false} />
           <ReferenceLine y={0.5} stroke="#f59e0b" strokeDasharray="4 2" label={{ value: "50%", position: "insideTopRight", fill: "#f59e0b", fontSize: 10 }} />
           <ReferenceLine segment={[{ x: 0, y: 0 }, { x: 1, y: 1 }]} stroke="#475569" strokeDasharray="2 3" />

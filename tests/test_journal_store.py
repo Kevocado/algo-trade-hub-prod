@@ -86,3 +86,81 @@ def test_freeze_still_records_when_the_horizon_column_is_not_deployed_yet():
     assert store.freeze(S(), fc) is True
     assert rows[-1]["horizon_seconds"] == 108000
     assert store._HORIZON_DEPLOYED is None or store._HORIZON_DEPLOYED is True
+
+
+def test_freeze_recognises_postgrest_missing_column_not_just_postgres_wording(monkeypatch):
+    """CodeRabbit Major on #106, and it invalidates the safety net itself.
+
+    PostgREST does not usually say "does not exist". It answers an unknown column with PGRST204 and a
+    JSON body naming the column. `_missing_horizon_column()` matched only the Postgres wording, so on
+    the real error shape the fallback never fired: `freeze()` returned False, the runner counted the
+    forecast as MISSED, and a missed freeze is never backfilled. The whole point of that branch was to
+    stop an unapplied migration from silently switching off the ledger, and it did not.
+
+    This test uses the actual PGRST204 wording. The earlier test used a Postgres-shaped message, which
+    is why it passed while the production path was broken.
+    """
+    from tradehub.journal import store
+    from tradehub.journal.contract import Forecast
+
+    rows: list[dict] = []
+    deployed = {"value": False}
+
+    class Q:
+        def insert(self, row):
+            if "horizon_seconds" in row and not deployed["value"]:
+                raise RuntimeError(
+                    '{"code":"PGRST204","details":"Could not find the '
+                    '\'horizon_seconds\' column of \'journal_forecasts\' in the schema cache",'
+                    '"hint":null,"message":"Could not find the '
+                    '\'horizon_seconds\' column of \'journal_forecasts\' in the schema cache"}')
+            rows.append(dict(row))
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": rows})()
+
+    class S:
+        def table(self, _n):
+            return Q()
+
+    monkeypatch.setattr(store, "_HORIZON_DEPLOYED", None)
+    fc = Forecast(forecaster="f", forecaster_version="v1", target="t", probability=0.6,
+                  horizon_seconds=108000)
+
+    assert store.freeze(S(), fc) is True, "the forecast was lost to an unapplied migration"
+    assert len(rows) == 1 and "horizon_seconds" not in rows[0]
+
+
+def test_a_different_missing_column_is_not_mistaken_for_the_horizon(monkeypatch):
+    """The guard on the guard. Without the column-name check, ANY PGRST204 or "schema cache" error
+    would enter the horizon branch, and the log would then claim `horizon_seconds is not deployed yet`
+    when the real fault was some other column. The retry would fail anyway, so the outcome is the same
+    -- but the operator is told the wrong thing, which is how the next hour's silence gets misread."""
+    from tradehub.journal import store
+    from tradehub.journal.contract import Forecast
+
+    seen: list[dict] = []
+
+    class Q:
+        def insert(self, row):
+            seen.append(dict(row))
+            raise RuntimeError(
+                '{"code":"PGRST204","message":"Could not find the '
+                '\'some_other_column\' column of \'journal_forecasts\' in the schema cache"}')
+
+        def execute(self):
+            return type("R", (), {"data": []})()
+
+    class S:
+        def table(self, _n):
+            return Q()
+
+    monkeypatch.setattr(store, "_HORIZON_DEPLOYED", None)
+    fc = Forecast(forecaster="f", forecaster_version="v1", target="t", probability=0.6,
+                  horizon_seconds=108000)
+
+    assert store.freeze(S(), fc) is False
+    assert len(seen) == 1, "an unrelated schema error triggered a pointless retry"
+    assert store._HORIZON_DEPLOYED is None, (
+        "an unrelated schema error was cached as 'the horizon column is not deployed'")
