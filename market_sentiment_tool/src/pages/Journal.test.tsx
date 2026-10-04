@@ -28,7 +28,7 @@ const journal: JournalResponse = {
     waiting("kalshi_implied_cpi", "v1", { cadence: "monthly" }),
     waiting("housing_direction", "housing-wf-v1", { cadence: "monthly" }),
   ],
-  headline: { forecasters: 6, calibrated: 0, settled_calibrated: 0, promoted: 0 },
+  headline: { forecasters: 6, calibrated: 0, frozen_calibrated: 0, settled_calibrated: 0, promoted: 0 },
 };
 
 const feed: JournalFeed = {
@@ -77,8 +77,11 @@ describe("Journal", () => {
     stubFetch();
     render(<Journal />);
     const totals = await screen.findByLabelText("Totals");
-    expect(within(totals).getByText("forecasts locked in").previousSibling).toHaveTextContent("4");
-    expect(within(totals).getByText("scored so far").previousSibling).toHaveTextContent("2");
+    // Every fixture card is `calibration_ready: false`, and the spec's display gate (§10) says the
+    // headline aggregates post-calibration forecasters only. This used to assert 4 and 2 -- the
+    // ungated sum over provisional cards, which is the bug. The hero is 0 until something calibrates.
+    expect(within(totals).getByText("forecasts locked in").previousSibling).toHaveTextContent("0");
+    expect(within(totals).getByText("scored so far").previousSibling).toHaveTextContent("0");
     expect(within(totals).getByText("promoted").previousSibling).toHaveTextContent("0");
     const results = screen.getByLabelText("Results");
     expect(within(results).getByText("S&P 500 tomorrow: model")).toBeInTheDocument();

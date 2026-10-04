@@ -35,11 +35,13 @@ describe("status", () => {
 });
 
 describe("view", () => {
+  // All calibrated: this fixture is about the CADENCE minimum (`needed`), not the display gate, so
+  // its cards must clear the gate to contribute at all. The gate has its own tests.
   const scores = [
-    score(),
-    score({ forecaster: "sports_nfl", forecaster_version: "feed-v1", baseline: "market", n_settled: 4, n_targets: 6 }),
-    score({ forecaster: "kalshi_implied_sports_nfl", forecaster_version: "v1", n_settled: 4, n_targets: 6 }),
-    score({ forecaster: "housing_direction", forecaster_version: "housing-wf-v1", cadence: "monthly" }),
+    score({ calibration_ready: true }),
+    score({ forecaster: "sports_nfl", forecaster_version: "feed-v1", baseline: "market", n_settled: 4, n_targets: 6, calibration_ready: true }),
+    score({ forecaster: "kalshi_implied_sports_nfl", forecaster_version: "v1", n_settled: 4, n_targets: 6, calibration_ready: true }),
+    score({ forecaster: "housing_direction", forecaster_version: "housing-wf-v1", cadence: "monthly", calibration_ready: true }),
   ];
 
   it("folds the Kalshi baseline into its model's row and orders scored rows first", () => {
@@ -74,10 +76,24 @@ describe("view", () => {
 
   it("counts one set of evidence when a model and its cautious copy share a target set", () => {
     const rows = viewRows([
-      score({ forecaster: "cpi_nowcast", forecaster_version: "cpi-v1", baseline: "market", n_targets: 200, n_settled: 200 }),
-      score({ forecaster: "cpi_nowcast_cautious", forecaster_version: "cpi-v1+w25", baseline: "market", n_targets: 200, n_settled: 200 }),
+      score({ forecaster: "cpi_nowcast", forecaster_version: "cpi-v1", baseline: "market", n_targets: 200, n_settled: 200, calibration_ready: true }),
+      score({ forecaster: "cpi_nowcast_cautious", forecaster_version: "cpi-v1+w25", baseline: "market", n_targets: 200, n_settled: 200, calibration_ready: true }),
     ]);
     expect(totals(rows)).toEqual({ forecasters: 2, frozen: 200, scored: 200, promoted: 0 });
+  });
+
+  it("leaves a provisional card out of the aggregate but not out of the count", async () => {
+    // Mutation testing caught that this gate was untested: `/journal` reads the server headline now,
+    // so only `/cpi` still calls `totals()`, and every fixture above is calibrated. Dropping
+    // `&& r.score.calibration_ready` passed the whole suite.
+    //
+    // Spec §10: "any forecaster appears from its first frozen row; headline stats aggregate ONLY
+    // post-calibration forecasters." The card is still COUNTED (`forecasters`), just not summed.
+    const rows = viewRows([
+      score({ forecaster: "spy_quant", forecaster_version: "v1", n_targets: 200, n_settled: 120, calibration_ready: true }),
+      score({ forecaster: "vix_direction", forecaster_version: "v1", n_targets: 999, n_settled: 888, calibration_ready: false }),
+    ]);
+    expect(totals(rows)).toEqual({ forecasters: 2, frozen: 200, scored: 120, promoted: 0 });
   });
 
   it("counts what the page headlines, and a monthly forecaster needs 50 not 200", () => {

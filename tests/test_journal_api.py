@@ -22,16 +22,19 @@ def test_journal_returns_precomputed_scorecards_in_order():
     db = FakeJournalDB(lambda: T0)
     db.tables["journal_scores"] += [
         {"forecaster": "labor", "forecaster_version": "v1", "gate_status": "SHADOW", "n_settled": 9,
-         "calibration_ready": False},
+         "n_targets": 12, "calibration_ready": False},
         {"forecaster": "cpi", "forecaster_version": "v1", "gate_status": "PROMOTED", "n_settled": 60,
-         "calibration_ready": True},
+         "n_targets": 30, "calibration_ready": True},
     ]
     res = _client(db).get("/api/journal")
     assert res.status_code == 200
     body = res.json()
     assert [r["forecaster"] for r in body["forecasters"]] == ["cpi", "labor"]
-    # headline counts cover calibrated forecasters only (spec §10); the page renders, never sums
-    assert body["headline"] == {"forecasters": 2, "calibrated": 1, "settled_calibrated": 60, "promoted": 1}
+    # headline counts cover calibrated forecasters only (spec §10); the page renders, never sums.
+    # That comment was here before the page honoured it -- `Journal.tsx` called `totals(rows)` over
+    # every card, provisional ones included. See the frontend half of this change.
+    assert body["headline"] == {"forecasters": 2, "calibrated": 1, "frozen_calibrated": 30,
+                                "settled_calibrated": 60, "promoted": 1}
 
 
 def test_feed_is_newest_first_with_calibration_and_provisional_flag():
