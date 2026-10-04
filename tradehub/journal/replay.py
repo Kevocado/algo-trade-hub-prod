@@ -68,7 +68,7 @@ def _paired_se(gaps: list[float]) -> float | None:
     return math.sqrt(variance) / math.sqrt(len(gaps))
 
 
-def _summary(rows: list[tuple[float, float, int]]) -> dict[str, Any]:
+def summary(rows: list[tuple[float, float, int]]) -> dict[str, Any]:
     """rows: (probability, climatology, outcome)."""
     if not rows:
         return {"n": 0, "brier": None, "brier_baseline": None, "bss": None, "up_rate": None,
@@ -117,7 +117,7 @@ def replay(closes: Mapping[date, float], *, start: date, end: date,
     # The days that actually produced a row -- NOT every candidate day. A day can be inside the window,
     # have a previous close and pass the calendar, and still yield nothing: no features, no climatology,
     # or no model fit. Reporting one of those as `date_from` claims history that was never scored.
-    return {**_summary(rows),
+    return {**summary(rows),
             "date_from": (scored_days[0].isoformat() if scored_days else start.isoformat()),
             "date_to": (scored_days[-1].isoformat() if scored_days else end.isoformat()),
-            "by_year": {year: _summary(group) for year, group in sorted(by_year.items())}}
+            "by_year": {year: summary(group) for year, group in sorted(by_year.items())}}
