@@ -135,20 +135,24 @@ def test_the_headline_freeze_count_is_gated_on_calibration_too_not_just_the_sett
     assert h["forecasters"] == 2
 
 
-def test_market_skill_pools_market_linked_cards_by_their_own_settled_counts():
+def test_market_skill_pools_market_linked_cards_by_their_own_matched_counts():
     """Spec §1/§10/§11 all promise a "Brier skill vs market" headline. §10: it "aggregates
     market-linked targets only".
 
-    Pooling is weighted by each card's own `n_settled`, because a card with 200 settled targets and a
+    Pooling is weighted by each card's own `n_baseline`, because a card with 200 matched targets and a
     card with 3 do not carry equal evidence. Weighting by card COUNT instead -- the obvious mistake --
-    gives a very different answer, so the fixture's two cards have deliberately unequal weights.
+    gives a very different answer, so the fixture's two cards have deliberately unequal weights. Both
+    cards are fully matched here (`n_settled == n_baseline`), so this test pins the WEIGHTS and nothing
+    else; the all-targets-vs-matched mismatch is pinned separately, below.
     """
     from tradehub.journal.scoring import market_skill
 
-    big = {"forecaster": "sports_nfl", "calibration_ready": True, "n_settled": 300,
-           "brier": 0.10, "brier_baseline": 0.20, "baseline": "market", "gate_status": "SHADOW"}
-    small = {"forecaster": "cpi_nowcast", "calibration_ready": True, "n_settled": 100,
-             "brier": 0.30, "brier_baseline": 0.20, "baseline": "market", "gate_status": "SHADOW"}
+    big = {"forecaster": "sports_nfl", "calibration_ready": True, "n_settled": 300, "n_baseline": 300,
+           "brier": 0.10, "brier_on_baseline": 0.10, "brier_baseline": 0.20,
+           "baseline": "market", "gate_status": "SHADOW"}
+    small = {"forecaster": "cpi_nowcast", "calibration_ready": True, "n_settled": 100, "n_baseline": 100,
+             "brier": 0.30, "brier_on_baseline": 0.30, "brier_baseline": 0.20,
+             "baseline": "market", "gate_status": "SHADOW"}
 
     out = market_skill([big, small])
     assert out is not None
@@ -164,14 +168,18 @@ def test_market_skill_ignores_non_market_cards_and_non_evidence_cards():
     model's target set -- both would corrupt the pool. Spec §10: "market-linked targets only"."""
     from tradehub.journal.scoring import market_skill
 
-    real = {"forecaster": "sports_nfl", "calibration_ready": True, "n_settled": 300,
-            "brier": 0.10, "brier_baseline": 0.20, "baseline": "market", "gate_status": "SHADOW"}
+    real = {"forecaster": "sports_nfl", "calibration_ready": True, "n_settled": 300, "n_baseline": 300,
+            "brier": 0.10, "brier_on_baseline": 0.10, "brier_baseline": 0.20,
+            "baseline": "market", "gate_status": "SHADOW"}
     climatology = {"forecaster": "housing_direction", "calibration_ready": True, "n_settled": 900,
-                   "brier": 0.40, "brier_baseline": 0.40, "baseline": "climatology", "gate_status": "SHADOW"}
+                   "n_baseline": 900, "brier": 0.40, "brier_on_baseline": 0.40, "brier_baseline": 0.40,
+                   "baseline": "climatology", "gate_status": "SHADOW"}
     cautious = {"forecaster": "sports_nfl_cautious", "calibration_ready": True, "n_settled": 300,
-                "brier": 0.05, "brier_baseline": 0.20, "baseline": "market", "gate_status": "SHADOW"}
+                "n_baseline": 300, "brier": 0.05, "brier_on_baseline": 0.05, "brier_baseline": 0.20,
+                "baseline": "market", "gate_status": "SHADOW"}
     uncalibrated = {"forecaster": "sports_cfb", "calibration_ready": False, "n_settled": 800,
-                    "brier": 0.01, "brier_baseline": 0.20, "baseline": "market", "gate_status": "SHADOW"}
+                    "n_baseline": 800, "brier": 0.01, "brier_on_baseline": 0.01, "brier_baseline": 0.20,
+                    "baseline": "market", "gate_status": "SHADOW"}
 
     out = market_skill([real, climatology, cautious, uncalibrated])
     assert out is not None and out["n"] == 300, out
@@ -186,9 +194,149 @@ def test_market_skill_is_absent_rather_than_zero_when_nothing_is_market_linked()
 
     assert market_skill([]) is None
     assert market_skill([{"forecaster": "housing_direction", "calibration_ready": True, "n_settled": 10,
-                          "brier": 0.3, "brier_baseline": 0.3, "baseline": "climatology",
-                          "gate_status": "SHADOW"}]) is None
+                          "n_baseline": 10, "brier": 0.3, "brier_on_baseline": 0.3, "brier_baseline": 0.3,
+                          "baseline": "climatology", "gate_status": "SHADOW"}]) is None
     # A card with no measured Brier yet cannot contribute a probability to the pool.
     assert market_skill([{"forecaster": "sports_nfl", "calibration_ready": True, "n_settled": 5,
-                          "brier": None, "brier_baseline": None, "baseline": "market",
+                          "n_baseline": 5, "brier": None, "brier_on_baseline": None,
+                          "brier_baseline": None, "baseline": "market",
                           "gate_status": "SHADOW"}]) is None
+
+
+# ── the paired Brier (migration 20260428000020) ──────────────────────────────
+#
+# `brier` is a mean over EVERY settled target; `brier_baseline` is a mean over only the targets that
+# HAVE a baseline. `score()` computes `bss` from a third denominator again -- the model's own Brier on
+# exactly the baseline-matched targets -- and threw it away. So the hero pooled an all-targets numerator
+# against a matched-subset denominator, over all-targets weights: three denominators, one sign. The card
+# has to carry the matched-subset pair and its count, or the pool is guessing.
+
+
+def _sign_flip_rows():
+    """A real forecaster whose two Briers point in OPPOSITE directions.
+
+    100 market-linked targets it calls well (0.1 against a 0.2 market, all resolving NO: ours 0.01,
+    market 0.04) and 300 targets with no market at all, on which it is badly wrong (0.9, all resolving
+    NO: 0.81). So on the pairs the market is actually graded on, this model has real skill; across every
+    settled target it looks worse than the market it beat on 100 of them.
+    """
+    rows = [_row(f"m{i}", 0.10, market=0.20) for i in range(100)]
+    rows += [_row(f"x{i}", 0.90) for i in range(300)]
+    return rows
+
+
+def test_a_scorecard_keeps_the_brier_and_the_count_its_bss_was_actually_computed_from():
+    """`bss` is `1 - ours_b / brier_base`, where `ours_b` is the model's Brier over the matched targets
+    ONLY. The card stored `brier` (every settled target) and `brier_baseline` (matched only) and not the
+    other half of the fraction, so nothing downstream could reconstruct what it had been graded against.
+
+    The fixture is built so the two sides DIFFER: one settled target has a market, one has no baseline at
+    all, so an all-targets mean and a matched mean cannot coincide by luck.
+    """
+    card = score([_row("m", 0.80, market=0.90), _row("x", 0.30)],
+                 {"m": 1, "x": 0}, {}, "daily")
+
+    assert card["n_settled"] == 2 and card["n_baseline"] == 1, card
+    assert card["brier_on_baseline"] == pytest.approx(0.04, abs=1e-6), card      # (0.8 - 1)**2
+    assert card["brier_baseline"] == pytest.approx(0.01, abs=1e-6), card        # (0.9 - 1)**2
+    assert card["brier"] == pytest.approx(0.065, abs=1e-6), card                 # (0.04 + 0.09) / 2
+    assert card["brier"] != pytest.approx(card["brier_on_baseline"], abs=1e-6), (
+        "the fixture is vacuous: both means are equal, so it cannot tell the two fields apart")
+    # The stored pair reproduces the BSS that was already stored, over the same n.
+    assert card["bss"] == pytest.approx(1 - card["brier_on_baseline"] / card["brier_baseline"], abs=1e-6)
+    assert card["brier"] != pytest.approx(card["brier_baseline"]), (
+        "the all-targets mean and the baseline mean must not be the same column")
+
+
+def test_market_skill_sign_flips_onto_the_baseline_matched_targets():
+    """THE bug: pool the right pair and the hero reads POSITIVE skill; pool the wrong pair and the same
+    card reads NEGATIVE. The sign is the whole claim, so it is what this asserts.
+
+    Fixture (`_sign_flip_rows`): n_settled 400, of which n_baseline 100.
+      matched subset : ours 0.01 vs market 0.04  ->  bss = 1 - 0.01/0.04 = +0.75
+      every target   : ours 0.61 vs market 0.04  ->  bss = 1 - 0.61/0.04 = -14.25
+    Pooling `brier` against `brier_baseline` therefore publishes the OPPOSITE sign for a forecaster
+    that beat the market on every target the market is graded on.
+    """
+    from tradehub.journal.scoring import market_skill
+
+    card = score(_sign_flip_rows(), {r["target"]: 0 for r in _sign_flip_rows()}, {}, "daily")
+    assert card["calibration_ready"] and card["baseline"] == "market", card
+    assert card["n_settled"] == 400 and card["n_baseline"] == 100, card
+    assert card["bss"] > 0, card                       # the card's own BSS is positive
+
+    out = market_skill([card])
+    assert out is not None
+    assert out["bss"] > 0, (
+        f"pooling {out['brier']} against {out['brier_baseline']} flipped a positive-skill card negative")
+    assert out["bss"] == pytest.approx(card["bss"], abs=1e-6), out
+    assert out["brier"] == pytest.approx(card["brier_on_baseline"], abs=1e-6), out
+    assert out["brier_baseline"] == pytest.approx(card["brier_baseline"], abs=1e-6), out
+    # The headline's sample size is the pooled set, not the cards' wider one.
+    assert out["n"] == 100, out
+
+
+def test_market_skill_weights_by_the_matched_count_never_the_settled_one():
+    """Two eligible cards whose `n_settled` and `n_baseline` orderings are REVERSED, so the weights are
+    not interchangeable and the three possible pools disagree on the SIGN.
+
+      A: n_settled 900 / n_baseline  50, paired ours 0.10
+      B: n_settled  60 / n_baseline 100, paired ours 0.30
+      market 0.20 on both.
+
+    by n_baseline (right) : (50*0.10 + 100*0.30)/150 = 0.2333 -> bss -0.1667  (negative)
+    by n_settled          : (900*0.10 + 60*0.30)/960 = 0.1125 -> bss +0.4375  (positive)
+    by card count         : (0.10 + 0.30)/2 = 0.20        -> bss  0.0      (a fabricated zero)
+    """
+    from tradehub.journal.scoring import market_skill
+
+    a = {"forecaster": "sports_nfl", "calibration_ready": True, "n_settled": 900, "n_baseline": 50,
+         "brier": 0.99, "brier_on_baseline": 0.10, "brier_baseline": 0.20,
+         "baseline": "market", "gate_status": "SHADOW"}
+    b = {"forecaster": "cpi_nowcast", "calibration_ready": True, "n_settled": 60, "n_baseline": 100,
+         "brier": 0.01, "brier_on_baseline": 0.30, "brier_baseline": 0.20,
+         "baseline": "market", "gate_status": "SHADOW"}
+
+    out = market_skill([a, b])
+    assert out is not None
+    assert out["n"] == 150, out
+    assert out["brier"] == pytest.approx(35 / 150, abs=1e-9), out
+    assert out["brier_baseline"] == pytest.approx(0.20, abs=1e-9), out
+    assert out["bss"] == pytest.approx(1 - (35 / 150) / 0.20, abs=1e-9), out
+    assert out["bss"] < 0, "weighting by n_settled would have published this as positive skill"
+
+
+def test_market_skill_ignores_a_card_scored_before_the_paired_columns_existed():
+    """Rows written before migration 20260428000020 carry NULL in `brier_on_baseline` and `n_baseline`.
+    They are NOT backfilled, and NULL is not zero: a card we never paired cannot contribute a half to
+    the pool, so the hero drops to absent rather than inventing one.
+    """
+    from tradehub.journal.scoring import market_skill
+
+    legacy = {"forecaster": "sports_nfl", "calibration_ready": True, "n_settled": 400, "n_baseline": None,
+              "brier": 0.61, "brier_on_baseline": None, "brier_baseline": 0.04,
+              "baseline": "market", "gate_status": "SHADOW"}
+    assert market_skill([legacy]) is None, (
+        "a NULL paired Brier was read as 0.0 and published a fabricated 1.00 skill")
+
+    paired = {"forecaster": "cpi_nowcast", "calibration_ready": True, "n_settled": 60, "n_baseline": 100,
+              "brier": 0.11, "brier_on_baseline": 0.10, "brier_baseline": 0.20,
+              "baseline": "market", "gate_status": "SHADOW"}
+    out = market_skill([legacy, paired])
+    assert out is not None and out["n"] == 100 and out["brier"] == pytest.approx(0.10, abs=1e-9), out
+
+    # A count without the score it counts is not a contribution either, and must not reach the division
+    # as a float -- that is a TypeError, i.e. the whole headline 500s rather than degrading.
+    orphan = {"forecaster": "gas_leak", "calibration_ready": True, "n_settled": 400, "n_baseline": 100,
+              "brier": 0.61, "brier_on_baseline": None, "brier_baseline": 0.04,
+              "baseline": "market", "gate_status": "SHADOW"}
+    out = market_skill([orphan, paired])
+    assert out is not None and out["n"] == 100 and out["brier"] == pytest.approx(0.10, abs=1e-9), out
+
+    # ...and the mirror: a score with no count is not a weight. `int(None)` here is a TypeError, and a
+    # TypeError in the hero takes the whole page down instead of showing an em dash.
+    weightless = {"forecaster": "sports_cfb", "calibration_ready": True, "n_settled": 400,
+                  "n_baseline": None, "brier": 0.61, "brier_on_baseline": 0.01, "brier_baseline": 0.04,
+                  "baseline": "market", "gate_status": "SHADOW"}
+    out = market_skill([weightless, paired])
+    assert out is not None and out["n"] == 100 and out["brier"] == pytest.approx(0.10, abs=1e-9), out
