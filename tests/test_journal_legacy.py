@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 from journal_fakes import FakeJournalDB
 
@@ -22,6 +23,43 @@ def test_a_journal_scorecard_becomes_one_legacy_shaped_row_tagged_with_its_sourc
     assert row["cal_buckets"] == [{"bucket": "60-70", "n": 7}] and row["bss"] == -0.03
     clim = journal_track_row({**SCORE, "baseline": "climatology"})
     assert clim["brier_market"] is None  # a climatology baseline is not "the market's Brier"
+
+
+def test_the_row_pairs_ours_with_market_over_ONE_sample_so_the_ratio_is_its_own_bss():
+    """Three denominators in one row, and the row's own `bss` computed from a fourth.
+
+    `n_settled`/`brier` cover every settled target; `brier_baseline`/`brier_on_baseline`/`n_baseline`
+    cover only the targets that HAVE a baseline. Pairing the all-targets `brier` with the matched
+    `brier_baseline` puts a 7-target mean beside a 3-target mean, so `1 - brier_ours/brier_market` --
+    the one thing every reader of this shape computes -- is not the `bss` the row also carries. The row
+    was not sign-flipped (PR #113 put the correct `bss` in it) but self-contradictory, which is worse to
+    debug and easier to trust. The three legacy keys are ONE comparison in the legacy shape
+    (`track_record._upsert_version` writes all three from one sample), so all three get the matched one.
+    """
+    three_ways = {**SCORE, "n_settled": 7, "brier": 0.21, "brier_on_baseline": 0.07,
+                  "n_baseline": 3, "brier_baseline": 0.068, "bss": -0.029412}
+    row = journal_track_row(three_ways)
+
+    assert (row["n_settled"], row["brier_ours"], row["brier_market"]) == (3, 0.07, 0.068), row
+    assert row["bss"] == pytest.approx(1 - 0.07 / 0.068, abs=5e-7), (
+        f"the row's two Briers do not produce its own bss: {row}")
+
+
+def test_the_all_settled_figures_are_still_there_under_names_that_say_which_sample_they_cover():
+    """Dropping them would lose the wider sample; keeping them under `brier_ours` would be the bug again.
+
+    The second case is a scorecard written before migration 20260428000020, which carries no matched
+    pair at all. It falls back to the all-settled pair, which is internally consistent on its own -- and
+    says so, rather than reporting `n_settled: null` for a card with 300 settled targets.
+    """
+    three_ways = {**SCORE, "n_settled": 7, "brier": 0.21, "brier_on_baseline": 0.07,
+                  "n_baseline": 3, "brier_baseline": 0.068, "bss": -0.029412}
+    row = journal_track_row(three_ways)
+    assert (row["n_settled_all"], row["brier_all"]) == (7, 0.21)
+
+    pre_migration = {k: v for k, v in three_ways.items() if k not in ("brier_on_baseline", "n_baseline")}
+    old = journal_track_row(pre_migration)
+    assert (old["n_settled"], old["brier_ours"], old["n_settled_all"]) == (7, 0.21, 7)
 
 
 def test_an_engine_on_the_journal_is_served_once_from_the_journal_whatever_the_legacy_version():

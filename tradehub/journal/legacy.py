@@ -44,13 +44,27 @@ def journal_engines(scores: Iterable[dict[str, Any]]) -> set[str]:
 
 
 def journal_track_row(score: dict[str, Any]) -> dict[str, Any]:
-    """One scorecard in the legacy `track_record` row shape, tagged so the reader knows where it came from."""
+    """One scorecard in the legacy `track_record` row shape, tagged so the reader knows where it came from.
+
+    `n_settled`, `brier_ours` and `brier_market` are ONE comparison here, and they are one sample: the
+    baseline-matched one (`brier_on_baseline`/`n_baseline`, migration 20260428000020), which is also the
+    sample `bss` was computed from. So `1 - brier_ours/brier_market` is this row's own `bss`. They used to
+    be `n_settled`/`brier` -- every settled target -- beside `brier_baseline`, which covers only the
+    targets that HAVE a baseline, so the ratio every reader of this shape computes was an all-targets
+    mean over a matched mean and was not the `bss` carried in the same row. Three denominators in one row.
+
+    The wider sample is still here, under names that say what they cover, because dropping it would lose
+    the settled count a caller may want. A scorecard written before the matched columns existed has no
+    matched pair at all: it falls back to the all-settled pair, which is consistent with itself, rather
+    than reporting `n_settled: null` for a card with hundreds of settled targets.
+    """
     market = score.get("baseline") == "market"
+    matched = score.get("n_baseline") is not None
     return {
         "engine": score["forecaster"],
         "engine_version": score["forecaster_version"],
-        "n_settled": score.get("n_settled"),
-        "brier_ours": score.get("brier"),
+        "n_settled": score.get("n_baseline") if matched else score.get("n_settled"),
+        "brier_ours": score.get("brier_on_baseline") if matched else score.get("brier"),
         "brier_market": score.get("brier_baseline") if market else None,
         "cal_buckets": score.get("reliability") or [],
         "max_cal_dev": None,
@@ -60,6 +74,9 @@ def journal_track_row(score: dict[str, Any]) -> dict[str, Any]:
         "baseline": score.get("baseline"),
         "bss": score.get("bss"),
         "calibration_ready": score.get("calibration_ready"),
+        # The all-settled figures, labelled: `brier_ours`/`n_settled` above are the matched sample.
+        "n_settled_all": score.get("n_settled"),
+        "brier_all": score.get("brier"),
     }
 
 

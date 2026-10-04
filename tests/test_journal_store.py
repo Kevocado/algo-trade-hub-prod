@@ -1,6 +1,88 @@
 from datetime import UTC, datetime
 
 
+def test_fetch_forecasts_can_be_asked_for_named_targets_instead_of_the_whole_history():
+    """The read that decides "is this target already frozen?" only ever needs THIS run's targets.
+
+    `fetch_forecasts` had no filter at all, so the runner asked the whole frozen history of a
+    forecaster -- every row it will ever write, paged 1000 at a time -- and then threw all of it away
+    except the targets in its hand. `fetch_settlements` and `fetch_calendar` both filter in the
+    database with `.in_("target", ...)`; this read was the one that did not.
+
+    The two sides have to DIFFER or the test proves nothing: three rows exist for the forecaster, two
+    are asked for, and the unfiltered call must still return all three.
+    """
+    from journal_fakes import FakeJournalDB
+
+    from tradehub.journal import store
+
+    db = FakeJournalDB(lambda: datetime(2026, 10, 4, tzinfo=UTC))
+    db.tables["journal_forecasts"] = [
+        {"id": i, "forecaster": "f", "forecaster_version": "v1", "target": t, "probability": 0.5}
+        for i, t in enumerate(("kalshi:A-IND", "kalshi:B-HOU", "kalshi:C-KC"), start=1)
+    ]
+
+    asked = store.fetch_forecasts(db, "f", "v1", ["kalshi:A-IND", "kalshi:C-KC"])
+    assert sorted(r["target"] for r in asked) == ["kalshi:A-IND", "kalshi:C-KC"], asked
+    assert sorted(r["target"] for r in store.fetch_forecasts(db, "f", "v1")) == [
+        "kalshi:A-IND", "kalshi:B-HOU", "kalshi:C-KC"]
+
+
+def test_the_target_filter_chunks_rather_than_building_one_enormous_in_clause():
+    """`IN_CHUNK` exists because PostgREST puts the whole filter in the URL. 250 targets in one `in.()`
+    is a long URL, a probable 414, and a whole run of exceptions -- so the filter carries the same
+    chunking discipline as `fetch_settlements`, and the chunk boundary is IN_CHUNK, not a guess.
+    """
+    from tradehub.journal import store
+
+    seen: list[int] = []
+
+    class Q:
+        def __init__(self, vals=None):
+            self.vals = vals
+
+        def select(self, *_a):
+            return self
+
+        def eq(self, *_a):
+            return self
+
+        def in_(self, _col, vals):
+            seen.append(len(vals))
+            return self
+
+        def order(self, *_a, **_k):
+            return self
+
+        def range(self, *_a):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": [{"id": 1, "target": "t"} for _ in range(len(self.vals or []))]})()
+
+    class S:
+        def table(self, _n):
+            return Q()
+
+    store.fetch_forecasts(S(), "f", "v1", [f"t{i}" for i in range(store.IN_CHUNK + 50)])
+    assert seen == [store.IN_CHUNK, 50], seen
+
+
+def test_an_empty_target_list_asks_for_nothing_rather_than_everything():
+    """`[]` means "none of these targets", not "no filter". A forecaster with no targets this run --
+    a real state, hours before a game's cutoff -- used to pay a full history read for a row it then
+    ignored. `None` is the only value that means "every target".
+    """
+    from journal_fakes import FakeJournalDB
+
+    from tradehub.journal import store
+
+    db = FakeJournalDB(lambda: datetime(2026, 10, 4, tzinfo=UTC))
+    db.tables["journal_forecasts"] = [
+        {"id": 1, "forecaster": "f", "forecaster_version": "v1", "target": "t", "probability": 0.5}]
+    assert store.fetch_forecasts(db, "f", "v1", []) == []
+
+
 def test_freeze_records_the_horizon_from_the_calendar_cutoff(monkeypatch):
     """Spec §3 step 1 puts `horizon` in the frozen row's shape and it was never written. The runner
     already holds the calendar entry, so the horizon is derived in ONE place -- no forecaster changes.

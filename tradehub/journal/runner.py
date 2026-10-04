@@ -28,7 +28,10 @@ def run_forecaster(supa, fc: Forecaster, now: datetime) -> dict[str, Any]:
     entries = [e for e in fc.targets(now) if e.cadence == fc.cadence]
     summary["registered"] = store.register_calendar(supa, entries, now)
 
-    existing = store.fetch_forecasts(supa, fc.name, fc.version)
+    # Only the entries in hand are asked about: `frozen` is consulted through `entry.target` and
+    # nothing else, so this read is a question about THIS run's targets, not about the forecaster's
+    # whole frozen history. The read after the freeze loop is the scorecard's and needs every row.
+    existing = store.fetch_forecasts(supa, fc.name, fc.version, [e.target for e in entries])
     frozen = {row["target"] for row in existing}
     for entry in entries:
         if entry.target in frozen or entry.cutoff_at <= now:
