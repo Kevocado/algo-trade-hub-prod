@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 
 
 def test_freeze_records_the_horizon_from_the_calendar_cutoff(monkeypatch):
@@ -164,3 +165,98 @@ def test_a_different_missing_column_is_not_mistaken_for_the_horizon(monkeypatch)
     assert len(seen) == 1, "an unrelated schema error triggered a pointless retry"
     assert store._HORIZON_DEPLOYED is None, (
         "an unrelated schema error was cached as 'the horizon column is not deployed'")
+
+
+def test_upsert_score_still_writes_when_the_paired_brier_columns_are_not_deployed_yet(monkeypatch):
+    """The same deploy-order hazard `freeze` had, one function over.
+
+    `upsert_score` spreads `**card` into a PostgREST upsert, so a card carrying `brier_on_baseline` and
+    `n_baseline` names two columns that do not exist until migration 20260428000020 is applied. PostgREST
+    rejects the WHOLE upsert (PGRST204), and without a fallback every scorecard would stop updating.
+
+    `upsert_score` is the LAST statement in `run_forecaster`, so the failure mode is the worst one in
+    this repo: freezes and settlements still commit, the ledger keeps filling, and every scorecard
+    silently freezes at its last written value. Nothing looks broken. A missing paired figure is
+    visible; a stale score is not.
+    """
+    from tradehub.journal import store
+
+    paired = ("brier_on_baseline", "n_baseline")
+    deployed = {"value": False}
+    rows: list[dict] = []
+
+    class Q:
+        def upsert(self, row, **_kw):
+            # PostgREST rejects the whole payload when it names an unknown column.
+            if any(k in row for k in paired) and not deployed["value"]:
+                raise RuntimeError(
+                    '{"code":"PGRST204","message":"Could not find the brier_on_baseline'
+                    ' column of journal_scores in the schema cache"}')
+            rows.append({k: v for k, v in row.items()
+                         if deployed["value"] or k not in paired})
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": rows})()
+
+    class S:
+        def table(self, _n):
+            return Q()
+
+    monkeypatch.setattr(store, "_PAIRED_BRIER_DEPLOYED", None)
+    card = {"n_settled": 100, "brier": 0.2, "brier_baseline": 0.25,
+            "brier_on_baseline": 0.2, "n_baseline": 40, "gate_status": "SHADOW"}
+    now = datetime(2026, 10, 4, tzinfo=UTC)
+
+    store.upsert_score(S(), "f", "v1", card, now)
+    assert len(rows) == 1, "the scorecard was lost because a new column was not deployed yet"
+    assert not any(k in rows[0] for k in paired)
+
+    # The negative is cached for the REST OF THE PROCESS so one run does not pay for a rejected write
+    # on every forecaster. `journal_run` is a fresh process each hour, so the next run probes again and
+    # the paired figures start being written as soon as the migration is applied -- no redeploy. Pinned
+    # here by resetting the flag, which is what a new process starts with.
+    assert store._PAIRED_BRIER_DEPLOYED is False
+    deployed["value"] = True
+    store._PAIRED_BRIER_DEPLOYED = None
+    store.upsert_score(S(), "f", "v1", card, now)
+    assert rows[-1]["brier_on_baseline"] == 0.2 and rows[-1]["n_baseline"] == 40
+
+
+def test_an_unrelated_schema_error_is_not_cached_as_the_paired_columns_being_absent(monkeypatch):
+    """The guard on the guard, matching the one added for `_missing_horizon_column`.
+
+    Without the column-name check, ANY PGRST204 or "schema cache" error enters the fallback: the write
+    is retried without the paired columns, the log claims migration 20260428000020 is unapplied, and
+    the answer is cached as False for the whole process -- so the real fault is both misreported and
+    then never rediscovered until the next hourly run.
+    """
+    from tradehub.journal import store
+
+    attempts: list[dict] = []
+
+    class Q:
+        def upsert(self, row, **_kw):
+            attempts.append(dict(row))
+            raise RuntimeError(
+                '{"code":"PGRST204","message":"Could not find the some_other_column'
+                ' column of journal_scores in the schema cache"}')
+
+        def execute(self):
+            return type("R", (), {"data": []})()
+
+    class S:
+        def table(self, _n):
+            return Q()
+
+    monkeypatch.setattr(store, "_PAIRED_BRIER_DEPLOYED", None)
+    card = {"n_settled": 100, "brier": 0.2, "brier_baseline": 0.25,
+            "brier_on_baseline": 0.2, "n_baseline": 40}
+
+    try:
+        store.upsert_score(S(), "f", "v1", card, datetime(2026, 10, 4, tzinfo=UTC))
+    except RuntimeError:
+        pass  # a real failure must still propagate
+    assert len(attempts) == 1, "an unrelated schema error triggered a pointless retry"
+    assert store._PAIRED_BRIER_DEPLOYED is None, (
+        "an unrelated schema error was cached as 'the paired columns are not deployed'")

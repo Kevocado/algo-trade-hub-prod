@@ -150,7 +150,46 @@ def settle(supa, settlement: Settlement) -> bool:
         return False
 
 
+# Columns added by migration 20260428000020, and whether they are deployed. `None` = not asked yet.
+# Same reasoning as `_HORIZON_DEPLOYED`, and the same reason it exists: `upsert_score` spreads the whole
+# card into one PostgREST upsert, so a single unknown column name rejects the ENTIRE write.
+_PAIRED_BRIER_COLUMNS = ("brier_on_baseline", "n_baseline")
+_PAIRED_BRIER_DEPLOYED: bool | None = None
+
+
+def _missing_paired_brier(exc: Exception) -> bool:
+    text = str(exc)
+    if not any(col in text for col in _PAIRED_BRIER_COLUMNS):
+        return False
+    return "PGRST204" in text or "does not exist" in text or "schema cache" in text
+
+
 def upsert_score(supa, forecaster: str, version: str, card: dict[str, Any], now: datetime) -> None:
-    supa.table(SCORES).upsert({"forecaster": forecaster, "forecaster_version": version,
-                               **card, "computed_at": now.isoformat()},
-                              on_conflict="forecaster,forecaster_version").execute()
+    """Write one scorecard.
+
+    A missing paired-Brier column degrades to "the paired figures are not recorded", never to "the
+    scorecard is not written". The distinction is the whole reason this branch exists: `upsert_score` is
+    the last statement in `run_forecaster`, so a rejected upsert leaves freezes and settlements
+    committed while every score silently freezes at its last written value. Nothing would look broken --
+    the ledger would keep filling and every scorecard would be stale, which is the worst failure shape
+    in this repo. An absent figure is visible; a stale one is not.
+    """
+    global _PAIRED_BRIER_DEPLOYED
+    row = {"forecaster": forecaster, "forecaster_version": version,
+           **card, "computed_at": now.isoformat()}
+
+    def _write(payload: dict[str, Any]) -> None:
+        supa.table(SCORES).upsert(payload, on_conflict="forecaster,forecaster_version").execute()
+
+    if _PAIRED_BRIER_DEPLOYED is False:
+        row = {k: v for k, v in row.items() if k not in _PAIRED_BRIER_COLUMNS}
+    try:
+        _write(row)
+        return
+    except Exception as exc:  # noqa: BLE001 - classified below, or propagated as a real failure
+        if _PAIRED_BRIER_DEPLOYED is False or not _missing_paired_brier(exc):
+            raise
+        _PAIRED_BRIER_DEPLOYED = False
+        log.warning("journal: paired Brier columns are not deployed yet (migration 20260428000020); "
+                    "scorecards will record no paired figures until it is applied")
+        _write({k: v for k, v in row.items() if k not in _PAIRED_BRIER_COLUMNS})

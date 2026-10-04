@@ -156,6 +156,12 @@ def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
         "n_settled": len(pairs),
         "brier": round(brier, 6) if brier is not None else None,
         "brier_baseline": round(brier_base, 6) if brier_base is not None else None,
+        # The other half of the fraction `bss` was computed from, and its denominator. `brier` covers
+        # every settled target and `brier_baseline` only the baseline-matched ones, so pairing THOSE two
+        # is pairing an all-targets mean with a matched mean -- three denominators and a sign that can
+        # be wrong. `brier_on_baseline`/`n_baseline` are the matched pair `brier_baseline` belongs to.
+        "brier_on_baseline": round(ours_b, 6) if ours_b is not None else None,
+        "n_baseline": len(ours_on_base),
         "bss": round(bss, 6) if bss is not None else None,
         "reliability": buckets,
         "murphy": murphy(pairs) or {},
@@ -215,28 +221,37 @@ def market_skill(cards: list[dict[str, Any]]) -> dict[str, Any] | None:
     explains: a cautious copy is scored on its model's exact target set, so pooling both would count
     every event twice. Uncalibrated cards are out for the same reason the rest of the headline is.
 
-    Pooling is weighted by each card's own `n_settled`, because a card carrying 300 settled targets
-    and a card carrying 3 are not equally informative. Weighting by card COUNT -- the obvious
-    mistake -- produces a different, less honest number, and the test pins the weighted one.
+    Pooling is weighted by each card's `n_baseline` -- the count of the targets its `brier_baseline`
+    actually averaged -- because a card carrying 300 matched targets and a card carrying 3 do not carry
+    equal evidence. It is NOT `n_settled`, and the numerator is NOT `brier`: those two cover every
+    settled target, while the baseline covers only the targets that have one, so pairing them grades the
+    model on contracts the market was never asked about. That mismatch did not merely blur the number,
+    it inverted the sign: a card with 100 market-linked targets it beats the market on and 300 targets
+    with no market at all pools as deeply NEGATIVE skill while its own `bss` is +0.75. So the numerator
+    is `brier_on_baseline`, the denominator is `brier_baseline`, both are means over the same
+    `n_baseline` targets, and the returned `n` is that pooled matched count -- the sample the reported
+    skill was measured on, not the wider one.
 
     This is an aggregate of each card's stored Brier scores, not a re-scoring of the pooled sample:
     `bss = 1 - brier/brier_baseline` over averaged scores is not identical to the BSS of the
-    concatenated pairs. It is the same aggregation the hero's other numbers use, and it is computed
-    from the same cards, so it cannot disagree with them. `None` rather than `0.0` when there is no
-    market-linked evidence -- a hero reading 0.00 for "we have not measured this" is a fabricated
-    number, which is the failure this repo keeps fixing.
+    concatenated pairs. It is the same aggregation the hero's other numbers use, and -- now that both
+    sides of the ratio come from one card's matched subset -- it agrees with that card's own `bss`, which
+    is the strongest consistency claim available without re-deriving it here. A card carrying NULL in
+    `brier_on_baseline` (written before migration 20260428000020) is skipped rather than read as 0.0, and
+    `None` rather than `0.0` is returned when nothing is left to pool -- a hero reading 0.00 for "we have
+    not measured this" is a fabricated number, which is the failure this repo keeps fixing.
     """
     eligible = [
         c for c in _independent([c for c in cards
                                  if c.get("calibration_ready") and c.get("baseline") == "market"])
-        if c.get("brier") is not None and c.get("brier_baseline") is not None
-        and int(c.get("n_settled") or 0) > 0
+        if c.get("brier_on_baseline") is not None and c.get("brier_baseline") is not None
+        and int(c.get("n_baseline") or 0) > 0
     ]
-    total = sum(int(c["n_settled"]) for c in eligible)
+    total = sum(int(c["n_baseline"]) for c in eligible)
     if not total:
         return None
-    brier = sum(int(c["n_settled"]) * float(c["brier"]) for c in eligible) / total
-    baseline = sum(int(c["n_settled"]) * float(c["brier_baseline"]) for c in eligible) / total
+    brier = sum(int(c["n_baseline"]) * float(c["brier_on_baseline"]) for c in eligible) / total
+    baseline = sum(int(c["n_baseline"]) * float(c["brier_baseline"]) for c in eligible) / total
     return {"n": total, "brier": brier, "brier_baseline": baseline,
             "bss": (1 - brier / baseline) if baseline > 0 else None}
 
