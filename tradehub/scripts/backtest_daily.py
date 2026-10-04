@@ -6,6 +6,13 @@
 Never touches the journal tables. Each run adds one row per forecaster, so the page can show how the answer
 moves over time; nothing here is counted toward a gate. Each stored row carries the Brier gap and its
 standard error beside the skill, because a skill printed with no interval reads as a result.
+
+The sentiment meter joins the four here, and it is not replayed the same way: its inputs are FRED series,
+and reading their CURRENT vintage would score the meter on revisions it never had (v2 spec §6). It goes
+through `journal.meter_replay`, which asks ALFRED for each input's vintage as of the forecast's own date
+and records a gap -- never a substituted value -- where there is none. It shares the table, the summary
+and the "not counted" label; it does not share the `SOURCES` shape, because a point-in-time read is not a
+single fetchable series.
 """
 
 from __future__ import annotations
@@ -15,12 +22,21 @@ import json
 import sys
 from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from tradehub.core.env import load_local_env
+from tradehub.data.alfred_vintages import DEFAULT_CACHE_DIR, fetch_vintages
 from tradehub.data.fred_daily import fetch_fred_daily
 from tradehub.journal.daily import closed_only
 from tradehub.journal.forecasters.daily_direction import eurusd_source, gold_source, vix_source
+from tradehub.journal.meter_replay import (
+    FORECASTER,
+    SETTLEMENT_LAG,
+    VERSION,
+    read_vintages,
+    replay_meter,
+)
 from tradehub.journal.nyse import is_session
 from tradehub.journal.replay import replay
 from tradehub.journal.spx import HISTORY_DAYS, SPX_SERIES
@@ -49,13 +65,38 @@ CALENDARS: dict[tuple[str, str], tuple[Any, Callable[[date], bool]]] = {
 }
 
 
-def run(now: datetime, years: int, *, sources=None, calendars=None) -> list[dict]:
-    """Replay every family on ITS OWN calendar.
+def replay_meter_window(now: datetime, years: int, *,
+                        fetch: Callable[..., Mapping[date, Any]] = fetch_vintages,
+                        cache_dir: Path | None = DEFAULT_CACHE_DIR,
+                        today: date | None = None,
+                        deadline: float | None = None) -> dict[str, Any]:
+    """The sentiment meter's replay over [now - years, now), read at FRED vintages.
+
+    The window is trimmed to sessions whose settlement vintage can still exist: `fetch_vintages` drops
+    `v >= today`, so asking for one would return nothing and report a gap that is really an artefact of
+    the arithmetic. That is why the last day `date_to` can name is the one before the last session.
+    """
+    today = today or now.date()
+    end = now.date() - timedelta(days=1)
+    start = end - timedelta(days=365 * years)
+    span = (end - start).days + 1
+    days = [start + timedelta(days=i) for i in range(span)]
+    days = [d for d in days if is_session(d) and d + SETTLEMENT_LAG < today]
+    return replay_meter(days, read_vintages(days, fetch=fetch, cache_dir=cache_dir, today=today,
+                                            deadline=deadline))
+
+
+def run(now: datetime, years: int, *, sources=None, calendars=None, meter=None) -> list[dict]:
+    """Replay every family on ITS OWN calendar, plus the sentiment meter when `meter` is given.
 
     A `sources` entry may be a bare `fetch`, or a `(fetch, is_target)` pair. A bare fetch takes its
     predicate from `CALENDARS` (the live forecaster's own), so a caller that swaps in a fake series
     without a predicate still replays every published day -- which is what the plain-fake tests want,
     and never silently applies one family's calendar to another.
+
+    `meter` is `replay_meter_window`, passed in rather than called here because it reaches the network
+    and the four families above do not: a test that replays fakes must not start an ALFRED crawl. `main`
+    passes it, which is what keeps the meter's row on the page.
     """
     if calendars is None:
         calendars = {}
@@ -83,6 +124,15 @@ def run(now: datetime, years: int, *, sources=None, calendars=None) -> list[dict
                         "error": f"{type(exc).__name__}: {exc}"})
             continue
         out.append({"forecaster": forecaster, "forecaster_version": version, **result})
+    if meter is not None:
+        # Same treatment as any other family: a meter replay that cannot be read point-in-time is an
+        # error, not a row. `record` writes nothing for it, which is the honest outcome -- a number from
+        # a current-vintage read would be the leak, so there is no number to store.
+        try:
+            out.append(meter(now, years))
+        except Exception as exc:  # noqa: BLE001
+            out.append({"forecaster": FORECASTER, "forecaster_version": VERSION,
+                        "error": f"{type(exc).__name__}: {exc}"})
     return out
 
 
@@ -112,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     load_local_env()
     now = datetime.now(UTC)
-    results = run(now, args.years)
+    results = run(now, args.years, meter=replay_meter_window)
     written = 0
     if not args.dry_run:
         from tradehub.core.supabase_client import get_client

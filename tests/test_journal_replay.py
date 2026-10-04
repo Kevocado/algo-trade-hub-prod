@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from tradehub.journal.replay import _summary, replay
+from tradehub.journal.replay import replay, summary
 from tradehub.journal.spx import climatology_up, up_outcome
 
 
@@ -129,7 +129,7 @@ def test_a_gap_that_is_identical_on_every_session_has_a_standard_error_of_zero()
     """The degenerate case, stated on purpose: every session's `(p-y)^2 - (c-y)^2` is bit-for-bit the
     same number, so the sample SD is 0 and the SE is 0. It is the one place a zero SE is a measurement
     rather than a missing measurement."""
-    s = _summary([(0.6, 0.5, 1)] * 5)
+    s = summary([(0.6, 0.5, 1)] * 5)
 
     assert s["brier_diff"] == pytest.approx(-0.09, abs=1e-6)
     assert s["brier_diff_se"] == 0.0
@@ -142,7 +142,7 @@ def test_the_standard_error_is_the_sample_sd_of_the_paired_gap_over_the_root_n()
             (0.49, 0.44, 1), (0.71, 0.66, 0), (0.45, 0.50, 0), (0.55, 0.53, 1)]
     gaps = [(p - y) ** 2 - (c - y) ** 2 for p, c, y in rows]
 
-    s = _summary(rows)
+    s = summary(rows)
     assert s["brier_diff"] == pytest.approx(statistics.fmean(gaps), abs=1e-6)
     assert s["brier_diff_se"] == pytest.approx(statistics.stdev(gaps) / math.sqrt(len(gaps)), abs=1e-6)
     assert s["brier_diff_se"] > 0
@@ -154,7 +154,7 @@ def test_the_gap_is_taken_session_by_session_so_a_shared_outcome_cancels_out_of_
     the gap is 0 while the spread of either score on its own is enormous. An unpaired SE -- the spread
     of the pooled squared errors -- would report that enormous number and drown a real effect in it."""
     rows = [(0.99, 0.01, 1), (0.01, 0.99, 0)] * 4
-    s = _summary(rows)
+    s = summary(rows)
 
     assert s["brier_diff_se"] == 0.0
     pooled = statistics.stdev([(p - y) ** 2 for p, _c, y in rows] + [(c - y) ** 2 for _p, c, y in rows])
@@ -165,14 +165,14 @@ def test_one_scored_session_has_a_gap_but_no_standard_error_to_stand_on():
     """`n - 1` has no value to divide by, and a sample SD of a single number is not zero -- it does not
     exist. Printing 0.0 would be a claim of perfect precision from one observation, which is the exact
     failure this change exists to stop, so the single-session summary reports `None`."""
-    s = _summary([(0.6, 0.5, 1)])
+    s = summary([(0.6, 0.5, 1)])
 
     assert s["n"] == 1 and s["brier_diff"] == pytest.approx(-0.09, abs=1e-6)
     assert s["brier_diff_se"] is None
 
 
 def test_an_empty_window_reports_no_gap_and_no_standard_error():
-    empty = _summary([])
+    empty = summary([])
 
     assert empty["brier_diff"] is None and empty["brier_diff_se"] is None
     assert empty["brier"] is None and empty["bss"] is None
@@ -183,14 +183,14 @@ def test_brier_diff_is_the_brier_gap_not_a_second_way_of_measuring_skill():
     the identity that ties the three together is asserted here instead of being assumed: if it ever
     stops holding, the page is printing two different stories about the same 760 sessions."""
     closes = _closes()
-    s = _summary([(0.52, 0.61, 1), (0.63, 0.55, 0), (0.41, 0.47, 1), (0.58, 0.60, 0)])
+    s = summary([(0.52, 0.61, 1), (0.63, 0.55, 0), (0.41, 0.47, 1), (0.58, 0.60, 0)])
     replayed = replay(closes, start=date(2022, 3, 1), end=date(2022, 4, 30),
                       fit_fn=lambda x, y, d: Const(0.5))
 
     # both are compared at the last published place (6dp): the two figures come from two different
     # float summations and are then each rounded, so they agree to that place and not to the last bit
-    for summary in (s, replayed):
-        assert summary["brier_diff"] == pytest.approx(summary["brier"] - summary["brier_baseline"], abs=1e-6)
+    for card in (s, replayed):
+        assert card["brier_diff"] == pytest.approx(card["brier"] - card["brier_baseline"], abs=1e-6)
     # the gap is our error MINUS theirs, so a negative gap means the model lost less than climatology
     # did, which is the same thing `bss` says with a positive sign.
     assert (s["brier_diff"] < 0) == (s["brier"] < s["brier_baseline"])
