@@ -82,13 +82,31 @@ export default function SportsEdges() {
   const [edges, setEdges] = useState<SportsEdge[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sport, setSport] = useState<"" | "nfl" | "cfb">("");
+  // `attempt` exists only so a retry re-runs the effect. `error` is cleared here rather than on the
+  // success path, because a failure used to replace the WHOLE page -- including this button -- leaving
+  // the visitor with no way forward but a full reload.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     setEdges(null);
+    setError(null);
     fetchAll(sport).then(setEdges).catch((e: Error) => setError(e.message));
-  }, [sport]);
+  }, [sport, attempt]);
 
-  if (error) return <div className="p-8 text-red-400">Sports picks unavailable: {error}</div>;
+  if (error) {
+    return (
+      <div className="p-8 text-red-400">
+        Sports picks unavailable: {error}
+        <button
+          type="button"
+          onClick={() => setAttempt((n) => n + 1)}
+          className="mt-3 rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300 hover:text-white"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
   if (!edges) return <div className="p-8 text-slate-400">Loading sports picks…</div>;
 
   const b = board(edges);
