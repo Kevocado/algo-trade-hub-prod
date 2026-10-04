@@ -39,6 +39,32 @@ export function forecasterLabel(forecaster: string, version?: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+/**
+ * What a forecast is built from, in words, where the choice would change how a visitor reads the
+ * number. Two plans required these on the tile and neither code path rendered them:
+ *
+ * - wave2, Global Constraint 2: gold settles on the GLD ETF (raw close), not COMEX GC=F, "a
+ *   continuous futures series jumps at every contract roll and would grade roll artefacts as
+ *   direction". `source` is `yahoo:GLD` on the payload, but the API serves `source_hash`, so the
+ *   instrument was never visible anywhere.
+ * - wave3-housing: "data lag stated on the tile ... published about two months later". The phrase
+ *   existed only in a docstring, so a two-month-old print looked like stale news.
+ *
+ * Deliberately not exhaustive. A forecaster with no entry gets no note, rather than a filler string.
+ */
+const TILE_NOTE: Record<string, string> = {
+  gold_direction: "GLD (gold ETF)",
+  housing_direction: "two months behind",
+};
+
+/** The note for a forecaster, or `undefined` when it has none. Cautious copies inherit the inner's. */
+export function tileNote(forecaster: string): string | undefined {
+  const base = forecaster.endsWith(CAUTIOUS_SUFFIX)
+    ? forecaster.slice(0, -CAUTIOUS_SUFFIX.length)
+    : forecaster;
+  return TILE_NOTE[base];
+}
+
 /** What a forecaster is being compared with, in words a visitor already knows. */
 export function baselineName(baseline: Baseline): string {
   if (baseline === "market") return "the Kalshi price";
