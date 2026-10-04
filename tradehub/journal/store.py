@@ -67,17 +67,54 @@ def fetch_forecasts(supa, forecaster: str, version: str) -> list[dict[str, Any]]
                       lambda q: q.eq("forecaster", forecaster).eq("forecaster_version", version), ("id",))
 
 
+# Whether `journal_forecasts.horizon_seconds` exists. `None` means "not asked yet"; the first freeze
+# settles it and the answer is cached, because probing costs a round trip per run otherwise.
+_HORIZON_DEPLOYED: bool | None = None
+
+
+def _missing_horizon_column(exc: Exception) -> bool:
+    text = str(exc)
+    return "horizon_seconds" in text and "does not exist" in text
+
+
 def freeze(supa, forecast: Forecast) -> bool:
-    """Insert one frozen forecast. False when the database refused it: a gap, never a backfill."""
+    """Insert one frozen forecast. False when the database refused it: a gap, never a backfill.
+
+    `horizon_seconds` arrived with migration 20260428000018, and code reaches production before
+    migrations do. PostgREST rejects the WHOLE insert when it names an unknown column, and this
+    function treats any insert error as "the trigger refused" -- so without the branch below, an
+    unapplied migration would make the journal record NOTHING, log one warning, and report every
+    target as missed. A new column would silently switch off the entire ledger.
+
+    So a missing horizon column degrades to "the horizon was not recorded" and never to "the
+    forecast was not recorded". The first is an honest gap; the second would be a lie, and the
+    reader downstream could not tell the difference.
+    """
+    global _HORIZON_DEPLOYED
+    row = {
+        "forecaster": forecast.forecaster, "forecaster_version": forecast.forecaster_version,
+        "target": forecast.target, "probability": round(forecast.probability, 5),
+        "market_prob": round(forecast.market_prob, 5) if forecast.market_prob is not None else None,
+        "source_hash": forecast.source_hash, "payload": forecast.payload,
+    }
+    if _HORIZON_DEPLOYED is not False:
+        row["horizon_seconds"] = forecast.horizon_seconds
     try:
-        supa.table(FORECASTS).insert({
-            "forecaster": forecast.forecaster, "forecaster_version": forecast.forecaster_version,
-            "target": forecast.target, "probability": round(forecast.probability, 5),
-            "market_prob": round(forecast.market_prob, 5) if forecast.market_prob is not None else None,
-            "source_hash": forecast.source_hash, "payload": forecast.payload,
-        }).execute()
+        supa.table(FORECASTS).insert(row).execute()
         return True
     except Exception as exc:  # noqa: BLE001 - the trigger's refusal is the expected failure mode
+        if _HORIZON_DEPLOYED is not False and _missing_horizon_column(exc):
+            # Pre-migration. Retry without the column, and remember so we stop paying for the failure.
+            _HORIZON_DEPLOYED = False
+            log.warning("journal: horizon_seconds is not deployed yet (migration 20260428000018); "
+                        "forecasts will record no horizon until it is applied")
+            try:
+                supa.table(FORECASTS).insert({k: v for k, v in row.items() if k != "horizon_seconds"}).execute()
+                return True
+            except Exception as retry_exc:  # noqa: BLE001 - fall through to the ordinary refusal path
+                log.warning("journal: freeze refused for %s/%s %s: %s", forecast.forecaster,
+                            forecast.forecaster_version, forecast.target, retry_exc)
+                return False
         log.warning("journal: freeze refused for %s/%s %s: %s", forecast.forecaster, forecast.forecaster_version,
                     forecast.target, exc)
         return False
