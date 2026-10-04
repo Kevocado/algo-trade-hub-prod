@@ -89,6 +89,9 @@ export default function Journal() {
                       >
                         {row.label}
                       </button>
+                      {row.experimental && (
+                        <span className="ml-2 align-middle text-xs text-amber-300/90">Experimental</span>
+                      )}
                       <div className="text-xs text-slate-500">vs {row.against}</div>
                       {tileNote(row.forecaster) && (
                         <div className="text-xs text-slate-500" data-tile-note="">{tileNote(row.forecaster)}</div>
@@ -115,7 +118,13 @@ export default function Journal() {
           <h2 className="mb-3 text-lg font-semibold text-slate-200">Waiting for results</h2>
           <ul className="flex flex-wrap gap-2">
             {waiting.map((row) => (
-              <li key={row.key}><Chip title={row.key}>{row.label}</Chip></li>
+              <li key={row.key} className="flex items-center gap-2">
+                <Chip title={row.key}>{row.label}</Chip>
+                {/* "from its first row" -- so the label cannot live only on the scored path. */}
+                {row.experimental && (
+                  <span className="text-xs text-amber-300/90">Experimental</span>
+                )}
+              </li>
             ))}
           </ul>
         </section>
