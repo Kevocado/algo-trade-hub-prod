@@ -279,3 +279,23 @@ describe("Journal", () => {
     const replay = await screen.findByLabelText("Daily models replayed over history");
     expect(replay.textContent).toContain("replayed");
   });
+
+  it("puts each model's By year row directly under that model's own row", async () => {
+    // Two separate `.map()` calls rendered every pooled row first and every year row after, so with
+    // more than one model "By year: 2023 …" sat under the WRONG model. CodeRabbit flagged this on #82
+    // and it survived every merge until now: the fix was written, saved to a patch, and never applied.
+    stubFetch();
+    render(<Journal />);
+    await screen.findByLabelText("Totals");
+    const summary = screen.getByText("Past backtests (not counted)");
+    const details = summary.closest("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    const replay = await screen.findByLabelText("Daily models replayed over history");
+    const rows = [...replay.querySelectorAll("tbody tr")].map((tr) => tr.textContent ?? "");
+    expect(rows.length).toBe(4);                       // 2 models + 1 year row each
+    expect(rows[0]).toContain("Gold tomorrow");
+    expect(rows[1]).toContain("2026 -0.019");         // gold's years, immediately after gold
+    expect(rows[2]).toContain("Euro vs dollar tomorrow");
+    expect(rows[3]).toContain("2025 -0.005");         // EUR/USD's years, immediately after it
+  });

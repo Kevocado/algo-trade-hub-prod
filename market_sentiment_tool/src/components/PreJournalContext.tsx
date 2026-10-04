@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
 import { buildApiUrl } from "@/lib/api";
 import { brierPair } from "@/lib/models";
@@ -142,30 +142,29 @@ export function PreJournalContext() {
             </tr>
           </thead>
           <tbody>
-            {replays.map((r) => (
-              <tr key={`${r.forecaster}@${r.forecaster_version}`}>
-                <td>{forecasterLabel(r.forecaster, r.forecaster_version)}</td>
-                <td>
-                  {r.date_from} → {r.date_to}
-                  {r.created_at ? (
-                    <div className="text-slate-500">replayed {r.created_at.slice(0, 10)}</div>
-                  ) : null}
-                </td>
-                <td className="text-right">{r.n}</td>
-                <td className="text-right font-mono">{r.bss === null ? "—" : signedNumber(r.bss)}</td>
-                <td className="text-right font-mono">{replayBrierPair(r)}</td>
-              </tr>
-            ))}
             {replays.map((r) => {
               const split = yearSplit(r);
-              if (!split) return null;
               return (
-                <tr key={`${r.forecaster}@${r.forecaster_version}-years`} className="text-slate-500">
-                  <td colSpan={2} className="pl-4">By year</td>
-                  <td className="text-right pl-4 font-mono">{split}</td>
-                  <td />
-                  <td />
-                </tr>
+                <Fragment key={`${r.forecaster}@${r.forecaster_version}`}>
+                  <tr>
+                    <td>{forecasterLabel(r.forecaster, r.forecaster_version)}</td>
+                    <td>
+                      {r.date_from} → {r.date_to}
+                      {r.created_at ? (
+                        <div className="text-slate-500">replayed {r.created_at.slice(0, 10)}</div>
+                      ) : null}
+                    </td>
+                    <td className="text-right">{r.n}</td>
+                    <td className="text-right font-mono">{r.bss === null ? "—" : signedNumber(r.bss)}</td>
+                    <td className="text-right font-mono">{replayBrierPair(r)}</td>
+                  </tr>
+                  {split && (
+                    <tr className="text-slate-500">
+                      <td colSpan={2} className="pl-4">By year</td>
+                      <td colSpan={3} className="pl-4 font-mono">{split}</td>
+                    </tr>
+                  )}
+                </Fragment>
               );
             })}
           </tbody>
