@@ -41,3 +41,44 @@ def test_the_only_cpi_edge_functions_are_deleters() -> None:
         assert not any(
             tok in body for tok in ('"insert"', "'insert'", "upsert_edge", "record_edge")
         ), f"{name} writes edges; the scan is supposed to produce none"
+
+
+def test_the_shared_edge_writer_refuses_a_cpi_row_however_it_arrives(monkeypatch):
+    """CodeRabbit Major on #118, and it is right about the gap.
+
+    The structural test above greps lines. A dispatch that adds `("cpi_nowcast", ..., cpi_edges)` on
+    ONE line and passes the list to the generic `upsert_opportunities(edges)` on ANOTHER satisfies
+    every assertion in it -- the engine name and the writer call are simply never on the same line.
+    Grepping the dispatch cannot be made to cover that.
+
+    So the guarantee is asserted at the writer instead: the single chokepoint every engine's edges pass
+    through. A behavioural test here is immune to how the dispatch is written, which a line-based
+    assertion is not.
+    """
+    import tradehub.core.supabase_client as sc
+
+    written: list[dict] = []
+
+    class Q:
+        def upsert(self, rows, **_kw):
+            written.extend(rows)
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": []})()
+
+    class S:
+        def table(self, _name):
+            return Q()
+
+    monkeypatch.setattr(sc, "get_client", lambda: S())
+    monkeypatch.setattr(sc, "is_quarantined_row", lambda _op: False)
+
+    rows = [
+        {"engine": "cpi_nowcast", "market_id": "cpi-1", "edge_pct": 0.4},
+        {"engine": "sports_nfl", "market_id": "nfl-1", "edge_pct": 0.2},
+    ]
+    sc.upsert_opportunities(rows)
+
+    assert [r["engine"] for r in written] == ["sports_nfl"], (
+        f"a display-only engine's row reached kalshi_edges: {written}")

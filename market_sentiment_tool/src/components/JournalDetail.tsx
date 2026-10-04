@@ -108,9 +108,14 @@ export function JournalDetail({ row }: { row: ViewRow }) {
             </thead>
             <tbody>
               {feed.forecasts.map((f) => (
-                <tr key={f.target} className={f.rebuilt ? "text-slate-500 line-through" : undefined}>
+                // CodeRabbit, on #115: `line-through` on the row also crosses the badge, and a
+                // descendant's `no-underline` cannot cancel an ANCESTOR's text decoration. So the
+                // strike goes on the values and the badge, which has to stay readable to be worth
+                // anything, stays clear.
+                <tr key={f.target} className={f.rebuilt ? "text-slate-500" : undefined}>
                   <td className="font-mono">
-                    {f.target}
+                    {f.rebuilt && <span className="line-through">{f.target}</span>}
+                    {!f.rebuilt && f.target}
                     {/* `rebuilt` is migration 20260428000014's "a row found invalid is kept and
                         shown, never counted". So it is shown -- it is the record that a forecast
                         existed and was retracted -- but never as an ordinary locked-in forecast, which
@@ -121,8 +126,8 @@ export function JournalDetail({ row }: { row: ViewRow }) {
                       </span>
                     )}
                   </td>
-                  <td className="text-right">{pct(f.probability)}</td>
-                  <td className="text-right">{pct(f.market_prob)}</td>
+                  <td className={`text-right ${f.rebuilt ? "line-through" : ""}`}>{pct(f.probability)}</td>
+                  <td className={`text-right ${f.rebuilt ? "line-through" : ""}`}>{pct(f.market_prob)}</td>
                 </tr>
               ))}
             </tbody>
