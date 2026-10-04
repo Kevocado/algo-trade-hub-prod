@@ -19,7 +19,11 @@ SCORE = {"forecaster": "cpi_nowcast", "forecaster_version": "cpi-v1", "baseline"
 def test_a_journal_scorecard_becomes_one_legacy_shaped_row_tagged_with_its_source():
     row = journal_track_row(SCORE)
     assert (row["engine"], row["engine_version"], row["source"]) == ("cpi_nowcast", "cpi-v1", "journal")
-    assert row["n_settled"] == 7 and row["brier_ours"] == 0.07 and row["brier_market"] == 0.068
+    # SCORE has no `n_baseline` -- it predates migration 20260428000020 -- so there is no matched
+    # sample to pair. `n_settled`/`brier_all` carry the all-settled figures and the comparison stays
+    # unset, rather than pairing a 7-target ours with a 3-target market.
+    assert row["n_settled"] == 7 and row["brier_all"] == 0.07
+    assert row["brier_ours"] is None and row["brier_market"] is None
     assert row["cal_buckets"] == [{"bucket": "60-70", "n": 7}] and row["bss"] == -0.03
     clim = journal_track_row({**SCORE, "baseline": "climatology"})
     assert clim["brier_market"] is None  # a climatology baseline is not "the market's Brier"
@@ -59,7 +63,13 @@ def test_the_all_settled_figures_are_still_there_under_names_that_say_which_samp
 
     pre_migration = {k: v for k, v in three_ways.items() if k not in ("brier_on_baseline", "n_baseline")}
     old = journal_track_row(pre_migration)
-    assert (old["n_settled"], old["brier_ours"], old["n_settled_all"]) == (7, 0.21, 7)
+    # CodeRabbit, on #119: the fallback used to put the all-settled 0.21 under `brier_ours`, beside a
+    # `brier_market` and `bss` computed on the MATCHED sample. That published a comparison across two
+    # denominators -- the defect #119 corrected in this row, reintroduced by its own fallback. The
+    # honest all-settled figure lives under `brier_all`; `brier_ours` stays unset.
+    assert (old["n_settled"], old["n_settled_all"], old["brier_all"]) == (7, 7, 0.21)
+    assert old["brier_ours"] is None and old["brier_market"] is None, (
+        "a pre-migration card must not publish a half-matched comparison")
 
 
 def test_an_engine_on_the_journal_is_served_once_from_the_journal_whatever_the_legacy_version():
@@ -102,3 +112,31 @@ def test_the_track_record_endpoint_serves_one_record_per_engine():
     finally:
         app.dependency_overrides.clear()
     assert [(r["engine"], r["source"]) for r in body] == [("cpi_nowcast", "journal"), ("weather", "legacy")]
+
+
+def test_a_pre_migration_card_does_not_publish_a_half_matched_comparison():
+    """CodeRabbit on #119.
+
+    A card with no `n_baseline` predates migration 20260428000020. `brier_market` and `bss` still come
+    from the MATCHED-baseline sample, so falling `brier_ours` back to the all-settled score published a
+    comparison across two denominators -- the same defect #119 corrected in this row, and the same one
+    `market_skill()` had. A reader dividing one by the other would compute a number that means nothing.
+
+    So the comparison is left unset and the all-settled figures stay available under the `_all` keys.
+    An absent number is honest; a mixed-sample one is not.
+    """
+    from tradehub.journal.legacy import journal_track_row
+
+    pre_migration = {
+        "forecaster": "sports_nfl", "forecaster_version": "feed-v1", "baseline": "market",
+        "gate_status": "SHADOW", "reliability": [], "computed_at": "x", "calibration_ready": True,
+        # all-settled sample
+        "n_settled": 7, "brier": 0.21,
+        # matched-baseline sample only -- and no n_baseline to pair it with
+        "brier_baseline": 0.068, "bss": 0.02,
+    }
+    row = journal_track_row(pre_migration)
+    assert row["brier_ours"] is None, "published an all-settled ours against a matched market"
+    assert row["brier_market"] is None, "published a market score with no ours to pair it with"
+    # ...and the wider figures are still there for anyone who wants the honest one.
+    assert row["n_settled"] == 7 and row["brier_all"] == 0.21 and row["n_settled_all"] == 7
