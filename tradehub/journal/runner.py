@@ -63,7 +63,7 @@ def run_forecaster(supa, fc: Forecaster, now: datetime) -> dict[str, Any]:
             settled[target] = result.outcome
             summary["settled"] += 1
 
-    card = score(rows, settled, calendar, fc.cadence)
+    card = score(rows, settled, calendar, fc.cadence, fc.name)
     store.upsert_score(supa, fc.name, fc.version, card, now)
     summary["gate_status"] = card["gate_status"]
     return summary

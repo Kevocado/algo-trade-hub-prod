@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from tradehub.journal.costs import cost_summary
+from tradehub.journal.forecasters.baselines import BASELINE_PREFIX
 from tradehub.journal.forecasters.shrunk import SUFFIX as SHRINK_SUFFIX
 from tradehub.track_record import BUCKETS, bucketize
 
@@ -93,12 +94,15 @@ def murphy(pairs: list[dict[str, Any]]) -> dict[str, float] | None:
 
 
 def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
-          calendar: dict[str, dict[str, Any]], cadence: str) -> dict[str, Any]:
+          calendar: dict[str, dict[str, Any]], cadence: str, forecaster: str = "") -> dict[str, Any]:
     """The scorecard for one (forecaster, version).
 
     `brier` covers every settled target; `bss` compares the forecaster with its baseline on exactly
     the targets that have a baseline (same contracts on both sides), and `baseline` says which
     baseline dominates so the tile can label it.
+
+    `forecaster` is the name, not a guess: `runner` is the only caller that knows it, and the gate
+    below has to be able to tell a naive baseline (spec §8) from a model without reading its rows.
     """
     if cadence not in MIN_SETTLED:
         raise ValueError(f"unknown cadence {cadence!r}")
@@ -123,6 +127,14 @@ def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
     calibration_ready = bool(buckets) and all(b["n"] >= MIN_BUCKET_TARGETS for b in buckets)
     costs = cost_summary(pairs) if baseline == "market" else {}
     reasons = []
+    # A naive baseline is the reference line, not a model, and can never be promoted. `KalshiImplied`
+    # does not need this rule (its BSS against the market it froze is 0 by construction) and neither
+    # does a real model (a positive BSS is the point). Persistence freezes 0.0/1.0 into a single
+    # calibration bucket, so 200 settled targets make it calibrated and it can hold positive skill
+    # against climatology; climatology scores a hair above zero because `freeze` rounds to 5dp while
+    # the calendar does not. Without this line both would post PROMOTED within a year of hourly runs.
+    if _baseline(forecaster):
+        reasons.append("a naive baseline is the reference line, not a model, so it is never promoted")
     if len(pairs) < MIN_SETTLED[cadence]:
         reasons.append(f"only {len(pairs)} settled targets, need {MIN_SETTLED[cadence]} ({cadence})")
     if bss is None:
@@ -161,24 +173,37 @@ def _cautious(name: str) -> bool:
     return str(name).endswith(SHRINK_SUFFIX)
 
 
+def _baseline(name: str) -> bool:
+    """A naive baseline (spec §8: persistence, climatology). `baselines.BASELINE_PREFIX` is the source
+    of truth and is imported, not retyped, for the reason `_cautious` gives -- and here the two
+    consumers disagree if either one is stale, because one gates PROMOTED and the other gates the
+    headline's evidence count."""
+    return str(name).startswith(BASELINE_PREFIX)
+
+
 def _independent(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The cards whose settled rows are evidence in their own right.
 
-    Two kinds of card are not, because they are scored on somebody else's exact target set:
+    Three kinds of card are not, because they are scored on somebody else's exact target set, or are not
+    evidence about the future at all:
 
-      * a `_cautious` copy, which is `m + w*(p - m)` of its model's frozen row; and
+      * a `_cautious` copy, which is `m + w*(p - m)` of its model's frozen row;
       * a `kalshi_implied_*` baseline, which `KalshiImplied` freezes on its model's tickers. NOT yet
         excluded: the pair is not derivable from names (`kalshi_implied_cpi` strips to `cpi`, while the
-        model is `cpi_nowcast`), and guessing would silently drop real evidence.
+        model is `cpi_nowcast`), and guessing would silently drop real evidence;
+      * a `baseline_*` naive baseline (spec §8), excluded UNCONDITIONALLY. Its target set is the
+        model's by construction, and unlike a market it is not evidence about the future: with no
+        model on the family, persistence and climatology are the only rows there would be, and summing
+        them would put the base rate into the hero number.
 
-    Summing either alongside the model it mirrors counts every event twice -- 200 settled forecasts
-    reported as 400, the same double counting a spread ladder caused before plan 12. The baseline is
-    excluded only when the model it mirrors is actually PRESENT: a baseline with no model card has
-    its own targets and is the only evidence there is.
+    Summing any of them alongside the card they mirror counts every event twice -- 200 settled forecasts
+    reported as 400, the same double counting a spread ladder caused before plan 12.
 
-    Every one of these is still a forecaster: `forecasters`, `calibrated` and `promoted` count them all.
+    Every one of these is still a forecaster: `forecasters`, `calibrated` and `promoted` count them all
+    (and `promoted` cannot reach a baseline, because `score` refuses to promote one).
     """
-    return [c for c in cards if not _cautious(c.get("forecaster", ""))]
+    return [c for c in cards if not _cautious(c.get("forecaster", ""))
+            and not _baseline(c.get("forecaster", ""))]
 
 
 def market_skill(cards: list[dict[str, Any]]) -> dict[str, Any] | None:

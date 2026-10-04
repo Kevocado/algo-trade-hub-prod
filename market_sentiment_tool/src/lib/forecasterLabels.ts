@@ -19,6 +19,18 @@ const BASE: Record<string, string> = {
   sports_nfl_total: "NFL game totals",
   sports_cfb_spread: "College football point spreads",
   sports_cfb_total: "College football game totals",
+  // Spec §8 naive baselines. Named so a visitor cannot mistake "yesterday again" for a prediction:
+  // every one carries "(baseline)", and none of them is called a model.
+  baseline_persistence_spx: "S&P 500 tomorrow: yesterday again (baseline)",
+  baseline_climatology_spx: "S&P 500 tomorrow: the usual rate (baseline)",
+  baseline_persistence_vix: "Volatility (VIX) tomorrow: yesterday again (baseline)",
+  baseline_climatology_vix: "Volatility (VIX) tomorrow: the usual rate (baseline)",
+  baseline_persistence_gold: "Gold tomorrow: yesterday again (baseline)",
+  baseline_climatology_gold: "Gold tomorrow: the usual rate (baseline)",
+  baseline_persistence_eurusd: "Euro vs dollar tomorrow: yesterday again (baseline)",
+  baseline_climatology_eurusd: "Euro vs dollar tomorrow: the usual rate (baseline)",
+  baseline_persistence_housing: "US home prices: last month again (baseline)",
+  baseline_climatology_housing: "US home prices: the usual rate (baseline)",
 };
 
 const VERSIONED: Record<string, string> = {

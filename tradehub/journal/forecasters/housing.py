@@ -78,6 +78,12 @@ class HousingForecaster:
             self._levels = self._levels_fn(HISTORY_START)
         return self._levels
 
+    def history(self) -> Mapping[date, float]:
+        """The fetched level series. Public so the naive baselines beside it read the SAME fetch
+        (`baselines.py`), which is one HTTP call per run instead of two, and is what makes the
+        climatology they freeze identical to the calendar's."""
+        return self._history()
+
     def targets(self, now: datetime) -> list[CalendarEntry]:
         self._levels = None  # refetched once per run
         levels = self._history()

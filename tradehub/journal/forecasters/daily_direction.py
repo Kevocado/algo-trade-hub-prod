@@ -81,12 +81,21 @@ class DirectionForecaster:
         return settle_daily(target, now, self._closes)
 
 
-def build_wave2(store_root=None) -> list[DirectionForecaster]:
+def wave2_closes() -> dict[str, DailyCloses]:
+    """One `DailyCloses` per family, shared by the walk-forward model and its naive baselines.
+
+    They must be the SAME object: `baselines.py` freezes the calendar's own `climatology_prob` as its
+    forecast, so a second fetch would leave the climatology card grading itself against a slightly
+    different base rate.
+    """
+    return {"vix": DailyCloses(vix_source()), "gold": DailyCloses(gold_source()),
+            "eurusd": DailyCloses(eurusd_source())}
+
+
+def build_wave2(closes: dict[str, DailyCloses] | None = None,
+                store_root=None) -> list[DirectionForecaster]:
     def store(family):
         return ArtifactStore(store_root, namespace=f"{family}_direction") if store_root else None
 
-    return [
-        DirectionForecaster(DailyCloses(vix_source()), "vix_direction", "vix-wf-v1", store("vix")),
-        DirectionForecaster(DailyCloses(gold_source()), "gold_direction", "gold-wf-v1", store("gold")),
-        DirectionForecaster(DailyCloses(eurusd_source()), "eurusd_direction", "eurusd-wf-v1", store("eurusd")),
-    ]
+    return [DirectionForecaster(shared, f"{family}_direction", f"{family}-wf-v1", store(family))
+            for family, shared in (wave2_closes() if closes is None else closes).items()]
