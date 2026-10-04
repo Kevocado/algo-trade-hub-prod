@@ -334,3 +334,66 @@ def test_load_local_env_does_not_override_the_real_environment(tmp_path):
         assert os.environ["SOME_PROBE_VAR"] == "from-environment"
     finally:
         os.environ.pop("SOME_PROBE_VAR", None)
+
+
+def test_table_missing_does_not_match_a_missing_column_of_an_existing_table():
+    """CodeRabbit, on #62: `table_missing()` matched any message naming the table plus "does not
+    exist" -- which a MISSING COLUMN message also contains. So a `journal_scores` table that exists but
+    lacks a queried column was reported as "the table is not there yet", the read fell through to the
+    legacy tables, and the API served legacy records as though no forecaster had moved onto the
+    journal. That is silent wrong data, not a visible failure."""
+    from tradehub.gate_status import table_missing
+
+    missing_table = RuntimeError(
+        'Could not find the table \'public.journal_scores\' in the schema cache')
+    missing_column = RuntimeError(
+        'column journal_scores.forecaster does not exist')
+
+    assert table_missing(missing_table, "journal_scores") is True
+    assert table_missing(missing_column, "journal_scores") is False, (
+        "a missing COLUMN must not read as a missing TABLE")
+    # the table name alone is not enough either: an unrelated error quoting it must not match
+    assert table_missing(RuntimeError("permission denied for journal_scores"), "journal_scores") is False
+
+
+def test_journal_scores_reads_every_page_not_the_first_thousand_rows():
+    """CodeRabbit, on #62: Supabase returns at most 1,000 rows by default and this read had no
+    `.range()` paging, so `journal_engines(...)` -- which decides WHICH engines are journal-backed --
+    was built from a partial set. Any scorecard past the cap was invisible and its engine fell back to
+    the legacy tables.
+
+    The client here models PostgREST's default limit, because the fake journal DB does not: without a
+    cap this test passes whether or not the read pages, which is exactly how a vacuous test hides.
+    """
+    from tradehub.journal import legacy
+
+    CAP = 1000
+    total = 1200
+    rows = [{"forecaster": f"f{i:04d}", "forecaster_version": "v1", "n_settled": 1,
+             "gate_status": "SHADOW"} for i in range(total)]
+
+    class Q:
+        def __init__(self, lo, hi):
+            self.lo, self.hi = lo, hi
+
+        def select(self, *_a):
+            return self
+
+        def order(self, *_a):
+            return self
+
+        def range(self, lo, hi):
+            return Q(lo, hi)
+
+        def execute(self):
+            page = rows[self.lo:self.hi + 1]
+            return type("R", (), {"data": page})()
+
+    class Capped:
+        def table(self, _name):
+            # no `.range()` call means the whole table in one request -> capped at CAP
+            return Q(0, min(CAP, total) - 1)
+
+    read = legacy.journal_scores(Capped())
+    assert len(read) == total, (
+        f"read {len(read)} of {total}; every engine past the cap would fall back to the legacy tables")

@@ -39,6 +39,9 @@ class _Query:
     def select(self, *_args):
         return self
 
+    def range(self, *_args, **_kwargs):
+        return self
+
     def order(self, column, **_kwargs):
         self.ordered_by = column
         return self
