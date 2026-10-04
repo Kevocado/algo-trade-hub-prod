@@ -7,6 +7,7 @@ target is retried on the next run; scoring is an idempotent recompute.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -39,6 +40,11 @@ def run_forecaster(supa, fc: Forecaster, now: datetime) -> dict[str, Any]:
             continue
         if forecast.forecaster != fc.name or forecast.forecaster_version != fc.version or forecast.target != entry.target:
             raise ValueError(f"{fc.name}: forecast identity does not match its forecaster/target")
+        # Spec §3's `horizon`, derived here because the calendar entry is in hand and no forecaster
+        # should have to compute it. Whole seconds, floored at 0: the runner has already skipped any
+        # entry whose cutoff has passed, but a sub-second straddle must not write a negative horizon.
+        # `Forecast` is a frozen dataclass, so this is a new value rather than a mutation.
+        forecast = replace(forecast, horizon_seconds=max(0, int((entry.cutoff_at - now).total_seconds())))
         if store.freeze(supa, forecast):
             summary["frozen"] += 1
         else:

@@ -54,6 +54,14 @@ class Forecast:
     probability: float
     market_prob: float | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+    """
+    Seconds from this freeze to the target's cutoff. Spec §3 step 1 lists `horizon` in the frozen
+    row's shape; it was never written, so a 5-minute-ahead CPI call and a month-ahead housing call
+    were indistinguishable in the ledger. The RUNNER sets it from the calendar entry it already
+    holds, so no forecaster has to know about it. `None` means "not measured" and is stored as NULL
+    rather than guessed -- an invented horizon is worse than an absent one.
+    """
+    horizon_seconds: int | None = None
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.probability <= 1.0:
