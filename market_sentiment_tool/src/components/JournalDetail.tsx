@@ -98,7 +98,7 @@ export function JournalDetail({ row }: { row: ViewRow }) {
         )}
       </div>
       <div>
-        <div className="mb-2 text-xs uppercase tracking-wider text-slate-500">Latest locked-in forecasts</div>
+        <div className="mb-2 text-xs uppercase tracking-wider text-slate-500">Latest forecasts</div>
         {error && <div className="text-sm text-rose-300">Unavailable: {error}</div>}
         {!feed && !error && <div className="text-sm text-slate-500">Loading…</div>}
         {feed && (
@@ -108,7 +108,22 @@ export function JournalDetail({ row }: { row: ViewRow }) {
             </thead>
             <tbody>
               {feed.forecasts.map((f) => (
-                <tr key={f.target}><td className="font-mono">{f.target}</td><td className="text-right">{pct(f.probability)}</td><td className="text-right">{pct(f.market_prob)}</td></tr>
+                <tr key={f.target} className={f.rebuilt ? "text-slate-500 line-through" : undefined}>
+                  <td className="font-mono">
+                    {f.target}
+                    {/* `rebuilt` is migration 20260428000014's "a row found invalid is kept and
+                        shown, never counted". So it is shown -- it is the record that a forecast
+                        existed and was retracted -- but never as an ordinary locked-in forecast, which
+                        is what rendering it identically alongside real ones did. */}
+                    {f.rebuilt && (
+                      <span className="ml-2 text-amber-300/90 no-underline" title="Found invalid after freezing; kept for the record and never counted.">
+                        rebuilt
+                      </span>
+                    )}
+                  </td>
+                  <td className="text-right">{pct(f.probability)}</td>
+                  <td className="text-right">{pct(f.market_prob)}</td>
+                </tr>
               ))}
             </tbody>
           </table>
