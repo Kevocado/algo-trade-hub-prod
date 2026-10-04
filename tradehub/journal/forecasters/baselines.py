@@ -172,10 +172,17 @@ class MonthlyBaseline:
     the same pass, or never runs the model in a later pass, will read the PREVIOUS pass's levels -- a
     stale target month and a stale climatology, both wrong and neither loud.
 
-    That warning is about a WARM cache only. On a cold one (`_levels is None`, as at the start of any
-    run) `history()` fetches fresh levels, so there is nothing stale to inherit and the baseline is
-    correct whatever the order -- it merely costs an extra fetch, because the model's own `targets()`
-    then clears and fetches again. Staleness needs prior-pass data to already be present. `registry.py` builds the baselines from the same instance the runner walks,
+    The staleness warning applies ONLY to an instance whose cache still holds levels from an EARLIER
+    pass, because `targets()` has not yet run in the current one. Precisely:
+
+      * an instance that has never fetched (`_levels is None`) -- `history()` fetches fresh levels, so
+        nothing stale is inherited and the baseline is correct whatever the order. It merely costs an
+        extra fetch, because the model's own `targets()` then clears and refetches;
+      * an instance already used in THIS pass -- the levels are current, so they are correct, though
+        the baseline reading them before `targets()` runs means the model refetches afterwards.
+
+    Staleness needs the third case: a REUSED instance from a previous pass, where `targets()` has not
+    run since. `registry.py` never reuses one across passes, so the shipped path cannot hit it. `registry.py` builds the baselines from the same instance the runner walks,
     so the shipped path satisfies this; the constraint is recorded here because the class is public.
     """
 
