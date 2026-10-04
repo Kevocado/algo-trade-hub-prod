@@ -170,7 +170,12 @@ class MonthlyBaseline:
     ("refetched once per run"), so the supported order is: let the model's `targets()` run FIRST, then
     run the baselines against it. A caller that runs `MonthlyBaseline` before the model's `targets()` in
     the same pass, or never runs the model in a later pass, will read the PREVIOUS pass's levels -- a
-    stale target month and a stale climatology, both wrong and neither loud. `registry.py` builds the baselines from the same instance the runner walks,
+    stale target month and a stale climatology, both wrong and neither loud.
+
+    That warning is about a WARM cache only. On a cold one (`_levels is None`, as at the start of any
+    run) `history()` fetches fresh levels, so there is nothing stale to inherit and the baseline is
+    correct whatever the order -- it merely costs an extra fetch, because the model's own `targets()`
+    then clears and fetches again. Staleness needs prior-pass data to already be present. `registry.py` builds the baselines from the same instance the runner walks,
     so the shipped path satisfies this; the constraint is recorded here because the class is public.
     """
 
