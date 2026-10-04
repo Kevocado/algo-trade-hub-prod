@@ -105,6 +105,28 @@ def upsert_opportunities(opportunities: list):
 
     Returns the number of rows dropped, so the caller can log the refusal instead of inferring it.
     """
+    # `cpi_nowcast` produces NO edges, deliberately: it is display-only, and the standing rule is that
+    # a display-only engine must never present a row as an opportunity. The scan has no CPI step left
+    # (PR #92), so nothing should arrive here -- which is exactly why the guarantee belongs HERE rather
+    # than in a test that greps the dispatch. CodeRabbit, on #118: a dispatch that names
+    # `cpi_nowcast` on one line and calls this generic writer on another slips past any line-based
+    # assertion. This is the one chokepoint every engine's edges pass through, so refusing here holds
+    # however the dispatch is written.
+    #
+    # Historical rows are NOT touched: the read-side filter (`partitionDisplayOnlyEngines`) is what
+    # keeps existing CPI rows out of the UI, and deleting them would destroy the record that the scan
+    # once wrote them.
+    # One predicate, used for BOTH the report and the filter. An earlier version had `== "cpi_nowcast"`
+    # in the guard and `!= "cpi_nowcast"` in the filter; mutating the guard to `False` left every test
+    # green, because the filter alone did the work. Redundant twins of a safety check are how one half
+    # dies unnoticed -- so there is only one now, and mutating it is load-bearing.
+    is_cpi = lambda op: op.get("engine") == "cpi_nowcast"  # noqa: E731
+    cpi = [op for op in opportunities if is_cpi(op)]
+    if cpi:
+        print(f"  ⛔ DISPLAY-ONLY: refused {len(cpi)} cpi_nowcast edge row(s); that engine publishes "
+              f"no opportunities and its rows are never presented as one.")
+    opportunities = [op for op in opportunities if not is_cpi(op)]
+
     dropped = [op for op in opportunities if is_quarantined_row(op)]
     opportunities = [op for op in opportunities if not is_quarantined_row(op)]
     if dropped:

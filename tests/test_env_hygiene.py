@@ -478,3 +478,66 @@ def test_scorecard_paging_uses_a_total_order_so_a_version_is_never_split_across_
     pairs = [(r["forecaster"], r["forecaster_version"]) for r in read]
     assert len(pairs) == len(set(pairs)), f"a version was duplicated across pages: {pages}"
     assert len(read) == len(rows), f"lost rows across pages: {pages}"
+
+
+def test_the_env_loader_resolves_its_candidate_from_the_MODULE_path_not_the_working_directory(tmp_path):
+    """CodeRabbit, on #116, and it is right: my `cwd=tmp_path` change made this vacuous.
+
+    `env_candidates_for(module_file)` builds its candidates from `repo_root_for(module_file)` -- the
+    MODULE's path -- never from the process working directory. So writing `.env` into `tmp_path` and
+    running with `cwd=tmp_path` put the file somewhere no loader would ever look: the original test
+    wrote `REPO/.env`, which IS the resolved candidate, and my change silently stopped testing the
+    property it was written for.
+
+    This exercises the loader the only way that is both safe and meaningful: point it at a module file
+    inside a temp tree, so the candidate it resolves is inside `tmp_path`. That proves the resolution
+    rule directly -- create the `.env` at the candidate the loader reports, and it must be read; leave
+    it absent, and it must not.
+    """
+    from market_sentiment_tool.backend.runtime_bootstrap import env_candidates_for, load_canonical_env
+
+    #  is  and  is , so the module needs TWO
+    # directory levels below tmp_path for both candidates to land inside it. One level (`pkg/worker.py`)
+    # put repo_root at tmp_path's PARENT -- the loader would have read a file outside the sandbox.
+    module = tmp_path / "svc" / "pkg" / "worker.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("# stand-in for a module inside the tree\n", encoding="utf-8")
+
+    candidates = dict(env_candidates_for(str(module)))
+    assert candidates, "no candidates resolved"
+    # Every candidate is inside tmp_path -- which is the property that makes this safe to assert on.
+    for label, path in candidates.items():
+        assert str(path).startswith(str(tmp_path)), f"{label} escaped tmp_path: {path}"
+
+    # The two candidates must be DISTINCT. Mutation testing caught that collapsing
+    # `service_root_for` onto `repo_root_for` passed every other assertion here -- the loader would
+    # silently stop honouring the per-service `.env`, and this test would have said nothing.
+    assert candidates["repo_root"] != candidates["service_local"], candidates
+    # repo_root is the module's GRANDparent's .env; service_local is its parent's. If those ever
+    # coincide the per-service override stops existing.
+    assert candidates["repo_root"].parent != candidates["service_local"].parent, candidates
+
+    # Absent .env -> nothing loaded, and specifically no FRED_API_KEY invented.
+    assert load_canonical_env(str(module)).env_path is None
+
+    # Present at the RESOLVED candidate -> the loader reads it. This is the step the cwd-based version
+    # skipped entirely: it never placed a file where the loader looks.
+    # `env_candidates_for` already returns the .env FILE path, not its directory.
+    repo_env = candidates["repo_root"]
+    repo_env.write_text("FRED_API_KEY=from-a-temp-candidate\n", encoding="utf-8")
+    # `load_canonical_env` calls `load_dotenv(override=True)`, so it OVERWRITES a real FRED_API_KEY in
+    # os.environ. Popping it in a `finally` would delete a developer's/CI's real value and change what
+    # every later test in the session sees -- CodeRabbit, on #122, and correct. Restore what was there.
+    prior = os.environ.get("FRED_API_KEY")
+    had_prior = "FRED_API_KEY" in os.environ
+    try:
+        loaded = load_canonical_env(str(module))
+        assert loaded.env_path == repo_env, loaded
+        assert loaded.parsed_values.get("FRED_API_KEY") == "from-a-temp-candidate"
+        assert os.environ["FRED_API_KEY"] == "from-a-temp-candidate", (
+            "the loader did not override an existing value, so this test is not exercising override")
+    finally:
+        if had_prior:
+            os.environ["FRED_API_KEY"] = prior
+        else:
+            os.environ.pop("FRED_API_KEY", None)

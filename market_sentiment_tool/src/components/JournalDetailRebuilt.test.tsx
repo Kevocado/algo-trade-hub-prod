@@ -85,3 +85,29 @@ describe("rebuilt rows are marked as rebuilt", () => {
     await waitFor(() => expect(within(table).getByText("61.0%")).toBeInTheDocument());
   });
 });
+
+describe("the rebuilt badge is not struck through", () => {
+  it("keeps the badge clear of the line-through on the values", async () => {
+    // CodeRabbit, on #115: the row carried `line-through`, which decorates EVERY descendant -- and a
+    // descendant's `no-underline` cannot cancel an ancestor's text decoration (CSS Text Decoration 4).
+    // So the badge itself was struck through, which is the one thing that must stay readable: if the
+    // word "rebuilt" is crossed out, the retraction is illegible.
+    //
+    // Asserted on classes, not computed style: jsdom does not resolve `text-decoration` inheritance,
+    // so a computed-style assertion would pass whatever the markup said. Checking that the strike is
+    // NOT on an ancestor of the badge is the part that is actually true here.
+    serve(feed(true));
+    render(<JournalDetail row={row()} />);
+    const table = await screen.findByLabelText(/Frozen forecasts/);
+    await waitFor(() => expect(within(table).getByText(/rebuilt/i)).toBeInTheDocument());
+
+    const badge = within(table).getByText(/rebuilt/i);
+    const struckRow = badge.closest("tr");
+    expect(struckRow?.className ?? "").not.toMatch(/line-through/);
+
+    // ...and the value cells ARE struck, so the retraction still reads visually.
+    const values = within(table).getAllByText(/61\.0%/);
+    expect(values.length).toBeGreaterThan(0);
+    expect(values[0].closest("td")?.className ?? "").toMatch(/line-through/);
+  });
+});
