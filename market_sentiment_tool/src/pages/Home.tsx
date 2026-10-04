@@ -1,7 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { TrendingUp, Wallet, ArrowUpRight, Activity, Loader2, Brain } from "lucide-react";
 import { usePortfolio, usePortfolioMetrics } from "@/hooks/usePortfolio";
 import { moneyMetric } from "@/lib/portfolioTruth";
@@ -11,14 +10,6 @@ import { enforceDisplayOnlyPartition } from "@/lib/displayOnlyEngines";
 import WithheldEdgesNotice from "@/components/WithheldEdgesNotice";
 import { GateBadge } from "@/components/GateBadge";
 import { Skeleton } from "@/components/ui/skeleton";
-
-// Mock Data for Equity Curve
-const chartData = [
-  { day: "01", equity: 10000 }, { day: "05", equity: 10800 },
-  { day: "10", equity: 11200 }, { day: "15", equity: 10900 },
-  { day: "20", equity: 12500 }, { day: "25", equity: 14100 },
-  { day: "30", equity: 15400 }
-];
 
 export default function Home() {
   const { metrics, loading: mLoading } = usePortfolioMetrics();
@@ -195,42 +186,6 @@ export default function Home() {
           </CardContent>
         </Card>
       </div>
-
-      {/* Middle Row: Equity Curve */}
-      <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
-        <CardHeader className="bg-slate-900/20 border-b border-slate-800">
-          <CardTitle className="text-white">Growth Trajectory</CardTitle>
-          <CardDescription className="text-slate-400">Aggregated account performance history.</CardDescription>
-        </CardHeader>
-        <CardContent className="pt-6 h-[400px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-              <defs>
-                <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
-              <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{fill: '#94a3b8'}} dy={10} />
-              <YAxis axisLine={false} tickLine={false} tickFormatter={(val) => `$${val/1000}k`} tick={{fill: '#94a3b8'}} dx={-10} />
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#0f172a', borderRadius: '8px', border: '1px solid #1e293b', boxShadow: 'none' }}
-                formatter={(value: number) => [`$${value.toLocaleString()}`, "Equity"]}
-                labelStyle={{ color: '#94a3b8', fontWeight: 600, marginBottom: '4px' }}
-              />
-              <Area 
-                type="monotone" 
-                dataKey="equity" 
-                stroke="#10b981" 
-                strokeWidth={3}
-                fillOpacity={1} 
-                fill="url(#colorEquity)" 
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
 
       {/* Bottom Row: Open Positions */}
       <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
