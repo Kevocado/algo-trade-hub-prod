@@ -110,3 +110,26 @@ def test_climatology_baselines_carry_no_cost_block():
     rows = [_row(f"c{i}", 0.9) for i in range(5)]
     card = score(rows, {r["target"]: 1 for r in rows}, {r["target"]: {"climatology_prob": 0.5} for r in rows}, "daily")
     assert card["baseline"] == "climatology" and card["costs"] == {}
+
+
+def test_the_headline_freeze_count_is_gated_on_calibration_too_not_just_the_settled_one():
+    """Specs audit, against the v2 journal spec.
+
+    Spec §10 display gate: "any forecaster appears from its first frozen row; headline stats aggregate
+    ONLY post-calibration forecasters." `headline()` gated `settled_calibrated` but not the frozen
+    count, so a forecaster with 5 locked-in forecasts and zero settled evidence still contributed 5
+    to a headline stat. Both numbers now come from the same `calibrated` slice, so they cannot drift.
+    """
+    from tradehub.journal.scoring import headline
+
+    ready = {"forecaster": "a", "calibration_ready": True, "n_settled": 30, "n_targets": 40,
+             "gate_status": "SHADOW"}
+    provisional = {"forecaster": "b", "calibration_ready": False, "n_settled": 0, "n_targets": 5,
+                   "gate_status": "SHADOW"}
+
+    h = headline([ready, provisional])
+    assert h["frozen_calibrated"] == 40, (
+        "an uncalibrated forecaster's frozen targets reached a headline stat")
+    assert h["settled_calibrated"] == 30
+    # The card still APPEARS in the list -- only the aggregate is gated.
+    assert h["forecasters"] == 2

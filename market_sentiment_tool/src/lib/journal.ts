@@ -46,6 +46,8 @@ export interface JournalCosts {
 export interface JournalHeadline {
   forecasters: number;
   calibrated: number;
+  /** Targets locked in by CALIBRATED forecasters only -- spec §10's display gate, server-side. */
+  frozen_calibrated: number;
   settled_calibrated: number;
   promoted: number;
 }

@@ -6,7 +6,7 @@ import { getJson } from "@/lib/getJson";
 import { PreJournalContext } from "@/components/PreJournalContext";
 import { Stat } from "@/components/Stat";
 import type { JournalResponse } from "@/lib/journal";
-import { STATUS_WORDS, skillText, split, totals, viewRows, type Status, type ViewRow } from "@/lib/journalView";
+import { STATUS_WORDS, skillText, split, viewRows, type Status, type ViewRow } from "@/lib/journalView";
 import { tileNote } from "@/lib/forecasterLabels";
 
 /**
@@ -44,7 +44,12 @@ export default function Journal() {
 
   const rows = viewRows(data.forecasters);
   const { results, waiting } = split(rows);
-  const t = totals(rows);
+  // The server's numbers, not a sum over the rows. Spec §3 step 4: "The frontend reads precomputed
+  // scores through the REST contract. It never recomputes a number." Spec §10: headline stats
+  // aggregate only post-calibration forecasters, which `scoring.headline()` has always enforced --
+  // and which this page ignored, because `totals(rows)` summed every card. `/cpi` filters to a
+  // subset, so it still uses `totals()`; there the gate is applied in the same place.
+  const h = data.headline;
 
   return (
     <div className="mx-auto max-w-5xl space-y-10 p-6 md:p-8">
@@ -54,9 +59,9 @@ export default function Journal() {
       </header>
 
       <section aria-label="Totals" className="grid gap-3 sm:grid-cols-3">
-        <Stat value={t.frozen} label="forecasts locked in" />
-        <Stat value={t.scored} label="scored so far" />
-        <Stat value={t.promoted} label="promoted" hint="Needs 200 scored (daily) or 50 (monthly)." />
+        <Stat value={h.frozen_calibrated} label="forecasts locked in" />
+        <Stat value={h.settled_calibrated} label="scored so far" />
+        <Stat value={h.promoted} label="promoted" hint="Needs 200 scored (daily) or 50 (monthly)." />
       </section>
 
       {results.length > 0 && (

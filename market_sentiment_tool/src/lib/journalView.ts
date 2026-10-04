@@ -80,7 +80,12 @@ export function totals(rows: ViewRow[]): Totals {
   // A cautious copy is a forecaster, so it appears in the list and in `forecasters` -- but it shares
   // its model's targets, so counting both would report 200 locked-in forecasts as 400. The hero
   // numbers count evidence, and this is the same row twice.
-  const evidence = (r: ViewRow) => !r.key.replace(/@.*$/, "").endsWith(CAUTIOUS_SUFFIX);
+  // And spec §10: "headline stats aggregate ONLY post-calibration forecasters." A provisional card has
+  // targets locked in but no settled evidence yet, so counting its rows inflated the hero with
+  // forecasts that have never been graded. The server has always gated this at `scoring.headline()`;
+  // this function did not, so `/journal` and `/cpi` both reported the ungated sum.
+  const evidence = (r: ViewRow) =>
+    !r.key.replace(/@.*$/, "").endsWith(CAUTIOUS_SUFFIX) && r.score.calibration_ready;
   return {
     forecasters: rows.length,
     frozen: rows.filter(evidence).reduce((n, r) => n + r.frozen, 0),

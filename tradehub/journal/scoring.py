@@ -192,6 +192,7 @@ def headline(cards: list[dict[str, Any]]) -> dict[str, int]:
     return {
         "forecasters": len(cards),
         "calibrated": len(calibrated),
+        "frozen_calibrated": sum(int(c.get("n_targets") or 0) for c in calibrated if id(c) in evidence),
         "settled_calibrated": sum(int(c.get("n_settled") or 0) for c in calibrated if id(c) in evidence),
         "promoted": sum(1 for c in cards if c.get("gate_status") == "PROMOTED"),
     }
