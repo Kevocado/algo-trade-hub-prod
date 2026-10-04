@@ -133,3 +133,62 @@ def test_the_headline_freeze_count_is_gated_on_calibration_too_not_just_the_sett
     assert h["settled_calibrated"] == 30
     # The card still APPEARS in the list -- only the aggregate is gated.
     assert h["forecasters"] == 2
+
+
+def test_market_skill_pools_market_linked_cards_by_their_own_settled_counts():
+    """Spec §1/§10/§11 all promise a "Brier skill vs market" headline. §10: it "aggregates
+    market-linked targets only".
+
+    Pooling is weighted by each card's own `n_settled`, because a card with 200 settled targets and a
+    card with 3 do not carry equal evidence. Weighting by card COUNT instead -- the obvious mistake --
+    gives a very different answer, so the fixture's two cards have deliberately unequal weights.
+    """
+    from tradehub.journal.scoring import market_skill
+
+    big = {"forecaster": "sports_nfl", "calibration_ready": True, "n_settled": 300,
+           "brier": 0.10, "brier_baseline": 0.20, "baseline": "market", "gate_status": "SHADOW"}
+    small = {"forecaster": "cpi_nowcast", "calibration_ready": True, "n_settled": 100,
+             "brier": 0.30, "brier_baseline": 0.20, "baseline": "market", "gate_status": "SHADOW"}
+
+    out = market_skill([big, small])
+    assert out is not None
+    assert out["n"] == 400
+    # count-weighting would give (0.10 + 0.30)/2 = 0.20; count-weighting is wrong and must not pass.
+    assert out["brier"] == pytest.approx(0.15, abs=1e-9)
+    assert out["brier_baseline"] == pytest.approx(0.20, abs=1e-9)
+    assert out["bss"] == pytest.approx(0.25, abs=1e-9)
+
+
+def test_market_skill_ignores_non_market_cards_and_non_evidence_cards():
+    """Climatology-graded forecasters have no market to be better than, and a cautious copy shares its
+    model's target set -- both would corrupt the pool. Spec §10: "market-linked targets only"."""
+    from tradehub.journal.scoring import market_skill
+
+    real = {"forecaster": "sports_nfl", "calibration_ready": True, "n_settled": 300,
+            "brier": 0.10, "brier_baseline": 0.20, "baseline": "market", "gate_status": "SHADOW"}
+    climatology = {"forecaster": "housing_direction", "calibration_ready": True, "n_settled": 900,
+                   "brier": 0.40, "brier_baseline": 0.40, "baseline": "climatology", "gate_status": "SHADOW"}
+    cautious = {"forecaster": "sports_nfl_cautious", "calibration_ready": True, "n_settled": 300,
+                "brier": 0.05, "brier_baseline": 0.20, "baseline": "market", "gate_status": "SHADOW"}
+    uncalibrated = {"forecaster": "sports_cfb", "calibration_ready": False, "n_settled": 800,
+                    "brier": 0.01, "brier_baseline": 0.20, "baseline": "market", "gate_status": "SHADOW"}
+
+    out = market_skill([real, climatology, cautious, uncalibrated])
+    assert out is not None and out["n"] == 300, out
+    assert out["brier"] == pytest.approx(0.10, abs=1e-9)
+    assert out["bss"] == pytest.approx(0.50, abs=1e-9)
+
+
+def test_market_skill_is_absent_rather_than_zero_when_nothing_is_market_linked():
+    """A hero that reads 0.00 when there is no market-linked evidence is a fabricated number --
+    the exact failure mode this repo keeps fixing. It must be absent, and the UI must say so."""
+    from tradehub.journal.scoring import market_skill
+
+    assert market_skill([]) is None
+    assert market_skill([{"forecaster": "housing_direction", "calibration_ready": True, "n_settled": 10,
+                          "brier": 0.3, "brier_baseline": 0.3, "baseline": "climatology",
+                          "gate_status": "SHADOW"}]) is None
+    # A card with no measured Brier yet cannot contribute a probability to the pool.
+    assert market_skill([{"forecaster": "sports_nfl", "calibration_ready": True, "n_settled": 5,
+                          "brier": None, "brier_baseline": None, "baseline": "market",
+                          "gate_status": "SHADOW"}]) is None

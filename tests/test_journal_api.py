@@ -34,7 +34,9 @@ def test_journal_returns_precomputed_scorecards_in_order():
     # That comment was here before the page honoured it -- `Journal.tsx` called `totals(rows)` over
     # every card, provisional ones included. See the frontend half of this change.
     assert body["headline"] == {"forecasters": 2, "calibrated": 1, "frozen_calibrated": 30,
-                                "settled_calibrated": 60, "promoted": 1}
+                                "settled_calibrated": 60, "promoted": 1, "market_skill": None}
+    # `market_skill` is None, not 0.0: neither fixture card names a market baseline, so there is
+    # nothing to be better than. A hero reading 0.00 here would be a fabricated number.
 
 
 def test_feed_is_newest_first_with_calibration_and_provisional_flag():

@@ -15,7 +15,7 @@ function score(over: Partial<JournalScore> = {}): JournalScore {
 
 function serve(forecasters: JournalScore[], feed: Partial<JournalFeed> = {}) {
   const journal: JournalResponse = {
-    as_of: "x", forecasters, headline: { forecasters: forecasters.length, calibrated: 0, frozen_calibrated: 0, settled_calibrated: 0, promoted: 0 },
+    as_of: "x", forecasters, headline: { forecasters: forecasters.length, calibrated: 0, frozen_calibrated: 0, settled_calibrated: 0, promoted: 0, market_skill: null },
   };
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     const body = String(url).includes("/api/journal/feed")
