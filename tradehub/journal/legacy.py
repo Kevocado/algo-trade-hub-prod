@@ -63,9 +63,17 @@ def journal_track_row(score: dict[str, Any]) -> dict[str, Any]:
     return {
         "engine": score["forecaster"],
         "engine_version": score["forecaster_version"],
+        # A pre-migration card has no matched pair, so `n_settled`/`brier_ours` report the all-settled
+        # sample and the wider figures are ALSO available under `n_settled_all`/`brier_all`.
+        #
+        # But `brier_market` and `bss` come from the MATCHED sample, and a reader dividing one by the
+        # other would be dividing across two different denominators -- the very mistake this row was
+        # corrected for in #119, and the same one `market_skill()` had. So for a pre-migration card the
+        # comparison is left unset rather than published half-matched. The all-settled figures remain
+        # readable under the `_all` keys; a number that mixes samples is worse than an absent one.
         "n_settled": score.get("n_baseline") if matched else score.get("n_settled"),
-        "brier_ours": score.get("brier_on_baseline") if matched else score.get("brier"),
-        "brier_market": score.get("brier_baseline") if market else None,
+        "brier_ours": score.get("brier_on_baseline") if matched else None,
+        "brier_market": score.get("brier_baseline") if market and matched else None,
         "cal_buckets": score.get("reliability") or [],
         "max_cal_dev": None,
         "gate_status": score.get("gate_status"),
@@ -74,7 +82,8 @@ def journal_track_row(score: dict[str, Any]) -> dict[str, Any]:
         "baseline": score.get("baseline"),
         "bss": score.get("bss"),
         "calibration_ready": score.get("calibration_ready"),
-        # The all-settled figures, labelled: `brier_ours`/`n_settled` above are the matched sample.
+        # The all-settled figures, labelled. Above, `brier_ours`/`n_settled` are the MATCHED sample
+        # when the card has one -- and UNSET when it does not, rather than paired across samples.
         "n_settled_all": score.get("n_settled"),
         "brier_all": score.get("brier"),
     }
