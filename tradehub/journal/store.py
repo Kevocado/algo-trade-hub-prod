@@ -62,9 +62,22 @@ def register_calendar(supa, entries: list[CalendarEntry], now: datetime) -> int:
     return len(fresh)
 
 
-def fetch_forecasts(supa, forecaster: str, version: str) -> list[dict[str, Any]]:
-    return select_all(supa, FORECASTS,
-                      lambda q: q.eq("forecaster", forecaster).eq("forecaster_version", version), ("id",))
+def fetch_forecasts(supa, forecaster: str, version: str, targets: list[str] | None = None) -> list[dict[str, Any]]:
+    """Every frozen row for one (forecaster, version), or only `targets` when the caller names them.
+
+    `targets` is the same filter `fetch_settlements` and `fetch_calendar` already push into the
+    database, with the same chunking: a caller that wants to know about twenty of a forecaster's
+    hundred thousand frozen rows should not pay for the other ninety-nine thousand and eighty. `None`
+    (the default) means every target and keeps the scoring read whole; `[]` means none of them, which
+    is not the same thing and is a real state -- a forecaster with no targets in this run.
+    """
+    def base(q):
+        return q.eq("forecaster", forecaster).eq("forecaster_version", version)
+
+    if targets is None:
+        return select_all(supa, FORECASTS, base, ("id",))
+    return [row for chunk in _chunks(sorted(set(targets)))
+            for row in select_all(supa, FORECASTS, lambda q, c=chunk: base(q).in_("target", c), ("id",))]
 
 
 # Whether `journal_forecasts.horizon_seconds` exists. `None` means "not asked yet"; the first freeze

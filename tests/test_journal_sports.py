@@ -13,6 +13,8 @@ from tradehub.journal.forecasters.sports import (
     one_per_game,
 )
 from tradehub.journal.runner import run_journal
+from tradehub.sports import scan as sports_scan
+from tradehub.sports.config import load_sport_config
 from tradehub.sports.feed import parse_feed
 from tradehub.sports.kalshi import parse_sports_market
 from tradehub.sports.scan import run_sports_scan
@@ -53,6 +55,68 @@ def test_one_target_per_game_winner_markets_only_first_ticker():
         {"market_ticker": "C-KC", "raw_payload": {"kind": "winner", "game_id": "g2"}},
     ]
     assert set(one_per_game(rows)) == {"A-IND", "C-KC"}  # never looks at the forecast
+
+
+def test_the_same_game_keeps_the_same_ticker_when_its_first_quote_goes_one_sided():
+    """A walk-forward series is only a series if the same game is the same instrument every hour.
+
+    CodeRabbit on #61: `one_per_game` chose from the quote-eligible rows, so the chosen ticker could
+    change between two hourly snapshots of ONE game. `scan_sport` only emits a prediction row when the
+    market has both a bid and an ask, so the minute `KXNFLGAME-26SEP27HOUIND-HOU` (the ASCII-first of
+    that game's two winner markets) goes one-sided, it drops out of the input entirely and
+    `…-IND` -- the exact complement, pointing the OTHER way -- is journaled under the same game_id.
+
+    Nothing downstream can see it. Both are winner markets for one game, the calendar registers a
+    fresh entry for the newcomer, and the settled count for the game goes to two: one target that
+    resolved YES and one that resolved NO, in the same series. The scorecard averages them as
+    independent evidence.
+
+    The docstring already claims the rule this breaks ("of a game's two winner markets only the first
+    in ASCII ticker order. The rule never looks at the forecast") -- it just does not hold when the
+    set of candidates changes, which is exactly what a quote going one-sided does.
+
+    Two snapshots of the same feed, one apart: same game, same ticker out. A test that asserted
+    "one_per_game returns something" would pass against the bug, so the two sides must DIFFER.
+    """
+    import copy
+
+    from tradehub.journal.forecasters.sports import one_per_game
+
+    raw = json.loads((FIXTURES / "nfl_open_markets.json").read_text())
+    feed_raw = json.loads((FIXTURES / "nfl_kalshi_feed.json").read_text())
+    for kind in ("winner", "spread", "total"):
+        for band in feed_raw["calibration"][kind]:   # the recorded feed has no graded history
+            mid = round(band["lo"] + 0.05, 2)
+            band.update(n=40, mean_prob=mid, hit_rate=mid)
+    feed = parse_feed(feed_raw)
+    cfg = load_sport_config("nfl")
+    now = datetime(2026, 9, 26, 12, 0, tzinfo=UTC)
+
+    def picked(markets):
+        rows = sports_scan.scan_sport(
+            cfg, {s: [parse_sports_market(m) for m in ms] for s, ms in markets.items()}, feed, now)
+        return one_per_game(rows.predictions)
+
+    both_quoted = copy.deepcopy(raw)
+    assert "KXNFLGAME-26SEP27HOUIND-HOU" in picked(both_quoted), picked(both_quoted)
+
+    one_sided = copy.deepcopy(raw)
+    for market in one_sided["KXNFLGAME"]:
+        if market["ticker"] == "KXNFLGAME-26SEP27HOUIND-HOU":
+            market["yes_ask_dollars"] = None   # the book thins; the row leaves the scan entirely
+    thinned = next(m for m in one_sided["KXNFLGAME"] if m["ticker"] == "KXNFLGAME-26SEP27HOUIND-HOU")
+    assert thinned["yes_bid_dollars"] and thinned["yes_ask_dollars"] is None, (
+        "the market must still be listed and priced -- only its quote is one-sided")
+
+    later = picked(one_sided)
+    assert "KXNFLGAME-26SEP27HOUIND-IND" not in later, (
+        "the complement was journaled for a game already journaled as its sibling, so one game enters "
+        f"the series twice in both directions: {sorted(later)}")
+    # A gap is the honest alternative and this is what the rule now produces: the game's ticker is
+    # unchanged, it simply has no quote to freeze this hour. Either state is fine; a DIFFERENT ticker
+    # is not, and that is the only thing this asserts.
+    assert set(later) & set(picked(both_quoted)) == set(both_quoted := picked(both_quoted)) - {
+        "KXNFLGAME-26SEP27HOUIND-HOU"}, (later, both_quoted)
 
 
 def test_the_feed_forecaster_freezes_the_predictors_probability_and_the_quote():

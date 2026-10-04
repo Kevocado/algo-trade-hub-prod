@@ -2,8 +2,7 @@
 
 Labor is the live case: the scan still runs the labor step, still refuses to write its `predictions`
 rows and still reports where they went. CPI is the other half of the set but the scan has no CPI step
-any more -- the journal is the only producer of a CPI forecast -- so it is exercised through
-`JOURNAL_ONLY_ENGINES` below rather than through a write.
+any more -- the journal is the only producer of a CPI forecast -- so nothing exercises a CPI write.
 
 Their edges, cleanup and gate lookups are unchanged. Weather, gas and sports keep writing `predictions`:
 weather and gas have no journal scorecard, and sports rows are the edge ledger the reviewer scorecard
@@ -14,7 +13,6 @@ from datetime import datetime, timezone
 from test_scan_labor import _base
 
 from tradehub.scripts import scan
-from tradehub.scripts.scan import JOURNAL_ONLY_ENGINES
 
 NOW = datetime(2026, 10, 2, 11, 5, tzinfo=timezone.utc)
 
@@ -34,8 +32,28 @@ def _run(monkeypatch, recorded):
     return scan.main(now=NOW, live=object(), client=object())
 
 
-def test_the_journal_engines_are_named_once():
-    assert JOURNAL_ONLY_ENGINES == frozenset({"cpi_nowcast", "labor_nowcast"})
+def test_the_shared_prediction_write_loop_has_no_journal_only_branch_left():
+    """A guard that cannot fire reads as a guard that can.
+
+    `main()` tested `JOURNAL_ONLY_ENGINES` before writing each engine's predictions, which is what #72
+    put there for `cpi_nowcast` -- and #92 then deleted the CPI scan step, which removed the ONLY engine
+    in that loop the set could ever match. Weather and gas are not journal forecasters (`registry.py`
+    builds no weather or gas forecaster at all), so the branch is unreachable. The set outlived its
+    subject.
+
+    Labor's suppression is not this branch and never depended on it: it is an unconditional
+    `writes["predictions"]["labor_nowcast"] = "journal"` in labor's own block, so deleting the guard
+    changes no behaviour. What deleting it removes is the false claim that this loop consults a list --
+    the next engine added here would read the loop as protected and get a `predictions` row written for
+    a journal engine, on the strength of a set that no longer exists. If a journal engine is ever added
+    to this loop, this test is what should fail first.
+    """
+    import inspect
+
+    assert "JOURNAL_ONLY_ENGINES" not in inspect.getsource(scan.main), (
+        "the shared write loop still guards on a set no engine in it can match")
+    assert not hasattr(scan, "JOURNAL_ONLY_ENGINES"), (
+        "a set of journal-only engines that nothing reads is left behind in tradehub.scripts.scan")
 
 
 def test_labor_predictions_are_not_written_but_weather_and_gas_still_are(monkeypatch):

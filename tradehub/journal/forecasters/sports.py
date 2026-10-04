@@ -47,17 +47,59 @@ def _default_scan(sport: str) -> Callable[[datetime], SportsRun]:
     return scan
 
 
+def _winner_pair(row: dict[str, Any]) -> tuple[str, str] | None:
+    """Both winner tickers of one game, from any single one of its rows.
+
+    A winner ticker's suffix IS the team code and its stem is the event ticker, and `_orientation`
+    freezes the game_id's own `home`/`away` codes beside it. So one row names the whole pair without a
+    second row existing -- which is the point: the pair is a property of the GAME, and reading it off
+    the rows that happen to be present is what made it a property of the HOUR.
+    """
+    payload = row.get("raw_payload") or {}
+    home, away = payload.get("home"), payload.get("away")
+    if not home or not away:
+        return None   # a hand-built row with no orientation: the caller falls back to ranking the rows
+    event = row["market_ticker"].rsplit("-", 1)[0]
+    return event + "-" + home, event + "-" + away
+
+
 def one_per_game(predictions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """{ticker: prediction row}: winner markets only, the first ticker (ASCII) of each game."""
-    chosen: dict[str, dict[str, Any]] = {}
+    """{ticker: prediction row}: winner markets only, the first ticker (ASCII) of each game.
+
+    The pick is over the game's FULL winner pair, not over "whatever is quote-eligible right now".
+    CodeRabbit on #61 had this right: `scan_sport` emits a prediction row only when a market has BOTH a
+    bid and an ask, so the ASCII-first winner of a game vanishes from the input the moment its book goes
+    one-sided, and its complement -- the same game, pointing the other way -- was journaled under the same
+    `game_id`. Two hourly snapshots of one game then froze two targets and that game settled twice, once
+    YES and once NO, in one walk-forward series, averaged as independent evidence. The docstring claimed a
+    rule the code did not implement; that gap is the bug.
+
+    So the pair comes from `_winner_pair`, which needs only ONE of the two rows, and the ASCII-first of
+    the pair is the pick whether or not this hour happens to quote it. A game whose chosen ticker has no
+    quote this hour is a GAP for that hour and is not journaled at all -- never a different instrument,
+    which is the corruption. It is retried next run like any other gap, and the game keeps one identity
+    for its whole series.
+
+    Ranking the rows present is the fallback for a row carrying no orientation, so the rule still holds
+    for a hand-built prediction that never went near `_orientation`.
+    """
+    chosen: dict[str, str] = {}   # game_id -> the ticker this game is journaled under, always
+    rows: dict[str, dict[str, Any]] = {}   # game_id -> its rows, by ticker
     for row in predictions:
         payload = row.get("raw_payload") or {}
         if payload.get("kind") != "winner":
             continue
         game = payload["game_id"]
-        if game not in chosen or row["market_ticker"] < chosen[game]["market_ticker"]:
-            chosen[game] = row
-    return {row["market_ticker"]: row for row in chosen.values()}
+        rows.setdefault(game, {})[row["market_ticker"]] = row
+        pair = _winner_pair(row)
+        pick = min(pair) if pair else None
+        current = chosen.get(game)
+        if pick is not None:
+            if current is None or (pick < current and current in rows.get(game, {})):
+                chosen[game] = pick
+        elif current is None or row["market_ticker"] < current:
+            chosen[game] = row["market_ticker"]
+    return {t: rows[g][t] for g, t in chosen.items() if t in rows[g]}
 
 
 def one_rung(predictions: list[dict[str, Any]], kind: str) -> dict[str, dict[str, Any]]:

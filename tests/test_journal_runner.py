@@ -88,6 +88,40 @@ def test_one_failing_forecaster_does_not_stop_the_others():
     assert out["forecasters"]["stub@v1"]["frozen"] == 3
 
 
+def test_the_already_frozen_check_asks_the_database_about_this_runs_targets_only():
+    """The runner reads the frozen rows twice per run. The second read is the scorecard's and needs
+    everything; the first is `entry.target in frozen` for the entries in hand, so it is a question
+    about THIS run's targets and was paying for the forecaster's entire frozen history to answer it.
+
+    Equivalence is what makes this safe, and it is why the filter is not a behaviour change: the set
+    that comes back is only ever consulted through `entry.target`, and `entry.target` is one of the
+    targets asked for. Recorded here rather than asserted on row counts, because a test that only
+    counted rows would pass just as happily against the unfiltered read.
+    """
+    from tradehub.journal import store
+
+    asked: list[list[str] | None] = []
+    real = store.fetch_forecasts
+
+    def spy(supa, forecaster, version, targets=None):
+        asked.append(targets)
+        return real(supa, forecaster, version, targets)
+
+    clock = Clock(T0)
+    db = FakeJournalDB(clock)
+    fc = StubForecaster()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(store, "fetch_forecasts", spy)
+        first = run_journal(db, [fc], clock())
+        again = run_journal(db, [fc], clock())
+
+    assert [e.target for e in fc.targets(clock())] == ["test:day1", "test:day2", "test:day3"]
+    # One filtered read per run; the scorecard read after it is the unfiltered one.
+    assert asked == [["test:day1", "test:day2", "test:day3"], None] * 2, asked
+    assert first["forecasters"]["stub@v1"]["frozen"] == 3
+    assert again["forecasters"]["stub@v1"]["frozen"] == 0, "the filtered read lost the no-double-freeze rule"
+
+
 def test_now_must_be_timezone_aware():
     with pytest.raises(ValueError, match="timezone-aware"):
         run_journal(FakeJournalDB(lambda: T0), [], datetime(2026, 10, 1, 8))  # noqa: DTZ001

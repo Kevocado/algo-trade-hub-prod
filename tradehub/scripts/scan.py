@@ -53,10 +53,13 @@ from tradehub.sports.scan import (
 )
 
 
-# Engines whose forecasts live in the prediction journal. Their `predictions` rows are no longer written:
-# the journal freezes, settles and scores them, and a second per-scan copy is a second record to disagree.
-# Their edges, cleanup and gate lookups are unchanged. Weather, gas and sports still write `predictions`.
-JOURNAL_ONLY_ENGINES = frozenset({"cpi_nowcast", "labor_nowcast"})
+# Engines whose forecasts live in the prediction journal do not get a second per-scan copy: the journal
+# freezes, settles and scores them, and a `predictions` row is a second record to disagree with. That
+# used to be a set consulted by the shared write loop below, for `cpi_nowcast` -- and #92 removed the
+# CPI scan step, so the set outlived the only engine in that loop it could ever match. CPI has no scan
+# step at all now, and `labor_nowcast` suppresses its own write unconditionally in the labor block
+# below, where this comment used to point. So the rule lives with the engine that obeys it. If a
+# journal engine is added to the loop below, give it the same unconditional write, not a set.
 
 log = logging.getLogger(__name__)
 SCAN_DEADLINE_SECONDS = 15 * 60
@@ -636,11 +639,8 @@ def main(
                 edge_writes[name] = "skipped"
                 continue
             try:
-                if name in JOURNAL_ONLY_ENGINES:
-                    prediction_writes[name] = "journal"
-                else:
-                    record_predictions(client, predictions)
-                    prediction_writes[name] = "ok"
+                record_predictions(client, predictions)
+                prediction_writes[name] = "ok"
             except Exception as exc:
                 message = f"{name}.predictions: {type(exc).__name__}: {exc}"
                 failures.append(message)
@@ -719,7 +719,10 @@ def main(
                             log.exception("scan labor gate-status lookup failed")
                             labor_statuses = {}
                         apply_gate_statuses(labor_edges, labor_statuses)
-                        writes["predictions"]["labor_nowcast"] = "journal"   # see JOURNAL_ONLY_ENGINES
+                        # No `predictions` row: this engine's forecasts live in the journal, which freezes,
+                        # settles and scores them, and a second per-scan copy is a second record to
+                        # disagree. Not a skip -- nothing was attempted -- so the summary says "journal".
+                        writes["predictions"]["labor_nowcast"] = "journal"
                         try:
                             upsert_opportunities(labor_edges)
                             writes["edges"]["labor_nowcast"] = "ok"
