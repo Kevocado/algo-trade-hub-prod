@@ -100,33 +100,34 @@ def _missing_horizon_column(exc: Exception) -> bool:
     return "PGRST204" in text or "does not exist" in text or "schema cache" in text
 
 
-# SQLSTATEs the `journal_calendar_guard` trigger raises with (migration 20260428000014). These are
-# genuine refusals: the cutoff has passed, the target has no calendar row, or the row is immutable.
-# No retry will change any of them, so they are the ONLY errors that may become a permanent gap.
-_REFUSAL_CODES = frozenset({"23514", "42501", "23503"})
-# Every message the trigger raises is prefixed `journal:`, which catches a refusal whose SQLSTATE did
-# not survive the trip through PostgREST's JSON body.
+# Every message `journal_calendar_guard` raises is prefixed `journal:` -- migration 20260428000014, and
+# that prefix is the AUTHORITATIVE signal. It is deliberately not a SQLSTATE allowlist.
+#
+# CodeRabbit, on #124, and it is right: the trigger raises 42501 (insufficient_privilege) for its
+# immutability rules on UPDATE/DELETE, but a *missing INSERT privilege* is also 42501. So a code-only
+# check cannot tell "the guard refused this immutable row" from "this client may not insert at all",
+# and the second would be recorded as a permanent missed forecast -- the exact failure #124 exists to
+# remove. A code-only error therefore PROPAGATES.
 _REFUSAL_PREFIX = "journal:"
 
 
 def _is_refusal(exc: Exception) -> bool:
-    """True when `exc` is the DATABASE saying no, not the network failing.
+    """True when `exc` is the DATABASE refusing this forecast, not the network failing.
 
-    CodeRabbit, on #48, and it is the most consequential kind of bug this journal has: `freeze()`
-    caught every exception and returned False, and `run_forecaster` counts False as a MISSED
-    forecast, which is never backfilled. So a dropped connection or a 500 near cutoff silently and
-    permanently lost a target the forecaster could have produced -- and if the next run started after
-    cutoff, that target was skipped forever and excluded from scoring.
+    CodeRabbit, on #48 and #124, and it is the most consequential kind of bug this journal has:
+    `freeze()` used to catch every exception and return False, and `run_forecaster` counts False as a
+    MISSED forecast, which is never backfilled. So a dropped connection or a 500 near cutoff silently
+    and permanently lost a target the forecaster could have produced -- and if the next run started
+    after cutoff, that target was skipped forever and excluded from scoring.
 
     A refusal and a transport failure are different claims: "the database said no" versus "we never
-    got to ask". Only the first may become a gap. A 5xx is deliberately NOT a refusal -- the insert may
-    have succeeded server-side, and retrying is safe because the trigger refuses a duplicate target.
+    got to ask". Only the first may become a gap, and it is identified by the guard's own message
+    prefix rather than by an error code the guard shares with unrelated faults.
+
+    A 5xx is deliberately not a refusal: the insert may have succeeded server-side, and retrying is
+    safe because the guard refuses a duplicate target.
     """
-    code = str(getattr(exc, "code", "") or "")
-    if code in _REFUSAL_CODES:
-        return True
-    text = str(exc)
-    return _REFUSAL_PREFIX in text
+    return _REFUSAL_PREFIX in str(exc)
 
 
 def freeze(supa, forecast: Forecast) -> bool:
@@ -163,7 +164,15 @@ def freeze(supa, forecast: Forecast) -> bool:
             try:
                 supa.table(FORECASTS).insert({k: v for k, v in row.items() if k != "horizon_seconds"}).execute()
                 return True
-            except Exception as retry_exc:  # noqa: BLE001 - fall through to the ordinary refusal path
+            except Exception as retry_exc:  # noqa: BLE001 - classified exactly as the first attempt
+                # CodeRabbit, on #124: this path returned False unconditionally, so a CONNECTION
+                # failure during the retry became a missed forecast -- the same permanent, silent gap,
+                # one branch deeper than the one #48 fixed. A guard refusal here is a genuine refusal;
+                # anything else propagates so the runner can retry before cutoff.
+                if not _is_refusal(retry_exc):
+                    log.exception("journal: freeze retry FAILED (not refused) for %s/%s %s; propagating",
+                                  forecast.forecaster, forecast.forecaster_version, forecast.target)
+                    raise
                 log.warning("journal: freeze refused for %s/%s %s: %s", forecast.forecaster,
                             forecast.forecaster_version, forecast.target, retry_exc)
                 return False

@@ -243,14 +243,16 @@ def test_a_different_missing_column_is_not_mistaken_for_the_horizon(monkeypatch)
     fc = Forecast(forecaster="f", forecaster_version="v1", target="t", probability=0.6,
                   horizon_seconds=108000)
 
-    # It now PROPAGATES rather than returning False. That is the point of #48: an unknown-column error
-    # is not the database refusing this forecast, so it must not become a permanent gap. The assertion
-    # below is written to tolerate either -- what matters is that it is not silently a gap.
+    # It must RAISE. CodeRabbit, on #124: my first version tolerated either outcome, so it passed
+    # against exactly the behaviour #48 exists to remove. An unknown-column error is not the database
+    # refusing this forecast, so it must never become a permanent gap.
     try:
-        assert store.freeze(S(), fc) is False, (
-            "an unrelated schema error was reported as a missed forecast, which is a permanent gap")
+        store.freeze(S(), fc)
     except RuntimeError:
         pass
+    else:
+        raise AssertionError(
+            "an unrelated schema error was reported as a missed forecast, which is a permanent gap")
     assert len(seen) == 1, "an unrelated schema error triggered a pointless retry"
     assert store._HORIZON_DEPLOYED is None, (
         "an unrelated schema error was cached as 'the horizon column is not deployed'")
@@ -428,13 +430,23 @@ def test_freeze_still_returns_false_for_a_real_database_refusal():
         ("23514", "journal: freeze for t refused, cutoff 2026-10-01 has passed"),
         ("23503", "journal: no calendar row for target t"),
         ("42501", "journal: journal_forecasts rows are immutable (UPDATE)"),
-        # SQLSTATE alone, with NO `journal:` prefix in the message. Mutation testing showed the
-        # prefix check alone passes every case above, so the SQLSTATE set was doing no work -- and a
-        # reworded PostgREST message would then be misread as a transport failure. Both signals are
-        # load-bearing, so both are pinned.
-        ("23514", "new row violates check constraint \"journal_forecasts_probability_check\""),
     ):
         assert store.freeze(S(Refusal(code, message)), fc) is False, (code, message)
+
+    # A recognised SQLSTATE with NO `journal:` prefix PROPAGATES. CodeRabbit, on #124: the guard uses
+    # 42501 for its immutability rules on UPDATE/DELETE, but a missing INSERT privilege is also 42501
+    # -- so a code-only check would read "this client may not insert at all" as a refusal, and record
+    # a permanent missed forecast. The guard's own message prefix is the only trustworthy signal.
+    for code, message in (
+        ("42501", "permission denied for table journal_forecasts"),
+        ("23514", "new row violates check constraint \"journal_forecasts_probability_check\""),
+    ):
+        try:
+            store.freeze(S(Refusal(code, message)), fc)
+        except Refusal:
+            continue
+        raise AssertionError(
+            f"a code-only error ({code}) was reported as a missed forecast, which is a permanent gap: {message}")
 
     # A 5xx from PostgREST is NOT a refusal -- the insert may well have succeeded server-side, and
     # retrying is safe because the trigger refuses a duplicate.
@@ -457,3 +469,47 @@ def test_freeze_still_returns_false_for_a_real_database_refusal():
     except Server:
         return
     raise AssertionError("a 5xx was reported as a gap; retrying could still succeed")
+
+
+def test_a_transport_failure_during_the_missing_column_retry_propagates_too(monkeypatch):
+    """CodeRabbit Major on #124: the retry branch returned False unconditionally.
+
+    When the first insert reports a missing `horizon_seconds` column, `freeze()` retries without it.
+    That retry hit `except Exception: return False` -- so a CONNECTION FAILURE during the retry became
+    a missed forecast, which is a permanent gap. The same permanent silent loss #48 removes, one
+    branch deeper. The retry path now classifies its exception exactly as the first attempt does.
+    """
+    import httpx
+
+    from tradehub.journal import store
+    from tradehub.journal.contract import Forecast
+
+    monkeypatch.setattr(store, "_HORIZON_DEPLOYED", None, raising=False)
+    attempts: list[dict] = []
+
+    class Q:
+        def insert(self, row):
+            attempts.append(dict(row))
+            if len(attempts) == 1:
+                raise RuntimeError(
+                    '{"code":"PGRST204","message":"Could not find the horizon_seconds'
+                    ' column of journal_forecasts in the schema cache"}')
+            raise httpx.ConnectError("[Errno 61] Connection refused")
+
+        def execute(self):
+            return type("R", (), {"data": []})()
+
+    class S:
+        def table(self, _n):
+            return Q()
+
+    fc = Forecast(forecaster="f", forecaster_version="v1", target="t", probability=0.6,
+                  horizon_seconds=108000)
+    try:
+        store.freeze(S(), fc)
+    except httpx.ConnectError:
+        assert len(attempts) == 2, "the retry never happened, so nothing was proven"
+        return
+    raise AssertionError(
+        "a connection failure during the missing-column retry became a missed forecast, which is a "
+        "permanent gap")
