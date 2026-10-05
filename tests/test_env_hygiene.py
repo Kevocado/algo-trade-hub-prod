@@ -416,7 +416,6 @@ def test_scorecard_paging_uses_a_total_order_so_a_version_is_never_split_across_
     does not use would read one page and prove nothing.
     """
     from tradehub.journal import legacy
-    from tradehub.journal.store import PAGE
 
     rows = [{"forecaster": f, "forecaster_version": v}
             for f in ("a", "b", "c") for v in ("v1", "v2")]     # 6 rows, PAGE is 1000
@@ -526,10 +525,21 @@ def test_the_env_loader_resolves_its_candidate_from_the_MODULE_path_not_the_work
     repo_env = candidates["repo_root"]
     repo_env.write_text("FRED_API_KEY=from-a-temp-candidate\n", encoding="utf-8")
     # `load_canonical_env` calls `load_dotenv(override=True)`, so it OVERWRITES a real FRED_API_KEY in
-    # os.environ. Popping it in a `finally` would delete a developer's/CI's real value and change what
-    # every later test in the session sees -- CodeRabbit, on #122, and correct. Restore what was there.
-    prior = os.environ.get("FRED_API_KEY")
+    # os.environ. The cleanup must therefore RESTORE what was there, not pop the key -- popping would
+    # delete a developer's or CI's real value and change what every later test in the session sees.
+    #
+    # A SENTINEL is set before loading so the override assertion is load-bearing: with the key absent,
+    # `os.environ["FRED_API_KEY"] == "from-a-temp-candidate"` holds whether or not the loader
+    # overrides, so the assertion could not tell overriding from plain loading.
+    #
+    # ORDER MATTERS, and CodeRabbit caught me getting it wrong twice on this same block. The FIRST
+    # version popped the key (losing a real value). The second set the sentinel BEFORE capturing
+    # `prior`, and hard-coded `had_prior = True` -- so an initially-absent key leaked the sentinel and
+    # an initially-present real key was overwritten and never restored. Capture the original state
+    # first, then perturb, then restore that captured state.
     had_prior = "FRED_API_KEY" in os.environ
+    prior = os.environ.get("FRED_API_KEY")
+    os.environ["FRED_API_KEY"] = "sentinel-already-in-the-environment"
     try:
         loaded = load_canonical_env(str(module))
         assert loaded.env_path == repo_env, loaded

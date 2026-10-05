@@ -25,8 +25,11 @@ log = logging.getLogger(__name__)
 HUB_FEED_VERSION = "feed-v1"
 
 # Winner markets only, by ruling. A game has a ladder of spread and total strikes and `one_rung`
-# (journal.forecasters.sports) freezes only the rung the market prices nearest a coin flip, so the
-# settled spread/total probabilities cluster around 0.5 by construction. Calibration bands cut from
+# (journal.forecasters.sports) freezes, per game, the AVAILABLE rung the market prices nearest a coin
+# flip -- so IN PRACTICE the settled spread/total probabilities cluster around 0.5. Not by construction:
+# a game with no rung priced near a coin flip still yields its nearest available rung, so the clustering
+# is what usually happens rather than what the code enforces. That gap is why this narrowing is
+# revisited by measurement, not assumed away. Calibration bands cut from
 # that describe only the middle of the range, and the scan then applies them to every edge of the
 # kind -- including the 0.9-priced rungs no settled row can ever represent. It fails closed, but it
 # drops the highest-conviction edges while the run report shows a settled record and nothing to

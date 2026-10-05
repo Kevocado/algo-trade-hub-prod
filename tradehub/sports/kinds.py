@@ -73,9 +73,13 @@ from typing import Iterable
 #
 # **There is a second, unrelated `("winner",)` and it is NOT this one.** `journal_ledger.py`'s
 # `HUB_LEDGER_KINDS` narrows what the hub's own settled RECORD holds, for a reason that has nothing to
-# do with readability: `one_rung` freezes only the rung priced nearest a coin flip, so settled spread and
-# total probabilities cluster near 0.5 and bands cut from them cannot describe the 0.9-priced rungs they
-# would be applied to. The kinds above are still fully supported; the ledger is deliberately behind.
+# do with readability: `one_rung` freezes, per game, the AVAILABLE rung whose Kalshi mid is nearest 0.5,
+# so in practice the settled spread and total probabilities cluster near 0.5 -- and bands cut from them
+# cannot describe the 0.9-priced rungs they would be applied to. Note the limit of that guarantee: if a
+# game has no rung near a coin flip, `one_rung` still picks the nearest one available, which may be a
+# 0.9-priced rung. So "clusters near 0.5" describes what usually happens, not what the code enforces --
+# which is why this narrowing is revisited by MEASUREMENT when the price range is actually covered, not
+# assumed. The kinds above are still fully supported; the ledger is deliberately behind.
 # Read `journal_ledger.py` before touching `HUB_LEDGER_KINDS`, and measure before widening it.
 KINDS: tuple[str, ...] = ("winner", "spread", "total")
 
