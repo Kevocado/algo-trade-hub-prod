@@ -55,22 +55,26 @@ def journal_track_row(score: dict[str, Any]) -> dict[str, Any]:
 
     The wider sample is still here, under names that say what they cover, because dropping it would lose
     the settled count a caller may want. A scorecard written before the matched columns existed has no
-    matched pair at all: it falls back to the all-settled pair, which is consistent with itself, rather
-    than reporting `n_settled: null` for a card with hundreds of settled targets.
+    matched pair at all. For such a card `n_settled` keeps the all-settled count (a caller may want it,
+    and the `_all` keys carry the same figure under a name that says which sample it covers) while
+    `brier_ours` and `brier_market` are left UNSET -- `brier_market`/`bss` come from the matched
+    sample, so pairing them with an all-settled `brier_ours` would publish a comparison across two
+    denominators. An absent number is honest; a mixed-sample one is not.
     """
     market = score.get("baseline") == "market"
     matched = score.get("n_baseline") is not None
     return {
         "engine": score["forecaster"],
         "engine_version": score["forecaster_version"],
-        # A pre-migration card has no matched pair, so `n_settled`/`brier_ours` report the all-settled
-        # sample and the wider figures are ALSO available under `n_settled_all`/`brier_all`.
+        # `n_settled` is the MATCHED count when the card has a matched pair, and the ALL-SETTLED count
+        # when it does not -- so on its own it names no particular sample, and `n_settled_all` below is
+        # the same figure under a name that does.
         #
-        # But `brier_market` and `bss` come from the MATCHED sample, and a reader dividing one by the
-        # other would be dividing across two different denominators -- the very mistake this row was
-        # corrected for in #119, and the same one `market_skill()` had. So for a pre-migration card the
-        # comparison is left unset rather than published half-matched. The all-settled figures remain
-        # readable under the `_all` keys; a number that mixes samples is worse than an absent one.
+        # `brier_ours`/`brier_market` are the pair a reader divides, and both are None without a
+        # matched pair. `brier_market`/`bss` come from the MATCHED sample, so pairing them with an
+        # all-settled `brier_ours` would compare across two denominators -- the mistake this row was
+        # corrected for in #119 and reintroduced by its own fallback in #120, and the same one
+        # `market_skill()` had. So the comparison is unset rather than half-matched.
         "n_settled": score.get("n_baseline") if matched else score.get("n_settled"),
         "brier_ours": score.get("brier_on_baseline") if matched else None,
         "brier_market": score.get("brier_baseline") if market and matched else None,
@@ -82,8 +86,8 @@ def journal_track_row(score: dict[str, Any]) -> dict[str, Any]:
         "baseline": score.get("baseline"),
         "bss": score.get("bss"),
         "calibration_ready": score.get("calibration_ready"),
-        # The all-settled figures, labelled. Above, `brier_ours`/`n_settled` are the MATCHED sample
-        # when the card has one -- and UNSET when it does not, rather than paired across samples.
+        # The all-settled figures under names that say which sample they cover. These are populated
+        # whether or not the card has a matched pair, which is the point of keeping them.
         "n_settled_all": score.get("n_settled"),
         "brier_all": score.get("brier"),
     }

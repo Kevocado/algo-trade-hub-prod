@@ -105,6 +105,11 @@ def one_per_game(predictions: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
 def one_rung(predictions: list[dict[str, Any]], kind: str) -> dict[str, dict[str, Any]]:
     """{ticker: prediction row}: per game, the one `kind` market whose Kalshi mid is nearest 0.5.
 
+    NEAREST AMONG AVAILABLE ROWS, not "nearest a coin flip if one exists": a game with no rung priced
+    near 0.5 still yields its nearest available rung, which may be a 0.9-priced one. That is why the
+    hub's settled ledger is narrowed to winners with a measurement caveat rather than treated as a
+    guarantee -- see `tradehub/sports/journal_ledger.py`.
+
     Ties go to the first ticker (ASCII). A row with no mid has no baseline and is never chosen. The rule
     reads only the market's price, so the forecast cannot influence which rung is journaled.
     """
