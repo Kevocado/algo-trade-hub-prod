@@ -243,7 +243,16 @@ def test_a_different_missing_column_is_not_mistaken_for_the_horizon(monkeypatch)
     fc = Forecast(forecaster="f", forecaster_version="v1", target="t", probability=0.6,
                   horizon_seconds=108000)
 
-    assert store.freeze(S(), fc) is False
+    # It must RAISE. CodeRabbit, on #124: my first version tolerated either outcome, so it passed
+    # against exactly the behaviour #48 exists to remove. An unknown-column error is not the database
+    # refusing this forecast, so it must never become a permanent gap.
+    try:
+        store.freeze(S(), fc)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError(
+            "an unrelated schema error was reported as a missed forecast, which is a permanent gap")
     assert len(seen) == 1, "an unrelated schema error triggered a pointless retry"
     assert store._HORIZON_DEPLOYED is None, (
         "an unrelated schema error was cached as 'the horizon column is not deployed'")
@@ -342,3 +351,165 @@ def test_an_unrelated_schema_error_is_not_cached_as_the_paired_columns_being_abs
     assert len(attempts) == 1, "an unrelated schema error triggered a pointless retry"
     assert store._PAIRED_BRIER_DEPLOYED is None, (
         "an unrelated schema error was cached as 'the paired columns are not deployed'")
+
+
+def test_freeze_propagates_a_transport_failure_instead_of_reporting_a_missed_forecast():
+    """CodeRabbit Major on #48, still open since 2026-09-29.
+
+    `freeze()` caught EVERY exception and returned False. `run_forecaster` counts False as a missed
+    forecast -- and a missed freeze is never backfilled. So a dropped connection or a 500 near cutoff
+    was recorded as "we had no forecast", which is a permanent, silent loss of a target the forecaster
+    was perfectly able to produce. If the next run starts after cutoff, that target is skipped forever
+    and excluded from scoring.
+
+    A refusal and a transport failure are different claims: "the database said no" versus "we never
+    asked". Only the first may become a gap.
+    """
+    import httpx
+
+    from tradehub.journal import store
+    from tradehub.journal.contract import Forecast
+
+    class Q:
+        def insert(self, _row):
+            return self
+
+        def execute(self):
+            raise httpx.ConnectError("[Errno 61] Connection refused")
+
+    class S:
+        def table(self, _n):
+            return Q()
+
+    fc = Forecast(forecaster="f", forecaster_version="v1", target="t", probability=0.6)
+    try:
+        store.freeze(S(), fc)
+    except httpx.ConnectError:
+        return  # the whole point: the failure reaches the runner, which can retry before cutoff
+    raise AssertionError(
+        "a transport failure was swallowed and reported as a missed forecast, which is a permanent gap")
+
+
+def test_freeze_still_returns_false_for_a_real_database_refusal():
+    """The other half of the distinction, and the reason the change is safe.
+
+    The `journal_calendar_guard` trigger raises with SQLSTATE 23514/42501/23503 and every message is
+    prefixed `journal:`. Those are genuine refusals -- the target is closed, or the row is immutable --
+    and they must stay a gap, because no amount of retrying will change the answer.
+    """
+    from tradehub.journal import store
+    from tradehub.journal.contract import Forecast
+
+    class Refusal(Exception):
+        """Stands in for postgrest's APIError: a JSON body carrying `code` and `message`."""
+
+        def __init__(self, code: str, message: str):
+            super().__init__(message)
+            self.code = code
+            self.message = message
+
+    class Q:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def insert(self, _row):
+            return self
+
+        def execute(self):
+            raise self.exc
+
+    class S:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def table(self, _n):
+            return Q(self.exc)
+
+    fc = Forecast(forecaster="f", forecaster_version="v1", target="t", probability=0.6)
+    for code, message in (
+        ("23514", "journal: freeze for t refused, cutoff 2026-10-01 has passed"),
+        ("23503", "journal: no calendar row for target t"),
+        ("42501", "journal: journal_forecasts rows are immutable (UPDATE)"),
+    ):
+        assert store.freeze(S(Refusal(code, message)), fc) is False, (code, message)
+
+    # A recognised SQLSTATE with NO `journal:` prefix PROPAGATES. CodeRabbit, on #124: the guard uses
+    # 42501 for its immutability rules on UPDATE/DELETE, but a missing INSERT privilege is also 42501
+    # -- so a code-only check would read "this client may not insert at all" as a refusal, and record
+    # a permanent missed forecast. The guard's own message prefix is the only trustworthy signal.
+    for code, message in (
+        ("42501", "permission denied for table journal_forecasts"),
+        ("23514", "new row violates check constraint \"journal_forecasts_probability_check\""),
+    ):
+        try:
+            store.freeze(S(Refusal(code, message)), fc)
+        except Refusal:
+            continue
+        raise AssertionError(
+            f"a code-only error ({code}) was reported as a missed forecast, which is a permanent gap: {message}")
+
+    # A 5xx from PostgREST is NOT a refusal -- the insert may well have succeeded server-side, and
+    # retrying is safe because the trigger refuses a duplicate.
+    class Server(Refusal):
+        pass
+
+    class Q5:
+        def insert(self, _row):
+            return self
+
+        def execute(self):
+            raise Server("500", "Internal Server Error")
+
+    class S5:
+        def table(self, _n):
+            return Q5()
+
+    try:
+        store.freeze(S5(), fc)
+    except Server:
+        return
+    raise AssertionError("a 5xx was reported as a gap; retrying could still succeed")
+
+
+def test_a_transport_failure_during_the_missing_column_retry_propagates_too(monkeypatch):
+    """CodeRabbit Major on #124: the retry branch returned False unconditionally.
+
+    When the first insert reports a missing `horizon_seconds` column, `freeze()` retries without it.
+    That retry hit `except Exception: return False` -- so a CONNECTION FAILURE during the retry became
+    a missed forecast, which is a permanent gap. The same permanent silent loss #48 removes, one
+    branch deeper. The retry path now classifies its exception exactly as the first attempt does.
+    """
+    import httpx
+
+    from tradehub.journal import store
+    from tradehub.journal.contract import Forecast
+
+    monkeypatch.setattr(store, "_HORIZON_DEPLOYED", None, raising=False)
+    attempts: list[dict] = []
+
+    class Q:
+        def insert(self, row):
+            attempts.append(dict(row))
+            if len(attempts) == 1:
+                raise RuntimeError(
+                    '{"code":"PGRST204","message":"Could not find the horizon_seconds'
+                    ' column of journal_forecasts in the schema cache"}')
+            raise httpx.ConnectError("[Errno 61] Connection refused")
+
+        def execute(self):
+            return type("R", (), {"data": []})()
+
+    class S:
+        def table(self, _n):
+            return Q()
+
+    fc = Forecast(forecaster="f", forecaster_version="v1", target="t", probability=0.6,
+                  horizon_seconds=108000)
+    try:
+        store.freeze(S(), fc)
+    except httpx.ConnectError:
+        assert len(attempts) == 2, "the retry never happened, so nothing was proven"
+        return
+    raise AssertionError(
+        "a connection failure during the missing-column retry became a missed forecast, which is a "
+        "permanent gap")

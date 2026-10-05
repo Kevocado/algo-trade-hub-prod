@@ -100,6 +100,36 @@ def _missing_horizon_column(exc: Exception) -> bool:
     return "PGRST204" in text or "does not exist" in text or "schema cache" in text
 
 
+# Every message `journal_calendar_guard` raises is prefixed `journal:` -- migration 20260428000014, and
+# that prefix is the AUTHORITATIVE signal. It is deliberately not a SQLSTATE allowlist.
+#
+# CodeRabbit, on #124, and it is right: the trigger raises 42501 (insufficient_privilege) for its
+# immutability rules on UPDATE/DELETE, but a *missing INSERT privilege* is also 42501. So a code-only
+# check cannot tell "the guard refused this immutable row" from "this client may not insert at all",
+# and the second would be recorded as a permanent missed forecast -- the exact failure #124 exists to
+# remove. A code-only error therefore PROPAGATES.
+_REFUSAL_PREFIX = "journal:"
+
+
+def _is_refusal(exc: Exception) -> bool:
+    """True when `exc` is the DATABASE refusing this forecast, not the network failing.
+
+    CodeRabbit, on #48 and #124, and it is the most consequential kind of bug this journal has:
+    `freeze()` used to catch every exception and return False, and `run_forecaster` counts False as a
+    MISSED forecast, which is never backfilled. So a dropped connection or a 500 near cutoff silently
+    and permanently lost a target the forecaster could have produced -- and if the next run started
+    after cutoff, that target was skipped forever and excluded from scoring.
+
+    A refusal and a transport failure are different claims: "the database said no" versus "we never
+    got to ask". Only the first may become a gap, and it is identified by the guard's own message
+    prefix rather than by an error code the guard shares with unrelated faults.
+
+    A 5xx is deliberately not a refusal: the insert may have succeeded server-side, and retrying is
+    safe because the guard refuses a duplicate target.
+    """
+    return _REFUSAL_PREFIX in str(exc)
+
+
 def freeze(supa, forecast: Forecast) -> bool:
     """Insert one frozen forecast. False when the database refused it: a gap, never a backfill.
 
@@ -134,10 +164,26 @@ def freeze(supa, forecast: Forecast) -> bool:
             try:
                 supa.table(FORECASTS).insert({k: v for k, v in row.items() if k != "horizon_seconds"}).execute()
                 return True
-            except Exception as retry_exc:  # noqa: BLE001 - fall through to the ordinary refusal path
+            except Exception as retry_exc:  # noqa: BLE001 - classified exactly as the first attempt
+                # CodeRabbit, on #124: this path returned False unconditionally, so a CONNECTION
+                # failure during the retry became a missed forecast -- the same permanent, silent gap,
+                # one branch deeper than the one #48 fixed. A guard refusal here is a genuine refusal;
+                # anything else propagates so the runner can retry before cutoff.
+                if not _is_refusal(retry_exc):
+                    log.exception("journal: freeze retry FAILED (not refused) for %s/%s %s; propagating",
+                                  forecast.forecaster, forecast.forecaster_version, forecast.target)
+                    raise
                 log.warning("journal: freeze refused for %s/%s %s: %s", forecast.forecaster,
                             forecast.forecaster_version, forecast.target, retry_exc)
                 return False
+        if not _is_refusal(exc):
+            # Not the database saying no. Propagate so `run_journal` records the forecaster as FAILED
+            # and a later run can retry while the target is still open -- rather than this becoming a
+            # permanent, silent gap that scoring then excludes.
+            log.exception("journal: freeze FAILED (not refused) for %s/%s %s; propagating so the run "
+                          "can retry before cutoff", forecast.forecaster, forecast.forecaster_version,
+                          forecast.target)
+            raise
         log.warning("journal: freeze refused for %s/%s %s: %s", forecast.forecaster, forecast.forecaster_version,
                     forecast.target, exc)
         return False
