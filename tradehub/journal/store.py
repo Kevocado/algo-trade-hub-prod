@@ -100,6 +100,35 @@ def _missing_horizon_column(exc: Exception) -> bool:
     return "PGRST204" in text or "does not exist" in text or "schema cache" in text
 
 
+# SQLSTATEs the `journal_calendar_guard` trigger raises with (migration 20260428000014). These are
+# genuine refusals: the cutoff has passed, the target has no calendar row, or the row is immutable.
+# No retry will change any of them, so they are the ONLY errors that may become a permanent gap.
+_REFUSAL_CODES = frozenset({"23514", "42501", "23503"})
+# Every message the trigger raises is prefixed `journal:`, which catches a refusal whose SQLSTATE did
+# not survive the trip through PostgREST's JSON body.
+_REFUSAL_PREFIX = "journal:"
+
+
+def _is_refusal(exc: Exception) -> bool:
+    """True when `exc` is the DATABASE saying no, not the network failing.
+
+    CodeRabbit, on #48, and it is the most consequential kind of bug this journal has: `freeze()`
+    caught every exception and returned False, and `run_forecaster` counts False as a MISSED
+    forecast, which is never backfilled. So a dropped connection or a 500 near cutoff silently and
+    permanently lost a target the forecaster could have produced -- and if the next run started after
+    cutoff, that target was skipped forever and excluded from scoring.
+
+    A refusal and a transport failure are different claims: "the database said no" versus "we never
+    got to ask". Only the first may become a gap. A 5xx is deliberately NOT a refusal -- the insert may
+    have succeeded server-side, and retrying is safe because the trigger refuses a duplicate target.
+    """
+    code = str(getattr(exc, "code", "") or "")
+    if code in _REFUSAL_CODES:
+        return True
+    text = str(exc)
+    return _REFUSAL_PREFIX in text
+
+
 def freeze(supa, forecast: Forecast) -> bool:
     """Insert one frozen forecast. False when the database refused it: a gap, never a backfill.
 
@@ -138,6 +167,14 @@ def freeze(supa, forecast: Forecast) -> bool:
                 log.warning("journal: freeze refused for %s/%s %s: %s", forecast.forecaster,
                             forecast.forecaster_version, forecast.target, retry_exc)
                 return False
+        if not _is_refusal(exc):
+            # Not the database saying no. Propagate so `run_journal` records the forecaster as FAILED
+            # and a later run can retry while the target is still open -- rather than this becoming a
+            # permanent, silent gap that scoring then excludes.
+            log.exception("journal: freeze FAILED (not refused) for %s/%s %s; propagating so the run "
+                          "can retry before cutoff", forecast.forecaster, forecast.forecaster_version,
+                          forecast.target)
+            raise
         log.warning("journal: freeze refused for %s/%s %s: %s", forecast.forecaster, forecast.forecaster_version,
                     forecast.target, exc)
         return False
