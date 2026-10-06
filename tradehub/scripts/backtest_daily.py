@@ -169,7 +169,26 @@ def main(argv: list[str] | None = None) -> int:
 
         written = record(get_client(), results, now)
     print(json.dumps({"as_of": now.isoformat(), "written": written, "results": results}, default=str))
-    return 1 if any("error" in r for r in results) else 0
+
+    # A replay that scored nothing is NOT a success, and it is not an error either -- the sentiment
+    # meter returns `n == 0` with a `gaps` diagnosis precisely because it correctly refuses to
+    # substitute current-vintage values for series that have no ALFRED coverage. Measured against the
+    # live API, `SP500` and `BAMLH0A0HYM2` have none at all, so that model can never produce a row.
+    #
+    # The JSON above carries the whole diagnosis, but a JSON blob in a cron log is not a signal anyone
+    # reads, and the exit code was 0 -- so the command reported success while writing nothing for that
+    # model. `record()` still writes no empty row: an `n == 0` result is not evidence, and publishing
+    # it would put a zero where "never measured" belongs.
+    barren = [r for r in results if "error" not in r and not r["n"]]
+    for r in barren:
+        gaps = r.get("gaps") or {}
+        print(f"  ⚠ NO EVIDENCE: {r['forecaster']}@{r['forecaster_version']} scored 0 of "
+              f"{r.get('date_from', '?')}..{r.get('date_to', '?')}"
+              + ("; unusable inputs: " + ", ".join(f"{k} ({v} sessions)" for k, v in gaps.items())
+                 if gaps else "; no per-input diagnosis was reported"),
+              file=sys.stderr)
+    failed = any("error" in r for r in results)
+    return 1 if (failed or barren) else 0
 
 
 if __name__ == "__main__":
