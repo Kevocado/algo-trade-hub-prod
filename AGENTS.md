@@ -32,7 +32,14 @@
 
 ## graphify
 
-This project has a graphify knowledge graph at graphify-out/.
+This project has a graphify knowledge graph at `graphify-out/`.
+
+**Install note.** The PyPI distribution is named **`graphifyy`**, not `graphify`; it provides the
+`graphify` package. `pip install graphify` finds nothing and `pip install graphifyy` is what works. It
+is declared in the `dev` extra, so `pip install -e '.[dev]'` covers it.
+
+`graphify-out/` is **generated output and is gitignored** -- it is not committed, so a fresh clone has
+no graph until the rebuild step below runs once. Expect ~22MB and a few minutes for the first build.
 
 Rules:
 - Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
