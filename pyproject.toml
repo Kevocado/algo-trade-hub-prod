@@ -48,6 +48,7 @@ research = [
     "vectorbt>=0.25.0",
 ]
 dev = [
+    "graphifyy>=0.9.77",  # PyPI name; provides the `graphify` package AGENTS.md's rebuild step imports
     "httpx>=0.27.0",
     "pytest>=8.0.0",
     "ruff>=0.6.0",
