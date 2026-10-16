@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Review every PR into main automatically, with this repo's rules in front of the reviewer.
+language: en-US
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+  path_filters:
+    - "!**/__pycache__/**"
+    - "!**/*.pyc"
+    - "!market_sentiment_tool/dist/**"
+    - "!docs/superpowers/plans/**"
+  path_instructions:
+    - path: "tradehub/journal/**"
+      instructions: |
+        This is the prediction journal. Check: forecasts are frozen before the outcome and never backfilled;
+        no look-ahead (nothing after the decision time reaches a forecast); timezone-aware datetimes; a missing
+        input is a gap (return None), never a guess; scorecards compare against a market or naive baseline on the
+        same targets; counts are never double-counted across a model and the copy that shadows it.
+    - path: "tradehub/sports/**"
+      instructions: "Check orientation (which side YES points) is carried in the payload and never sign-flipped."
+    - path: "tradehub/data/**"
+      instructions: "Keyless public sources only. Check retries, timeouts, partial responses and that no secret is read or logged."
+    - path: "tests/**"
+      instructions: "Flag tests that cannot fail (asserting a default, a superset, or the implementation's own output)."
+    - path: "market_sentiment_tool/src/**"
+      instructions: "Numbers first, little prose; a missing figure is a dash or a word, never 0; no computed score in TSX."
+    - path: "market_sentiment_tool/supabase/migrations/**"
+      instructions: "Migrations must be idempotent and additive. Flag anything that locks a big table or drops data. A migration must be applied by the reviewer before merge."
+chat:
+  auto_reply: true
