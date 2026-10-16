@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import math
 import time
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, Callable
+from typing import Any
 
 import requests
 
@@ -34,11 +35,11 @@ def _retry_after_seconds(value: Any, *, now: datetime | None = None) -> float | 
         if parsed is None:
             return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        reference = now or datetime.now(timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
+        reference = now or datetime.now(UTC)
         if reference.tzinfo is None:
-            reference = reference.replace(tzinfo=timezone.utc)
-        seconds = (parsed.astimezone(timezone.utc) - reference.astimezone(timezone.utc)).total_seconds()
+            reference = reference.replace(tzinfo=UTC)
+        seconds = (parsed.astimezone(UTC) - reference.astimezone(UTC)).total_seconds()
     if not math.isfinite(seconds) or seconds < 0:
         return None
     return seconds
@@ -60,13 +61,8 @@ def _retry_sleep(delay: float, deadline: float | None) -> None:
     time.sleep(delay)
 
 
-def default_get_json(
-    url: str,
-    params: dict | None = None,
-    *,
-    deadline: float | None = None,
-) -> Any:
-    """GET JSON with bounded retries and an optional monotonic deadline."""
+def _get(url: str, params: dict | None, deadline: float | None) -> Any:
+    """GET with bounded retries and an optional monotonic deadline; returns the response."""
     for attempt in range(MAX_ATTEMPTS):
         remaining = _remaining(deadline)
         request_timeout = REQUEST_TIMEOUT_SECONDS if remaining is None else min(REQUEST_TIMEOUT_SECONDS, remaining)
@@ -94,8 +90,28 @@ def default_get_json(
             except requests.Timeout as timeout_exc:
                 raise timeout_exc from exc
             continue
-        return response.json()
+        return response
     raise RuntimeError("HTTP retry loop exited without a response")
+
+
+def default_get_json(
+    url: str,
+    params: dict | None = None,
+    *,
+    deadline: float | None = None,
+) -> Any:
+    """GET JSON with bounded retries and an optional monotonic deadline."""
+    return _get(url, params, deadline).json()
+
+
+def default_get_text(
+    url: str,
+    params: dict | None = None,
+    *,
+    deadline: float | None = None,
+) -> str:
+    """GET text (e.g. an HTML report) with the same bounded retries as `default_get_json`."""
+    return _get(url, params, deadline).text
 
 
 class ThrottledGetJson:

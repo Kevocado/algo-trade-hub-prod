@@ -84,6 +84,15 @@ describe("view", () => {
     expect(rows[0].market?.forecaster).toBe("kalshi_implied_weather_rain");
   });
 
+  it("pairs the ERCOT peak family with its Kalshi baseline and names it plainly", () => {
+    const rows = viewRows([
+      score({ forecaster: "ercot_peak", forecaster_version: "ls-v1", baseline: "market", n_settled: 2, n_targets: 3 }),
+      score({ forecaster: "kalshi_implied_ercot_peak", forecaster_version: "v1", n_settled: 2, n_targets: 3 }),
+    ]);
+    expect(rows.map((r) => r.label)).toEqual(["Texas grid peak demand"]);
+    expect(rows[0].market?.forecaster).toBe("kalshi_implied_ercot_peak");
+  });
+
   it("folds the Kalshi baseline into its model's row and orders scored rows first", () => {
     const { results, waiting } = split(viewRows(scores));
     expect(results.map((r) => r.label)).toEqual(["NFL winners"]);
