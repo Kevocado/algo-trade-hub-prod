@@ -11,6 +11,9 @@ public trade tape. Two records per run, both gzip JSON lines under `<root>/<YYYY
 
 Read only. No orders, no credentials (the market-data API is public). A run that hits its time budget
 stops listing and says so (`truncated`) rather than pretending it saw everything.
+
+Each run also prunes whole date folders older than `RETENTION_DAYS` (60), after the write succeeds, and
+names what it deleted in its output -- about 38 MB a day otherwise accumulates.
 """
 
 from __future__ import annotations
@@ -19,10 +22,11 @@ import argparse
 import gzip
 import json
 import os
+import shutil
 import sys
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +39,7 @@ MAX_PAGES = 1000
 DEPTH_CAP = 300
 EXTREME = 0.10
 BUDGET_SECONDS = 8 * 60
+RETENTION_DAYS = 60
 ROOT_ENV = "TRADEHUB_ORDERBOOK_DIR"
 DEFAULT_ROOT = Path("/cache/orderbooks")
 TOP_FIELDS = ("yes_bid_dollars", "yes_ask_dollars", "yes_bid_size_fp", "yes_ask_size_fp",
@@ -114,16 +119,47 @@ def write(snap: dict[str, Any], root: Path, now: datetime) -> Path:
     return path
 
 
+def prune(root: Path, now: datetime, days: int = RETENTION_DAYS) -> list[str]:
+    """Delete whole date folders older than `days`, after a successful write. Returns the ones removed.
+
+    Only directories named like a UTC date are touched, and only when the entire day is older than the
+    cutoff, so the folder being written right now is never a candidate. A folder that cannot be removed
+    is left in place rather than failing the run, and is not reported as deleted.
+    """
+    if not root.exists():
+        return []
+    cutoff = (now - timedelta(days=days)).date()
+    removed: list[str] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        try:
+            day = date.fromisoformat(child.name)
+        except ValueError:
+            continue
+        if day.isoformat() != child.name:   # only canonical YYYY-MM-DD, never 20260801
+            continue
+        if day >= cutoff:
+            continue
+        shutil.rmtree(child, ignore_errors=True)
+        if not child.exists():
+            removed.append(child.name)
+    return removed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=os.getenv(ROOT_ENV, str(DEFAULT_ROOT)))
     args = parser.parse_args(argv)
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
     snap = snapshot(datetime.now(UTC), lambda url, params: default_get_json(url, params))
-    path = write(snap, Path(args.root), now)
+    root = Path(args.root)
+    path = write(snap, root, now)
+    pruned = prune(root, now)
     print(json.dumps({"path": str(path), "listed": snap["listed"], "traded": len(snap["top"]),
                       "depth": len(snap["depth"]), "depth_failed": snap["depth_failed"],
-                      "pages": snap["pages"], "truncated": snap["truncated"]}))
+                      "pages": snap["pages"], "truncated": snap["truncated"],
+                      "retention_days": RETENTION_DAYS, "pruned": pruned}))
     return 0 if snap["top"] else 1
 
 
