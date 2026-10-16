@@ -10,6 +10,8 @@ reproduced the settled rung on every one.
 
 The daily reports begin at 2024-05-07 (older dates 404). Fetched peaks are cached on disk keyed by
 operating day, so the ~600-day backfill happens once and only new days are fetched after that.
+Operating dates are Texas-local, and only days at least two days old are trusted: ERCOT serves a
+partial report for the day in progress and finishes it the following morning.
 
 Weather features use Open-Meteo (keyless). Live uses its forecast API; the historical replay uses the
 "previous runs" forecast archive, which is the same model's forecast for past days, so the training and
@@ -26,6 +28,7 @@ from datetime import UTC, date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -37,6 +40,7 @@ HISTORY_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 FIRST_DAY = date(2024, 5, 7)
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "tradehub" / "ercot"
 CACHE_ENV = "TRADEHUB_ERCOT_CACHE_DIR"
+CENTRAL = ZoneInfo("America/Chicago")
 
 # Metro areas mapped to the four ERCOT forecast zones (HOUSTON->Houston, NORTH->Dallas,
 # SOUTH->San Antonio, WEST->Austin), with approximate metro population in millions as the weight.
@@ -50,6 +54,15 @@ CITIES: dict[str, tuple[float, float, float]] = {
 
 def zone_url(day: date) -> str:
     return ZONE_URL.format(ymd=day.strftime("%Y%m%d"))
+
+
+def central_date(moment: datetime) -> date:
+    """The Texas operating date at `moment`; UTC and Central differ across the evening boundary."""
+    return moment.astimezone(CENTRAL).date()
+
+
+def central_today() -> date:
+    return central_date(datetime.now(UTC))
 
 
 class _TableRows(HTMLParser):
@@ -114,11 +127,13 @@ def load_peaks(first: date, last: date, *, get_text: Callable[..., Any] = defaul
                cache_dir: Path | None = None, today: date | None = None) -> dict[date, float]:
     """{operating day: peak MW} over [first, last], fetching only days not already cached.
 
-    Only a COMPLETE operating day is trusted. ERCOT serves a partial report for the day in progress
-    (at 13:00 CDT it held 12 of 24 rows), and the report for day D is published the following morning,
-    so days on or after `today` are neither fetched nor kept from the cache. A day whose report is not
-    published yet (404) is skipped. Only successful parses are cached, so a transient failure leaves a
-    hole to retry, not a silent gap.
+    Dates are Texas-local (``America/Chicago``), ERCOT's own operating date. Only days through
+    `today - 2` are trusted: ERCOT serves a partial report for the day in progress (at 13:00 CDT it
+    held 12 of 24 rows) and finishes it the following morning, so even a one-day margin can catch an
+    incomplete report. Days on or after that cutoff are neither fetched nor kept from the cache, so a
+    partial value from an earlier run is dropped. The last few cached days are re-fetched each run
+    (ERCOT revises recent reports) and replaced only after a successful parse, so a 404 or an
+    unparseable report preserves the stored value rather than leaving a hole.
     """
     cache = Path(cache_dir) if cache_dir is not None else cache_dir_from_env()
     path = cache / "peaks.json"
@@ -128,13 +143,15 @@ def load_peaks(first: date, last: date, *, get_text: Callable[..., Any] = defaul
             peaks = {date.fromisoformat(k): float(v) for k, v in json.loads(path.read_text()).items()}
         except (ValueError, OSError, TypeError):
             peaks = {}
-    today = today or datetime.now(UTC).date()
-    last_full = today - timedelta(days=1)
+    today = today or central_today()
+    last_full = today - timedelta(days=2)
+    refresh_after = today - timedelta(days=3)
     complete = {d: v for d, v in peaks.items() if d <= last_full}
     changed = len(complete) != len(peaks)
     peaks = complete
     for day in _days(max(first, FIRST_DAY), min(last, last_full)):
-        if day in peaks:
+        cached = peaks.get(day)
+        if cached is not None and day < refresh_after:
             continue
         try:
             html = get_text(zone_url(day))
@@ -143,7 +160,7 @@ def load_peaks(first: date, last: date, *, get_text: Callable[..., Any] = defaul
                 continue
             raise
         peak = parse_daily_peak(html)
-        if peak is not None:
+        if peak is not None and peak != cached:
             peaks[day] = peak
             changed = True
     if changed:

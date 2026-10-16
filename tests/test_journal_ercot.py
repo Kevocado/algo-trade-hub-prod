@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from journal_fakes import FakeJournalDB
 
-from tradehub.data.ercot import load_peaks, parse_daily_peak
+from tradehub.data.ercot import central_date, load_peaks, parse_daily_peak
 from tradehub.data.kalshi_live import LiveMarket
 from tradehub.edges import Quote
 from tradehub.journal.forecasters.ercot import (
@@ -101,12 +101,31 @@ def test_a_duplicated_fall_back_hour_does_not_break_the_peak():
     assert parse_daily_peak(html) == pytest.approx(67992.13)
 
 
-def test_a_cached_in_progress_operating_day_is_dropped(tmp_path):
-    # ERCOT serves a partial report for the day in progress; a peak read from it is not the day's peak.
-    (tmp_path / "peaks.json").write_text('{"2026-10-14": 70000.0, "2026-10-15": 12345.0}')
-    got = load_peaks(date(2026, 10, 14), date(2026, 10, 15), get_text=lambda *_a, **_k: "",
-                     cache_dir=tmp_path, today=date(2026, 10, 15))
+def test_cached_days_near_today_are_not_trusted(tmp_path):
+    # ERCOT serves a partial report for the day in progress and finishes a day only the next morning;
+    # only days through today-2 are trusted, so today's and yesterday's cached values are dropped.
+    (tmp_path / "peaks.json").write_text(
+        '{"2026-10-14": 70000.0, "2026-10-15": 12345.0, "2026-10-16": 54321.0}')
+    got = load_peaks(date(2026, 10, 14), date(2026, 10, 16), get_text=lambda *_a, **_k: "",
+                     cache_dir=tmp_path, today=date(2026, 10, 16))
     assert got == {date(2026, 10, 14): 70000.0}
+
+
+def test_a_recent_cached_day_is_replaced_only_after_a_successful_parse(tmp_path):
+    (tmp_path / "peaks.json").write_text('{"2026-10-14": 11111.0}')
+    args = {"cache_dir": tmp_path, "today": date(2026, 10, 16)}
+    # an unparseable report keeps the stored value...
+    assert load_peaks(date(2026, 10, 14), date(2026, 10, 14),
+                      get_text=lambda *_a, **_k: "", **args) == {date(2026, 10, 14): 11111.0}
+    # ...and a successful parse corrects it.
+    assert load_peaks(date(2026, 10, 14), date(2026, 10, 14),
+                      get_text=lambda *_a, **_k: ZONE_HTML, **args) == {date(2026, 10, 14): 67992.13}
+
+
+def test_the_operating_date_is_texas_local_not_utc():
+    # 04:00 UTC on Oct 16 is 23:00 CDT on Oct 15: still the Oct 15 operating day.
+    assert central_date(datetime(2026, 10, 16, 4, 0, tzinfo=UTC)) == date(2026, 10, 15)
+    assert central_date(datetime(2026, 10, 16, 6, 0, tzinfo=UTC)) == date(2026, 10, 16)
 
 
 def test_the_operating_day_is_the_day_before_the_settlement_date():
