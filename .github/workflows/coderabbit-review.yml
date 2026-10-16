@@ -1,0 +1,24 @@
+name: Ask CodeRabbit to review
+
+# CodeRabbit sometimes skips this public repo with "manual review required". Asking for the review in a
+# comment is the supported way to trigger it, so do that on every PR that targets main. No secrets, no
+# checkout, and no code from the PR is run: the job only posts one comment.
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened]
+    branches: [main]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  ask:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: gh pr comment "$PR" --repo "$REPO" --body "@coderabbitai review"
