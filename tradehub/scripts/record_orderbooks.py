@@ -137,6 +137,8 @@ def prune(root: Path, now: datetime, days: int = RETENTION_DAYS) -> list[str]:
             day = date.fromisoformat(child.name)
         except ValueError:
             continue
+        if day.isoformat() != child.name:   # only canonical YYYY-MM-DD, never 20260801
+            continue
         if day >= cutoff:
             continue
         shutil.rmtree(child, ignore_errors=True)

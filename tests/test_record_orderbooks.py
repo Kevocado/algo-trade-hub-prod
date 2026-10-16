@@ -2,6 +2,8 @@ import gzip
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from tradehub.scripts import record_orderbooks as ro
 
 NOW = datetime(2026, 10, 8, 14, 0, tzinfo=UTC)
@@ -69,16 +71,19 @@ def test_the_file_is_one_gzip_jsonl_per_hour_with_meta_first(tmp_path):
 
 def test_prune_removes_only_whole_days_older_than_the_retention(tmp_path):
     (tmp_path / "2026-08-01").mkdir()      # 68 days old -> removed
+    (tmp_path / "2026-08-08").mkdir()      # the day before the 60d cutoff -> removed
+    (tmp_path / "2026-08-09").mkdir()      # exactly the cutoff -> kept
     (tmp_path / "2026-09-01").mkdir()      # 37 days old -> kept
     (tmp_path / "2026-10-08").mkdir()      # the day being written -> kept
+    (tmp_path / "20260801").mkdir()        # parses as a date, but not canonical -> kept
     (tmp_path / "not-a-date").mkdir()      # not a date -> left alone
     (tmp_path / "loose.txt").write_text("x")
     (tmp_path / "2026-08-01" / "12.jsonl.gz").write_text("old")
 
-    assert ro.prune(tmp_path, NOW) == ["2026-08-01"]
+    assert ro.prune(tmp_path, NOW) == ["2026-08-01", "2026-08-08"]
 
-    assert not (tmp_path / "2026-08-01").exists()
-    for kept in ("2026-09-01", "2026-10-08", "not-a-date"):
+    assert not (tmp_path / "2026-08-01").exists() and not (tmp_path / "2026-08-08").exists()
+    for kept in ("2026-08-09", "2026-09-01", "2026-10-08", "20260801", "not-a-date"):
         assert (tmp_path / kept).is_dir()
     assert (tmp_path / "loose.txt").exists()
 
@@ -107,3 +112,22 @@ def test_a_successful_run_prunes_and_reports_what_it_deleted(tmp_path, capsys, m
     assert out["pruned"] == ["2026-08-01"] and out["retention_days"] == 60
     assert not old.exists()
     assert (tmp_path / "2026-10-08" / "14.jsonl.gz").exists()
+
+
+def test_a_failed_write_does_not_prune(tmp_path, monkeypatch):
+    """Retention runs after a successful write, so a failed write must delete nothing."""
+    old = tmp_path / "2026-08-01"
+    old.mkdir()
+    (old / "12.jsonl.gz").write_text("old")
+    monkeypatch.setattr(ro, "snapshot", lambda now, get: {"as_of": "", "pages": 1, "listed": 1,
+                                                         "truncated": False, "top": [], "depth": [],
+                                                         "depth_failed": 0})
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ro, "write", boom)
+
+    with pytest.raises(OSError):
+        ro.main(["--root", str(tmp_path)])
+    assert old.exists()
