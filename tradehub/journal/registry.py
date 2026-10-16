@@ -15,6 +15,7 @@ from tradehub.journal.forecasters.cpi import CpiForecaster
 from tradehub.journal.forecasters.daily_direction import build_wave2, wave2_closes
 from tradehub.journal.forecasters.ercot import build_ercot
 from tradehub.journal.forecasters.fomc import FOMC_SERIES, FomcMapped, is_hold_market
+from tradehub.journal.forecasters.gas import build_gas
 from tradehub.journal.forecasters.housing import HousingForecaster
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
 from tradehub.journal.forecasters.sentiment import SentimentMeter
@@ -63,6 +64,8 @@ FORECASTERS: list[Forecaster] = [
     *build_weather(_LIVE),
     # ERCOT daily peak demand: a temperature regression beside the Kalshi mid and a weekday baseline
     *build_ercot(_LIVE),
+    # AAA daily gasoline: the RBOB regression beside the Kalshi mid and a persistence baseline
+    *build_gas(_LIVE),
 ]
 
 # plan 15: the market-linked models again, each pulled toward the Kalshi price (see forecasters/shrunk.py).

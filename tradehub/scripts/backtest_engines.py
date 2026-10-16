@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 
 from datetime import date, datetime, time, timedelta, timezone
@@ -40,8 +41,12 @@ from tradehub.engines.cpi import (
     training_pairs,
 )
 from tradehub.engines.gas import (
+    GAS_DECISION_LEAD,
     GAS_ENGINE_VERSION,
     GAS_SERIES,
+    MIN_GAS_SIGMA,
+    GasModel,
+    aaa_daily_changes,
     fit_gas_model,
     gas_prob,
     gas_training_pairs,
@@ -59,7 +64,6 @@ from tradehub.engines.weather import (
 from tradehub.engine_config import load_engine_config
 from tradehub.markets import KalshiMarket, event_date, event_month, parse_cpi_market, parse_market
 
-GAS_DECISION_LEAD = timedelta(hours=2)
 CPI_DECISION_LEAD = timedelta(minutes=25)  # 08:00 ET on release morning (close is 08:25 ET)
 
 
@@ -158,6 +162,7 @@ def build_gas_decisions(
                     known,
                     rbob_sorted,
                     roll_dates=roll_dates,
+                    lead=decision_lead,
                 )
                 if published <= decided_at
             ],
@@ -168,6 +173,34 @@ def build_gas_decisions(
         used_rbob = () if rbob_window is None else rbob_window[1]
         prob = gas_prob(market, last.value, horizon, rbob_x, model)
         decisions.append(Decision(market.ticker, decided_at, prob, (last,) + used_rbob))
+    return decisions
+
+
+def build_gas_persistence_decisions(
+    markets: list[KalshiMarket],
+    aaa: list[Observation],
+    *,
+    decision_lead: timedelta = GAS_DECISION_LEAD,
+) -> list[Decision]:
+    """The naive baseline on the same contracts: tomorrow's AAA = today's AAA.
+
+    The sigma is the SD of past daily changes among only the observations known at the decision time,
+    so it is point-in-time like the model's. No RBOB, no fit -- the null hypothesis the model is tested
+    against, so a model that cannot beat this has no edge at all.
+    """
+    decisions = []
+    for market in markets:
+        decided_at = market.close_time - decision_lead
+        known = [o for o in aaa if o.published_at <= decided_at]
+        if len(known) < 30:
+            continue
+        last = max(known, key=lambda o: event_date(o.name))
+        horizon = (event_date(market.event_ticker) - event_date(last.name)).days
+        if horizon < 1:
+            continue
+        sigma = max(MIN_GAS_SIGMA, statistics.stdev(aaa_daily_changes(known)))
+        prob = gas_prob(market, last.value, horizon, None, GasModel(0.0, 0.0, sigma))
+        decisions.append(Decision(market.ticker, decided_at, prob, (last,)))
     return decisions
 
 
@@ -262,6 +295,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--lead-days", type=int, default=0,
                         help="cpi_nowcast: decide this many days before release morning (default 0)")
+    parser.add_argument("--persistence", action="store_true",
+                        help="gas: also report the naive persistence baseline's Brier on the same contracts")
     args = parser.parse_args(argv)
     if args.train_days < 0:
         parser.error("--train-days must be >= 0")
@@ -369,6 +404,25 @@ def main(argv: list[str] | None = None) -> int:
         date_from=datetime.combine(args.start, time(0), tzinfo=timezone.utc),
         date_to=datetime.combine(args.end, time(23, 59), tzinfo=timezone.utc),
     )
+    persistence = None
+    if args.persistence and args.engine == "gas":
+        model_tickers = {decision.market_ticker for decision in decisions}
+        # Restrict to the model's own markets so the two Briers cover the same contracts; the counts
+        # below are printed so a difference between them is visible rather than assumed away.
+        persistence = run_backtest(
+            engine=args.engine,
+            cadence=cadence,
+            decisions=[
+                d
+                for d in build_gas_persistence_decisions(
+                    markets, aaa, decision_lead=timedelta(hours=args.gas_lead_hours)
+                )
+                if d.market_ticker in model_tickers
+            ],
+            histories=histories,
+            mode=args.mode,
+            min_edge_pct=cfg.min_edge_pct,
+        )
     print(
         json.dumps(
             {
@@ -387,7 +441,16 @@ def main(argv: list[str] | None = None) -> int:
                 )
             }
             | {"n_unquoted": getattr(result, "n_unquoted", 0)}
-            | ({"decision_lead_hours": args.gas_lead_hours} if args.engine == "gas" else {}),
+            | ({"decision_lead_hours": args.gas_lead_hours} if args.engine == "gas" else {})
+            | (
+                {
+                    "brier_persistence": persistence.summary.get("brier_ours"),
+                    "n_settled": result.summary.get("n_settled"),
+                    "n_settled_persistence": persistence.summary.get("n_settled"),
+                }
+                if persistence is not None
+                else {}
+            ),
             default=str,
             indent=2,
         )

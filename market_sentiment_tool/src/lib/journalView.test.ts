@@ -93,6 +93,15 @@ describe("view", () => {
     expect(rows[0].market?.forecaster).toBe("kalshi_implied_ercot_peak");
   });
 
+  it("pairs the AAA gasoline family with its Kalshi baseline and names it plainly", () => {
+    const rows = viewRows([
+      score({ forecaster: "gas", forecaster_version: "v2", baseline: "market", n_settled: 2, n_targets: 3 }),
+      score({ forecaster: "kalshi_implied_gas", forecaster_version: "v1", n_settled: 2, n_targets: 3 }),
+    ]);
+    expect(rows.map((r) => r.label)).toEqual(["AAA gasoline prices"]);
+    expect(rows[0].market?.forecaster).toBe("kalshi_implied_gas");
+  });
+
   it("folds the Kalshi baseline into its model's row and orders scored rows first", () => {
     const { results, waiting } = split(viewRows(scores));
     expect(results.map((r) => r.label)).toEqual(["NFL winners"]);

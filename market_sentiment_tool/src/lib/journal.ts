@@ -92,6 +92,7 @@ export const MARKET_PAIR: Record<string, string> = {
   labor_nowcast: "kalshi_implied_labor",
   sports_nfl: "kalshi_implied_sports_nfl",
   ercot_peak: "kalshi_implied_ercot_peak",
+  gas: "kalshi_implied_gas",
   weather_high: "kalshi_implied_weather_high",
   weather_low: "kalshi_implied_weather_low",
   weather_rain: "kalshi_implied_weather_rain",

@@ -681,7 +681,7 @@ def test_scan_gas_passes_nymex_roll_dates_to_training_and_live_change(monkeypatc
         calls["range"] = (start, end)
         return roll_dates
 
-    def training_pairs(_aaa, _rbob, *, roll_dates):
+    def training_pairs(_aaa, _rbob, *, roll_dates, lead):
         calls["training"] = roll_dates
         return []
 

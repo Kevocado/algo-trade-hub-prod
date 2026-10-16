@@ -72,15 +72,16 @@ class KalshiImplied:
     version = "v1"
 
     def __init__(self, family: str, series: tuple[str, ...], cadence: str, live, fetch_market: Callable[[str], Any],
-                 *, keep: Callable[[LiveMarket], bool] = lambda lm: True):
+                 *, keep: Callable[[LiveMarket], bool] = lambda lm: True,
+                 lead: timedelta = FREEZE_LEAD):
         self.name = f"{MARKET_PREFIX}{family}"
         self.family, self.series, self.cadence = family, series, cadence
-        self._live, self._fetch_market, self._keep = live, fetch_market, keep
+        self._live, self._fetch_market, self._keep, self._lead = live, fetch_market, keep, lead
         self._open: dict[str, LiveMarket] = {}
 
     def targets(self, now: datetime) -> list[CalendarEntry]:
         self._open = {kalshi_target(lm.market.ticker): lm for s in self.series for lm in self._live.open_markets(s)
-                      if in_freeze_window(lm, now) and self._keep(lm)}
+                      if in_freeze_window(lm, now, self._lead) and self._keep(lm)}
         return [entry_for(lm, self.family, self.cadence) for lm in self._open.values()]
 
     def forecast(self, entry: CalendarEntry, now: datetime) -> Forecast | None:

@@ -30,7 +30,15 @@ from tradehub.data.weather import (
 from tradehub.edges import EdgeSuggestion, evaluate_edge
 from tradehub.engine_config import EngineConfig, load_engine_config
 from tradehub.gate_status import latest_gate_statuses
-from tradehub.engines.gas import GAS_ENGINE_VERSION, GAS_SERIES, fit_gas_model, gas_prob, gas_training_pairs, rbob_change
+from tradehub.engines.gas import (
+    GAS_DECISION_LEAD,
+    GAS_ENGINE_VERSION,
+    GAS_SERIES,
+    fit_gas_model,
+    gas_prob,
+    gas_training_pairs,
+    rbob_change,
+)
 from tradehub.engines.labor import (
     LABOR_ENGINE_VERSION,
     PAYROLL_SERIES,
@@ -402,7 +410,7 @@ def scan_gas(
     last = max(known, key=lambda o: event_date(o.name))
     roll_dates = roll_dates_fn(min(event_date(o.name) for o in known), now.astimezone(timezone.utc).date())
     model = fit_gas_model(
-        [(x, y) for x, y, published in gas_training_pairs(known, rbob, roll_dates=roll_dates) if published <= now],
+        [(x, y) for x, y, published in gas_training_pairs(known, rbob, roll_dates=roll_dates, lead=GAS_DECISION_LEAD) if published <= now],
         aaa=known,
     )
     x_now = rbob_change(rbob, now, roll_dates=roll_dates)
