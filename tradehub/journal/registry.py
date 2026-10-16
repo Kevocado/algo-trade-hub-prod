@@ -13,6 +13,7 @@ from tradehub.journal.contract import Forecaster
 from tradehub.journal.forecasters.baselines import build_baselines
 from tradehub.journal.forecasters.cpi import CpiForecaster
 from tradehub.journal.forecasters.daily_direction import build_wave2, wave2_closes
+from tradehub.journal.forecasters.ercot import build_ercot
 from tradehub.journal.forecasters.fomc import FOMC_SERIES, FomcMapped, is_hold_market
 from tradehub.journal.forecasters.housing import HousingForecaster
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
@@ -60,6 +61,8 @@ FORECASTERS: list[Forecaster] = [
     *build_sports(),
     # daily weather (highs, lows, rain): NOAA/ECMWF ensembles beside the Kalshi mid and station climatology
     *build_weather(_LIVE),
+    # ERCOT daily peak demand: a temperature regression beside the Kalshi mid and a weekday baseline
+    *build_ercot(_LIVE),
 ]
 
 # plan 15: the market-linked models again, each pulled toward the Kalshi price (see forecasters/shrunk.py).
