@@ -17,11 +17,11 @@ from __future__ import annotations
 import argparse
 import math
 import statistics
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from tradehub.backtest.http import default_get_json, default_get_text
 from tradehub.backtest.kalshi_history import KalshiHistoryClient, parse_ts
-from tradehub.data.ercot import FIRST_DAY, fetch_historical_temps, load_peaks
+from tradehub.data.ercot import FIRST_DAY, central_today, fetch_historical_temps, load_peaks
 from tradehub.journal.forecasters.ercot import (
     BASELINE_WEEKS,
     MIN_LEAD,
@@ -38,7 +38,7 @@ STRIKES = tuple(range(30000, 90001, 500))   # a fixed 500 MW ladder spanning ERC
 def samples_for(*, get_json=default_get_json, get_text=default_get_text, cache_dir=None,
                 today: date | None = None) -> dict[date, tuple[float, float]]:
     """{operating day: (peak MW, population-weighted max-temp F)}."""
-    today = today or datetime.now(UTC).date()
+    today = today or central_today()
     peaks = load_peaks(FIRST_DAY, today, get_text=get_text, cache_dir=cache_dir, today=today)
     temps = fetch_historical_temps(FIRST_DAY, today, get_json=get_json)
     return {d: (peaks[d], temps[d]) for d in peaks if d in temps}

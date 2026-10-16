@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Iterable
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -29,6 +29,7 @@ from tradehub.backtest.http import default_get_json, default_get_text
 from tradehub.core.kalshi_feed import fetch_market
 from tradehub.data.ercot import (
     FIRST_DAY,
+    central_today,
     fetch_forecast_temps,
     fetch_historical_temps,
     load_peaks,
@@ -111,7 +112,7 @@ class ErcotInputs:
         self._forecast: dict[date, float] | None = None
 
     def _load(self) -> None:
-        today = datetime.now(UTC).date()
+        today = central_today()
         if self._peaks is None:
             self._peaks = load_peaks(FIRST_DAY, today, get_text=self._get_text, cache_dir=self._cache, today=today)
         if self._temps is None:
