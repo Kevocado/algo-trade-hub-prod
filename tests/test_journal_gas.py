@@ -117,10 +117,25 @@ def test_the_persistence_baseline_is_the_last_print_with_past_daily_sigma():
 
 def test_too_little_history_is_a_gap_not_a_guess():
     live = FakeLive([_lm("KXAAAGASD-26OCT17-4.5000", 4.50)], aaa=_aaa(MIN_TRAIN - 1))
-    fc = GasAaa(live, lambda t: None, _inputs(live))
-    [entry] = fc.targets(NOW)
-    assert fc.forecast(entry, NOW) is None
-    assert GasPersistence(live, lambda t: None, _inputs(live)).forecast(entry, NOW) is None
+    inputs = _inputs(live)
+    for cls in (GasAaa, GasPersistence):
+        fc = cls(live, lambda t: None, inputs)
+        [entry] = fc.targets(NOW)
+        assert fc.forecast(entry, NOW) is None
+
+
+def test_the_inputs_are_reloaded_each_run_not_reused_across_runs():
+    """The journal runs hourly and the AAA print lands mid-morning, so a cache that outlives a run
+    would freeze the next day's market off a print that is not out yet (horizon 2 instead of 1)."""
+    live = FakeLive([_lm("KXAAAGASD-26OCT17-4.5000", 4.50)])
+    inputs = _inputs(live)
+    first = inputs.aaa(NOW)
+
+    later_now = NOW + timedelta(hours=9)  # the 26OCT17 print lands at 11:06Z, after NOW
+    live.aaa = live.aaa + [Observation("KXAAAGASD-26OCT17", 4.03, later_now)]
+    later = inputs.aaa(later_now)
+
+    assert later is not first and len(later) == len(first) + 1
 
 
 def _final(result):

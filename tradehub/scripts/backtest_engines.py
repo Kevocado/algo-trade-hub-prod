@@ -404,19 +404,25 @@ def main(argv: list[str] | None = None) -> int:
         date_from=datetime.combine(args.start, time(0), tzinfo=timezone.utc),
         date_to=datetime.combine(args.end, time(23, 59), tzinfo=timezone.utc),
     )
-    persistence_brier = None
+    persistence = None
     if args.persistence and args.engine == "gas":
-        p = run_backtest(
+        model_tickers = {decision.market_ticker for decision in decisions}
+        # Restrict to the model's own markets so the two Briers cover the same contracts; the counts
+        # below are printed so a difference between them is visible rather than assumed away.
+        persistence = run_backtest(
             engine=args.engine,
             cadence=cadence,
-            decisions=build_gas_persistence_decisions(
-                markets, aaa, decision_lead=timedelta(hours=args.gas_lead_hours)
-            ),
+            decisions=[
+                d
+                for d in build_gas_persistence_decisions(
+                    markets, aaa, decision_lead=timedelta(hours=args.gas_lead_hours)
+                )
+                if d.market_ticker in model_tickers
+            ],
             histories=histories,
             mode=args.mode,
             min_edge_pct=cfg.min_edge_pct,
         )
-        persistence_brier = p.summary.get("brier_ours")
     print(
         json.dumps(
             {
@@ -436,7 +442,15 @@ def main(argv: list[str] | None = None) -> int:
             }
             | {"n_unquoted": getattr(result, "n_unquoted", 0)}
             | ({"decision_lead_hours": args.gas_lead_hours} if args.engine == "gas" else {})
-            | ({"brier_persistence": persistence_brier} if persistence_brier is not None else {}),
+            | (
+                {
+                    "brier_persistence": persistence.summary.get("brier_ours"),
+                    "n_settled": result.summary.get("n_settled"),
+                    "n_settled_persistence": persistence.summary.get("n_settled"),
+                }
+                if persistence is not None
+                else {}
+            ),
             default=str,
             indent=2,
         )

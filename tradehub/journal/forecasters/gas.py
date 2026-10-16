@@ -59,21 +59,32 @@ def target_day(market: KalshiMarket) -> date:
 
 
 class GasInputs:
-    """The AAA prints (Kalshi's own settled values) and RBOB closes, each loaded at most once per run."""
+    """The AAA prints (Kalshi's own settled values) and RBOB closes, loaded once per run.
+
+    The journal runs hourly and the AAA print for a day lands mid-morning, so a cache that outlives a
+    run would freeze the next day's market off a print that is not out yet (horizon 2 instead of 1).
+    The cache is therefore keyed on `now`: one load per run, never reused across runs.
+    """
 
     def __init__(self, live, *, rbob_fn: Callable[[], list] = rbob_closes):
         self._live, self._rbob_fn = live, rbob_fn
-        self._aaa: list | None = None
-        self._rbob: list | None = None
+        self._now: datetime | None = None
+        self._aaa: list = []
+        self._rbob: list = []
+
+    def _refresh(self, now: datetime) -> None:
+        if now == self._now:
+            return
+        self._now = now
+        self._aaa = [o for o in self._live.settled_values(SERIES) if o.published_at <= now]
+        self._rbob = self._rbob_fn()
 
     def aaa(self, now: datetime) -> list:
-        if self._aaa is None:
-            self._aaa = [o for o in self._live.settled_values(SERIES) if o.published_at <= now]
+        self._refresh(now)
         return self._aaa
 
-    def rbob(self) -> list:
-        if self._rbob is None:
-            self._rbob = self._rbob_fn()
+    def rbob(self, now: datetime) -> list:
+        self._refresh(now)
         return self._rbob
 
     def roll_dates(self, aaa: list, now: datetime) -> list[date]:
@@ -111,7 +122,7 @@ class GasAaa(_GasBase):
         horizon = (day - event_date(last.name)).days
         if horizon < 1:
             return None
-        rbob = self._inputs.rbob()
+        rbob = self._inputs.rbob(now)
         roll_dates = self._inputs.roll_dates(aaa, now)
         model = fit_gas_model(
             [(x, y) for x, y, published in gas_training_pairs(aaa, rbob, roll_dates=roll_dates, lead=LEAD)
