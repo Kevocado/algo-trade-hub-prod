@@ -65,3 +65,45 @@ def test_the_file_is_one_gzip_jsonl_per_hour_with_meta_first(tmp_path):
         lines = [json.loads(x) for x in fh.read().splitlines()]
     assert [x["kind"] for x in lines] == ["meta", "top", "depth"] and lines[0]["listed"] == 1
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_prune_removes_only_whole_days_older_than_the_retention(tmp_path):
+    (tmp_path / "2026-08-01").mkdir()      # 68 days old -> removed
+    (tmp_path / "2026-09-01").mkdir()      # 37 days old -> kept
+    (tmp_path / "2026-10-08").mkdir()      # the day being written -> kept
+    (tmp_path / "not-a-date").mkdir()      # not a date -> left alone
+    (tmp_path / "loose.txt").write_text("x")
+    (tmp_path / "2026-08-01" / "12.jsonl.gz").write_text("old")
+
+    assert ro.prune(tmp_path, NOW) == ["2026-08-01"]
+
+    assert not (tmp_path / "2026-08-01").exists()
+    for kept in ("2026-09-01", "2026-10-08", "not-a-date"):
+        assert (tmp_path / kept).is_dir()
+    assert (tmp_path / "loose.txt").exists()
+
+
+def test_prune_on_a_missing_root_is_a_no_op(tmp_path):
+    assert ro.prune(tmp_path / "nope", NOW) == []
+
+
+def test_a_successful_run_prunes_and_reports_what_it_deleted(tmp_path, capsys, monkeypatch):
+    old = tmp_path / "2026-08-01"
+    old.mkdir()
+    (old / "12.jsonl.gz").write_text("old")
+    monkeypatch.setattr(
+        ro, "datetime",
+        type("Fixed", (datetime,), {"now": classmethod(lambda cls, tz=None: NOW)}),
+    )
+    monkeypatch.setattr(
+        ro, "snapshot",
+        lambda now, get: {"as_of": now.isoformat(), "pages": 1, "listed": 1, "truncated": False,
+                          "top": [_m("A-1", "0.02", "0.04", "5")], "depth": [], "depth_failed": 0},
+    )
+
+    assert ro.main(["--root", str(tmp_path)]) == 0
+    out = json.loads(capsys.readouterr().out)
+
+    assert out["pruned"] == ["2026-08-01"] and out["retention_days"] == 60
+    assert not old.exists()
+    assert (tmp_path / "2026-10-08" / "14.jsonl.gz").exists()
