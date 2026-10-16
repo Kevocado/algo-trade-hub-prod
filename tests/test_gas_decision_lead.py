@@ -23,12 +23,15 @@ Two properties are pinned here, and the second is the one that would actually ca
 - **The lead travels with the result.** It is recorded in the run config and printed, so a Brier can
   never be read without the lead it was measured at.
 """
-from datetime import datetime, timedelta, timezone
+import statistics
+from datetime import date, datetime, time, timedelta, timezone
 
 import pytest
 
-from tradehub.scripts import backtest_engines as backtest_engines
 from tradehub.backtest.pit import Observation
+from tradehub.engines.gas import MIN_GAS_SIGMA, GasModel, gas_prob
+from tradehub.markets import event_date, parse_market
+from tradehub.scripts import backtest_engines as backtest_engines
 
 MARKET = {
     "ticker": "KXAAAGASD-26JUL24-4.1000",
@@ -120,3 +123,42 @@ def test_the_printed_result_states_the_lead_it_was_measured_at(monkeypatch, caps
 
     assert "decision_lead_hours" in printed
     assert "12.0" in printed
+
+
+def _aaa(n):
+    return [
+        Observation(
+            f"KXAAAGASD-{(date(2026, 6, 1) + timedelta(days=i)).strftime('%y%b%d').upper()}",
+            4.0 + i * 0.001 + (0.01 if i % 2 else -0.01),
+            datetime.combine(date(2026, 6, 1) + timedelta(days=i), time(12), timezone.utc),
+        )
+        for i in range(n)
+    ]
+
+
+def test_the_persistence_baseline_is_point_in_time_and_uses_the_last_print():
+    """The null hypothesis: tomorrow's AAA = today's AAA, sigma from only the daily changes knowable at
+    the decision time. If it used future observations, it would flatter itself and the comparison would
+    be meaningless."""
+    market = parse_market(MARKET)
+    [decision] = backtest_engines.build_gas_persistence_decisions([market], _aaa(40), decision_lead=timedelta(hours=2))
+
+    decided_at = market.close_time - timedelta(hours=2)
+    known = [o for o in _aaa(40) if o.published_at <= decided_at]
+    last = max(known, key=lambda o: event_date(o.name))
+    ordered = sorted(known, key=lambda o: event_date(o.name))
+    changes = [b.value - a.value for a, b in zip(ordered, ordered[1:])]
+    sigma = max(MIN_GAS_SIGMA, statistics.stdev(changes))
+
+    assert decision.decided_at == decided_at
+    assert decision.features == (last,)
+    horizon = (event_date(market.event_ticker) - event_date(last.name)).days
+    assert decision.our_prob == pytest.approx(
+        gas_prob(market, last.value, horizon, None, GasModel(0.0, 0.0, sigma))
+    )
+
+
+def test_the_persistence_baseline_gaps_without_enough_history():
+    assert backtest_engines.build_gas_persistence_decisions(
+        [parse_market(MARKET)], _aaa(29), decision_lead=timedelta(hours=2)
+    ) == []

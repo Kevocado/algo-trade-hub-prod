@@ -602,12 +602,12 @@ class TestBacktestRunsProvenance:
             *(version for _, version in CPI_TARGETS.values()),  # backtest_engines.py:287
             LABOR_ENGINE_VERSION,                               # backtest_labor.py:163
         }
-        assert produced == {"gas-v1", "gas-v1-lead2.5h", "weather-v1", "cpi-v1", "cpi-core-v1",
+        assert produced == {"gas-v2", "gas-v2-lead2.5h", "weather-v1", "cpi-v1", "cpi-core-v1",
                             "labor-v1"}
         # The excluded one, named. The next test asserts the OTHER five are clean, and this is what
         # makes "the other five" a fact rather than a hope -- it is why the count in the name is 5
         # and the count in the set is 6.
-        assert {v for v in produced if is_experiment_version(v)} == {"gas-v1-lead2.5h"}
+        assert {v for v in produced if is_experiment_version(v)} == {"gas-v2-lead2.5h"}
 
     def test_the_production_versions_are_exactly_the_ones_the_predators_declare(self):
         from tradehub.engines.cpi import CPI_CORE_ENGINE_VERSION, CPI_ENGINE_VERSION
@@ -618,12 +618,12 @@ class TestBacktestRunsProvenance:
         declared = {GAS_ENGINE_VERSION, WEATHER_ENGINE_VERSION, CPI_ENGINE_VERSION,
                     CPI_CORE_ENGINE_VERSION, LABOR_ENGINE_VERSION}
 
-        assert declared == {"gas-v1", "weather-v1", "cpi-v1", "cpi-core-v1", "labor-v1"}
+        assert declared == {"gas-v2", "weather-v1", "cpi-v1", "cpi-core-v1", "labor-v1"}
         assert not any(is_experiment_version(v) for v in declared)
 
     def test_no_production_version_contains_the_experiment_marker(self):
         """`-lead` is safe to key on only because no real version contains it."""
-        for version in ("gas-v1", "weather-v1", "cpi-v1", "cpi-core-v1", "labor-v1"):
+        for version in ("gas-v2", "weather-v1", "cpi-v1", "cpi-core-v1", "labor-v1"):
             assert "-lead" not in version
 
 

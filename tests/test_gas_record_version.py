@@ -72,23 +72,24 @@ def _run_cli(monkeypatch, extra_argv, spy=None):
 
 
 def test_the_production_lead_keeps_the_production_engine_version(monkeypatch):
-    """A default run must stay `gas-v1`. Changing this would orphan every recorded gas run already
-    in the table, and it is the only value the promotion evidence is keyed on."""
+    """A default run must stay on the current production version. A model change bumps that version
+    (gas-v1 -> gas-v2) so the old scorecard's rows are untouched; the lead alone must never bump it,
+    or an experiment could decide the gate."""
     spy = _run_cli(monkeypatch, [])
 
-    assert spy["engine_version"] == GAS_ENGINE_VERSION == "gas-v1"
+    assert spy["engine_version"] == GAS_ENGINE_VERSION == "gas-v2"
 
 
 def test_a_non_default_lead_is_tagged_so_it_cannot_masquerade_as_production(monkeypatch):
     spy = _run_cli(monkeypatch, ["--gas-lead-hours", "12"])
 
-    assert spy["engine_version"] == "gas-v1-lead12h"
+    assert spy["engine_version"] == "gas-v2-lead12h"
     assert spy["engine_version"] != GAS_ENGINE_VERSION
 
 
 @pytest.mark.parametrize(
     ("hours", "expected"),
-    [("6", "gas-v1-lead6h"), ("6.5", "gas-v1-lead6.5h"), ("24", "gas-v1-lead24h")],
+    [("6", "gas-v2-lead6h"), ("6.5", "gas-v2-lead6.5h"), ("24", "gas-v2-lead24h")],
 )
 def test_the_tag_names_the_lead_exactly_including_a_fractional_one(monkeypatch, hours, expected):
     spy = _run_cli(monkeypatch, ["--gas-lead-hours", hours])

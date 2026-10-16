@@ -1,6 +1,7 @@
 import math
 import statistics
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -137,6 +138,34 @@ def test_gas_training_pairs_consecutive_days_only():
     x, y, published = pairs[0]
     assert y == pytest.approx(0.02) and published == aaa[1].published_at
     assert x == pytest.approx(rbob_change(rbob, aaa[0].published_at))
+
+
+def test_gas_training_pairs_use_the_decision_time_rbob_window():
+    """The regressor must be the RBOB window known at the decision time -- 11:59 PM ET the day before
+    the reference day, minus the engine lead -- not the previous day's AAA print time. Computing it at
+    the print excludes that day's 18:00 ET RBOB close, so training and inference fit and apply the
+    beta on different features (a train/serve skew)."""
+    closes = [
+        Observation(
+            f"RBOB:RBV26.NYM:2026-09-{day:02d}",
+            value,
+            datetime(2026, 9, day, 22, tzinfo=timezone.utc),  # 18:00 EDT
+        )
+        for day, value in [(4, 3.00), (5, 3.10), (6, 3.20), (7, 3.30), (8, 3.40), (9, 3.50), (10, 4.00)]
+    ]
+    aaa = [
+        Observation("KXAAAGASD-26SEP10", 4.40, datetime(2026, 9, 10, 12, tzinfo=timezone.utc)),
+        Observation("KXAAAGASD-26SEP11", 4.42, datetime(2026, 9, 11, 12, tzinfo=timezone.utc)),
+    ]
+    decision_at = datetime(2026, 9, 10, 23, 59, tzinfo=ZoneInfo("America/New_York")) - timedelta(hours=2)
+
+    assert len(gas_training_pairs(aaa, closes)) == 1
+    x, y, published = gas_training_pairs(aaa, closes)[0]
+
+    assert published == aaa[1].published_at
+    assert y == pytest.approx(0.02)
+    assert x == pytest.approx(rbob_change(closes, decision_at))
+    assert x != pytest.approx(rbob_change(closes, aaa[0].published_at))
 
 
 def test_fit_gas_model_recovers_linear_relation_and_defaults():

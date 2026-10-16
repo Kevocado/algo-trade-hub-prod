@@ -2,6 +2,11 @@
 
 Retail follows wholesale RBOB with a 1-3 week lag, so the day-over-day AAA change
 is modeled as alpha + beta * (RBOB change over the last RBOB_WINDOW closes).
+
+`gas-v2` fixes the regressor's train/serve skew: `gas-v1` computed the training feature at the
+previous day's AAA print time (before that day's RBOB close), while inference uses it at the
+decision time (close minus lead, after the close), so beta was fit on a feature one RBOB session
+stale relative to the one applied. Both now use `decision_time`.
 """
 
 from __future__ import annotations
@@ -9,16 +14,21 @@ from __future__ import annotations
 import math
 import statistics
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from tradehub.backtest.pit import Observation
 from tradehub.markets import KalshiMarket, event_date, prob_in_interval, yes_interval
 
-GAS_ENGINE_VERSION = "gas-v1"
+GAS_ENGINE_VERSION = "gas-v2"
 GAS_SERIES = "KXAAAGASD"
 GAS_RESOLUTION = 0.0001
 MIN_GAS_SIGMA = 0.002
 RBOB_WINDOW = 5
+# Kalshi's last trading time is 11:59 PM ET the day before the reference day (contract terms).
+GAS_DECISION_LEAD = timedelta(hours=2)
+_EASTERN = ZoneInfo("America/New_York")
+_MARKET_CLOSE = time(23, 59)
 
 
 @dataclass(frozen=True)
@@ -29,6 +39,21 @@ class GasModel:
 
 
 DEFAULT_GAS = GasModel(alpha=0.0, beta=0.0, sigma=0.01)
+
+
+def market_close(day: date) -> datetime:
+    """When the market that settles on `day` stops trading: 11:59 PM ET the day before."""
+    return datetime.combine(day - timedelta(days=1), _MARKET_CLOSE, _EASTERN)
+
+
+def decision_time(day: date, lead: timedelta = GAS_DECISION_LEAD) -> datetime:
+    """When the model decides the market that settles on `day`: its close minus `lead`.
+
+    The RBOB feature must be read here (in training and at inference alike), so it reflects the same
+    RBOB session. Any lead under ~6h lands after the previous day's 18:00 ET RBOB close and before
+    that day's, so the window is the same; a lead past ~6h reads one session earlier.
+    """
+    return market_close(day) - lead
 
 
 def _contract_id(observation: Observation) -> str | None:
@@ -82,20 +107,21 @@ def gas_training_pairs(
     window: int = RBOB_WINDOW,
     *,
     roll_dates: list[date] | None = None,
+    lead: timedelta = GAS_DECISION_LEAD,
 ) -> list[tuple[float, float, datetime]]:
     ordered = sorted(aaa, key=lambda o: event_date(o.name))
     pairs = []
     for prev, cur in zip(ordered, ordered[1:]):
         if (event_date(cur.name) - event_date(prev.name)).days != 1:
             continue
-        x = rbob_change(rbob, prev.published_at, window, roll_dates=roll_dates)
+        x = rbob_change(rbob, decision_time(event_date(cur.name), lead), window, roll_dates=roll_dates)
         if x is None:
             continue
         pairs.append((x, cur.value - prev.value, cur.published_at))
     return pairs
 
 
-def _aaa_daily_changes(aaa: list[Observation]) -> list[float]:
+def aaa_daily_changes(aaa: list[Observation]) -> list[float]:
     ordered = sorted(aaa, key=lambda observation: event_date(observation.name))
     return [
         current.value - previous.value
@@ -111,7 +137,7 @@ def fit_gas_model(
     aaa: list[Observation] | None = None,
 ) -> GasModel:
     if len(pairs) < min_points:
-        changes = _aaa_daily_changes(aaa or [])
+        changes = aaa_daily_changes(aaa or [])
         if len(changes) < min_points:
             return DEFAULT_GAS
         return GasModel(
