@@ -75,6 +75,15 @@ describe("view", () => {
     score({ forecaster: "housing_direction", forecaster_version: "housing-wf-v1", cadence: "monthly", calibration_ready: true }),
   ];
 
+  it("pairs each weather family with its own Kalshi baseline and names it plainly", () => {
+    const rows = viewRows([
+      score({ forecaster: "weather_rain", forecaster_version: "ens-v1", baseline: "market", n_settled: 2, n_targets: 3 }),
+      score({ forecaster: "kalshi_implied_weather_rain", forecaster_version: "v1", n_settled: 2, n_targets: 3 }),
+    ]);
+    expect(rows.map((r) => r.label)).toEqual(["Rain today"]);
+    expect(rows[0].market?.forecaster).toBe("kalshi_implied_weather_rain");
+  });
+
   it("folds the Kalshi baseline into its model's row and orders scored rows first", () => {
     const { results, waiting } = split(viewRows(scores));
     expect(results.map((r) => r.label)).toEqual(["NFL winners"]);

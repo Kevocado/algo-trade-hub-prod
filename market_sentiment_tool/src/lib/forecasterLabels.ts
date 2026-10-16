@@ -21,6 +21,12 @@ const BASE: Record<string, string> = {
   sports_cfb_total: "College football game totals",
   // Spec §8 naive baselines. Named so a visitor cannot mistake "yesterday again" for a prediction:
   // every one carries "(baseline)", and none of them is called a model.
+  weather_high: "Daily high temperatures",
+  weather_low: "Daily low temperatures",
+  weather_rain: "Rain today",
+  baseline_climatology_weather_high: "Daily highs: the usual for this week (baseline)",
+  baseline_climatology_weather_low: "Daily lows: the usual for this week (baseline)",
+  baseline_climatology_weather_rain: "Rain: the usual for this week (baseline)",
   baseline_persistence_spx: "S&P 500 tomorrow: yesterday again (baseline)",
   baseline_climatology_spx: "S&P 500 tomorrow: the usual rate (baseline)",
   baseline_persistence_vix: "Volatility (VIX) tomorrow: yesterday again (baseline)",
