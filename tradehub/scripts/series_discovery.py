@@ -16,7 +16,7 @@ BASE = "https://api.elections.kalshi.com/trade-api/v2"
 NOW = datetime.now(timezone.utc)
 CUTOFF = NOW - timedelta(days=30)
 SESSION = requests.Session()
-SESSION.timeout = 15
+SESSION_TIMEOUT = 15
 
 JOURNAL_SERIES = {
     "KXCPI", "KXCPICORE", "KXFOMC", "KXPAYROLLS", "KXUNRATE", "KXQUITS",
@@ -27,35 +27,28 @@ JOURNAL_SERIES = {
     "KXAAAGASD", "KXAAAGASDNE", "KXAAAGASDTX",
 }
 
-# Curated list of series likely to have volume in the last 30 days
-# Based on known active categories: Economics, Climate, Financials, Sports, Elections
 CANDIDATE_SERIES = [
-    # Economics (daily/weekly/monthly)
     "KXCPI", "KXCPICORE", "KXCPIFOOD", "KXCPISHELTER", "KXPCEHEAD", "KXPCECORE",
     "KXPAYROLLS", "KXUNRATE", "KXQUITS", "KXCONTCLAIMS", "KXJPCONCONF", "KXISMPMI",
     "KXJETFUEL", "KXNGASMAX", "KXWTIMAX", "KXGASMIN", "KXAAAGASD", "KXAAAGASDNE", "KXAAAGASDTX",
     "KXSOYBEANMON", "KXCORNWALLMEADOWBY", "KXSDCORNYIELD", "KXERCOTPEAKD",
-    # Climate (daily weather)
     "KXHIGHNY", "KXHIGHMIA", "KXHIGHTBOS", "KXHIGHPHIL", "KXLOWNY", "KXLOWMIA", "KXLOWTBOS", "KXLOWPHIL",
     "KXRAINNY", "KXRAINMIA", "KXRAINTBOS", "KXRAINPHIL", "KXHIGHTVHHH", "KXLOWTEBBR",
-    # Financials (daily/weekly)
     "KXSPX", "KXVIX", "KXGOLD", "KXEURUSD", "KXUSDJPY", "KXUST10AM", "KXUST30", "KXINXM",
     "KXNFLXAPP", "KXTESLAM2", "KXSHOPA", "KXRBLXA", "KXRPRESPRIMARY",
-    # Sports (seasonal)
     "KXNFL", "KXNFLSPREAD", "KXNFLTOTAL", "KXCFB", "KXCFBSPREAD", "KXCFBTOTAL",
     "KXNHL", "KXNBAGAMES", "KXNBA", "KXNCAAF", "KXNCAAM",
-    # Elections (as they happen)
     "KXPRESPARTY", "KXSENATE", "KXHOUSE", "KXGOV",
-    # Crypto
     "KXETH", "KXBTC", "KXSHIBAD",
 ]
 
+
 def get_json(path: str, params: dict | None = None) -> dict:
     url = urljoin(BASE + "/", path.lstrip("/"))
-    resp = SESSION.get(url, params=params)
+    resp = SESSION.get(url, params=params, timeout=SESSION_TIMEOUT)
     if resp.status_code == 429:
         time.sleep(2)
-        resp = SESSION.get(url, params=params)
+        resp = SESSION.get(url, params=params, timeout=SESSION_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
@@ -65,12 +58,17 @@ def parse_iso(s: str) -> datetime:
 
 
 def series_volume_last_30d(series_ticker: str) -> tuple[float, int, datetime | None]:
-    """Return (total_volume, n_settled_events, latest_settlement) in the last 30 days."""
+    """Return (total_volume, n_settled_events, latest_settlement) for markets settled in the last 30 days.
+
+    The volume is the market's total volume (cumulative over its lifetime), and the market is included
+    if its settlement_ts falls within the last 30 days.
+    """
     params = {"series_ticker": series_ticker, "status": "settled", "limit": 1000}
     cursor = None
     vol = 0.0
     events = set()
     latest = None
+    incomplete = False
     while True:
         if cursor:
             params["cursor"] = cursor
@@ -79,10 +77,10 @@ def series_volume_last_30d(series_ticker: str) -> tuple[float, int, datetime | N
         if not batch:
             break
         for m in batch:
-            close = m.get("close_time")
-            if not close:
+            st = m.get("settlement_ts")
+            if not st:
                 continue
-            t = parse_iso(close)
+            t = parse_iso(st)
             if t < CUTOFF:
                 continue
             v = m.get("volume_fp") or m.get("volume") or 0.0
@@ -96,7 +94,7 @@ def series_volume_last_30d(series_ticker: str) -> tuple[float, int, datetime | N
         if not cursor:
             break
         time.sleep(0.1)
-    return vol, len(events), latest
+    return vol, len(events), latest, incomplete
 
 
 def fetch_series_details(ticker: str) -> dict:
@@ -112,9 +110,12 @@ def main():
     print(f"Checking {len(CANDIDATE_SERIES)} candidate series...", file=sys.stderr)
 
     with_volume = []
+    any_incomplete = False
     for i, ticker in enumerate(CANDIDATE_SERIES):
         try:
-            vol, n_events, latest = series_volume_last_30d(ticker)
+            vol, n_events, latest, inc = series_volume_last_30d(ticker)
+            if inc:
+                any_incomplete = True
         except Exception as e:
             print(f"  {ticker}: ERR {e}", file=sys.stderr)
             continue
@@ -122,12 +123,15 @@ def main():
             with_volume.append((ticker, vol, n_events, latest))
             print(f"  {ticker}: vol={vol:.1f} events={n_events}", file=sys.stderr)
         else:
-            print(f"  {ticker}: no volume in last 30d", file=sys.stderr)
+            print(f"  {ticker}: no settled markets in last 30d", file=sys.stderr)
         if i % 10 == 0:
             print(f"  checked {i+1}/{len(CANDIDATE_SERIES)}... ({time.time()-t0:.1f}s)", file=sys.stderr)
         time.sleep(0.15)
 
-    print(f"\n{len(with_volume)} series with >0 volume in last 30d", file=sys.stderr)
+    if any_incomplete:
+        print("WARNING: one or more series had incomplete scans; rankings may be partial", file=sys.stderr)
+
+    print(f"\n{len(with_volume)} series with >0 volume (markets settled in last 30d)", file=sys.stderr)
 
     details_cache = {}
     for ticker, vol, n_ev, latest in with_volume:
@@ -146,7 +150,6 @@ def main():
     for ticker, vol, n_ev, latest in with_volume:
         details = details_cache.get(ticker, {})
         src_q = source_quality(details.get("settlement_sources", []))
-        # Get category/frequency from details or defaults
         cat = details.get("category", "Unknown")
         freq = details.get("frequency", "unknown")
         results.append({
@@ -161,22 +164,23 @@ def main():
             "title": details.get("title", ""),
             "in_journal": ticker in JOURNAL_SERIES,
             "_source_q": src_q,
+            "incomplete": any_incomplete,
         })
 
     for r in results:
-        r["_score"] = r["volume_30d"] * r["_source_q"] * max(1, r["n_settled_events"])
+        r["_score"] = r["volume_30d"] * r["_source_q"] * (1 + r["n_settled_events"])
 
     results.sort(key=lambda r: r["_score"], reverse=True)
 
     # Write Markdown
     md = []
     md.append(f"# Series Discovery — {NOW.date().isoformat()}\n")
-    md.append("Curated check of likely-active Kalshi series with >0 volume in the last 30 days, ranked by\n")
-    md.append("(30d volume) × (source quality: 2=free URL, 1=agency no URL, 0=private) × (1 + settled events).\n")
+    md.append("Curated check of likely-active Kalshi series with settled markets in the last 30 days, ranked by\n")
+    md.append("(total volume of those markets) × (source quality: 2=free URL, 1=agency no URL, 0=private) × (1 + settled events).\n")
     md.append("Series already in the journal are marked and excluded from recommendations.\n")
 
-    md.append("\n| Rank | Series | Category | Freq | 30d Volume | Settled Events | Source Quality | Free Source | In Journal |\n")
-    md.append("|---:|---|---|---|---:|---:|---:|---|---:|\n")
+    md.append("\n| Rank | Series | Category | Freq | Total Vol (markets settled 30d) | Settled Events | Source Quality | Free Source | In Journal |")
+    md.append("|---:|---|---|---|---:|---:|---:|---|---:|")
 
     for i, r in enumerate(results, 1):
         sources = r["settlement_sources"]
@@ -185,26 +189,27 @@ def main():
         journal = "✓" if r["in_journal"] else ""
         md.append(f"| {i} | {r['ticker']} | {r['category']} | {r['frequency']} | {r['volume_30d']:.1f} | {r['n_settled_events']} | {src_q} | {free_src} | {journal} |")
 
-    md.append("\n## Top 10 by Score\n")
-    md.append("| Rank | Series | Score | 30d Vol | Events | Source | Free Source |\n")
-    md.append("|---:|---|---:|---:|---:|---|---|\n")
+    md.append("\n## Top 10 by Score")
+    md.append("| Rank | Series | Score | Total Vol | Events | Source | Free Source |")
+    md.append("|---:|---|---:|---:|---:|---|---|")
+
     for i, r in enumerate(results[:10], 1):
         sources = r["settlement_sources"]
         free_src = " | ".join(f'{src.get("name","")} ({src.get("url","")})' for src in sources if src.get("url")) or "—"
         md.append(f"| {i} | {r['ticker']} | {r['_score']:.1f} | {r['volume_30d']:.1f} | {r['n_settled_events']} | {r['_source_q']} | {free_src} |")
 
-    md.append("\n## Top 3 Recommendations (not in journal)\n")
+    md.append("\n## Top 3 Recommendations (not in journal)")
     recs = [r for r in results if not r["in_journal"]][:3]
     for i, r in enumerate(recs, 1):
         sources = r["settlement_sources"]
         free_src = "; ".join(f'{src.get("name","")} ({src.get("url","")})' for src in sources if src.get("url")) or "no free source named"
-        md.append(f"\n### {i}. {r['ticker']} — {r['title']}\n")
-        md.append(f"- **Category:** {r['category']} | **Frequency:** {r['frequency']}\n")
-        md.append(f"- **30d volume:** {r['volume_30d']:.1f} | **Settled events (30d):** {r['n_settled_events']}\n")
-        md.append(f"- **Settles on:** {r['title']}\n")
-        md.append(f"- **Free source:** {free_src}\n")
-        md.append(f"- **Why:** {r['volume_30d']:.0f} vol × {r['_source_q']} source × {r['n_settled_events']} events = score {r['_score']:.1f}. "
-                  f"Settlement data is public; a forecaster can be built and graded against Kalshi.\n")
+        md.append(f"\n### {i}. {r['ticker']} — {r['title']}")
+        md.append(f"- **Category:** {r['category']} | **Frequency:** {r['frequency']}")
+        md.append(f"- **Total volume (markets settled 30d):** {r['volume_30d']:.1f} | **Settled events (30d):** {r['n_settled_events']}")
+        md.append(f"- **Settles on:** {r['title']}")
+        md.append(f"- **Free source:** {free_src}")
+        md.append(f"- **Why:** {r['volume_30d']:.0f} vol × {r['_source_q']} source × (1 + {r['n_settled_events']}) events = score {r['_score']:.1f}. "
+                  f"Settlement data is public; a forecaster can be built and graded against Kalshi.")
 
     out_path = "docs/research/2026-10-series-discovery.md"
     import os
