@@ -22,6 +22,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from tradehub.core.env import load_local_env
+from tradehub.health import collect_health
 from tradehub.api.schemas import (
     HealthResponse, Position, PnLSummary,
     ShadowPerformanceResponse,
@@ -288,9 +289,17 @@ app.add_middleware(
 # ENDPOINT 1: /api/health
 # ════════════════════════════════════════════════════════════════════════════
 @app.get("/api/health", response_model=HealthResponse, tags=["System"])
-async def health():
-    """Liveness check. Returns 200 if the API process is running."""
-    return HealthResponse(status="ok", timestamp=datetime.now(timezone.utc))
+async def health(supabase=Depends(get_supabase)):
+    """Liveness plus a read-only health report. Returns 200 if the API process is running.
+
+    `status` stays the liveness answer so nothing that depended on it breaks. `report` is the detail:
+    timer freshness, per-family freeze counts, order-book age. It is read-only and never raises --
+    a missing table degrades that one fact to `never`, never the whole report to a 500. The report is
+    computed even without credentials (it then honestly reads `never`/`missing`), because "no data" is
+    itself the thing an operator needs to see.
+    """
+    now = datetime.now(timezone.utc)
+    return HealthResponse(status="ok", timestamp=now, report=collect_health(supabase, now=now))
 
 
 # ════════════════════════════════════════════════════════════════════════════
