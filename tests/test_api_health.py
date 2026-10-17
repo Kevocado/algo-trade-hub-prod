@@ -44,7 +44,10 @@ class _Supa:
         return q
 
 
-def test_health_is_200_and_carries_a_report_without_a_database():
+def test_health_is_200_and_carries_a_report_without_a_database(tmp_path, monkeypatch):
+    # Point the order-book reader at an empty temp dir so a real /cache/orderbooks on the machine
+    # running the suite cannot turn this into a different test.
+    monkeypatch.setenv("TRADEHUB_ORDERBOOK_DIR", str(tmp_path))
     main.app.dependency_overrides[get_supabase] = lambda: None
     try:
         response = TestClient(main.app).get("/api/health")
@@ -59,7 +62,8 @@ def test_health_is_200_and_carries_a_report_without_a_database():
     assert body["report"]["orderbook"]["status"] == "missing"
 
 
-def test_health_report_counts_frozen_rows_by_family():
+def test_health_report_counts_frozen_rows_by_family(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADEHUB_ORDERBOOK_DIR", str(tmp_path))
     supa = _Supa({
         "journal_forecasts": [{"forecaster": "weather_high"}, {"forecaster": "weather_high"}],
     })
@@ -68,8 +72,8 @@ def test_health_report_counts_frozen_rows_by_family():
         report = TestClient(main.app).get("/api/health").json()["report"]
     finally:
         main.app.dependency_overrides.clear()
-    # Two frozen rows for weather_high are counted; a missing freeze table yields no families.
-    assert report["families"].get("weather_high", {}).get("frozen_24h", 0) >= 0
+    # The fake returned exactly two rows, both weather_high.
+    assert report["families"]["weather_high"]["frozen_24h"] == 2
 
 
 def test_the_route_is_registered_before_the_spa_catch_all():

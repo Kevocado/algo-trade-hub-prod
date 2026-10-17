@@ -102,3 +102,60 @@ def test_the_report_carries_the_frozen_window_and_generated_at():
     report = _report()
     assert report["generated_at"] == NOW.isoformat()
     assert report["frozen_window_hours"] == FROZEN_WINDOW_HOURS
+
+
+def test_a_registry_family_missing_from_the_counts_read_froze_zero_and_is_silent():
+    # The count read succeeded and held no row for weather_low: that is a measurement of zero.
+    report = _report(frozen_by_family={"weather_high": 5},
+                     cadences={"weather_high": "daily", "weather_low": "daily"})
+    assert report["families"]["weather_low"]["frozen_24h"] == 0
+    assert report["families"]["weather_low"]["silent"] is True
+    assert any("weather_low" in p for p in report["problems"])
+
+
+def test_an_unreadable_count_read_is_unknown_not_zero_and_never_silent():
+    # `None` means the query FAILED. Reporting 0 here would raise a false "froze nothing" alert on a
+    # database outage, which is the exact failure this distinction exists to prevent.
+    report = _report(frozen_by_family=None, cadences={"weather_high": "daily"})
+    assert report["families"]["weather_high"]["frozen_24h"] is None
+    assert report["families"]["weather_high"]["silent"] is False
+    assert not any("froze nothing" in p for p in report["problems"])
+
+
+def test_the_orderbooks_timer_uses_its_own_longer_window():
+    # A file written 2h ago is fine for a 3hly recorder but would be stale on a 2h timer. The order-book
+    # entry must agree with the order-book block, not with the other three timers.
+    report = _report(timers={"scan": _ago(minutes=5), "settle": _ago(minutes=5),
+                             "journal": _ago(minutes=5), "orderbooks": _ago(hours=2)})
+    assert report["timers"]["orderbooks"]["status"] == "ok"
+    assert report["orderbook"]["status"] == "ok"
+
+
+def test_a_non_datetime_latest_value_is_treated_as_unknown():
+    from tradehub.health import _latest
+
+    class Q:
+        def __init__(self, value):
+            self.value = value
+
+        def select(self, *a, **k):
+            return self
+
+        def order(self, *a, **k):
+            return self
+
+        def limit(self, *a, **k):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": [{"c": self.value}]})()
+
+    class S:
+        def __init__(self, value):
+            self.value = value
+
+        def table(self, name):
+            return Q(self.value)
+
+    assert _latest(S("not-a-timestamp"), "t", "c") is None
+    assert _latest(S("2026-10-17T11:00:00Z"), "t", "c") == _ago(hours=1)

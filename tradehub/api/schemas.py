@@ -16,8 +16,10 @@ class HealthResponse(BaseModel):
     timestamp: datetime
     version: str = "1.0.0"
     # Read-only detail from `tradehub.health.collect_health`: timer freshness, per-family freeze,
-    # order-book age. `None` when Supabase is not configured so a reader can tell "no data" from a
-    # report that found no faults -- an absent report is not a healthy one.
+    # order-book age. Populated even with no database, where it honestly reads `never`/`missing` -- so
+    # absent credentials are visible in the DATA, not as an absent field. `None` therefore means only
+    # one thing: an older API build that predates the report. A client must treat it as "unknown",
+    # never as "healthy".
     report: Optional[Dict[str, Any]] = None
 
 

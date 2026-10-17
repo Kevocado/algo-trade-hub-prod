@@ -19,10 +19,11 @@ const REPORT = {
   problems: ["timer journal is never"],
 };
 
-function mockFetch(payload: unknown, ok = true) {
+function mockFetch(payload: unknown, ok = true, contentType = "application/json") {
   return vi.fn().mockResolvedValue({
     ok,
     status: ok ? 200 : 500,
+    headers: { get: () => contentType },
     json: async () => payload,
   });
 }
@@ -44,9 +45,15 @@ describe("Health page", () => {
     expect(screen.getByText("Degraded")).toBeTruthy();
   });
 
-  it("reports a missing report as an error rather than a healthy page", async () => {
+  it("reports an absent report as an error rather than a healthy page", async () => {
     vi.stubGlobal("fetch", mockFetch({ status: "ok", report: null }));
     render(<Health />);
-    await waitFor(() => expect(screen.getByText(/No health report available/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/has no health report/)).toBeTruthy());
+  });
+
+  it("reports the status when a non-JSON response comes back", async () => {
+    vi.stubGlobal("fetch", mockFetch({}, false, "text/html"));
+    render(<Health />);
+    await waitFor(() => expect(screen.getByText(/status 500/)).toBeTruthy());
   });
 });

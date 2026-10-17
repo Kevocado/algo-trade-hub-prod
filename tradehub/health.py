@@ -71,18 +71,27 @@ def _age_seconds(now: datetime, when: datetime | None) -> float | None:
 def build_health_report(
     *,
     timers: Mapping[str, datetime | None],
-    frozen_by_family: Mapping[str, int],
+    frozen_by_family: Mapping[str, int] | None,
     cadences: Mapping[str, str | None],
     orderbook_age_seconds: float | None,
     now: datetime,
 ) -> dict[str, Any]:
-    """Assemble the whole read-only report. Pure: `timers`/`frozen_by_family` are already fetched."""
+    """Assemble the whole read-only report. Pure: `timers`/`frozen_by_family` are already fetched.
+
+    `frozen_by_family` is `None` when the count query itself failed, which is NOT the same as an empty
+    dict: empty means "the table was read and it held no rows", and `None` means "we do not know". A
+    family absent from a successfully-read mapping therefore froze 0 rows (and a daily one is silent),
+    while a family under a `None` mapping is reported as unknown (`frozen_24h: None`, not silent) so an
+    unreadable table can never raise a false "froze nothing" alert.
+    """
     problems: list[str] = []
 
     timer_payload: dict[str, Any] = {}
     for name in TIMERS:
         last = timers.get(name)
-        status = timer_status(last, now)
+        # The order-book timer has its own window: a file every 3h is not stale at 2h.
+        window = ORDERBOOK_STALE_AFTER_HOURS if name == "orderbooks" else STALE_AFTER_HOURS
+        status = timer_status(last, now, stale_after_hours=window)
         timer_payload[name] = {
             "last_success": last.isoformat() if last else None,
             "age_seconds": _age_seconds(now, last),
@@ -91,9 +100,16 @@ def build_health_report(
         if status != "ok":
             problems.append(f"timer {name} is {status}")
 
+    known_counts = frozen_by_family or {}
+    counts_known = frozen_by_family is not None
     family_payload: dict[str, Any] = {}
-    for family, count in frozen_by_family.items():
+    # The union: every family the registry knows, plus any only the count read saw.
+    for family in sorted(set(cadences) | set(known_counts)):
         cadence = cadences.get(family)
+        if family in known_counts:
+            count: int | None = known_counts[family]
+        else:
+            count = 0 if counts_known else None
         silent = expected_daily(cadence) and count == 0
         family_payload[family] = {
             "frozen_24h": count,
@@ -131,6 +147,22 @@ def build_health_report(
 # ─── the one place that reads ──────────────────────────────────────────────────
 
 
+def _as_datetime(value: Any) -> datetime | None:
+    """Coerce a column value to an aware datetime, or None when it is not one.
+
+    Supabase returns timestamptz as either a `datetime` or an ISO string depending on the driver. A
+    naive value is assumed UTC (the database's own storage zone) rather than local, because a health
+    figure read as local time is a wrong number that still looks like a number.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def _latest(supa, table: str, column: str) -> datetime | None:
     """The newest value of `column` in `table`, or None when the table is empty/unreadable.
 
@@ -141,16 +173,18 @@ def _latest(supa, table: str, column: str) -> datetime | None:
     except Exception:  # noqa: BLE001 - health must never 500 on a missing table
         return None
     rows = getattr(result, "data", None) or []
-    if not rows or rows[0].get(column) is None:
+    if not rows:
         return None
-    value = rows[0][column]
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return _as_datetime(rows[0].get(column))
 
 
-def _frozen_counts(supa, since: datetime) -> dict[str, int]:
-    """Forecasts frozen at/after `since`, grouped by forecaster."""
+def _frozen_counts(supa, since: datetime) -> dict[str, int] | None:
+    """Forecasts frozen at/after `since`, grouped by forecaster.
+
+    `None` (not `{}`) when the query FAILS: an unreadable table means "we do not know how many froze",
+    which must not be reported as zero, because zero is a measurement of a search nobody performed.
+    An empty dict here means the table WAS read and genuinely held no rows in the window.
+    """
     try:
         result = (
             supa.table("journal_forecasts")
@@ -159,7 +193,7 @@ def _frozen_counts(supa, since: datetime) -> dict[str, int]:
             .execute()
         )
     except Exception:  # noqa: BLE001 - health must never 500 on a missing table
-        return {}
+        return None
     counts: dict[str, int] = {}
     for row in getattr(result, "data", None) or []:
         name = row.get("forecaster")

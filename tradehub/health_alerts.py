@@ -21,6 +21,9 @@ from typing import Any, Callable
 import requests
 
 TELEGRAM_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
+# Telegram rejects a message longer than this outright, so a long problem list would be dropped rather
+# than truncated. Split instead, on line boundaries.
+TELEGRAM_MAX_CHARS = 4096
 
 
 def telegram_configured() -> bool:
@@ -53,24 +56,55 @@ def build_alert_message(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def split_message(message: str, limit: int = TELEGRAM_MAX_CHARS) -> list[str]:
+    """Split a message into chunks each within Telegram's limit, never mid-line.
+
+    A single line longer than the limit is hard-split rather than dropped: losing a problem line to a
+    length rule is the one outcome a health alert must not have.
+    """
+    if len(message) <= limit:
+        return [message]
+    chunks: list[str] = []
+    current = ""
+    for line in message.splitlines():
+        while len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def send_alert(
     message: str,
     *,
     post: Callable[..., Any] = requests.post,
 ) -> bool:
-    """POST one message to the configured chat. True on a 200, False otherwise; never raises."""
+    """POST the message to the configured chat, split to fit. True only if every chunk sent."""
     token, chat_id = _token(), _chat_id()
     if not token or not chat_id:
         return False
     try:
-        response = post(
-            TELEGRAM_SEND_URL.format(token=token),
-            json={"chat_id": chat_id, "text": message},
-            timeout=10,
-        )
+        for chunk in split_message(message):
+            response = post(
+                TELEGRAM_SEND_URL.format(token=token),
+                json={"chat_id": chat_id, "text": chunk},
+                timeout=10,
+            )
+            if getattr(response, "status_code", 0) != 200:
+                return False
     except Exception:  # noqa: BLE001 - a notifier must never crash the caller
         return False
-    return getattr(response, "status_code", 0) == 200
+    return True
 
 
 def alert_on_failures(

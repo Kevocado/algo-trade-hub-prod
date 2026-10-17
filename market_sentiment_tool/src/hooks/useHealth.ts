@@ -13,12 +13,19 @@ export function useHealth() {
     setLoading(true);
     fetch(buildApiUrl("/api/health"))
       .then(async (response) => {
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload?.detail || `Request failed with status ${response.status}`);
+        // Only parse JSON when it is JSON: an HTML error page (the SPA catch-all, a proxy 502) would
+        // otherwise throw an opaque "Unexpected token <" and hide the status that actually explains it.
+        const type = response.headers?.get?.("content-type") ?? "";
+        const isJson = type.includes("json");
+        const payload = isJson ? await response.json() : null;
+        if (!response.ok) {
+          throw new Error(payload?.detail || `Request failed with status ${response.status}`);
+        }
         if (cancelled) return;
-        // `report` is null when the API has no Supabase configured. That is "no data", not "healthy",
-        // so it is surfaced as an error rather than rendered as an empty healthy page.
-        if (!payload?.report) throw new Error("No health report available (database not configured)");
+        // `report` is null only on an older API build that predates the report. Absent credentials are
+        // NOT this case -- the report is populated and reads `never`/`missing`. Either way an absent
+        // report is "unknown", never "healthy", so it is surfaced as an error.
+        if (!payload?.report) throw new Error("This API build has no health report");
         setReport(payload.report as HealthReport);
         setError(null);
       })

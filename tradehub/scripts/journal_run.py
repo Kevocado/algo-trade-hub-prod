@@ -23,17 +23,15 @@ def main() -> int:
     supa = get_client()
     summary = run_journal(supa, FORECASTERS, datetime.now(UTC))
 
-    # Failure notifier. The health report already knows the timers and the silent daily families; the
-    # one thing only this function knows is whether THIS run failed, so it is added to the problems
-    # before the report is rendered. `alert_on_failures` is a no-op when Telegram is not configured
-    # and never raises, so a cron run is never taken down by the notifier.
+    # Failure notifier, scoped to the two things this job is asked to alert on: the run itself failing,
+    # and a daily family freezing nothing for 24h. Timer staleness and the order-book file are on the
+    # /health page but are NOT alerts here -- a scan that has not run for 3h is a fact about the scan
+    # job, and paging about it from the journal cron would report someone else's outage under our name.
     report = collect_health(supa)
+    alertable = [p for p in report["problems"] if "froze nothing" in p]
     if summary["failures"]:
-        report = {
-            **report,
-            "problems": [*report["problems"], f"journal run failed for: {', '.join(summary['failures'])}"],
-        }
-    alert_on_failures(report)
+        alertable.append(f"journal run failed for: {', '.join(summary['failures'])}")
+    alert_on_failures({**report, "problems": alertable})
 
     print(json.dumps(summary, default=str))
     return 1 if summary["failures"] else 0
