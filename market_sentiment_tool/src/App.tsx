@@ -8,10 +8,11 @@ import SportsEdges from "@/pages/SportsEdges";
 import JobsScorecard from "@/pages/JobsScorecard";
 import Cpi from "@/pages/Cpi";
 import Journal from "@/pages/Journal";
+import Health from "@/pages/Health";
 import { NoOrdersBanner } from "@/components/NoOrdersBanner";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
-import { LayoutDashboard, Activity, Wallet, Cpu, LineChart, Scale, Trophy, Briefcase, BarChart3, BookOpen } from "lucide-react";
+import { LayoutDashboard, Activity, Wallet, Cpu, LineChart, Scale, Trophy, Briefcase, BarChart3, BookOpen, HeartPulse } from "lucide-react";
 
 const Sidebar = () => {
   const { portfolio } = usePortfolio();
@@ -101,6 +102,14 @@ const Sidebar = () => {
         >
           <BarChart3 className="w-5 h-5 text-amber-400" /> CPI Display
         </NavLink>
+        <NavLink
+          to="/health"
+          className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
+        >
+          {/* Freshness of every timer and forecaster. Not a scoreboard: it answers "is anything
+              running", which is a different question from "who is winning". */}
+          <HeartPulse className="w-5 h-5 text-teal-400" /> Health
+        </NavLink>
       </nav>
 
       <div className="p-4 border-t border-slate-900">
@@ -174,6 +183,7 @@ function App() {
           <Route path="/sports" element={<SportsEdges />} />
           <Route path="/jobs" element={<JobsScorecard />} />
           <Route path="/cpi" element={<Cpi />} />
+          <Route path="/health" element={<Health />} />
         </Routes>
       </AppShell>
     </BrowserRouter>

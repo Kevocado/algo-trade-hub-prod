@@ -22,6 +22,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from tradehub.core.env import load_local_env
+from tradehub.health import collect_health
 from tradehub.api.schemas import (
     HealthResponse, Position, PnLSummary,
     ShadowPerformanceResponse,
@@ -288,9 +289,22 @@ app.add_middleware(
 # ENDPOINT 1: /api/health
 # ════════════════════════════════════════════════════════════════════════════
 @app.get("/api/health", response_model=HealthResponse, tags=["System"])
-async def health():
-    """Liveness check. Returns 200 if the API process is running."""
-    return HealthResponse(status="ok", timestamp=datetime.now(timezone.utc))
+def health(supabase=Depends(get_supabase)):
+    """Liveness plus a read-only health report. Returns 200 if the API process is running.
+
+    `status` stays the liveness answer so nothing that depended on it breaks. `report` is the detail:
+    timer freshness, per-family freeze counts, order-book age.
+
+    Synchronous on purpose: `collect_health` does blocking Supabase reads and an `rglob` over the
+    order-book directory, and doing those on the event loop would stall every other request for the
+    duration. FastAPI runs a `def` handler in its threadpool.
+
+    It never raises. A missing table or absent credentials degrade the affected fact to `never` /
+    `missing` rather than the whole report to a 500, because "no data" is itself the thing an operator
+    needs to see, and a reader shown an error page cannot tell it from a broken query.
+    """
+    now = datetime.now(timezone.utc)
+    return HealthResponse(status="ok", timestamp=now, report=collect_health(supabase, now=now))
 
 
 # ════════════════════════════════════════════════════════════════════════════

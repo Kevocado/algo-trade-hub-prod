@@ -4,16 +4,23 @@ Keeps the API layer typed, validated, and self-documenting (Swagger UI).
 """
 
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
 # ─── Generic ─────────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):
+    # Liveness (the original two fields) is unchanged and stays the contract for "is the process up".
     status: str
     timestamp: datetime
     version: str = "1.0.0"
+    # Read-only detail from `tradehub.health.collect_health`: timer freshness, per-family freeze,
+    # order-book age. Populated even with no database, where it honestly reads `never`/`missing` -- so
+    # absent credentials are visible in the DATA, not as an absent field. `None` therefore means only
+    # one thing: an older API build that predates the report. A client must treat it as "unknown",
+    # never as "healthy".
+    report: Optional[Dict[str, Any]] = None
 
 
 # ─── Positions & PnL ─────────────────────────────────────────────────────────
