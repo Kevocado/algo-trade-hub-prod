@@ -7,7 +7,9 @@
 export interface HealthTimer {
   last_success: string | null;
   age_seconds: number | null;
-  status: "ok" | "stale" | "never";
+  status: "ok" | "stale" | "never" | "not_tracked";
+  /** False when the job writes no run marker, so there is nothing to read. See `not_tracked`. */
+  tracked: boolean;
 }
 
 export interface HealthFamily {
@@ -28,6 +30,9 @@ export interface HealthReport {
   frozen_window_hours: number;
   stale_after_hours: number;
   timers: Record<string, HealthTimer>;
+  /** Timer names with no run marker. Listed, not hidden, and not counted as faults. */
+  untracked_timers: string[];
+  tracked_timer_count: number;
   families: Record<string, HealthFamily>;
   orderbook: HealthOrderbook;
   problems: string[];
@@ -52,6 +57,11 @@ export function statusChip(status: string): Chip {
       return { label: "Never ran", tone: "bad" };
     case "missing":
       return { label: "Missing", tone: "bad" };
+    case "not_tracked":
+      // A distinct word from "Never ran" on purpose. `not_tracked` means nobody is watching this job;
+      // `never` means we watched and it has not succeeded. Both jobs run fine -- they just write no
+      // row recording the run -- so calling them "never" made a healthy system read as degraded.
+      return { label: "Not tracked", tone: "warn" };
     case "degraded":
       return { label: "Degraded", tone: "warn" };
     default:
@@ -69,13 +79,16 @@ export function formatAge(seconds: number | null): string {
 }
 
 export function healthSummary(report: HealthReport) {
-  const timers = Object.values(report.timers);
+  // Only tracked timers are in the denominator. "2/4 fresh" would read as two faults on a healthy
+  // system; the two untracked jobs are reported by their own count so the gap stays visible.
+  const timers = Object.values(report.timers).filter((t) => t.tracked);
   const okTimers = timers.filter((t) => t.status === "ok").length;
   const silentFamilies = Object.values(report.families).filter((f) => f.silent).length;
   const verdict = report.status === "ok" ? "Healthy" : "Degraded";
   return {
     totalTimers: timers.length,
     okTimers,
+    untrackedTimers: Object.values(report.timers).filter((t) => !t.tracked).length,
     silentFamilies,
     problemCount: report.problems.length,
     verdict,

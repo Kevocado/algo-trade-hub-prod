@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from tradehub.health import (
     FROZEN_WINDOW_HOURS,
     STALE_AFTER_HOURS,
+    TIMERS,
+    UNTRACKED_TIMERS,
     build_health_report,
     expected_daily,
     timer_status,
@@ -159,3 +161,87 @@ def test_a_non_datetime_latest_value_is_treated_as_unknown():
 
     assert _latest(S("not-a-timestamp"), "t", "c") is None
     assert _latest(S("2026-10-17T11:00:00Z"), "t", "c") == _ago(hours=1)
+
+
+# ─── timers with no marker are untracked, not broken ──────────────────────────
+# `scan` and `settle` run hourly and write no record that the *job* ran. `scanner_runs` exists but
+# `start_run`/`complete_run` are never called, so it stays empty; `predictions.settled_at` is only
+# written when a contract actually settles, so it records "last time something settled". Reading
+# either as a last-success marker reported both timers "never" while they were running fine, which
+# made the whole page "degraded" on a healthy system -- a false alarm on the page whose only job is
+# to be trusted about faults.
+
+
+def test_only_scan_and_settle_lacking_markers_still_reports_ok():
+    """The reported bug, as a test: untracked timers must not degrade a healthy system."""
+    report = _report(timers={"scan": None, "settle": None,
+                             "journal": _ago(minutes=10), "orderbooks": _ago(minutes=20)},
+                    untracked=UNTRACKED_TIMERS)
+    assert report["status"] == "ok"
+    assert report["problems"] == []
+    assert report["timers"]["journal"]["status"] == "ok"
+    assert report["timers"]["orderbooks"]["status"] == "ok"
+
+
+def test_an_untracked_timer_says_not_tracked_and_never_never():
+    """Three different facts, three different words: fresh, stale/never, and not measured at all."""
+    report = _report(timers={"scan": None, "settle": None,
+                             "journal": _ago(minutes=10), "orderbooks": _ago(minutes=20)},
+                    untracked=UNTRACKED_TIMERS)
+    for name in ("scan", "settle"):
+        assert report["timers"][name]["status"] == "not_tracked"
+        assert report["timers"][name]["tracked"] is False
+        # Unmeasured is not a measurement: no timestamp and no age, exactly like a missing order book.
+        assert report["timers"][name]["last_success"] is None
+        assert report["timers"][name]["age_seconds"] is None
+    assert "never" not in {t["status"] for t in report["timers"].values()}
+
+
+def test_a_tracked_timer_that_really_never_ran_is_still_never_and_still_degrades():
+    """The anti-regression half. Dropping a timer from UNTRACKED must not silence a real fault, and a
+    read that fails must not read as "untracked" -- that would turn a loud failure into a quiet gap."""
+    report = _report(timers={"scan": None, "settle": None, "journal": None, "orderbooks": _ago(minutes=20)})
+    assert report["timers"]["journal"]["status"] == "never"
+    assert report["timers"]["journal"]["tracked"] is True
+    assert report["status"] == "degraded"
+    assert any("timer journal is never" in p for p in report["problems"])
+
+
+def test_untracked_is_opt_in_so_the_pure_function_defaults_to_tracking_everything():
+    """`build_health_report` called without `untracked` treats every timer as measured. If the caller
+    forgets to pass it, the failure is a loud "never", never a silent hole."""
+    report = _report(timers={"scan": None, "settle": None, "journal": _ago(minutes=10),
+                             "orderbooks": _ago(minutes=20)}, untracked=None)
+    assert report["timers"]["scan"]["status"] == "never"
+    assert report["status"] == "degraded"
+
+
+def test_untracked_timers_are_still_listed_on_the_report():
+    """They are excluded from the fault count, never hidden: the gap stays visible on the page."""
+    report = _report(timers={"scan": None, "settle": None,
+                             "journal": _ago(minutes=10), "orderbooks": _ago(minutes=20)},
+                     untracked=UNTRACKED_TIMERS)
+    assert set(report["timers"]) == {"scan", "settle", "journal", "orderbooks"}
+    assert report["untracked_timers"] == ["scan", "settle"]
+    assert report["tracked_timer_count"] == 2
+
+
+def test_untracked_does_not_mask_a_fault_in_a_tracked_timer():
+    report = _report(timers={"scan": None, "settle": None,
+                             "journal": _ago(hours=6), "orderbooks": _ago(minutes=20)})
+    assert report["status"] == "degraded"
+    assert any("timer journal is stale" in p for p in report["problems"])
+
+
+def test_the_untracked_set_is_exactly_the_two_jobs_with_no_marker():
+    """Pin the policy, because it is fail-safe in the dangerous direction.
+
+    Widening UNTRACKED_TIMERS silences a real timer: adding `journal` here would make a journal that
+    never ran read as "not tracked" and the page would report `ok` on a system whose journal is dead.
+    That is the exact false-negative this whole change exists to avoid, so the set is pinned to the
+    two jobs whose absence of a marker is a documented fact about their code, and `journal` and
+    `orderbooks` stay tracked.
+    """
+    assert UNTRACKED_TIMERS == {"scan", "settle"}
+    assert UNTRACKED_TIMERS < set(TIMERS)
+    assert {"journal", "orderbooks"} & UNTRACKED_TIMERS == set()

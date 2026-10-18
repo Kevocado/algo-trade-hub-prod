@@ -83,7 +83,11 @@ function HealthBody({ report }: { report: import("@/lib/health").HealthReport })
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Timers fresh" value={`${s.okTimers}/${s.totalTimers}`} />
+        <Stat
+          label="Timers fresh"
+          value={`${s.okTimers}/${s.totalTimers}`}
+          sub={s.untrackedTimers > 0 ? `${s.untrackedTimers} not tracked` : undefined}
+        />
         <Stat label="Quiet families" value={s.silentFamilies} sub="daily, froze nothing" />
         <Stat label="Problems" value={s.problemCount} />
         <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
@@ -96,6 +100,13 @@ function HealthBody({ report }: { report: import("@/lib/health").HealthReport })
           </div>
         </div>
       </div>
+
+      {s.untrackedTimers > 0 ? (
+        <p className="text-xs text-slate-500">
+          {report.untracked_timers.join(" and ")} write no record of each run, so their last success
+          cannot be read. They are not counted above and are not faults.
+        </p>
+      ) : null}
 
       <section>
         <h2 className="mb-2 text-sm font-bold uppercase tracking-wider text-slate-400">Timers</h2>

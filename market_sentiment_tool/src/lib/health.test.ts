@@ -16,10 +16,12 @@ const REPORT: HealthReport = {
   generated_at: "2026-10-17T12:00:00+00:00",
   frozen_window_hours: 24,
   stale_after_hours: 2,
+  untracked_timers: [],
+  tracked_timer_count: 3,
   timers: {
-    scan: { last_success: "2026-10-17T11:50:00+00:00", age_seconds: 600, status: "ok" },
-    journal: { last_success: "2026-10-17T06:00:00+00:00", age_seconds: 21600, status: "stale" },
-    orderbooks: { last_success: null, age_seconds: null, status: "never" },
+    scan: { last_success: "2026-10-17T11:50:00+00:00", age_seconds: 600, status: "ok", tracked: true },
+    journal: { last_success: "2026-10-17T06:00:00+00:00", age_seconds: 21600, status: "stale", tracked: true },
+    orderbooks: { last_success: null, age_seconds: null, status: "never", tracked: true },
   },
   families: {
     weather_high: { frozen_24h: 20, cadence: "daily", expected_daily: true, silent: false },
@@ -72,6 +74,60 @@ describe("health formatting", () => {
     const rows = timerRows(REPORT);
     expect(rows.map((r) => r.name)).toEqual(["scan", "journal", "orderbooks"]);
     expect(rows[2].chip.label).toBe("Never ran");
+  });
+
+  // The healthy case that used to read "degraded": scan and settle run hourly and write no row
+  // recording the run, so their marker can never be read. Calling that "never" made a working system
+  // look broken on the one page whose only job is to be trusted about faults.
+  const HEALTHY: HealthReport = {
+    status: "ok",
+    generated_at: "2026-10-17T12:00:00+00:00",
+    frozen_window_hours: 24,
+    stale_after_hours: 2,
+    untracked_timers: ["scan", "settle"],
+    tracked_timer_count: 2,
+    timers: {
+      scan: { last_success: null, age_seconds: null, status: "not_tracked", tracked: false },
+      settle: { last_success: null, age_seconds: null, status: "not_tracked", tracked: false },
+      journal: { last_success: "2026-10-17T11:50:00+00:00", age_seconds: 600, status: "ok", tracked: true },
+      orderbooks: { last_success: "2026-10-17T11:40:00+00:00", age_seconds: 1200, status: "ok", tracked: true },
+    },
+    families: { weather_high: { frozen_24h: 12, cadence: "daily", expected_daily: true, silent: false } },
+    orderbook: { newest_file_age_seconds: 1200, status: "ok" },
+    problems: [],
+  };
+
+  it("renders an untracked timer as Not tracked, never as Never ran", () => {
+    expect(statusChip("not_tracked").label).toBe("Not tracked");
+    const rows = timerRows(HEALTHY);
+    const scan = rows.find((r) => r.name === "scan");
+    expect(scan?.chip.label).toBe("Not tracked");
+    expect(scan?.age).toBe("—");
+  });
+
+  it("counts only tracked timers, so a healthy system reads 2/2 not 2/4", () => {
+    const s = healthSummary(HEALTHY);
+    expect(s.totalTimers).toBe(2);
+    expect(s.okTimers).toBe(2);
+    expect(s.untrackedTimers).toBe(2);
+    expect(s.verdict).toBe("Healthy");
+  });
+
+  it("still counts a tracked timer that is stale", () => {
+    const stale: HealthReport = {
+      ...HEALTHY,
+      status: "degraded",
+      problems: ["timer journal is stale"],
+      timers: {
+        ...HEALTHY.timers,
+        journal: { ...HEALTHY.timers.journal, status: "stale", age_seconds: 21600 },
+      },
+    };
+    const s = healthSummary(stale);
+    expect(s.okTimers).toBe(1); // orderbooks only; the two untracked never entered the denominator
+    expect(s.totalTimers).toBe(2);
+    expect(s.untrackedTimers).toBe(2);
+    expect(s.verdict).toBe("Degraded");
   });
 
   it("lists families with their freeze counts and a quiet marker", () => {
