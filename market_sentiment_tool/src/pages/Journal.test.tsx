@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import Journal from "@/pages/Journal";
-import type { JournalFeed, JournalResponse, JournalScore } from "@/lib/journal";
+import type { JournalFeed, JournalResponse, JournalScore, SeriesResponse } from "@/lib/journal";
 import { copyWords } from "@/test/copyWords";
 
 function score(over: Partial<JournalScore> = {}): JournalScore {
@@ -29,6 +29,30 @@ const journal: JournalResponse = {
     waiting("housing_direction", "housing-wf-v1", { cadence: "monthly" }),
   ],
   headline: { forecasters: 6, calibrated: 0, frozen_calibrated: 0, settled_calibrated: 0, promoted: 0, market_skill: null },
+};
+
+const series: SeriesResponse = {
+  series: [
+    {
+      forecaster: "spy_quant", version: "spy-wf-v1",
+      points: [
+        { date: "2026-09-28", gap: -0.01, se: 0.004, n: 10 },
+        { date: "2026-09-29", gap: -0.02, se: 0.004, n: 11 },
+        { date: "2026-09-30", gap: -0.015, se: null, n: 12 },
+      ],
+    },
+    {
+      forecaster: "sentiment_meter", version: "meter-v1",
+      points: [
+        { date: "2026-09-28", gap: 0.005, se: 0.003, n: 8 },
+        { date: "2026-09-29", gap: null, se: null, n: 0 },
+      ],
+    },
+    {
+      forecaster: "cpi_nowcast", version: "cpi-v1",
+      points: [],
+    },
+  ],
 };
 
 const feed: JournalFeed = {
@@ -63,7 +87,7 @@ const backtests = { as_of: "x", counted: false, backtests: [
 function stubFetch(replays: unknown = backtests) {
   const fn = vi.fn((url: string) => {
     const body = url.includes("/api/journal/feed") ? feed : url.includes("/api/scoreboard") ? scoreboard
-      : url.includes("/api/journal/backtests") ? replays : journal;
+      : url.includes("/api/journal/series") ? series : url.includes("/api/journal/backtests") ? replays : journal;
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
   });
   vi.stubGlobal("fetch", fn);

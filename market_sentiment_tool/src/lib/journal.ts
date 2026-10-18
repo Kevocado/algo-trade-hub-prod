@@ -57,6 +57,23 @@ export interface JournalHeadline {
   market_skill: { n: number; brier: number; brier_baseline: number; bss: number | null } | null;
 }
 
+export interface SeriesPoint {
+  date: string;
+  gap: number | null;
+  se: number | null;
+  n: number;
+}
+
+export interface SeriesEntry {
+  forecaster: string;
+  version: string;
+  points: SeriesPoint[];
+}
+
+export interface SeriesResponse {
+  series: SeriesEntry[];
+}
+
 export interface JournalResponse {
   as_of: string;
   forecasters: JournalScore[];

@@ -2,10 +2,12 @@ import { Fragment, useEffect, useState } from "react";
 
 import { Chip, type Tone } from "@/components/Chip";
 import { JournalDetail } from "@/components/JournalDetail";
+import { SkillChart } from "@/components/SkillChart";
+import { SkillOverTime } from "@/components/SkillOverTime";
+import { Stat } from "@/components/Stat";
 import { getJson } from "@/lib/getJson";
 import { PreJournalContext } from "@/components/PreJournalContext";
-import { Stat } from "@/components/Stat";
-import type { JournalResponse } from "@/lib/journal";
+import type { JournalResponse, SeriesResponse } from "@/lib/journal";
 import { STATUS_WORDS, skillText, split, viewRows, type Status, type ViewRow } from "@/lib/journalView";
 import { tileNote } from "@/lib/forecasterLabels";
 
@@ -22,12 +24,19 @@ const STATUS_TONE: Record<Status, Tone> = { waiting: "quiet", early: "quiet", ah
 
 export default function Journal() {
   const [data, setData] = useState<JournalResponse | null>(null);
+  const [series, setSeries] = useState<SeriesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [backtests, setBacktests] = useState(false);
 
   useEffect(() => {
-    getJson<JournalResponse>("/api/journal").then(setData).catch((e: Error) => setError(e.message));
+    Promise.all([
+      getJson<JournalResponse>("/api/journal"),
+      getJson<SeriesResponse>("/api/journal/series"),
+    ]).then(([journal, serie]) => {
+      setData(journal);
+      setSeries(serie);
+    }).catch((e: Error) => setError(e.message));
   }, []);
 
   if (error) {
@@ -40,7 +49,7 @@ export default function Journal() {
       </div>
     );
   }
-  if (!data) return <div className="p-8 text-slate-400">Loading journal…</div>;
+  if (!data || !series) return <div className="p-8 text-slate-400">Loading journal…</div>;
 
   const rows = viewRows(data.forecasters);
   const { results, waiting } = split(rows);
@@ -61,13 +70,10 @@ export default function Journal() {
       <section aria-label="Totals" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat value={h.frozen_calibrated} label="forecasts locked in" />
         <Stat value={h.settled_calibrated} label="scored so far" />
-        {/* Spec §1: the hero leads with settled-ledger stats including "Brier skill vs market".
-            Pooled server-side over market-linked cards only (§10); `skillText` prints an em dash
-            for null, so an unmeasured skill never renders as 0.00. */}
-        <Stat value={skillText(h.market_skill?.bss ?? null)} label="Brier skill vs market"
-              hint="Against the Kalshi price, on market-linked calls only." />
         <Stat value={h.promoted} label="promoted" hint="Needs 200 scored (daily) or 50 (monthly)." />
       </section>
+
+      <SkillChart series={series?.series ?? []} />
 
       {results.length > 0 && (
         <section aria-label="Results">
@@ -117,6 +123,8 @@ export default function Journal() {
           </table>
         </section>
       )}
+
+      <SkillOverTime series={series?.series ?? []} />
 
       {waiting.length > 0 && (
         <section aria-label="Waiting">

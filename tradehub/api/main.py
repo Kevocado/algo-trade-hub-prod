@@ -538,6 +538,40 @@ def get_journal_backtests(supabase=Depends(get_supabase)):
             "backtests": [{k: r.get(k) for k in keep} for r in latest.values()]}
 
 
+@app.get("/api/journal/series", tags=["Journal"])
+def get_journal_series(supabase=Depends(get_supabase)):
+    """Per-forecaster skill series over time: one point per replay row, gap = brier_diff ± se.
+
+    Mirrors `/api/journal/backtests`: a missing `journal_backtests` table degrades to an empty
+    answer (200), not a 500, and `brier_diff`/`brier_diff_se` arrive with migration 017 so they are
+    read with `.get()` and stay null rather than 0.0 when the column does not exist yet. Points are
+    ordered by `date_from` ascending.
+    """
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase is not configured")
+    try:
+        rows = _fetch_all(supabase, "journal_backtests", lambda q: q.select("*"),
+                          order=("created_at", "id"))
+    except Exception as exc:  # noqa: BLE001 - classified below
+        if table_missing(exc, "journal_backtests"):
+            rows = []
+        else:
+            raise _table_fault("journal_backtests", exc) from exc
+    points = [
+        {
+            "forecaster": r.get("forecaster"),
+            "forecaster_version": r.get("forecaster_version"),
+            "date_from": r.get("date_from"),
+            "gap": r.get("brier_diff"),
+            "se": r.get("brier_diff_se"),
+            "n": r.get("n"),
+        }
+        for r in rows
+    ]
+    points.sort(key=lambda p: p["date_from"])
+    return {"series": points}
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Sports edges (rollout step 7): candidate edges with review verdicts and links
 # ════════════════════════════════════════════════════════════════════════════
