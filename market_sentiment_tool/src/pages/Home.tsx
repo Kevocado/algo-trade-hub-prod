@@ -1,249 +1,158 @@
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import { TrendingUp, Wallet, ArrowUpRight, Activity, Loader2, Brain } from "lucide-react";
-import { usePortfolio, usePortfolioMetrics } from "@/hooks/usePortfolio";
-import { moneyMetric } from "@/lib/portfolioTruth";
-import { useMarketEdges, type KalshiEdge } from "@/hooks/useMarketEdges";
-import { edgePctNumber, edgePctText, edgeReason } from "@/lib/edgeFigures";
-import { enforceDisplayOnlyPartition } from "@/lib/displayOnlyEngines";
-import WithheldEdgesNotice from "@/components/WithheldEdgesNotice";
-import { GateBadge } from "@/components/GateBadge";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Link } from "react-router-dom";
+import { AlertTriangle, ArrowRight, Loader2 } from "lucide-react";
+
+import { useStandings } from "@/hooks/useStandings";
+import {
+  HOME_INTRO,
+  gapText,
+  headlineStats,
+  homeLinks,
+  plainName,
+  verdictChip,
+  type Chip,
+  type StandingEntry,
+} from "@/lib/homeTruth";
+
+const toneClass: Record<Chip["tone"], string> = {
+  ok: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+  warn: "border-amber-500/40 bg-amber-500/10 text-amber-300",
+  bad: "border-rose-500/40 bg-rose-500/10 text-rose-300",
+  flat: "border-slate-600/60 bg-slate-700/20 text-slate-400",
+};
+
+function ChipBadge({ chip }: { chip: Chip }) {
+  return (
+    <span
+      className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${toneClass[chip.tone]}`}
+    >
+      {chip.label}
+    </span>
+  );
+}
+
+function Stat({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-[11px] uppercase tracking-wider text-slate-500">{label}</div>
+      <div className="mt-1 text-3xl font-black tracking-tight text-white">{value}</div>
+      {sub ? <div className="mt-1 text-xs text-slate-500">{sub}</div> : null}
+    </div>
+  );
+}
+
+function EndRow({ entry, label }: { entry: StandingEntry; label: string }) {
+  const sessions = entry.n;
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[11px] uppercase tracking-wider text-slate-500">{label}</div>
+          <div className="truncate text-sm font-semibold text-slate-200">
+            {plainName(entry.forecaster)}
+            <span className="ml-2 font-mono text-[11px] text-slate-500">{entry.forecaster}</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* A dash when either half is missing: there is no bar for the gap to clear. */}
+          <span className="text-sm tabular-nums text-slate-200">{gapText(entry.gap, entry.se)}</span>
+          <ChipBadge chip={verdictChip(entry.verdict)} />
+        </div>
+      </div>
+      <p className="mt-1.5 text-xs text-slate-500">
+        {sessions === null ? "replayed over an unrecorded number of sessions" : `over ${sessions} replayed sessions`}
+        {entry.date_to ? ` · ${entry.date_from} to ${entry.date_to}` : ""}
+        {entry.n_settled === null ? "" : ` · ${entry.n_settled} settled`}
+      </p>
+    </div>
+  );
+}
 
 export default function Home() {
-  const { metrics, loading: mLoading } = usePortfolioMetrics();
-  const { portfolio, positions: paperPositions, loading: pLoading } = usePortfolio();
-  const { edges: readEdges, withheld: readWithheld, loading: eLoading, error: edgesError, truncated } = useMarketEdges();
-  // Same rule as the Prediction Lab, same reason: this page renders `edge_pct` as a headline
-  // number, so a display-only row reaching `topEdges` would read as an opportunity. The hook
-  // withholds it; this is the reader being the last line as well.
-  const { edges, withheld } = enforceDisplayOnlyPartition<KalshiEdge>(readEdges, readWithheld);
-
-  const loading = mLoading || pLoading || eLoading;
-
-  if (loading) {
-    return (
-      <div className="p-8 max-w-[1400px] mx-auto space-y-8 bg-slate-950">
-        <div className="flex flex-col gap-1 border-b border-slate-900 pb-6 mb-2">
-           <Skeleton className="h-10 w-64 bg-slate-900" />
-           <Skeleton className="h-4 w-96 bg-slate-900 mt-2" />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <Skeleton className="h-32 bg-slate-900" />
-          <Skeleton className="h-32 bg-slate-900" />
-          <Skeleton className="h-32 bg-slate-900" />
-        </div>
-      </div>
-    );
-  }
-
-  // These were `?? 0`, which is not a measured zero: PnLSummary carries no daily_pnl and no
-  // cash_balance, so all three figures were missing numbers rendered as confident ones, under
-  // headings claiming live equity and real-time P&L. This product places no orders, so they are
-  // unknown until it does -- a dash, with the reason, not $0.00.
-  const totalValue = moneyMetric(metrics?.total_value, metrics);
-  const dailyPnL = moneyMetric(metrics?.daily_pnl, metrics, { signed: true });
-  const availableCash = moneyMetric(metrics?.cash_balance, metrics);
-  // From the API's paper ledger. Always empty today: this product places no orders.
-  const positions = paperPositions;
-
-  // Top 3 edges with AI summary
-  const topEdges = edges
-    .filter(e => e.ui_reasoning && e.ai_summary)
-    .slice(0, 3);
+  const { standings, loading, error } = useStandings();
+  const s = standings ? headlineStats(standings) : null;
 
   return (
-    <div className="p-8 max-w-[1400px] mx-auto space-y-8 animate-in fade-in duration-500 bg-slate-950 min-h-screen text-slate-100">
-      
-      <div className="flex flex-col gap-1 border-b border-slate-900 pb-6 mb-2">
-        <h1 className="text-4xl font-black tracking-tight text-white uppercase italic">War Room HQ</h1>
-        <p className="text-slate-400 font-medium">Aggregating cross-engine alpha & real-time Kalshi telemetry.</p>
-      </div>
+    <div className="min-h-screen bg-slate-950 px-4 py-8 text-slate-100 sm:px-8">
+      <div className="mx-auto flex max-w-4xl flex-col gap-6">
+        <header className="border-b border-slate-900 pb-6">
+          <div className="text-xs font-bold uppercase tracking-widest text-emerald-400">Findings</div>
+          <h1 className="mt-2 text-3xl font-black uppercase italic tracking-tight text-white sm:text-4xl">
+            What we found
+          </h1>
+          <p className="mt-2 max-w-2xl text-sm text-slate-400">{HOME_INTRO}</p>
+        </header>
 
-      {/* An engine that is no longer an edge engine is relabelled, not removed. Without this the War
-          Room's edge board simply gets quieter, which is indistinguishable from CPI never having
-          existed -- and CPI did exist, and was measured. A FAILED read is a third thing, and it must
-          not be allowed to look like the second: `readError` suppresses the authoritative copy and
-          renders the reason the board cannot be read. */}
-      <WithheldEdgesNotice withheld={withheld} readError={edgesError} truncated={truncated} />
-
-      {/* AI War Room Section */}
-      {topEdges.length > 0 && (
-        <div className="space-y-4">
-          <div className="flex items-center gap-2">
-             <Brain className="w-5 h-5 text-emerald-400" />
-             <h2 className="text-lg font-bold uppercase tracking-widest text-emerald-500">AI High-Conviction Edges</h2>
+        {loading ? (
+          <div className="flex items-center gap-2 text-slate-400">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Loading…
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {topEdges.map((edge) => (
-              <Card key={edge.id} className="bg-emerald-500/5 border-emerald-500/20 shadow-xl backdrop-blur-md hover:border-emerald-500/40 transition-all duration-300">
-                <CardHeader className="pb-2">
-                  <div className="flex justify-between items-start">
-                    <Badge className="bg-emerald-500 text-emerald-950 text-[10px] font-bold uppercase tracking-tighter">{edge.edge_type}</Badge>
-                    <div className="flex items-center gap-2">
-                      <GateBadge edge={edge} />
-                      {/* Null when the row recorded no edge. A dash with the reason, never "+0.0%":
-                          an edge of zero is a measurement and "no edge was recorded" is not one,
-                          and this board is the first thing a reader lands on. */}
-                      <span
-                        className={`text-xl font-black ${edgePctNumber(edge.edge_pct) ? "text-emerald-400" : "text-slate-600"}`}
-                        title={edgeReason(edge.edge_pct) ?? undefined}
-                      >
-                        {edgePctText(edge.edge_pct)}
-                      </span>
+        ) : error ? (
+          <div className="flex items-start gap-2 rounded-xl border border-rose-500/40 bg-rose-500/10 p-4 text-sm text-rose-200">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>{error}</span>
+          </div>
+        ) : standings && s ? (
+          <>
+            {/* The lede, assembled on the server from the numbers below. */}
+            <p className="text-base leading-relaxed text-slate-200">{standings.verdict}</p>
+
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <Stat label="Settled" value={s.settled} sub="frozen and scored" />
+              <Stat label="Forecasters" value={s.forecasters} sub={`${s.replayed} replayed`} />
+              <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Best</div>
+                <div className="mt-1 truncate text-sm font-bold text-white">{s.bestName}</div>
+                <div className="text-xs tabular-nums text-slate-400">{s.bestGap}</div>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Worst</div>
+                <div className="mt-1 truncate text-sm font-bold text-white">{s.worstName}</div>
+                <div className="text-xs tabular-nums text-slate-400">{s.worstGap}</div>
+              </div>
+            </div>
+
+            {standings.best ? (
+              <section className="flex flex-col gap-2">
+                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">
+                  Both ends of the leaderboard
+                </h2>
+                <EndRow entry={standings.best} label="Best" />
+                {standings.worst ? <EndRow entry={standings.worst} label="Worst" /> : null}
+                <p className="text-xs text-slate-500">
+                  A gap counts as a result only when it clears {standings.distinct_se} standard errors.
+                  Anything inside that bar is noise, whatever its sign.
+                </p>
+              </section>
+            ) : null}
+
+            <section className="flex flex-col gap-2">
+              <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">Go deeper</h2>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {homeLinks.map((link) => (
+                  <Link
+                    key={link.to}
+                    to={link.to}
+                    className="group flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3 transition-colors hover:border-slate-700 hover:bg-slate-900"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-200">{link.label}</div>
+                      <div className="truncate text-xs text-slate-500">{link.blurb}</div>
                     </div>
-                  </div>
-                  <CardTitle className="text-sm font-bold text-white mt-2 line-clamp-1">{edge.market_title}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-xs text-slate-300 leading-relaxed italic border-l-2 border-emerald-500/30 pl-3 py-1">
-                    "{edge.ai_summary}"
-                  </p>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </div>
-      )}
+                    <ArrowRight
+                      className="h-4 w-4 shrink-0 text-slate-600 transition-colors group-hover:text-slate-300"
+                      aria-hidden="true"
+                    />
+                  </Link>
+                ))}
+              </div>
+            </section>
 
-      {/* Top Row: Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card className="bg-slate-900/40 border-slate-800 shadow-xl overflow-hidden group hover:border-slate-700 transition-all">
-          <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
-            <Activity className="w-12 h-12 text-slate-400" />
-          </div>
-          <CardHeader className="pb-2">
-            <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-widest">
-              <TrendingUp className="w-4 h-4 text-emerald-500" /> Total Value
-            </div>
-            <CardTitle
-              className={`text-3xl font-black tracking-tight ${
-                totalValue.known ? "text-white" : "text-slate-500"
-              }`}
-              title={totalValue.note}
-            >
-              {totalValue.value}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {/* "Live equity" was never true: no order has ever been placed. */}
-            <p className="text-xs text-slate-500 font-medium uppercase tracking-tight">
-              {totalValue.known
-                ? "Settled cash across all markets."
-                : "No orders placed, so there is no equity to report."}
+            <p className="pb-6 text-xs text-slate-600">
+              This product places no orders. Every number is a measurement of a forecast, not a return.
             </p>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-slate-900/40 border-slate-800 shadow-xl overflow-hidden group hover:border-slate-700 transition-all">
-          <CardHeader className="pb-2">
-            <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-widest">
-              {/* Neutral when unknown: a green or red arrow would imply a direction that was never measured. */}
-              <ArrowUpRight className={`w-4 h-4 ${
-                !dailyPnL.known ? "text-slate-500" : dailyPnL.value.startsWith("-") ? "text-rose-500" : "text-emerald-500"
-              }`} /> Daily PnL
-            </div>
-            <CardTitle
-              className={`text-3xl font-black tracking-tight ${
-                !dailyPnL.known
-                  ? "text-slate-500"
-                  : dailyPnL.value.startsWith("-")
-                    ? "text-rose-400"
-                    : "text-emerald-400"
-              }`}
-              title={dailyPnL.note}
-            >
-              {dailyPnL.value}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {/* "Real-time profit/loss" was never true either. */}
-            <p className="text-xs text-slate-500 font-medium uppercase tracking-tight">
-              {dailyPnL.known
-                ? "Realised profit/loss for the current 24h cycle."
-                : "No orders placed, so there is no profit or loss."}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-slate-900/40 border-slate-800 shadow-xl overflow-hidden group hover:border-slate-700 transition-all">
-          <CardHeader className="pb-2">
-            <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-widest">
-              <Wallet className="w-4 h-4 text-amber-500" /> Available Cash
-            </div>
-            <CardTitle
-              className={`text-3xl font-black tracking-tight ${
-                availableCash.known ? "text-white" : "text-slate-500"
-              }`}
-              title={availableCash.note}
-            >
-              {availableCash.value}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-xs text-slate-500 font-medium uppercase tracking-tight">Liquid purchasing power ready for immediate deployment.</p>
-          </CardContent>
-        </Card>
+          </>
+        ) : null}
       </div>
-
-      {/* Bottom Row: Open Positions */}
-      <Card className="shadow-lg border-slate-800 bg-slate-900/50 backdrop-blur-sm">
-        <CardHeader className="bg-slate-900/20 border-b border-slate-800">
-          <CardTitle className="text-white">Paper Ledger</CardTitle>
-          <CardDescription className="text-slate-400">
-            A record of positions the Hub would have taken. It places no orders, so this stays empty
-            unless a paper-trading feature is switched on deliberately.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader className="bg-slate-900/50">
-              <TableRow className="hover:bg-transparent border-slate-800">
-                <TableHead className="w-[300px] pl-6 text-slate-400">Market</TableHead>
-                <TableHead className="text-slate-400 text-right">Side</TableHead>
-                <TableHead className="text-slate-400 text-right">Contracts</TableHead>
-                <TableHead className="text-slate-400 text-right">Avg Cost</TableHead>
-                <TableHead className="text-slate-400 text-right pr-6">P&amp;L (cents)</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {positions.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={5} className="text-center py-10 text-slate-500">
-                    This product places no orders. Nothing is ever bought or sold &mdash; every row on this
-                    site is a suggestion, and an engine is only promoted once its settled results beat
-                    the market after fees.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                positions.map((pos, idx) => (
-                  <TableRow key={idx} className="border-slate-800 hover:bg-slate-800/30 transition-colors">
-                    <TableCell className="font-semibold text-white pl-6">{pos.ticker ?? "—"}</TableCell>
-                    <TableCell className="text-right font-medium text-slate-300">
-                      {pos.side ? (
-                        <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
-                          {pos.side.toUpperCase()}
-                        </Badge>
-                      ) : (
-                        "—"
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right text-slate-400 font-medium">{pos.contracts ?? "—"}</TableCell>
-                    <TableCell className="text-right font-bold text-white">
-                      {typeof pos.avg_cost_cents === "number" ? `${pos.avg_cost_cents}¢` : "—"}
-                    </TableCell>
-                    <TableCell className="text-right pr-6 font-bold text-slate-300">
-                      {typeof pos.pnl_cents === "number" ? pos.pnl_cents.toFixed(1) : "—"}
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
     </div>
   );
 }

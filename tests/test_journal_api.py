@@ -100,3 +100,100 @@ def test_a_cautious_copy_is_not_counted_as_a_second_set_of_evidence_in_the_headl
     assert body["headline"]["forecasters"] == 2
 
 
+
+
+# ── standings: the front page's "what we found" ─────────────────────────────────
+# Every claim on that page is compared against the standard error stored beside the gap, because a
+# bare skill number reads as a result when it is noise (migration 20260428000017).
+
+
+def _score(forecaster, version, **over):
+    row = {"forecaster": forecaster, "forecaster_version": version, "cadence": "daily", "baseline": "market",
+           "n_targets": 100, "n_settled": 50, "n_baseline": 50, "brier": 0.21, "brier_baseline": 0.25,
+           "brier_on_baseline": 0.24, "bss": 0.04, "calibration_ready": True, "gate_status": "SHADOW"}
+    row.update(over)
+    return row
+
+
+def _replay(forecaster, version, diff, se, **over):
+    row = {"forecaster": forecaster, "forecaster_version": version, "n": 760, "brier": 0.21,
+           "brier_baseline": 0.22, "brier_diff": diff, "brier_diff_se": se, "bss": 0.045,
+           "date_from": "2026-06-01", "date_to": "2026-09-20", "created_at": "2026-10-01T12:00:00+00:00"}
+    row.update(over)
+    return row
+
+
+def test_standings_ship_with_the_journal_payload():
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_scores"] += [_score("gas", "gas-v2"), _score("weather_high", "v1")]
+    db.tables["journal_backtests"] += [
+        _replay("gas", "gas-v2", -0.030, 0.005),
+        _replay("weather_high", "v1", -0.010, 0.009),
+    ]
+    body = _client(db).get("/api/journal").json()
+    s = body["standings"]
+    assert s["best"]["forecaster"] == "gas"
+    assert s["best"]["verdict"] == "beats"
+    assert s["worst"]["forecaster"] == "weather_high"
+    assert s["worst"]["verdict"] == "indistinguishable"
+    assert s["n_settled"] == 100
+    assert s["distinct_se"] == 2.0
+    # The lede is assembled from the numbers, and a real result is stated with its interval.
+    assert "gas" in s["verdict"]
+    assert "0.005" in s["verdict"]
+    assert "beat" in s["verdict"].lower()
+
+
+def test_standings_with_no_replays_says_so_instead_of_scoring_zero():
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_scores"] += [_score("gas", "gas-v2")]
+    s = _client(db).get("/api/journal").json()["standings"]
+    assert s["best"] is None
+    assert s["worst"] is None
+    assert s["n_settled"] == 50
+    assert "no replay" in s["verdict"].lower()
+
+
+def test_the_newest_replay_wins_when_a_forecaster_has_been_replayed_twice():
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_scores"] += [_score("gas", "gas-v2")]
+    db.tables["journal_backtests"] += [
+        _replay("gas", "gas-v2", -0.001, 0.001, created_at="2026-09-01T12:00:00+00:00"),
+        _replay("gas", "gas-v2", -0.030, 0.005, created_at="2026-10-01T12:00:00+00:00"),
+    ]
+    s = _client(db).get("/api/journal").json()["standings"]
+    assert s["best"]["gap"] == -0.030
+    assert s["n_replayed"] == 1
+
+
+def test_a_missing_journal_backtests_table_degrades_standings_rather_than_500():
+    """A half-deployed journal must not take the front page down. 'No replay yet' is the true answer."""
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_scores"] += [_score("gas", "gas-v2")]
+
+    def _missing(name):
+        if name == "journal_backtests":
+            raise RuntimeError(
+                "Could not find the table 'public.journal_backtests' in the schema cache (PGRST205)")
+        return FakeJournalDB.table(db, name)
+
+    db.table = _missing
+    res = _client(db).get("/api/journal")
+    assert res.status_code == 200
+    assert res.json()["standings"]["best"] is None
+    assert "no replay" in res.json()["standings"]["verdict"].lower()
+
+
+def test_a_non_missing_table_error_on_backtests_is_still_an_error():
+    """The degradation is for 'the table is not there', not for 'the database is on fire'."""
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_scores"] += [_score("gas", "gas-v2")]
+
+    def _broken(name):
+        if name == "journal_backtests":
+            raise RuntimeError("connection reset by peer")
+        return FakeJournalDB.table(db, name)
+
+    db.table = _broken
+    res = _client(db).get("/api/journal")
+    assert res.status_code != 200

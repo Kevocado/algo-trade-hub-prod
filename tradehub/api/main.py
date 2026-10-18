@@ -34,6 +34,8 @@ from tradehub.engine_health import engine_health
 from tradehub.gate_status import DEFAULT_GATE_STATUS, latest_gate_statuses, table_missing
 from tradehub.journal.legacy import journal_scores, merge_track_record
 from tradehub.journal.scoring import headline as journal_headline
+from tradehub.journal.standings import standings as journal_standings
+from tradehub.journal.standings import verdict_sentence as journal_verdict_sentence
 from tradehub.quarantine import QUARANTINE_MARK, QUARANTINE_NOTE, quarantine_report
 from tradehub.scoreboard import current_runs, market_comparison
 from tradehub.scripts.shadow_performance import MissingCredentialError, build_shadow_timeline_response
@@ -427,7 +429,14 @@ JOURNAL_PAGE_MAX = 500
 
 @app.get("/api/journal", tags=["Journal"])
 def get_journal(supabase=Depends(get_supabase)):
-    """Every (forecaster, version) scorecard, ordered by forecaster, plus the precomputed headline."""
+    """Every (forecaster, version) scorecard, ordered by forecaster, plus the precomputed headline.
+
+    `standings` is the front page's "what we found": the best and worst forecaster, each with the
+    interval its gap was measured on, and a lede assembled from those numbers. It is computed HERE
+    rather than in the browser because comparing a gap against its standard error is an analytic
+    judgement about whether a result is real, and the journal already owns that rule (migration
+    20260428000017 exists precisely because a bare skill number reads as a result when it is noise).
+    """
     if supabase is None:
         raise HTTPException(status_code=503, detail="Supabase is not configured")
     try:
@@ -435,7 +444,26 @@ def get_journal(supabase=Depends(get_supabase)):
                           order=("forecaster", "forecaster_version"))
     except Exception as exc:  # noqa: BLE001 - classified by _table_fault
         raise _table_fault("journal_scores", exc) from exc
-    return {"as_of": datetime.now(timezone.utc).isoformat(), "forecasters": rows, "headline": journal_headline(rows)}
+    # A missing or unapplied `journal_backtests` degrades standings to "not measured", the same rule
+    # /api/journal/backtests follows: "no replay yet" is the true statement, and it is better than a
+    # 500 that takes the front page down over a table the journal does not need to answer this.
+    try:
+        replays = _fetch_all(supabase, "journal_backtests", lambda q: q.select("*"),
+                             order=("created_at", "id"))
+    except Exception as exc:  # noqa: BLE001 - classified below
+        if table_missing(exc, "journal_backtests"):
+            replays = []
+        else:
+            raise _table_fault("journal_backtests", exc) from exc
+    # Newest replay per (forecaster, version): ascending created_at, so the last row per pair is current.
+    latest = {(r["forecaster"], r["forecaster_version"]): r for r in replays}
+    rows_out = journal_standings(rows, list(latest.values()))
+    return {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "forecasters": rows,
+        "headline": journal_headline(rows),
+        "standings": {**rows_out, "verdict": journal_verdict_sentence(rows_out)},
+    }
 
 
 @app.get("/api/journal/feed", tags=["Journal"])
