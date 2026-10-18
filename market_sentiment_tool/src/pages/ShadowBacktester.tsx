@@ -538,6 +538,12 @@ export default function ShadowBacktester() {
                     {freshness?.age_hours == null ? "Unavailable" : formatHours(freshness.age_hours)}
                   </span>
                 </div>
+                <div className="flex items-center justify-between">
+                  <span>Data Source</span>
+                  <span className="text-slate-400">
+                    {freshness?.source ?? "Unavailable"}
+                  </span>
+                </div>
               </CardContent>
             </Card>
 

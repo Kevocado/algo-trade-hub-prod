@@ -58,20 +58,20 @@ class _Client:
 
 
 @pytest.fixture
-def no_alpaca_network(monkeypatch):
+def no_crypto_network(monkeypatch):
     """Replaces the live market-data call. `_fetch_alpaca_hourly_closes` is the only seam that reaches
     the network, and an empty frame is a legitimate answer: no bars for the window."""
     calls = []
 
     def fake(asset, *, start, end):
         calls.append(asset)
-        return pd.DataFrame(columns=["timestamp", "close"])
+        return pd.DataFrame(columns=["timestamp", "Close"]), "kraken"
 
-    monkeypatch.setattr(sp, "_fetch_alpaca_hourly_closes", fake)
+    monkeypatch.setattr(sp, "_fetch_crypto_hourly_closes", fake)
     return calls
 
 
-def test_the_shadow_timeline_works_once_signal_events_exists(monkeypatch, no_alpaca_network):
+def test_the_shadow_timeline_works_once_signal_events_exists(monkeypatch, no_crypto_network):
     """The gap. With the table present, the endpoint must return a payload rather than raise -- and
     it must do so with the market-data call stubbed, so this test needs no credentials and no network.
 
@@ -89,7 +89,7 @@ def test_the_shadow_timeline_works_once_signal_events_exists(monkeypatch, no_alp
     assert response["series"] == [], "no settled signals, so an empty series is the honest result"
 
 
-def test_a_missing_signal_events_table_is_reported_as_a_missing_table(monkeypatch, no_alpaca_network):
+def test_a_missing_signal_events_table_is_reported_as_a_missing_table(monkeypatch, no_crypto_network):
     """The failure that was live. It must be distinguishable from every other failure, because it is
     fixed by applying a migration rather than by editing code."""
 
@@ -107,22 +107,27 @@ def test_a_missing_signal_events_table_is_reported_as_a_missing_table(monkeypatc
     assert "signal_events" in str(caught.value)
 
 
-def test_missing_alpaca_credentials_name_the_variables_to_set(monkeypatch):
-    """The second, undiscoverable dependency. Without this, applying the migration trades one opaque
-    503 for another, and the new one points at credentials rather than at the migration that was
-    still unapplied.
+def test_works_without_alpaca_credentials(monkeypatch):
+    """The route uses keyless Kraken/Coinbase market data, so ALPACA_* being unset must not block it.
 
-    `_alpaca_config` reads the environment directly, so this is exercised by clearing the variables
-    rather than by stubbing -- which means the assertion covers the real message operators will see.
+    The old behavior raised `MissingCredentialError("Alpaca API", ...)` when ALPACA_* was unset.
+    That is gone: Kraken and Coinbase need no credentials, and the route must run with no env vars
+    set at all.
     """
     monkeypatch.delenv("ALPACA_API_KEY", raising=False)
     monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
+    monkeypatch.delenv("ALPACA_DATA_API_BASE", raising=False)
     monkeypatch.setattr(sp, "_load_supabase_client", lambda: _Client())
-    # No market-data stub here on purpose: the point is that the credential check comes first.
 
-    with pytest.raises(RuntimeError) as caught:
-        sp.build_shadow_timeline_response(hours=24, domain="crypto")
+    def fake_fetch(asset, *, start, end):
+        index = pd.date_range("2026-10-01", periods=2, freq="h", tz="UTC")
+        return pd.DataFrame({"Close": [100.0, 101.0]}, index=index), "kraken"
 
-    message = str(caught.value)
-    assert "ALPACA_API_KEY" in message, message
-    assert "ALPACA_SECRET_KEY" in message, message
+    monkeypatch.setattr(sp, "_fetch_crypto_hourly_closes", fake_fetch)
+
+    # Must not raise, and must return a payload rather than empty
+    report = sp.build_shadow_timeline_response(hours=24, domain="crypto")
+    assert report["domain"] == "crypto"
+    assert report["hours"] == 24
+    assert "thresholds" in report
+

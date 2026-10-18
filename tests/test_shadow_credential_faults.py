@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import re
 
+import pandas as pd
 import pytest
 from fastapi import HTTPException
 from postgrest.exceptions import APIError
@@ -226,20 +227,24 @@ def test_the_credential_type_survives_the_builders_error_wrapping(monkeypatch):
     `("ALPACA_API_KEY", "ALPACA_SECRET_KEY")` as attributes and produced a bare RuntimeError whose
     only content was a sentence, after which the API had nothing to classify but a substring. The
     type now survives, and this fails if it stops surviving.
+
+    With the new keyless crypto system, there are no Alpaca credentials to test. The endpoint now
+    uses Kraken and Coinbase which require no credentials.
     """
     monkeypatch.setenv("SUPABASE_URL", "https://stub.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "stub-service-role")
-    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
-    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
     monkeypatch.setattr(sp, "_load_supabase_client", lambda: _EmptySignalEvents())
 
-    # The real builder, no stubbing of the thing under test.
-    with pytest.raises(sp.MissingCredentialError) as caught:
-        sp.build_shadow_timeline_response(hours=24, domain="crypto")
+    # No Alpaca credentials anymore; the route uses Kraken/Coinbase and should work with no credentials set
+    def fake_fetch(asset, *, start, end):
+        index = pd.date_range("2026-10-01", periods=2, freq="h", tz="UTC")
+        return pd.DataFrame({"Close": [100.0, 101.0]}, index=index), "kraken"
 
-    assert caught.value.variables == ("ALPACA_API_KEY", "ALPACA_SECRET_KEY")
-    assert api_main._is_missing_credential(caught.value) is True
-    assert api_main._is_missing_table(caught.value) is False
+    monkeypatch.setattr(sp, "_fetch_crypto_hourly_closes", fake_fetch)
+
+    # Should not raise any credential error; the route works with keyless market data
+    report = sp.build_shadow_timeline_response(hours=24, domain="crypto")
+    assert report["domain"] == "crypto"
 
 
 def test_the_telegram_path_still_gets_its_strings(monkeypatch):
@@ -248,16 +253,21 @@ def test_the_telegram_path_still_gets_its_strings(monkeypatch):
     report reads: `errors` stays a list of strings, in the same order, with the same dedup."""
     monkeypatch.setenv("SUPABASE_URL", "https://stub.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "stub-service-role")
-    monkeypatch.delenv("ALPACA_API_KEY", raising=False)
-    monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
     monkeypatch.setattr(sp, "_load_supabase_client", lambda: _EmptySignalEvents())
+
+    def fake_fetch(asset, *, start, end):
+        index = pd.date_range("2026-10-01", periods=2, freq="h", tz="UTC")
+        return pd.DataFrame({"Close": [100.0, 101.0]}, index=index), "kraken"
+
+    monkeypatch.setattr(sp, "_fetch_crypto_hourly_closes", fake_fetch)
 
     report = sp.build_shadow_report(hours=24, domain="crypto")
 
-    assert report["errors"], report
+    # With the keyless crypto system working, there should be no credential errors
+    assert report["errors"] == []
     assert all(isinstance(message, str) for message in report["errors"]), report["errors"]
-    assert "ALPACA_API_KEY" in report["errors"][0], report["errors"]
-    assert "ALPACA_API_KEY" in sp.render_shadow_report(report)
+    assert "ALPACA_API_KEY" not in sp.render_shadow_report(report)  # No longer present
+
     # The freshness loop hits both assets, and the same message is not listed twice.
     assert len(report["errors"]) == len(set(report["errors"])), report["errors"]
 

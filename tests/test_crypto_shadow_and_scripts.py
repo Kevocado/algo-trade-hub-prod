@@ -41,11 +41,11 @@ def test_shadow_report_computes_hit_rate_brier_and_virtual_pnl(monkeypatch):
     def fake_fetch(asset, *, start, end):
         if asset == "BTC":
             index = pd.to_datetime(["2026-04-09T02:00:00Z", "2026-04-09T03:00:00Z"], utc=True)
-            return pd.DataFrame({"Close": [100.0, 101.0]}, index=index)
+            return (pd.DataFrame({"Close": [100.0, 101.0]}, index=index), "kraken")
         index = pd.to_datetime(["2026-04-09T02:00:00Z", "2026-04-09T03:00:00Z"], utc=True)
-        return pd.DataFrame({"Close": [200.0, 199.0]}, index=index)
+        return (pd.DataFrame({"Close": [200.0, 199.0]}, index=index), "kraken")
 
-    monkeypatch.setattr(shadow_performance, "_fetch_alpaca_hourly_closes", fake_fetch)
+    monkeypatch.setattr(shadow_performance, "_fetch_crypto_hourly_closes", fake_fetch)
 
     report = shadow_performance.build_shadow_report(hours=24, btc_yes=0.55, btc_no=0.45, eth_yes=0.55, eth_no=0.45)
 
@@ -91,18 +91,16 @@ def test_shadow_current_hour_utc_handles_aware_datetime():
     assert ts == pd.Timestamp("2026-04-09T22:00:00Z")
 
 
-def test_shadow_alpaca_config_reads_env_lazily(monkeypatch):
+def test_shadow_uses_keyless_crypto_data(monkeypatch):
     from tradehub.scripts import shadow_performance
+    import inspect
 
-    monkeypatch.setenv("ALPACA_API_KEY", "key-123")
-    monkeypatch.setenv("ALPACA_SECRET_KEY", "secret-456")
-    monkeypatch.setenv("ALPACA_DATA_API_BASE", "https://example.alpaca")
-
-    api_base, api_key, secret_key = shadow_performance._alpaca_config()
-
-    assert api_base == "https://example.alpaca"
-    assert api_key == "key-123"
-    assert secret_key == "secret-456"
+    # The Alpaca credential check is gone; only the keyless crypto read remains
+    assert not hasattr(shadow_performance, "_alpaca_config")
+    assert hasattr(shadow_performance, "_fetch_crypto_hourly_closes")
+    src = inspect.getsource(shadow_performance._fetch_crypto_hourly_closes)
+    assert "fetch_hourly_closes" in src or "crypto_data" in src
+    assert "ALPACA" not in src
 
 
 def test_shadow_report_counts_dead_zone_and_reports_freshness(monkeypatch):
@@ -139,11 +137,11 @@ def test_shadow_report_counts_dead_zone_and_reports_freshness(monkeypatch):
     def fake_fetch(asset, *, start, end):
         if asset == "BTC":
             index = pd.to_datetime(["2026-04-09T02:00:00Z", "2026-04-09T03:00:00Z"], utc=True)
-            return pd.DataFrame({"Close": [100.0, 101.0]}, index=index)
+            return (pd.DataFrame({"Close": [100.0, 101.0]}, index=index), "kraken")
         index = pd.to_datetime(["2026-04-09T02:00:00Z", "2026-04-09T03:00:00Z"], utc=True)
-        return pd.DataFrame({"Close": [200.0, 200.0]}, index=index)
+        return (pd.DataFrame({"Close": [200.0, 200.0]}, index=index), "kraken")
 
-    monkeypatch.setattr(shadow_performance, "_fetch_alpaca_hourly_closes", fake_fetch)
+    monkeypatch.setattr(shadow_performance, "_fetch_crypto_hourly_closes", fake_fetch)
 
     report = shadow_performance.build_shadow_report(hours=24, btc_yes=0.55, btc_no=0.45, eth_yes=0.55, eth_no=0.45)
     text = shadow_performance.render_shadow_report(report, telegram=False)
