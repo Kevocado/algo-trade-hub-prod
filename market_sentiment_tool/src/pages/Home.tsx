@@ -67,6 +67,32 @@ function EndRow({ entry, label }: { entry: StandingEntry; label: string }) {
   );
 }
 
+function LeaderboardSection({
+  title,
+  best,
+  worst,
+  forecasters,
+}: {
+  title: string;
+  best: StandingEntry | null;
+  worst: StandingEntry | null;
+  forecasters: string[];
+}) {
+  if (!best) return null;
+
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">{title}</h2>
+      <EndRow entry={best} label="Best" />
+      {worst ? <EndRow entry={worst} label="Worst" /> : null}
+      <p className="text-xs text-slate-500">
+        {forecasters.length} forecasters · A gap counts as a result only when it clears 2 standard errors.
+        Anything inside that bar is noise, whatever its sign.
+      </p>
+    </section>
+  );
+}
+
 export default function Home() {
   const { standings, loading, error } = useStandings();
   const s = standings ? headlineStats(standings) : null;
@@ -100,30 +126,32 @@ export default function Home() {
               <Stat label="Settled" value={s.settled} sub="frozen and scored" />
               <Stat label="Forecasters" value={s.forecasters} sub={`${s.replayed} replayed`} />
               <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-                <div className="text-[11px] uppercase tracking-wider text-slate-500">Best</div>
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Best (vs Kalshi)</div>
                 <div className="mt-1 truncate text-sm font-bold text-white">{s.bestName}</div>
                 <div className="text-xs tabular-nums text-slate-400">{s.bestGap}</div>
               </div>
               <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-                <div className="text-[11px] uppercase tracking-wider text-slate-500">Worst</div>
+                <div className="text-[11px] uppercase tracking-wider text-slate-500">Worst (vs Kalshi)</div>
                 <div className="mt-1 truncate text-sm font-bold text-white">{s.worstName}</div>
                 <div className="text-xs tabular-nums text-slate-400">{s.worstGap}</div>
               </div>
             </div>
 
-            {standings.best ? (
-              <section className="flex flex-col gap-2">
-                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">
-                  Both ends of the leaderboard
-                </h2>
-                <EndRow entry={standings.best} label="Best" />
-                {standings.worst ? <EndRow entry={standings.worst} label="Worst" /> : null}
-                <p className="text-xs text-slate-500">
-                  A gap counts as a result only when it clears {standings.distinct_se} standard errors.
-                  Anything inside that bar is noise, whatever its sign.
-                </p>
-              </section>
-            ) : null}
+            {/* Market-linked section: graded against the Kalshi price */}
+            <LeaderboardSection
+              title="Graded vs Kalshi price"
+              best={standings.market_linked_best}
+              worst={standings.market_linked_worst}
+              forecasters={standings.market_linked}
+            />
+
+            {/* Climatology section: graded against the usual rate */}
+            <LeaderboardSection
+              title="Graded vs climatology"
+              best={standings.climatology_best}
+              worst={standings.climatology_worst}
+              forecasters={standings.climatology}
+            />
 
             <section className="flex flex-col gap-2">
               <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400">Go deeper</h2>

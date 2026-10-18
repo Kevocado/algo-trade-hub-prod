@@ -100,8 +100,6 @@ def test_a_cautious_copy_is_not_counted_as_a_second_set_of_evidence_in_the_headl
     assert body["headline"]["forecasters"] == 2
 
 
-
-
 # ── standings: the front page's "what we found" ─────────────────────────────────
 # Every claim on that page is compared against the standard error stored beside the gap, because a
 # bare skill number reads as a result when it is noise (migration 20260428000017).
@@ -132,10 +130,11 @@ def test_standings_ship_with_the_journal_payload():
     ]
     body = _client(db).get("/api/journal").json()
     s = body["standings"]
-    assert s["best"]["forecaster"] == "gas"
-    assert s["best"]["verdict"] == "beats"
-    assert s["worst"]["forecaster"] == "weather_high"
-    assert s["worst"]["verdict"] == "indistinguishable"
+    # Market-linked section
+    assert s["market_linked_best"]["forecaster"] == "gas"
+    assert s["market_linked_best"]["verdict"] == "beats"
+    assert s["market_linked_worst"]["forecaster"] == "weather_high"
+    assert s["market_linked_worst"]["verdict"] == "indistinguishable"
     assert s["n_settled"] == 100
     assert s["distinct_se"] == 2.0
     # The lede is assembled from the numbers, and a real result is stated with its interval.
@@ -148,8 +147,8 @@ def test_standings_with_no_replays_says_so_instead_of_scoring_zero():
     db = FakeJournalDB(lambda: T0)
     db.tables["journal_scores"] += [_score("gas", "gas-v2")]
     s = _client(db).get("/api/journal").json()["standings"]
-    assert s["best"] is None
-    assert s["worst"] is None
+    assert s["market_linked_best"] is None
+    assert s["market_linked_worst"] is None
     assert s["n_settled"] == 50
     assert "no replay" in s["verdict"].lower()
 
@@ -162,7 +161,7 @@ def test_the_newest_replay_wins_when_a_forecaster_has_been_replayed_twice():
         _replay("gas", "gas-v2", -0.030, 0.005, created_at="2026-10-01T12:00:00+00:00"),
     ]
     s = _client(db).get("/api/journal").json()["standings"]
-    assert s["best"]["gap"] == -0.030
+    assert s["market_linked_best"]["gap"] == -0.030
     assert s["n_replayed"] == 1
 
 
@@ -180,7 +179,7 @@ def test_a_missing_journal_backtests_table_degrades_standings_rather_than_500():
     db.table = _missing
     res = _client(db).get("/api/journal")
     assert res.status_code == 200
-    assert res.json()["standings"]["best"] is None
+    assert res.json()["standings"]["market_linked_best"] is None
     assert "no replay" in res.json()["standings"]["verdict"].lower()
 
 

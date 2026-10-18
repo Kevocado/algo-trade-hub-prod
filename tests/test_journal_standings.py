@@ -91,44 +91,44 @@ def test_a_missing_gap_or_interval_is_unknown_not_zero():
     assert gap_verdict(-0.05, None) != "beats"
 
 
-# ── standings: best and worst, each carrying its own interval ──────────────────
+# ── standings: market-linked and climatology leaderboards ─────────────────────
 
 
-def test_standings_ranks_by_the_measured_gap_and_reports_both_ends():
+def test_standings_ranks_market_linked_by_gap_and_reports_both_ends():
     rows = standings(
         [_card("gas"), _card("weather_high")],
         [_bt("gas", diff=-0.030, se=0.005), _bt("weather_high", diff=+0.020, se=0.004)],
     )
-    assert rows["best"]["forecaster"] == "gas"
-    assert rows["best"]["gap"] == -0.030
-    assert rows["best"]["se"] == 0.005
-    assert rows["best"]["verdict"] == "beats"
-    assert rows["worst"]["forecaster"] == "weather_high"
-    assert rows["worst"]["verdict"] == "loses to"
-    assert rows["worst"]["n"] == 760
+    assert rows["market_linked_best"]["forecaster"] == "gas"
+    assert rows["market_linked_best"]["gap"] == -0.030
+    assert rows["market_linked_best"]["se"] == 0.005
+    assert rows["market_linked_best"]["verdict"] == "beats"
+    assert rows["market_linked_worst"]["forecaster"] == "weather_high"
+    assert rows["market_linked_worst"]["verdict"] == "loses to"
+    assert rows["market_linked_worst"]["n"] == 760
 
 
-def test_standings_reports_a_forecaster_with_no_error_bar_as_unknown():
+def test_standings_reports_a_market_forecaster_with_no_error_bar_as_unknown():
     rows = standings([_card("gas")], [_bt("gas", diff=-0.030, se=None)])
-    assert rows["best"]["se"] is None
-    assert rows["best"]["verdict"] == "unknown"
+    assert rows["market_linked_best"]["se"] is None
+    assert rows["market_linked_best"]["verdict"] == "unknown"
     # And it is still the best on the number we do have, rather than being dropped from the page.
-    assert rows["best"]["forecaster"] == "gas"
+    assert rows["market_linked_best"]["forecaster"] == "gas"
 
 
 def test_standings_with_nothing_measured_returns_none_not_a_zero():
     rows = standings([], [])
-    assert rows["best"] is None
-    assert rows["worst"] is None
+    assert rows["market_linked_best"] is None
+    assert rows["market_linked_worst"] is None
     assert rows["n_settled"] == 0
     assert rows["n_replayed"] == 0
 
 
-def test_a_forecaster_without_a_replay_row_is_ranked_on_nothing_rather_than_zero():
+def test_a_market_forecaster_without_a_replay_row_is_not_ranked():
     # One model has no replay. It must not appear as a gap of 0.0 and win the "best" slot.
     rows = standings([_card("gas"), _card("weather_high")], [_bt("gas", diff=-0.030, se=0.005)])
-    assert rows["best"]["forecaster"] == "gas"
-    assert rows["worst"] is None or rows["worst"]["forecaster"] == "gas"
+    assert rows["market_linked_best"]["forecaster"] == "gas"
+    assert rows["market_linked_worst"] is None  # only one has a replay
 
 
 def test_standings_counts_settled_targets_from_the_cards_not_the_replays():
@@ -143,7 +143,22 @@ def test_only_market_linked_baselines_can_support_a_beating_the_market_claim():
     )
     # Both are listed (they were measured), but only the market-linked one is pooled as a market claim.
     assert rows["market_linked"] == ["gas"]
-    assert rows["best"]["baseline"] == "market"
+    assert rows["market_linked_best"]["baseline"] == "market"
+    # Climatology model is in the climatology section, not market-linked
+    assert rows["climatology_best"]["forecaster"] == "climatology_model"
+
+
+def test_climatology_section_ranks_separately_and_reports_vs_climatology():
+    rows = standings(
+        [_card("unrate_direction", baseline="climatology"), _card("spy_quant", baseline="climatology")],
+        [_bt("unrate_direction", diff=-0.040, se=0.005), _bt("spy_quant", diff=+0.020, se=0.004)],
+    )
+    assert rows["climatology_best"]["forecaster"] == "unrate_direction"
+    assert rows["climatology_best"]["verdict"] == "beats"
+    assert rows["climatology_worst"]["forecaster"] == "spy_quant"
+    assert rows["climatology_worst"]["verdict"] == "loses to"
+    # Market-linked section is empty
+    assert rows["market_linked_best"] is None
 
 
 # ── the verdict sentence: assembled from the numbers, never typed ──────────────
@@ -160,7 +175,8 @@ def test_an_indistinguishable_result_says_so_rather_than_claiming_a_win():
     rows = standings([_card("gas")], [_bt("gas", diff=-0.010, se=0.009)])
     s = verdict_sentence(rows)
     assert "noise" in s.lower() or "indistinguishable" in s.lower()
-    assert "beat" not in s.lower().replace("beats the", "")  # no claim of beating the market
+    # Should not claim "beats the Kalshi price" (the market claim)
+    assert "beats the kalshi price" not in s.lower()
 
 
 def test_a_real_result_names_the_number_and_the_interval_it_was_measured_on():
@@ -187,3 +203,28 @@ def test_the_sentence_is_short_enough_to_be_a_lede():
         ([], []),
     ):
         assert len(verdict_sentence(standings(cards, bts)).split()) <= 45
+
+
+def test_verdict_sentence_mentions_after_costs_only_when_costs_back_it():
+    """When a market-linked forecaster has costs data AND the edge survives costs,
+    the sentence mentions "after costs". Without costs data, it must not claim it.
+    """
+    # With costs backing the edge
+    rows = standings(
+        [_card("gas")],
+        [_bt("gas", diff=-0.030, se=0.005, costs={"n_quoted": 100, "n_traded": 80, "edge_after_costs_pct": 0.5})],
+    )
+    s = verdict_sentence(rows)
+    assert "after costs" in s.lower()
+
+    # Without costs - should NOT say "after costs"
+    rows = standings([_card("gas")], [_bt("gas", diff=-0.030, se=0.005)])
+    s = verdict_sentence(rows)
+    assert "after costs" not in s.lower()
+
+
+def test_climatology_result_says_vs_climatology_not_market():
+    rows = standings([_card("unrate_direction", baseline="climatology")], [_bt("unrate_direction", diff=-0.040, se=0.005)])
+    s = verdict_sentence(rows)
+    assert "climatology" in s.lower()
+    assert "Kalshi price" not in s.lower()

@@ -6,7 +6,7 @@ import Home from "@/pages/Home";
 import type { Standings } from "@/lib/homeTruth";
 
 const BEATS: Standings = {
-  best: {
+  market_linked_best: {
     forecaster: "gas",
     version: "gas-v2",
     baseline: "market",
@@ -20,10 +20,10 @@ const BEATS: Standings = {
     date_from: "2026-06-01",
     date_to: "2026-09-20",
   },
-  worst: {
+  market_linked_worst: {
     forecaster: "ercot_peak",
     version: "v1",
-    baseline: "climatology",
+    baseline: "market",
     cadence: "daily",
     gap: 0.02,
     se: 0.004,
@@ -34,29 +34,69 @@ const BEATS: Standings = {
     date_from: "2026-06-01",
     date_to: "2026-09-20",
   },
+  climatology_best: null,
+  climatology_worst: null,
   n_settled: 2282,
   n_replayed: 2,
   forecasters: 9,
   market_linked: ["gas"],
+  climatology: [],
   distinct_se: 2,
-  verdict: "gas beats the Kalshi price by -0.030 ± 0.005 over 760 replayed sessions.",
+  verdict:
+    "gas beats the Kalshi price by -0.030 ± 0.005 over 760 replayed sessions, on 1982 settled contracts in total.",
 };
 
 const NO_SIGNAL: Standings = {
-  ...BEATS,
-  best: { ...BEATS.best!, gap: -0.01, se: 0.009, verdict: "indistinguishable" },
-  worst: { ...BEATS.worst!, gap: 0.01, se: 0.009, verdict: "indistinguishable" },
+  market_linked_best: {
+    forecaster: "gas",
+    version: "gas-v2",
+    baseline: "market",
+    cadence: "daily",
+    gap: -0.01,
+    se: 0.009,
+    n: 760,
+    n_settled: 1982,
+    bss: 0.045,
+    verdict: "indistinguishable",
+    date_from: "2026-06-01",
+    date_to: "2026-09-20",
+  },
+  market_linked_worst: {
+    forecaster: "ercot_peak",
+    version: "v1",
+    baseline: "market",
+    cadence: "daily",
+    gap: 0.01,
+    se: 0.009,
+    n: 500,
+    n_settled: 300,
+    bss: -0.01,
+    verdict: "indistinguishable",
+    date_from: "2026-06-01",
+    date_to: "2026-09-20",
+  },
+  climatology_best: null,
+  climatology_worst: null,
+  n_settled: 2282,
+  n_replayed: 2,
+  forecasters: 9,
+  market_linked: ["gas"],
+  climatology: [],
+  distinct_se: 2,
   verdict:
-    "No forecaster beats the Kalshi price after costs. Best is AAA gasoline prices at -0.010 ± 0.009 over 760 replayed sessions, inside the noise.",
+    "No forecaster beats the Kalshi price. Best is AAA gasoline prices at -0.010 ± 0.009 over 760 replayed sessions, inside the noise.",
 };
 
 const EMPTY: Standings = {
-  best: null,
-  worst: null,
+  market_linked_best: null,
+  market_linked_worst: null,
+  climatology_best: null,
+  climatology_worst: null,
   n_settled: 0,
   n_replayed: 0,
   forecasters: 0,
   market_linked: [],
+  climatology: [],
   distinct_se: 2,
   verdict: "No forecaster has settled results yet, so there is nothing to compare against the Kalshi price.",
 };
