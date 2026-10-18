@@ -73,6 +73,10 @@ class FakeJournalDB:
         self.tables: dict[str, list[dict[str, Any]]] = {
             "journal_calendars": [], "journal_forecasts": [], "journal_settlements": [], "journal_scores": [],
             "backtest_runs": [], "track_record": [],
+            # Present but empty, which is the true state: every migration is applied (see
+            # docs/superpowers/plans/migrations-applied.md) and no daily replay has been written yet.
+            # Tests that need rows put them in; tests that need the table GONE raise from `table()`.
+            "journal_backtests": [],
         }
         self._id = 0
 
