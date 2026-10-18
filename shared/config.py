@@ -79,9 +79,6 @@ GEMINI_API_KEY = get("GEMINI_API_KEY")
 FOOTBALL_DATA_API_KEY = get("FOOTBALL_DATA_API_KEY")
 BALLDONTLIE_API_KEY   = get("BALLDONTLIE_API_KEY")
 
-# ── Azure Blob (FPL Optimizer files) ────────────────────────────────────────
-AZURE_CONNECTION_STRING = get("AZURE_CONNECTION_STRING")
-
 # ── Telegram ────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID   = get("TELEGRAM_CHAT_ID")
