@@ -11,7 +11,7 @@ import {
 } from "@/lib/homeTruth";
 
 const STANDINGS: Standings = {
-  best: {
+  market_linked_best: {
     forecaster: "gas",
     version: "gas-v2",
     baseline: "market",
@@ -25,10 +25,10 @@ const STANDINGS: Standings = {
     date_from: "2026-06-01",
     date_to: "2026-09-20",
   },
-  worst: {
+  market_linked_worst: {
     forecaster: "ercot_peak",
     version: "v1",
-    baseline: "climatology",
+    baseline: "market",
     cadence: "daily",
     gap: 0.02,
     se: 0.004,
@@ -39,22 +39,28 @@ const STANDINGS: Standings = {
     date_from: "2026-06-01",
     date_to: "2026-09-20",
   },
+  climatology_best: null,
+  climatology_worst: null,
   n_settled: 2282,
   n_replayed: 2,
   forecasters: 9,
   market_linked: ["gas"],
+  climatology: [],
   distinct_se: 2,
   verdict:
     "gas beats the Kalshi price by -0.030 ± 0.005 over 760 replayed sessions, on 1982 settled contracts in total.",
 };
 
 const EMPTY: Standings = {
-  best: null,
-  worst: null,
+  market_linked_best: null,
+  market_linked_worst: null,
+  climatology_best: null,
+  climatology_worst: null,
   n_settled: 0,
   n_replayed: 0,
   forecasters: 0,
   market_linked: [],
+  climatology: [],
   distinct_se: 2,
   verdict: "No forecaster has settled results yet, so there is nothing to compare against the Kalshi price.",
 };

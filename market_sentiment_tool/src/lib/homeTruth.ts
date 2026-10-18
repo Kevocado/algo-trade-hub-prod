@@ -33,12 +33,17 @@ export interface StandingEntry {
 }
 
 export interface Standings {
-  best: StandingEntry | null;
-  worst: StandingEntry | null;
+  /** Market-linked forecasters (graded vs Kalshi price) */
+  market_linked_best: StandingEntry | null;
+  market_linked_worst: StandingEntry | null;
+  /** Climatology-baseline forecasters (graded vs usual rate) */
+  climatology_best: StandingEntry | null;
+  climatology_worst: StandingEntry | null;
   n_settled: number;
   n_replayed: number;
   forecasters: number;
   market_linked: string[];
+  climatology: string[];
   distinct_se: number;
   /** Assembled from the numbers on the server. Never typed here. */
   verdict: string;
@@ -109,16 +114,18 @@ export interface HomeStat {
 /** The big numbers, and the names of each end. Formatting only; no score is derived here. */
 export function headlineStats(s: Standings): HomeStat {
   const se = (v: number | null) => (v === null || v === undefined ? null : v.toFixed(3));
+  const best = s.market_linked_best ?? s.climatology_best;
+  const worst = s.market_linked_worst ?? s.climatology_worst;
   return {
     settled: s.n_settled,
     forecasters: s.forecasters,
     replayed: s.n_replayed,
-    bestName: s.best ? plainName(s.best.forecaster) : "—",
-    bestGap: s.best ? gapText(s.best.gap, s.best.se) : "—",
-    bestSe: s.best ? se(s.best.se) : null,
-    worstName: s.worst ? plainName(s.worst.forecaster) : "—",
-    worstGap: s.worst ? gapText(s.worst.gap, s.worst.se) : "—",
-    worstSe: s.worst ? se(s.worst.se) : null,
+    bestName: best ? plainName(best.forecaster) : "—",
+    bestGap: best ? gapText(best.gap, best.se) : "—",
+    bestSe: best ? se(best.se) : null,
+    worstName: worst ? plainName(worst.forecaster) : "—",
+    worstGap: worst ? gapText(worst.gap, worst.se) : "—",
+    worstSe: worst ? se(worst.se) : null,
   };
 }
 
