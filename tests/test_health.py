@@ -228,9 +228,12 @@ def test_untracked_timers_are_still_listed_on_the_report():
 
 def test_untracked_does_not_mask_a_fault_in_a_tracked_timer():
     report = _report(timers={"scan": None, "settle": None,
-                             "journal": _ago(hours=6), "orderbooks": _ago(minutes=20)})
+                             "journal": _ago(hours=6), "orderbooks": _ago(minutes=20)},
+                     untracked=UNTRACKED_TIMERS)
     assert report["status"] == "degraded"
     assert any("timer journal is stale" in p for p in report["problems"])
+    # And the untracked pair contributed nothing to that verdict.
+    assert not any(p.startswith("timer scan") or p.startswith("timer settle") for p in report["problems"])
 
 
 def test_the_untracked_set_is_exactly_the_two_jobs_with_no_marker():

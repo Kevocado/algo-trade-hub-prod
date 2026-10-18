@@ -79,8 +79,9 @@ describe("Health page", () => {
     // The whole point: a healthy system with two untracked jobs must not read as degraded.
     expect(screen.queryByText("Degraded")).toBeNull();
     expect(screen.queryByText("Never ran")).toBeNull();
-    expect(screen.queryByText("Problems:")).toBeNull();
-    expect(screen.getByText("Problems")).toBeTruthy();
+    // By role, not by text: `getByText("Problems")` also matches the stat card's label, so it proves
+    // nothing about whether the problems SECTION is hidden.
+    expect(screen.queryByRole("heading", { name: "Problems" })).toBeNull();
     // The untracked jobs are named and explained rather than dropped from the page.
     expect(screen.getByText(/write no record of each run/)).toBeTruthy();
     expect(screen.getAllByText("Not tracked").length).toBe(2);
