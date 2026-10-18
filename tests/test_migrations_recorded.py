@@ -76,7 +76,16 @@ def test_the_watermark_is_the_newest_migration():
     )
 
 
-def test_migration_filenames_are_ordered_by_timestamp():
-    """A filename whose timestamp does not match its sort position would make 'newest' ambiguous."""
+def test_migration_filenames_are_well_formed():
+    """Every filename must be `<14-digit-timestamp>_<slug>.sql`.
+
+    This checks FORMAT, deliberately not ordering, and the name used to claim otherwise. Ordering
+    cannot drift from the timestamps anyway: the watermark is computed as
+    `max(files, key=lambda name: NAME_RE.match(name).group(1))`, so "newest" is the largest
+    timestamp no matter what order `glob` returned. Format is what actually matters, because that
+    same `max()` calls `NAME_RE.match(name).group(1)` on every file: one migration named without a
+    14-digit prefix turns this guard into an `AttributeError` on None, which reads as a crash in
+    the test rather than as the naming mistake it is.
+    """
     for name in _migration_files():
         assert NAME_RE.match(name), f"{name} does not match <14-digit-timestamp>_<slug>.sql"
