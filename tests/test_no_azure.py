@@ -36,8 +36,12 @@ FORBIDDEN = ("azure", "containerapp", "AZURE_")
 EXEMPT = {Path(__file__).name, "test_repo_layout.py"}
 
 # Text-ish files only; a binary that happens to contain the bytes is not a reference to Azure.
+# `.env` is deliberately NOT here. `Path(".env").suffix` is `""`, so listing it would never have
+# matched anyway -- it was dead config that only looked like coverage. Adding real coverage would
+# mean this test reading a `.env` and, when it failed, quoting its line into the assertion message:
+# that prints secret values. A credential file is not where a stale cloud hostname hides.
 SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".yml", ".yaml", ".json", ".toml", ".cfg",
-            ".ini", ".sh", ".md", ".txt", ".env", ".sql", ".css", ".html"}
+            ".ini", ".sh", ".md", ".txt", ".sql", ".css", ".html"}
 SKIP_DIR_PARTS = {"node_modules", "__pycache__", ".git", "dist", ".venv", "build", ".ruff_cache",
                   ".pytest_cache"}
 
@@ -103,10 +107,39 @@ def test_no_azure_references_in_the_live_tree():
     )
 
 
-def test_the_workflow_assertion_in_repo_layout_is_still_there():
+def test_the_workflow_assertion_in_repo_layout_is_live_not_just_present(tmp_path, monkeypatch):
     """`tests/test_repo_layout.py` pins the deploy workflow separately. That ruling is Kevin's and it
-    stays where it is; this test guards the source tree, not the workflow, and must not absorb it."""
-    text = (REPO / "tests" / "test_repo_layout.py").read_text(encoding="utf-8")
-    assert "az login" in text and "containerapp" in text and "AZURE_" in text, (
-        "test_repo_layout.py must keep its own assertion that workflows reference no Azure"
+    stays where it is; this test guards the source tree, not the workflow, and must not absorb it.
+
+    It proves the assertion is LIVE by running it, not by grepping its source. Grepping for the
+    forbidden words would keep passing if the assertion were deleted and the words left behind in a
+    comment -- the exact "test that cannot fail" shape. So: copy the real workflow, confirm the
+    upstream test passes on the copy, inject `az login`, and confirm it now fails on Azure and only
+    on Azure. A disabled or deleted assertion cannot produce that second failure.
+    """
+    import test_repo_layout
+
+    workflow_dir = tmp_path / ".github" / "workflows"
+    workflow_dir.mkdir(parents=True)
+    real = REPO / ".github" / "workflows" / "deploy-tradehub.yml"
+    assert real.is_file(), f"{real} is missing; the upstream assertion has nothing to read"
+    clean = real.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(test_repo_layout, "REPO", tmp_path)
+    (workflow_dir / "deploy-tradehub.yml").write_text(clean, encoding="utf-8")
+    # The copy is byte-identical to the real workflow, so this must pass. If it does not, the
+    # harness below is measuring something other than the Azure assertion and the rest is void.
+    test_repo_layout.test_deploy_workflow_builds_then_deploys_to_vps()
+
+    (workflow_dir / "deploy-tradehub.yml").write_text(
+        clean + "\n# az login --never-happened\n", encoding="utf-8"
     )
+    try:
+        test_repo_layout.test_deploy_workflow_builds_then_deploys_to_vps()
+    except AssertionError as exc:
+        assert "Azure" in str(exc), f"expected the Azure assertion to be the one that fired, got: {exc}"
+    else:
+        raise AssertionError(
+            "tests/test_repo_layout.py's deploy-workflow test PASSED a workflow containing "
+            "'az login'. Its Azure assertion has been weakened or removed; restore it."
+        )
