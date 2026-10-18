@@ -8,6 +8,7 @@ export interface ShadowFreshness {
   latest_bar: string | null;
   age_hours: number | null;
   is_stale: boolean | null;
+  source: string | null;
 }
 
 export interface ShadowSummary {
@@ -205,17 +206,20 @@ const WAITING_LEAD =
   "to read yet. Only an operator can finish this, and the step is:";
 
 /**
- * The credential state, worded in the same four beats as `WAITING_LEAD` and deliberately not
+ * The database credential state, worded in the same four beats as `WAITING_LEAD` and deliberately not
  * naming the variables: the sentence underneath is the server's, it names them exactly, and
  * restating them here would be a second copy to keep in step with `CREDENTIAL_SOURCES` in
- * `tradehub/api/main.py`. Two operators is also not a fact about credentials in general -- a third
- * credentialed service is a one-line change there and would make a count printed here a lie.
+ * `tradehub/api/main.py`.
+ *
+ * This used to be "Waiting on environment variables" for Alpaca credentials. The Alpaca read was
+ * replaced with keyless Kraken/Coinbase data (PR #146), so this state is now only for Supabase
+ * credentials. The Alpaca-specific check is gone.
  */
-const CREDENTIAL_TITLE = "Waiting on environment variables";
+const CREDENTIAL_TITLE = "Waiting on database credentials";
 const CREDENTIAL_LEAD =
-  "This page is not broken, and nothing is wrong with the charts or with the database. The " +
-  "shadow timeline reads market data from a service this deployment has no credentials for, so " +
-  "there is nothing to read yet. Only an operator can finish this, and the step is:";
+  "This page is not broken, and nothing is wrong with the charts. The shadow timeline reads " +
+  "signal events from a database this deployment has no credentials for, so there is nothing " +
+  "to read yet. Only an operator can finish this, and the step is:";
 
 const FAULT_TITLE = "The shadow timeline could not be read";
 const FAULT_LEAD = "The read failed and this page has nothing to show. The server said:";

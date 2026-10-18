@@ -175,12 +175,10 @@ describe("shadowUnavailable", () => {
  * and not a hypothetical: once the migration is applied, this is the read every reader gets.
  */
 const CREDENTIAL_SENTENCE =
-  "This service has no Alpaca API credentials, so the shadow timeline cannot be read. " +
+  "This service has no Supabase credentials, so the shadow timeline cannot be read. " +
   "The database is fine -- this is not a migration. " +
-  "Set ALPACA_API_KEY and ALPACA_SECRET_KEY in the stack's .env file, beside " +
-  "vps-stack/compose.yml. Then add 'ALPACA_API_KEY: ${ALPACA_API_KEY:-}' and " +
-  "'ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}' to the tradehub service's environment: block, " +
-  "and redeploy.";
+  "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the stack's .env file, beside " +
+  "vps-stack/compose.yml.";
 
 /** What a real bug in the builder produces, and the one thing no operator step closes. */
 const BUG_SENTENCE = "unsupported operand type(s) for +: 'int' and 'NoneType'";
@@ -193,13 +191,13 @@ describe("the three failed reads, told apart by status", () => {
     expect(notice.tone).toBe("operator_step");
     expect(notice.waiting_on_operator).toBe(true);
     expect(notice.failure).toBe("missing_credentials");
-    expect(notice.title).toBe("Waiting on environment variables");
+    expect(notice.title).toBe("Waiting on database credentials");
     expect(notice.title.toLowerCase()).not.toContain("unavailable");
     expect(notice.title).not.toMatch(/could not be read/i);
     // The same four beats as the migration notice: not broken, why there is nothing to read, only
     // an operator can finish it, and here is the step. The panel reads as a to-do, not an apology.
     expect(notice.lead).toMatch(/not broken/i);
-    expect(notice.lead).toMatch(/nothing is wrong with the charts or with the database/i);
+    expect(notice.lead).toMatch(/nothing is wrong with the charts/i);
     expect(notice.lead).toMatch(/only an operator can finish this/i);
   });
 
@@ -208,7 +206,7 @@ describe("the three failed reads, told apart by status", () => {
 
     expect(notice.body).toBe(CREDENTIAL_SENTENCE);
     // What, where, and the second place it has to be named. The page must not have to guess.
-    for (const needed of ["ALPACA_API_KEY", "ALPACA_SECRET_KEY", "vps-stack/compose.yml", "environment:"]) {
+    for (const needed of ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "vps-stack/compose.yml"]) {
       expect(notice.body).toContain(needed);
     }
   });

@@ -8,12 +8,15 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import requests
 from supabase import create_client
 
-
 from market_sentiment_tool.backend.runtime_bootstrap import env_candidates_for, load_canonical_env
-from market_sentiment_tool.backend.signal_events import CRYPTO_DOMAIN, SIGNAL_EVENTS_TABLE, is_supported_signal_event_domain
+from market_sentiment_tool.backend.signal_events import (
+    CRYPTO_DOMAIN,
+    SIGNAL_EVENTS_TABLE,
+    is_supported_signal_event_domain,
+)
+from tradehub.core.crypto_data import fetch_hourly_closes
 
 # NB: no env load at import time. `load_canonical_env` writes into `os.environ`,
 # so calling it at module scope made `import tradehub.scripts.shadow_performance`
@@ -134,15 +137,6 @@ def _missing_env_detail() -> str:
     return "No canonical .env file was found under the repo root or service root."
 
 
-def _alpaca_config() -> tuple[str, str, str]:
-    api_base = os.getenv("ALPACA_DATA_API_BASE", "https://data.alpaca.markets").strip('"').strip("'")
-    api_key = os.getenv("ALPACA_API_KEY", "")
-    secret_key = os.getenv("ALPACA_SECRET_KEY", "")
-    if not api_key or not secret_key:
-        raise MissingCredentialError("Alpaca API", ("ALPACA_API_KEY", "ALPACA_SECRET_KEY"))
-    return api_base, api_key, secret_key
-
-
 def _load_supabase_client():
     url = os.getenv("SUPABASE_URL", "") or os.getenv("VITE_SUPABASE_URL", "")
     key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
@@ -214,44 +208,16 @@ def fetch_recent_signal_events(
     return filtered
 
 
-def _alpaca_symbol(asset: str) -> str:
-    symbol = {"BTC": "BTC/USD", "ETH": "ETH/USD"}.get(asset.upper())
-    if not symbol:
-        raise ValueError(f"Unsupported crypto asset: {asset}")
-    return symbol
-
-
-def _fetch_alpaca_hourly_closes(asset: str, *, start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    api_base, api_key, secret_key = _alpaca_config()
-    symbol = _alpaca_symbol(asset)
-    response = requests.get(
-        f"{api_base}/v1beta3/crypto/us/bars",
-        headers={
-            "accept": "application/json",
-            "APCA-API-KEY-ID": api_key,
-            "APCA-API-SECRET-KEY": secret_key,
-        },
-        params={
-            "symbols": symbol,
-            "timeframe": "1Hour",
-            "start": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "limit": 1000,
-            "sort": "asc",
-        },
-        timeout=20,
+def _fetch_crypto_hourly_closes(asset: str, *, start: pd.Timestamp, end: pd.Timestamp) -> tuple[pd.DataFrame, str]:
+    """Fetch hourly closes from Kraken (or Coinbase fallback). Returns (DataFrame, source_name)."""
+    df, source = fetch_hourly_closes(
+        asset,
+        start=start.to_pydatetime(),
+        end=end.to_pydatetime(),
+        drop_last=True,
     )
-    response.raise_for_status()
-    payload = response.json()
-    rows = ((payload.get("bars") or {}).get(symbol)) or []
-    if not rows:
-        return pd.DataFrame(columns=["Close"])
-    frame = pd.DataFrame(rows)
-    frame["timestamp"] = pd.to_datetime(frame["t"], utc=True)
-    frame["Close"] = pd.to_numeric(frame["c"], errors="coerce")
-    frame = frame.set_index("timestamp")[["Close"]].dropna().sort_index()
     current_hour = _current_hour_utc()
-    return frame[frame.index < current_hour]
+    return df[df.index < current_hour], source
 
 
 def _event_hours(created_at: str) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -291,9 +257,9 @@ def _latest_bar_status(asset: str, *, current_hour: pd.Timestamp, grace_seconds:
     if grace_seconds is None:
         grace_seconds = default_stale_grace_seconds()
     start = current_hour - pd.Timedelta(hours=6)
-    closes = _fetch_alpaca_hourly_closes(asset, start=start, end=current_hour)
+    closes, source = _fetch_crypto_hourly_closes(asset, start=start, end=current_hour)
     if closes.empty:
-        return {"asset": asset, "latest_bar": None, "age_hours": None, "is_stale": True}
+        return {"asset": asset, "latest_bar": None, "age_hours": None, "is_stale": True, "source": source}
     latest_bar = closes.index.max()
     age = current_hour.to_pydatetime() - latest_bar.to_pydatetime()
     stale_cutoff = timedelta(hours=2) + timedelta(seconds=max(float(grace_seconds), 0.0))
@@ -302,6 +268,7 @@ def _latest_bar_status(asset: str, *, current_hour: pd.Timestamp, grace_seconds:
         "latest_bar": latest_bar,
         "age_hours": age.total_seconds() / 3600.0,
         "is_stale": age > stale_cutoff,
+        "source": source,
     }
 
 
@@ -339,7 +306,7 @@ def evaluate_recent_signals(
             continue
         start = min(base_hour for _, base_hour, _ in grouped)
         end = current_hour
-        closes = _fetch_alpaca_hourly_closes(asset, start=start, end=end)
+        closes, _source = _fetch_crypto_hourly_closes(asset, start=start, end=end)
         if closes.empty:
             continue
         for row, base_hour, realized_hour in grouped:
@@ -443,7 +410,7 @@ def build_shadow_report(
             freshness[asset] = _latest_bar_status(asset, current_hour=current_hour)
         except RuntimeError as exc:
             _record(exc)
-            freshness[asset] = {"asset": asset, "latest_bar": None, "age_hours": None, "is_stale": None}
+            freshness[asset] = {"asset": asset, "latest_bar": None, "age_hours": None, "is_stale": None, "source": None}
 
     if not evaluated:
         return {
@@ -509,6 +476,7 @@ def _serialize_freshness(freshness: dict[str, dict[str, Any]]) -> dict[str, dict
             "latest_bar": None if latest_bar is None else _to_utc_timestamp(latest_bar).to_pydatetime(),
             "age_hours": None if status.get("age_hours") is None else float(status["age_hours"]),
             "is_stale": status.get("is_stale"),
+            "source": status.get("source"),
         }
     return payload
 

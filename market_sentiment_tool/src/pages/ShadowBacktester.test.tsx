@@ -35,23 +35,19 @@ const MIGRATION_SENTENCE =
   "and redeploy. The database still has crypto_signal_events under its old name.";
 
 /**
- * The sentence the same handler sends for a MISSING CREDENTIAL, quoted from
- * `tradehub/api/main.py:_missing_credential_message` with the real arguments
- * (`sp.MissingCredentialError("Alpaca API", ("ALPACA_API_KEY", "ALPACA_SECRET_KEY"))`).
+ * The sentence `tradehub/api/main.py:_missing_credential_message` sends when Supabase credentials
+ * are missing. Quoted rather than retyped so that a change to the server's wording shows up here
+ * as a failing test -- which is the point, because the page is not allowed a second copy of an
+ * instruction that names a file and two variables.
  *
- * This is the 424 PR #43 (`f856fb3`) added, and it is the read every reader will get once
- * `20260415090000` is applied: `vps-stack/compose.yml` passes no `ALPACA_*` to the tradehub service,
- * so the table becomes fine and the credential does not. Quoted rather than retyped so that a
- * change to the server's wording shows up here as a failing test -- which is the point, because the
- * page is not allowed a second copy of an instruction that names a file and two variables.
+ * With the Alpaca read replaced by keyless Kraken/Coinbase data (PR #146), there are no Alpaca
+ * credentials left to check on this route. The 424 is now only for Supabase credentials.
  */
 const CREDENTIAL_SENTENCE =
-  "This service has no Alpaca API credentials, so the shadow timeline cannot be read. " +
+  "This service has no Supabase credentials, so the shadow timeline cannot be read. " +
   "The database is fine -- this is not a migration. " +
-  "Set ALPACA_API_KEY and ALPACA_SECRET_KEY in the stack's .env file, beside " +
-  "vps-stack/compose.yml. Then add 'ALPACA_API_KEY: ${ALPACA_API_KEY:-}' and " +
-  "'ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}' to the tradehub service's environment: block, " +
-  "and redeploy.";
+  "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the stack's .env file, beside " +
+  "vps-stack/compose.yml.";
 
 /** What a real bug in the builder produces: a 500, and the one case no operator step closes. */
 const BUG_SENTENCE = "unsupported operand type(s) for +: 'int' and 'NoneType'";
@@ -218,7 +214,7 @@ describe("a 424: the table is fine and an environment variable is not set", () =
     // The heading says what is being waited on, in the same voice as the migration one, because it
     // is the same kind of fact: a person has a step to take on this deployment.
     expect(
-      screen.getByRole("heading", { name: /Waiting on environment variables/i }),
+      screen.getByRole("heading", { name: /Waiting on database credentials/i }),
     ).toBeInTheDocument();
     expect(screen.getByText(/Only an operator can finish this/i)).toBeInTheDocument();
 
@@ -226,17 +222,16 @@ describe("a 424: the table is fine and an environment variable is not set", () =
     // the product was broken when the only thing wrong was two unset variables.
     expect(screen.queryByText(/could not be read/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/API unavailable/i)).not.toBeInTheDocument();
-    const panel = panelFor(/Waiting on environment variables/i);
+    const panel = panelFor(/Waiting on database credentials/i);
     expect(panel.className).toMatch(/amber/);
     expect(panel.className).not.toMatch(/rose/);
 
     // What is missing and what to do. The two variables, the file to put them in, and the
     // `environment:` block that has to name them too -- `compose.yml` will not pass them through
     // otherwise, and an operator who sets the variables and redeploys would be back here again.
-    expect(screen.getByText(/ALPACA_API_KEY/)).toBeInTheDocument();
-    expect(screen.getByText(/ALPACA_SECRET_KEY/)).toBeInTheDocument();
+    expect(screen.getByText(/SUPABASE_URL/)).toBeInTheDocument();
+    expect(screen.getByText(/SUPABASE_SERVICE_ROLE_KEY/)).toBeInTheDocument();
     expect(screen.getByText(/vps-stack\/compose\.yml/)).toBeInTheDocument();
-    expect(screen.getByText(/environment: block/)).toBeInTheDocument();
   });
 
   it("says this is not a migration, because applying one would fix nothing", async () => {
@@ -257,7 +252,7 @@ describe("a 424: the table is fine and an environment variable is not set", () =
     }
     // The blunt form. The server's instruction contains no digits, so "no digits anywhere on the
     // panel" is exact and catches a `0.00h` freshness line or a stray `424` printed as a figure.
-    expect((panelFor(/Waiting on environment variables/i).textContent ?? "").match(/[0-9]+/g) ?? [])
+    expect((panelFor(/Waiting on database credentials/i).textContent ?? "").match(/[0-9]+/g) ?? [])
       .toEqual([]);
   });
 
@@ -276,7 +271,7 @@ describe("a 424: the table is fine and an environment variable is not set", () =
     await renderPage(answerWith(424, { detail: CREDENTIAL_SENTENCE }));
 
     expect(
-      screen.getByRole("heading", { name: /Waiting on environment variables/i }),
+      screen.getByRole("heading", { name: /Waiting on database credentials/i }),
     ).toBeInTheDocument();
   });
 });
@@ -290,7 +285,7 @@ describe("the three failed reads, side by side", () => {
 
     for (const [status, detail, code, heading] of [
       [503, MIGRATION_SENTENCE, "missing_table", /Waiting on a database migration/i],
-      [424, CREDENTIAL_SENTENCE, "missing_credentials", /Waiting on environment variables/i],
+      [424, CREDENTIAL_SENTENCE, "missing_credentials", /Waiting on database credentials/i],
       [500, BUG_SENTENCE, "internal_error", /could not be read/i],
     ] as const) {
       await renderPage(answerWith(status, { detail }, { "X-Error-Code": code }));
@@ -321,8 +316,9 @@ describe("the three failed reads, side by side", () => {
     // variable name would send one to go and set it.
     expect(seen[0].body).toContain("20260415090000_signal_events_unification.sql");
     expect(seen[0].body).not.toContain("ALPACA");
-    expect(seen[1].body).toContain("ALPACA_API_KEY");
-    expect(seen[1].body).toContain("ALPACA_SECRET_KEY");
+    expect(seen[0].body).not.toContain("SUPABASE");
+    expect(seen[1].body).toContain("SUPABASE_URL");
+    expect(seen[1].body).toContain("SUPABASE_SERVICE_ROLE_KEY");
     expect(seen[1].body).not.toContain(".sql");
     expect(seen[2].body).toContain(BUG_SENTENCE);
     expect(seen[2].body).not.toMatch(/ALPACA|\.sql/);
@@ -373,7 +369,7 @@ describe("the page classifies on the status, not on the message", () => {
     );
 
     expect(
-      screen.getByRole("heading", { name: /Waiting on environment variables/i }),
+      screen.getByRole("heading", { name: /Waiting on database credentials/i }),
     ).toBeInTheDocument();
   });
 
@@ -386,7 +382,7 @@ describe("the page classifies on the status, not on the message", () => {
     );
 
     expect(screen.getByRole("heading", { name: /could not be read/i })).toBeInTheDocument();
-    expect(screen.queryByText(/Waiting on environment variables/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Waiting on database credentials/i)).not.toBeInTheDocument();
   });
 
   it("keeps a 500 a fault when its detail is the migration sentence word for word", async () => {
@@ -405,7 +401,7 @@ describe("the page classifies on the status, not on the message", () => {
     );
 
     expect(
-      screen.getByRole("heading", { name: /Waiting on environment variables/i }),
+      screen.getByRole("heading", { name: /Waiting on database credentials/i }),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Waiting on a database migration/i)).not.toBeInTheDocument();
   });
