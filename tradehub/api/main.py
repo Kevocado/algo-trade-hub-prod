@@ -568,6 +568,97 @@ def get_journal_series(supabase=Depends(get_supabase)):
     return {"series": series}
 
 
+@app.get("/api/weather", tags=["Weather"])
+def get_weather(supabase=Depends(get_supabase)):
+    """Today's weather forecast vs Kalshi vs climatology, plus settled history.
+
+    Read from journal tables. No new forecasting. The forecaster names are:
+    - weather_high/low/rain: the ensemble model
+    - baseline_climatology_weather_*: the climatology baseline
+    - kalshi_implied_weather_*: the Kalshi market probability
+    """
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase is not configured")
+    try:
+        forecasts = _fetch_all(supabase, "journal_forecasts", lambda q: q.select("*"),
+                               order=("frozen_at",))
+    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
+        raise _table_fault("journal_forecasts", exc) from exc
+    try:
+        settlements = _fetch_all(supabase, "journal_settlements", lambda q: q.select("*"),
+                                 order=("settled_at",))
+    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
+        raise _table_fault("journal_settlements", exc) from exc
+
+    # Weather forecaster patterns
+    weather_forecasters = {
+        "ensemble": ("weather_high", "weather_low", "weather_rain"),
+        "climatology": ("baseline_climatology_weather_high", "baseline_climatology_weather_low",
+                        "baseline_climatology_weather_rain"),
+        "kalshi": ("kalshi_implied_weather_high", "kalshi_implied_weather_low",
+                   "kalshi_implied_weather_rain"),
+    }
+
+    # Group by target, keep only weather forecasters
+    by_target: dict[str, dict[str, float]] = {}
+    for row in forecasts:
+        target = row.get("target", "")
+        forecaster = row.get("forecaster", "")
+        prob = row.get("probability")
+        if prob is None:
+            continue
+        # Check if this is a weather forecaster
+        is_weather = False
+        for kind, names in weather_forecasters.items():
+            if forecaster in names:
+                is_weather = True
+                break
+        if not is_weather:
+            continue
+        if target not in by_target:
+            by_target[target] = {}
+        # Map forecaster to kind
+        for kind, names in weather_forecasters.items():
+            if forecaster in names:
+                by_target[target][kind] = float(prob)
+                break
+
+    # Split into today and settled
+    today_str = datetime.now(timezone.utc).strftime("%y%b%d").upper()
+    today = []
+    settled = []
+    for target, probs in by_target.items():
+        # Extract date from target: T-KXHIGHNY-26OCT18 -> 26OCT18
+        parts = target.rsplit("-", 1)
+        if len(parts) != 2:
+            continue
+        date_str = parts[1]
+        row = {
+            "target": target,
+            "date": date_str,
+            "ensemble": probs.get("ensemble"),
+            "kalshi": probs.get("kalshi"),
+            "climatology": probs.get("climatology"),
+        }
+        if date_str == today_str:
+            today.append(row)
+        else:
+            # Check if settled
+            for s in settlements:
+                if s.get("target") == target:
+                    row["outcome"] = s.get("outcome")
+                    row["realized_value"] = s.get("realized_value")
+                    row["settled_at"] = s.get("settled_at")
+                    break
+            settled.append(row)
+
+    return {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "today": today,
+        "settled": settled,
+    }
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Sports edges (rollout step 7): candidate edges with review verdicts and links
 # ════════════════════════════════════════════════════════════════════════════
