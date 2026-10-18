@@ -58,6 +58,7 @@ from tradehub.sports import hub_calibration as hub_calibration_mod
 from tradehub.sports import kinds as kinds_mod
 from tradehub.sports import scan as scan_mod
 from tradehub.sports.candidates import HUB_LEDGER_MIN_SETTLED, check_candidate, choose_calibration
+from tradehub.sports.config import load_sport_config
 from tradehub.sports.feed import FeedGame, parse_feed
 from tradehub.sports.hub_calibration import HUB_ORIENTATION, KINDS, settled_buckets
 from tradehub.sports.journal_ledger import journal_settled_ledger
@@ -68,12 +69,28 @@ from tradehub.sports.scorecard import MIN_SETTLED
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sports"
 NOW = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
-
 PARAMS = {"max_quote_spread": 0.04, "min_resting_size": 100, "min_volume": 1000, "min_hours_to_start": 1,
           "max_hours_to_start": 72, "calibration_max_dev": 0.10, "calibration_min_n": 20}
 
 PREDICTOR = {"winner": [{"lo": 0.6, "hi": 0.7, "n": 3, "mean_prob": 0.65, "hit_rate": 0.66}]}
 HUB = {"winner": [{"lo": 0.6, "hi": 0.7, "n": 120, "mean_prob": 0.65, "hit_rate": 0.70}]}
+
+
+def _sport_of(url: str) -> str:
+    """Which sport a feed URL belongs to, resolved from the CONFIG rather than a hostname prefix.
+
+    The fake `fetch` below used to sniff the feed hostname as a prefix, which only worked because the
+    default `base_url` happened to be the now-retired host the stack used to run on. When the defaults
+    moved to the VPS service names (`http://nfl:8001`, `http://cfb:8003`) that prefix matched neither,
+    so EVERY request was routed to NFL and three feed-parsing tests failed for a reason that had
+    nothing to do with what they test. Reading the config is what the product does, so a future URL
+    change cannot break these again. Raising on an unmatched URL keeps the failure loud instead of
+    silently defaulting one sport's feed to the other's.
+    """
+    for sport in ("cfb", "nfl"):
+        if url.startswith(load_sport_config(sport).base_url):
+            return sport
+    raise AssertionError(f"feed URL matches no configured sport: {url}")
 
 # What `parse_feed` returns for a payload that published no calibration at all. NOT `{}`: the
 # comprehension is `{k: calibration.get(k) or [] for k in KINDS}`, so the mapping always has three
@@ -1100,7 +1117,7 @@ def _both_sports(ledger):
     """Run both sports' recorded feeds and markets through the orchestrator with one shared ledger."""
     return scan_mod.run_sports_scan(
         BOTH_NOW, _Kalshi({**_recorded_markets("nfl"), **_recorded_markets("cfb")}),
-        fetch=lambda url, **_kw: _recorded_feed("cfb" if url.startswith("https://cfb-") else "nfl"),
+        fetch=lambda url, **_kw: _recorded_feed(_sport_of(url)),
         hub_ledger=ledger, sports=("nfl", "cfb"),
     )
 
@@ -1319,7 +1336,7 @@ def test_the_run_summary_carries_the_feeds_unread_names_per_sport():
     parsed: list = []
 
     def fetch(url, **_kw):
-        sport = "cfb" if url.startswith("https://cfb-") else "nfl"
+        sport = _sport_of(url)
         if sport == "cfb":
             return _recorded_feed(sport)
         parsed.append(_feed_with_extra_calibration_key(sport, "moneyline"))
@@ -1360,7 +1377,7 @@ def test_the_feeds_gap_survives_a_run_where_the_ledger_read_failed():
     run = scan_mod.run_sports_scan(
         BOTH_NOW, _Kalshi({**_recorded_markets("nfl"), **_recorded_markets("cfb")}),
         fetch=lambda url, **_kw: _feed_with_extra_calibration_key(
-            "cfb" if url.startswith("https://cfb-") else "nfl", "moneyline"),
+            _sport_of(url), "moneyline"),
         hub_ledger=scan_mod.HubLedger(read_failed=True), sports=("nfl", "cfb"),
     )
 

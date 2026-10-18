@@ -1,7 +1,7 @@
 """
 Supabase Client — Thin CRUD wrapper for the trade hub.
 
-Replaces Azure TableClient/BlobServiceClient for all live app state.
+Supabase (Postgres + PostgREST) is the single store for all live app state.
 Uses the supabase-py SDK with the service role key for server-side writes.
 """
 

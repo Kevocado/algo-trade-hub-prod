@@ -9,7 +9,7 @@ You are the Lead Full-Stack Quant Engineer for this project. You must strictly a
 
 ## 1. Database (The Single Source of Truth)
 - **Primary:** Supabase (PostgreSQL).
-- **Banned:** Azure Tables, SQLite, or local JSON files.
+- **Banned:** any other hosted table store, SQLite, or local JSON files.
 - **Rule:** Do NOT use `ON CONFLICT` blindly without ensuring the `market_id` generation is truly unique (e.g., concatenate home/away teams and date for sports).
 
 ## 2. Backend (Python / Machine Learning)

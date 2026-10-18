@@ -59,8 +59,8 @@ def test_sports_scan_passes_the_deadline_into_the_client(monkeypatch):
     monkeypatch.setattr(sports_scan, "SportsKalshi", FakeKalshi)
     monkeypatch.setattr(sports_scan, "load_sport_config", lambda sport: _cfg())
     # Patching the module global was NOT enough: `run_sports_scan`'s `fetch` default binds
-    # fetch_feed at definition time, so the real one ran and opened a socket to the Azure
-    # predictor. The test still passed, because a 404 is handled as a feed error -- which is
+    # fetch_feed at definition time, so the real one ran and opened a socket to the live sports
+    # feed. The test still passed, because a 404 is handled as a feed error -- which is
     # exactly how a test can quietly need the internet. Pass `fetch=` explicitly and assert it
     # was used, so a regression to the network fails here.
     feeds: list[str] = []
