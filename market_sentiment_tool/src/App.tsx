@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation } from "react-router-dom";
 // Pages
 import Home from "@/pages/Home";
 import ShadowBacktester from "@/pages/ShadowBacktester";
@@ -9,6 +9,7 @@ import JobsScorecard from "@/pages/JobsScorecard";
 import Cpi from "@/pages/Cpi";
 import Journal from "@/pages/Journal";
 import Health from "@/pages/Health";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { NoOrdersBanner } from "@/components/NoOrdersBanner";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
@@ -145,10 +146,15 @@ const AppShell = ({ children }: { children: React.ReactNode }) => {
   );
 };
 
+function Guarded({ children }: { children: React.ReactNode }) {
+  return <ErrorBoundary resetKey={useLocation().pathname}>{children}</ErrorBoundary>;
+}
+
 function App() {
   return (
     <BrowserRouter>
       <AppShell>
+        <Guarded>
         <Routes>
           <Route path="/" element={<Home />} />
           {/* /lab was the Prediction Lab; the journal replaced it (v2 spec §9). A redirect, not a 404, so
@@ -185,6 +191,7 @@ function App() {
           <Route path="/cpi" element={<Cpi />} />
           <Route path="/health" element={<Health />} />
         </Routes>
+        </Guarded>
       </AppShell>
     </BrowserRouter>
   );

@@ -66,7 +66,8 @@ def _row_without_interval(forecaster, version, n, date_from, **over):
     return row
 
 
-def test_series_returns_per_forecaster_points_with_gap_se_n():
+def test_series_returns_one_entry_per_forecaster_with_its_points():
+    """The shape the page reads: [{forecaster, version, points: [{date, gap, se, n}]}], oldest point first."""
     db = FakeJournalDB(lambda: T0)
     db.tables["journal_backtests"] += [
         _replay("gas", "gas-v2", -0.030, 0.005, 760, "2026-06-01"),
@@ -75,34 +76,13 @@ def test_series_returns_per_forecaster_points_with_gap_se_n():
     ]
     res = _client(db).get("/api/journal/series")
     assert res.status_code == 200
-    points = res.json()["series"]
-    assert len(points) == 3
-    # Ordered by date_from ascending.
-    assert [p["date_from"] for p in points] == ["2026-05-01", "2026-06-01", "2026-07-01"]
-    assert points[0] == {
-        "forecaster": "gas",
-        "forecaster_version": "gas-v2",
-        "date_from": "2026-05-01",
-        "gap": -0.020,
-        "se": 0.004,
-        "n": 500,
-    }
-    assert points[1] == {
-        "forecaster": "gas",
-        "forecaster_version": "gas-v2",
-        "date_from": "2026-06-01",
-        "gap": -0.030,
-        "se": 0.005,
-        "n": 760,
-    }
-    assert points[2] == {
-        "forecaster": "weather_high",
-        "forecaster_version": "v1",
-        "date_from": "2026-07-01",
-        "gap": -0.010,
-        "se": 0.009,
-        "n": 400,
-    }
+    series = res.json()["series"]
+    assert [(e["forecaster"], e["version"]) for e in series] == [("gas", "gas-v2"), ("weather_high", "v1")]
+    assert series[0]["points"] == [
+        {"date": "2026-05-01", "gap": -0.020, "se": 0.004, "n": 500},
+        {"date": "2026-06-01", "gap": -0.030, "se": 0.005, "n": 760},
+    ]
+    assert series[1]["points"] == [{"date": "2026-07-01", "gap": -0.010, "se": 0.009, "n": 400}]
 
 
 def test_series_empty_when_no_backtests():
@@ -137,12 +117,13 @@ def test_series_null_gap_se_never_zero_when_interval_columns_missing():
     ]
     res = _client(db).get("/api/journal/series")
     assert res.status_code == 200
-    points = res.json()["series"]
-    assert len(points) == 2
-    for p in points:
-        assert p["gap"] is None, p
-        assert p["se"] is None, p
-        assert p["n"] is not None
+    series = res.json()["series"]
+    assert len(series) == 2
+    for e in series:
+        for p in e["points"]:
+            assert p["gap"] is None, p
+            assert p["se"] is None, p
+            assert p["n"] is not None
 
 
 def test_series_ordered_by_date_from_ascending():
@@ -154,8 +135,8 @@ def test_series_ordered_by_date_from_ascending():
     ]
     res = _client(db).get("/api/journal/series")
     assert res.status_code == 200
-    points = res.json()["series"]
-    assert [p["date_from"] for p in points] == ["2026-06-01", "2026-07-01", "2026-09-01"]
+    [entry] = res.json()["series"]
+    assert [p["date"] for p in entry["points"]] == ["2026-06-01", "2026-07-01", "2026-09-01"]
 
 
 def test_series_works_with_monotonic_forced_to_5_and_1e7(monkeypatch):
