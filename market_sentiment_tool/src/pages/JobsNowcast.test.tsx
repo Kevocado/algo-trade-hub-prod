@@ -58,8 +58,8 @@ describe("JobsNowcast", () => {
       mockRow({ reference_month: "2026-09-01" }),
     ]);
     render(<JobsNowcast />);
-    await waitFor(() => expect(screen.getByText("We were closer")).toBeInTheDocument());
-    expect(screen.getByText("We were closer").closest("div")?.parentElement).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("We were closer")[0]).toBeInTheDocument());
+    expect(screen.getAllByText("We were closer")[0].closest("div")?.parentElement).toBeInTheDocument();
   });
 
   it("shows a per-report us-vs-Kalshi chart with dots (no lines)", async () => {
@@ -76,7 +76,7 @@ describe("JobsNowcast", () => {
       mockRow({ reference_month: "2026-08-01", nowcast_mu: 162 }),
     ]);
     render(<JobsNowcast />);
-    await waitFor(() => expect(screen.getByText("+162k")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("+162k")[0]).toBeInTheDocument());
   });
 
   it("renders a disclosure for internals (engine version, gate status not in table)", async () => {
@@ -100,7 +100,7 @@ describe("JobsNowcast", () => {
       }),
     ]);
     render(<JobsNowcast />);
-    await waitFor(() => expect(screen.getByText("We were closer")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("We were closer")[0]).toBeInTheDocument());
     const { container } = render(<JobsNowcast />);
     // The page's text nodes should not contain bare "0" representing a missing figure
     expect(container.textContent).not.toMatch(/0\.0/);
