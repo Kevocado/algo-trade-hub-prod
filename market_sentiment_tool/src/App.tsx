@@ -5,7 +5,7 @@ import ShadowBacktester from "@/pages/ShadowBacktester";
 import Models from "@/pages/Models";
 import Scoreboard from "@/pages/Scoreboard";
 import SportsEdges from "@/pages/SportsEdges";
-import JobsScorecard from "@/pages/JobsScorecard";
+import JobsNowcast from "@/pages/JobsNowcast";
 import Cpi from "@/pages/Cpi";
 import Journal from "@/pages/Journal";
 import Health from "@/pages/Health";
@@ -92,7 +92,7 @@ const Sidebar = () => {
           to="/jobs"
           className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
         >
-          <Briefcase className="w-5 h-5 text-sky-400" /> Jobs Scorecard
+          <Briefcase className="w-5 h-5 text-sky-400" /> Jobs nowcast
         </NavLink>
         {/* Label says "Display", not "Nowcast" or "Edges". This board is NOT a board of
             opportunities, and a nav entry that reads like the other four would put the claim back
@@ -187,7 +187,7 @@ function App() {
               Same component, same /api/scoreboard read, address bar updated to the real path. */}
           <Route path="/shadow-scoreboard" element={<Navigate to="/scoreboard" replace />} />
           <Route path="/sports" element={<SportsEdges />} />
-          <Route path="/jobs" element={<JobsScorecard />} />
+          <Route path="/jobs" element={<JobsNowcast />} />
           <Route path="/cpi" element={<Cpi />} />
           <Route path="/health" element={<Health />} />
         </Routes>
