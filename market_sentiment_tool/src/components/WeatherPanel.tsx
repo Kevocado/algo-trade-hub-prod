@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, Line, XAxis, YAxis } from "recharts";
+import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, ReferenceLine, XAxis, YAxis } from "recharts";
 import { getJson } from "@/lib/getJson";
 
 const CORRECT = "#10b981";   // green: our prediction matched the outcome
@@ -18,6 +18,8 @@ interface WeatherPanelResponse {
   settled_date: string | null;
   contracts: WeatherContract[];
 }
+
+export type { WeatherPanelResponse };
 
 /** Weather/ERCOT panel: per-contract probability vs Kalshi's on a 45-degree scatter,
     points coloured by outcome (green = our call was right, red = wrong).
@@ -68,7 +70,7 @@ export function WeatherPanel() {
               type="number"
               dataKey="our_prob"
               domain={[0, 1]}
-              tick={{ fill: "#94a3b8", fontSize: 10, format: (v: number) => `${(v * 100).toFixed(0)}%` }}
+              tick={{ fill: "#94a3b8", fontSize: 10 }}
               tickLine={false}
               axisLine={false}
             />
@@ -76,23 +78,23 @@ export function WeatherPanel() {
               type="number"
               dataKey="market_prob"
               domain={[0, 1]}
-              tick={{ fill: "#94a3b8", fontSize: 10, format: (v: number) => `${(v * 100).toFixed(0)}%` }}
+              tick={{ fill: "#94a3b8", fontSize: 10 }}
               tickLine={false}
               axisLine={false}
             />
             {/* 45-degree reference line: our probability = Kalshi's probability */}
-            <Line type="number" dataKey="our_prob" points={[[0, 0], [1, 1]]} stroke="#64748b" strokeWidth={1} strokeDasharray="3 3" />
+            <ReferenceLine x={0} y={0} x2={1} y2={1} stroke="#64748b" strokeWidth={1} strokeDasharray="3 3" />
             {/* Points coloured by outcome */}
             <Scatter
               name="Outcome matched our call"
               data={contracts.filter((c) => c.outcome !== null && ((c.our_prob! > 0.5) === (c.outcome === 1)))}
-              dataKey={["our_prob", "market_prob"] as const}
+              dataKey="our_prob"
               fill={CORRECT}
             />
             <Scatter
               name="Our call missed"
               data={contracts.filter((c) => c.outcome !== null && ((c.our_prob! > 0.5) !== (c.outcome === 1)))}
-              dataKey={["our_prob", "market_prob"] as const}
+              dataKey="our_prob"
               fill={WRONG}
             />
           </ScatterChart>
