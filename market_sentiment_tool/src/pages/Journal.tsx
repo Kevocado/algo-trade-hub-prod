@@ -73,7 +73,7 @@ export default function Journal() {
         <Stat value={h.promoted} label="promoted" hint="Needs 200 scored (daily) or 50 (monthly)." />
       </section>
 
-      <SkillChart data={data} />
+      <SkillChart series={series?.series ?? []} />
 
       {results.length > 0 && (
         <section aria-label="Results">
