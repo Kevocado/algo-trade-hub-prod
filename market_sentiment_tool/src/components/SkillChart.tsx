@@ -1,124 +1,104 @@
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, XAxis, YAxis } from "recharts";
-
+import { CartesianGrid, ErrorBar, ReferenceLine, ResponsiveContainer, Scatter, ScatterChart, XAxis, YAxis } from "recharts";
 import { forecasterLabel } from "@/lib/forecasterLabels";
-import type { SeriesEntry } from "@/lib/journal";
+import type { JournalResponse } from "@/lib/journal";
 
 const AHEAD = "#10b981";   // green: better than baseline (gap < 0)
 const BEHIND = "#f87171";  // red: worse than baseline (gap > 0)
-const UNKNOWN = "#94a3b8"; // slate: not measured
-const WHISKER = "#64748b";
+const UNKNOWN = "#94a3b8"; // slate: not measured / too early
+const TOO_EARLY_N = 30;
 
-interface Row {
-  label: string;
-  gap: number | null;
-  se: number | null;
-}
+/** Horizontal forest plot: one row per market-linked forecaster,
+    gap (paired Brier vs Kalshi price) on the x-axis with a labelled zero line,
+    95% interval whiskers, sorted by gap, no connecting lines.
+    Rows under 30 settled are shown hollow ("too early").
+    Gap and SE are computed server-side (per-contract squared-error differences)
+    and arrive in `JournalScore.gap` / `gap_se`. Nothing is computed here. */
+export function SkillChart({ data }: { data: JournalResponse }) {
+  const marketLinked = data.forecasters.filter(
+    (f) => f.baseline === "market" && (f.n_settled ?? 0) > 0,
+  );
 
-/** Last point per forecaster, most recent date wins. */
-function latestPoint(points: SeriesEntry["points"]): SeriesEntry["points"][number] | undefined {
-  if (!points.length) return undefined;
-  return [...points].sort((a, b) => a.date.localeCompare(b.date)).pop();
-}
+  const rows = marketLinked.map((f) => ({
+    label: forecasterLabel(f.forecaster, f.forecaster_version),
+    gap: f.gap ?? null,
+    se: f.gap_se ?? null,
+    nSettled: f.n_settled ?? 0,
+    tooEarly: (f.n_settled ?? 0) < TOO_EARLY_N,
+  }));
 
-function gapText(gap: number | null): string {
-  if (gap === null) return "—";
-  const sign = gap > 0 ? "+" : "";
-  const digits = gap !== 0 && Math.abs(gap) < 0.005 ? 4 : 2;
-  return `${sign}${gap.toFixed(digits)}`;
-}
-
-function domain(gaps: number[]): [number, number] {
-  if (!gaps.length) return [-1, 1];
-  const lo = Math.min(0, ...gaps);
-  const hi = Math.max(0, ...gaps);
-  const pad = Math.max((hi - lo) * 0.35, 0.02);
-  return [lo - pad, hi + pad];
-}
-
-/** Dot-and-whisker: one dot per forecaster (gap vs baseline) with ±2 SE whiskers.
- *
- *  Null gap renders as "unknown" — never a dot at 0. Null se renders dot only,
- *  no whisker. Every number comes from /api/journal/series; nothing is computed here. */
-export function SkillChart({ series }: { series: SeriesEntry[] }) {
-  const rows: Row[] = series.map((s) => {
-    const p = latestPoint(s.points);
-    return {
-      label: forecasterLabel(s.forecaster, s.version),
-      gap: p?.gap ?? null,
-      se: p?.se ?? null,
-    };
+  // Sort by gap ascending (most negative = best first), nulls last.
+  const sorted = [...rows].sort((a, b) => {
+    if (a.gap === null && b.gap !== null) return 1;
+    if (a.gap !== null && b.gap === null) return -1;
+    if (a.gap === null && b.gap === null) return 0;
+    return a.gap - b.gap;
   });
 
-  const gaps = rows.map((r) => r.gap).filter((v): v is number => v !== null);
-  const [yMin, yMax] = domain(gaps);
-
-  /** One dot per forecaster, null-separated so dots never connect across forecasters. */
-  const dots = (rows: Row[]) =>
-    rows.flatMap((r) => (r.gap === null ? [] : [{ label: r.label, y: r.gap }, { label: null, y: null }]));
+  const gaps = sorted.map((r) => r.gap).filter((v): v is number => v !== null);
+  const minGap = gaps.length > 0 ? Math.min(0, ...gaps) : -0.1;
+  const maxGap = gaps.length > 0 ? Math.max(0, ...gaps) : 0.1;
+  const pad = Math.max((maxGap - minGap) * 0.15, 0.02);
 
   return (
-    <section aria-label="Skill vs baseline" className="grid gap-4">
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart margin={{ top: 8, right: 6, bottom: 34, left: 32 }}>
+    <section aria-label="Skill vs Kalshi price" className="grid gap-4">
+      <ResponsiveContainer width="100%" height={260}>
+        <ScatterChart
+          data={sorted}
+          margin={{ top: 24, right: 40, bottom: 36, left: 130 }}
+          layout="horizontal"
+        >
           <CartesianGrid stroke="#1e293b" />
+          {/* Zero line: darker vertical line at x=0 with a "0" label. */}
+          <ReferenceLine
+            x={0}
+            stroke="#64748b"
+            strokeWidth={1.5}
+            label={{ position: "top", content: "0", fill: "#94a3b8", fontSize: 9, offset: 4 }}
+          />
           <XAxis
-            type="category"
-            dataKey="label"
-            tick={{ fill: "#94a3b8", fontSize: 10 }}
+            type="number"
+            dataKey="gap"
+            domain={[minGap - pad, maxGap + pad]}
+            tick={{ fill: "#94a3b8", fontSize: 10, format: (v: number) => v.toFixed(3) }}
             tickLine={false}
             axisLine={false}
-            interval={0}
           />
           <YAxis
-            type="number"
-            dataKey="y"
-            domain={[yMin, yMax]}
-            tick={{ fill: "#94a3b8", fontSize: 10 }}
+            type="category"
+            dataKey="label"
+            domain={[sorted.length, -1]}
+            tick={{ fill: "#94a3b8", fontSize: 9 }}
             tickLine={false}
             axisLine={false}
+            allowDuplicatedCategory
           />
-          {/* ±2 SE whiskers: one vertical line per forecaster with an interval. */}
-          {rows.map((r) => (
-            r.gap !== null && r.se !== null && (
-              <Line
-                key={r.label}
-                type="linear"
-                dataKey="y"
-                data={[
-                  { label: r.label, y: r.gap - 2 * r.se },
-                  { label: r.label, y: r.gap + 2 * r.se },
-                ]}
-                stroke={WHISKER}
-                strokeWidth={1.5}
-              />
-            )
-          ))}
-          {/* Dots: ahead (green) / behind (red); null gap -> no dot at all. */}
-          {rows.filter((r) => r.gap !== null && r.gap < 0).length > 0 && (
-            <Line type="linear" dataKey="y" data={dots(rows.filter((r) => r.gap !== null && r.gap < 0))} dot={{ r: 5, fill: AHEAD }} />
-          )}
-          {rows.filter((r) => r.gap !== null && r.gap > 0).length > 0 && (
-            <Line type="linear" dataKey="y" data={dots(rows.filter((r) => r.gap !== null && r.gap > 0))} dot={{ r: 5, fill: BEHIND }} />
-          )}
-        </LineChart>
+          {/* Error bars: horizontal whiskers at ±SE around the gap dot. */}
+          <ErrorBar dataKey="gap" errorKey="gap_se" stroke="#64748b" strokeWidth={1} />
+          {/* Ahead dots (green): gap < 0, enough settled. */}
+          <Scatter
+            name="Better than Kalshi"
+            data={sorted.filter((r) => r.gap !== null && r.gap < 0 && !r.tooEarly)}
+            dataKey="gap"
+            fill={AHEAD}
+          />
+          {/* Behind dots (red): gap > 0, enough settled. */}
+          <Scatter
+            name="Worse than Kalshi"
+            data={sorted.filter((r) => r.gap !== null && r.gap > 0 && !r.tooEarly)}
+            dataKey="gap"
+            fill={BEHIND}
+          />
+          {/* Too-early dots (hollow grey): under 30 settled. */}
+          <Scatter
+            name="Too early"
+            data={sorted.filter((r) => r.gap !== null && r.tooEarly)}
+            dataKey="gap"
+            fill="none"
+            stroke={UNKNOWN}
+            strokeWidth={1.5}
+          />
+        </ScatterChart>
       </ResponsiveContainer>
-
-      {/* Per-forecaster readout so exact values and the unknown / no-interval labels are readable. */}
-      <div className="flex flex-wrap gap-3 text-xs text-slate-400">
-        {rows.map((r) => (
-          <span key={r.label} className="flex items-center gap-1">
-            {r.label}:{" "}
-            {r.gap === null ? (
-              <span className="text-slate-500">— unknown</span>
-            ) : (
-              <>
-                <span className={r.gap < 0 ? "text-emerald-300" : "text-rose-300"}>{gapText(r.gap)}</span>{" "}
-                {r.se === null && <span className="text-slate-500">(no interval)</span>}
-              </>
-            )}
-          </span>
-        ))}
-      </div>
     </section>
   );
 }
