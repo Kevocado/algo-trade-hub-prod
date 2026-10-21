@@ -581,8 +581,11 @@ def get_weather_panel(supabase=Depends(get_supabase)):
     """
     if supabase is None:
         raise HTTPException(status_code=503, detail="Supabase is not configured")
+    # Weather/ERCOT forecaster families - filter in the query so we don't read the whole table
+    weather_forecasters = ["weather_high", "weather_low", "weather_rain", "ercot_peak"]
     try:
-        forecasts = _fetch_all(supabase, "journal_forecasts", lambda q: q.select("*"),
+        forecasts = _fetch_all(supabase, "journal_forecasts",
+                               lambda q: q.select("*").in_("forecaster", weather_forecasters),
                                order=("frozen_at",))
     except Exception as exc:  # noqa: BLE001 - classified by _table_fault
         if table_missing(exc, "journal_forecasts"):
@@ -598,21 +601,15 @@ def get_weather_panel(supabase=Depends(get_supabase)):
         else:
             raise _table_fault("journal_settlements", exc) from exc
 
-    # Weather/ERCOT forecaster families
-    weather_forecasters = {"weather_high", "weather_low", "weather_rain", "ercot_peak"}
-
-    # Group forecasts by target, keeping only weather/ERCOT forecasters
+    # Group forecasts by target
     by_target: dict[str, dict[str, Any]] = {}
     for row in forecasts:
-        forecaster = row.get("forecaster", "")
-        if forecaster not in weather_forecasters:
-            continue
         target = row.get("target", "")
         prob = row.get("probability")
         if prob is None or not target:
             continue
         if target not in by_target:
-            by_target[target] = {"target": target, "forecaster": forecaster}
+            by_target[target] = {"target": target, "forecaster": row.get("forecaster")}
         by_target[target]["our_prob"] = float(prob)
         by_target[target]["market_prob"] = row.get("market_prob")
 
