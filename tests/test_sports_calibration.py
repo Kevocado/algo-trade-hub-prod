@@ -5,7 +5,7 @@ variant fitting, evaluation, time splitting, and the full calibrate_engine proto
 including the 2-SE stop rule.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -28,6 +28,7 @@ from tradehub.sports.calibration import (
     calibrate_engine,
     CalibrationFit,
 )
+from tradehub.journal.store import PAGE
 
 T0 = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
@@ -248,3 +249,218 @@ def test_calibrate_engine_returns_stop_reason():
     assert result is not None
     assert isinstance(result["stop_reason"], str)
     assert len(result["stop_reason"]) > 0
+
+
+# ── CalibratedForecaster (journal forecaster wrapper) ──────────────────────
+
+def _make_pairs_with_cutoffs(n: int, base_cutoff: datetime = T0) -> list[tuple[datetime, float, bool]]:
+    """Generate n synthetic (cutoff_time, prob, hit) pairs spread over n cutoffs."""
+    from datetime import timedelta
+    pairs = []
+    for i in range(n):
+        cutoff = base_cutoff + timedelta(hours=i)
+        p = min(max(0.5 + (i % 5) * 0.05, 0.05), 0.95)
+        h = p > 0.5
+        pairs.append((cutoff, p, h))
+    return pairs
+
+
+class _FakeRow:
+    """A fake frozen forecast row from journal_forecasts."""
+    def __init__(self, target, probability, market_prob=0.5, frozen_at=None):
+        self.target = target
+        self.probability = probability
+        self.market_prob = market_prob
+        self.frozen_at = frozen_at or T0.isoformat()
+        self.payload = {}
+        self.rebuilt = False
+
+
+class _FakeSupa:
+    """Strict fake Supabase client: counts reads, rejects unknown tables."""
+
+    def __init__(self):
+        self.read_count = 0
+        self.forecasts: list[dict] = []
+        self.settlements: dict[str, int] = {}
+
+    def table(self, name):
+        self.read_count += 1
+        return _FakeTable(self, name)
+
+
+class _FakeTable:
+    def __init__(self, supa, name):
+        self.supa = supa
+        self.name = name
+        self._filters = []
+        self._lo = 0
+        self._hi = PAGE - 1
+
+    def select(self, *cols):
+        return self
+
+    def eq(self, col, val):
+        self._filters.append(("eq", col, val))
+        return self
+
+    def in_(self, col, vals):
+        self._filters.append(("in", col, vals))
+        return self
+
+    def order(self, col):
+        return self
+
+    def range(self, lo, hi):
+        self._lo = lo
+        self._hi = hi
+        return self
+
+    def execute(self):
+        return _FakeResult(self.supa, self.name, self._filters, self._lo, self._hi)
+
+
+class _FakeResult:
+    def __init__(self, supa, name, filters, lo, hi):
+        self.supa = supa
+        self.name = name
+        self.filters = filters
+        self.lo = lo
+        self.hi = hi
+
+    @property
+    def data(self):
+        if self.name == "journal_forecasts":
+            return self._filter_forecasts()[self.lo:self.hi + 1]
+        elif self.name == "journal_settlements":
+            return [{"target": t, "outcome": o} for t, o in self.supa.settlements.items()
+                    if self._matches_settlement(t, o)]
+        return []
+
+    def _matches_settlement(self, target, outcome):
+        for ftype, fcol, fval in self.filters:
+            if ftype == "in" and fcol == "target":
+                return target in fval
+        return True
+
+    def _filter_forecasts(self):
+        result = []
+        for f in self.supa.forecasts:
+            ok = True
+            for ftype, fcol, fval in self.filters:
+                if ftype == "eq" and f.get(fcol) != fval:
+                    ok = False
+                    break
+                elif ftype == "in" and fcol == "target" and f.get("target") not in fval:
+                    ok = False
+                    break
+            if ok:
+                result.append(f)
+        return result
+
+
+def test_calibrated_forecaster_fits_on_150_settled_rows():
+    """The calibrated forecaster fits calibration on 150+ settled journal rows."""
+    from tradehub.journal.forecasters.calibrated import CalibratedForecaster
+
+    inner = type("FakeInner", (), {
+        "name": "sports_nfl",
+        "version": "feed-v1",
+        "cadence": "daily",
+        "kind": "winner",
+        "targets": lambda now: [],
+        "settle": lambda target, now: None,
+    })()
+
+    supa = _FakeSupa()
+    supa.forecasts = [
+        {"id": i, "target": f"t-{i}", "forecaster": "sports_nfl",
+         "forecaster_version": "feed-v1", "probability": p,
+         "market_prob": 0.5, "rebuilt": False,
+         "frozen_at": (T0 + timedelta(hours=i)).isoformat(),
+         "payload": {}}
+        for i, p in enumerate([0.6, 0.4, 0.8, 0.2, 0.7] * 30)
+    ]
+    supa.settlements = {f"t-{i}": 1 if p > 0.5 else 0 for i, p in
+                        enumerate([0.6, 0.4, 0.8, 0.2, 0.7] * 30)}
+
+    cf = CalibratedForecaster(inner, lambda: supa)
+    assert cf.name == "sports_nfl_cal"
+    assert cf.version == "feed-v1+cal"
+    assert cf.cadence == "daily"
+    assert cf.kind == "winner"
+
+    # Fit calibration
+    cf._fit_calibration(supa)
+    assert cf._calibration is not None
+    assert cf._calibration[0] in ("identity", "platt", "isotonic", "shrinkage")
+
+
+def test_calibrated_forecaster_does_not_refit_per_target():
+    """When the stop rule ships identity, _calibration is ('identity', ()) not None,
+    so we do not refit on every target. Store reads stay bounded."""
+    from tradehub.journal.forecasters.calibrated import CalibratedForecaster
+
+    inner = type("FakeInner", (), {
+        "name": "sports_nfl",
+        "version": "feed-v1",
+        "cadence": "daily",
+        "kind": "winner",
+        "targets": lambda now: [],
+        "settle": lambda target, now: None,
+    })()
+
+    supa = _FakeSupa()
+    supa.forecasts = [
+        {"id": i, "target": f"t-{i}", "forecaster": "sports_nfl",
+         "forecaster_version": "feed-v1", "probability": 0.5,
+         "market_prob": 0.5, "rebuilt": False,
+         "frozen_at": (T0 + timedelta(hours=i)).isoformat(),
+         "payload": {}}
+        for i in range(150)
+    ]
+    supa.settlements = {f"t-{i}": 1 if i % 2 == 0 else 0 for i in range(150)}
+
+    cf = CalibratedForecaster(inner, lambda: supa)
+
+    # First forecast: fits calibration
+    entry = type("FakeEntry", (), {"target": "t-0", "cutoff_at": T0})()
+    cf.forecast(entry, T0)
+    reads_after_first = supa.read_count
+
+    # Second forecast with same hour: should NOT refit
+    entry2 = type("FakeEntry", (), {"target": "t-1", "cutoff_at": T0})()
+    cf.forecast(entry2, T0)
+    reads_after_second = supa.read_count
+
+    assert reads_after_second == reads_after_first, (
+        f"Refit on every target: {reads_after_first} reads -> {reads_after_second} reads")
+
+
+def test_calibrated_forecaster_under_min_settled_returns_identity():
+    """Under MIN_SETTLED (100) settled rows, no calibration is fitted."""
+    from tradehub.journal.forecasters.calibrated import CalibratedForecaster
+
+    inner = type("FakeInner", (), {
+        "name": "sports_nfl",
+        "version": "feed-v1",
+        "cadence": "daily",
+        "kind": "winner",
+        "targets": lambda now: [],
+        "settle": lambda target, now: None,
+    })()
+
+    supa = _FakeSupa()
+    supa.forecasts = [
+        {"id": i, "target": f"t-{i}", "forecaster": "sports_nfl",
+         "forecaster_version": "feed-v1", "probability": 0.5,
+         "market_prob": 0.5, "rebuilt": False,
+         "frozen_at": (T0 + timedelta(hours=i)).isoformat(),
+         "payload": {}}
+        for i in range(50)
+    ]
+    supa.settlements = {f"t-{i}": i % 2 for i in range(50)}
+
+    cf = CalibratedForecaster(inner, lambda: supa)
+    cf._fit_calibration(supa)
+    assert cf._calibration is None

@@ -11,8 +11,10 @@ Protocol (docs/superpowers/plans/2026-10-18-improve-the-models.md):
 
 This forecaster wraps an inner sports forecaster (e.g. `sports_nfl`), reads that forecaster's
 frozen row from the journal store, applies the fitted calibration, and publishes a `<name>_cal`
-row beside the original. No change to `tradehub.sports.scan`: the calibrated forecaster is purely
-a journal-side wrapper.
+row beside the original. Both are scored independently by `scoring.py`.
+
+No change to `tradehub.sports.scan`: the calibrated forecaster is purely a journal-side wrapper,
+like `forecasters/shrunk.MarketShrunk`.
 
 Calibration parameters are fitted once per hourly run from all settled journal rows for the inner
 forecaster, using only rows whose cutoff is earlier than the current forecast's cutoff (walk-forward).
@@ -22,6 +24,7 @@ once on a time-split test slice. Minimum 100 settled results per engine and kind
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -29,6 +32,8 @@ from typing import Any
 from tradehub.journal.contract import CalendarEntry, Forecast, Forecaster, Settlement
 from tradehub.journal.store import fetch_forecasts, fetch_settlements
 from tradehub.sports.calibration import calibrate_engine
+
+log = logging.getLogger(__name__)
 
 SHRINK_SUFFIX = "_cal"
 
@@ -41,8 +46,8 @@ class CalibratedForecaster:
     published under `inner.name + "_cal"` with version `inner.version + "+cal"`, beside the
     original in the journal. Both are scored independently by `scoring.py`.
 
-    No change to `tradehub.sports.scan`: this is purely a journal-side wrapper, like
-    `forecasters/shrunk.MarketShrunk`.
+    No change to `tradehub.sports.scan`: the calibrated forecaster is purely a journal-side wrapper,
+    like `forecasters/shrunk.MarketShrunk`.
     """
 
     def __init__(self, inner: Forecaster, store: Callable[[], Any]):
@@ -53,9 +58,9 @@ class CalibratedForecaster:
         self.name = f"{inner.name}{SHRINK_SUFFIX}"
         self.version = f"{inner.version}+cal"
         self.cadence = inner.cadence
-        # kind comes from the inner forecaster (sports forecasters have .kind)
         self.kind = getattr(inner, "kind", "winner")
         self._calibration: tuple[str, tuple[float, ...]] | None = None
+        self._calibrated_at: datetime | None = None
         self._rows: dict[str, dict] | None = None
         self._read_at: datetime | None = None
 
@@ -64,6 +69,7 @@ class CalibratedForecaster:
         self._store_factory = lambda: supa
         self._rows = None
         self._calibration = None
+        self._calibrated_at = None
         self._read_at = None
 
     @property
@@ -106,12 +112,18 @@ class CalibratedForecaster:
         Result is cached in `self._calibration` as `(variant_name, params)` or `None`
         (identity: pass the raw probability through unchanged). Fits only if there are at
         least MIN_SETTLED settled results.
+
+        Uses `self._calibrated_at` (not None) as the sentinel so that when the stop rule
+        ships identity, `_calibration` is `("identity", ())` and we do not refit on every
+        target. `self._calibrated_at` tracks the hour we last fitted; when it matches the
+        current hour we skip refitting entirely.
         """
         from tradehub.sports.calibration import MIN_SETTLED
 
         pairs = self._load_settled_pairs(supa)
         if len(pairs) < MIN_SETTLED:
             self._calibration = None
+            self._calibrated_at = None
             return
 
         result = calibrate_engine(self.inner.name, self.kind, pairs)
@@ -123,7 +135,7 @@ class CalibratedForecaster:
                 result["gap"], result["gap_se"], result["ship"],
             )
         else:
-            self._calibration = None  # identity: pass raw probability through
+            self._calibration = ("identity", ())  # sentinel: fitted, ship identity
             log.info(
                 "sports calibration %s/%s: %s (not shipped)",
                 self.inner.name, self.kind, result["stop_reason"] if result else "insufficient data",
@@ -142,10 +154,12 @@ class CalibratedForecaster:
     def forecast(self, entry: CalendarEntry, now: datetime) -> Forecast | None:
         supa = self.store()
 
-        # Load/refit calibration once per hour
+        # Load/refit calibration once per hour.
+        # `_calibrated_at` is the sentinel: when it matches `hour`, we do not refit,
+        # even if `_calibration` is None (stop rule shipped identity).
         hour = now.replace(minute=0, second=0, microsecond=0)
-        if self._calibration is None or self._read_at != hour:
-            self._read_at = hour
+        if self._calibrated_at != hour:
+            self._calibrated_at = hour
             self._fit_calibration(supa)
 
         # Read the inner's frozen row
