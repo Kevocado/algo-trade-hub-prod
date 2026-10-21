@@ -73,7 +73,7 @@ export default function Journal() {
         <Stat value={h.promoted} label="promoted" hint="Needs 200 scored (daily) or 50 (monthly)." />
       </section>
 
-      <SkillChart series={series?.series ?? []} />
+      <SkillChart data={data} series={series?.series ?? []} />
 
       {results.length > 0 && (
         <section aria-label="Results">
@@ -140,6 +140,42 @@ export default function Journal() {
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {/* Weather/ERCOT panel: per-contract probability vs Kalshi, coloured by outcome */}
+      {data && series && data.forecasters.some((f: any) => /weather/i.test(f.forecaster)) && (
+        <section aria-label="Weather/ERCOT" className="border-t border-slate-800/40 pt-6">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Weather & ERCOT</h2>
+          <div className="space-y-4 text-sm text-slate-300">
+            {series.series
+              .filter((s: any) => /weather/i.test(s.forecaster))
+              .slice(0, 3)
+              .map((s: any) => (
+                <div key={s.forecaster} className="flex items-baseline gap-2">
+                  <span className="font-medium text-slate-100">{s.forecaster} v{s.version}</span>
+                  <div className="flex gap-1">
+                    {s.points.map((p: any, i: number) => (
+                      <span
+                        key={i}
+                        className={p.gap > 0
+                          ? "bg-emerald-500/20 text-emerald-300 rounded-full px-2 py-0.5 text-xs font-medium"
+                          : p.gap < 0
+                          ? "bg-rose-500/20 text-rose-300 rounded-full px-2 py-0.5 text-xs font-medium"
+                          : "bg-slate-700/30 text-slate-300 rounded-full px-2 py-0.5 text-xs font-medium"
+                        }
+                      >
+                        {p.gap !== null ? (+p.gap * 100).toFixed(1) + "%" : "—"}
+                      </span>
+                    ))}
+                  </div>
+                  <span className="text-xs text-slate-500">n={s.n ?? null}</span>
+                </div>
+              ))}
+            {data.forecasters.some((f: any) => /weather/i.test(f.forecaster)) ? null : (
+              <p className="text-slate-500/60">No weather forecasters active</p>
+            )}
+          </div>
         </section>
       )}
 
