@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
-import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, XAxis, YAxis } from "recharts";
+import { ResponsiveContainer, Scatter, ScatterChart, XAxis, YAxis } from "recharts";
 
 import { useJobsScorecard } from "@/hooks/useJobsScorecard";
 import { formatValue, summarizeScorecard, toChartPoints, type JobsSeries } from "@/lib/jobsScorecard";
@@ -47,7 +47,7 @@ export default function JobsNowcast() {
         <div className="py-12 text-center text-sm text-slate-500" role="status" aria-live="polite">Loading scorecard…</div>
       ) : (
         <Fragment>
-          {/* Three plainly labelled stats with units */}
+          {/* Plainly labelled stats with units */}
           <section aria-label="Headline stats" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
               label="We were closer"
@@ -158,32 +158,58 @@ function JobsChart({
 }: {
   points: { month: string; nowcast: number | null; kalshi: number | null; firstPrint: number | null; latest: number | null }[];
 }) {
+  // Pre-compute which estimator was closer for each month (closer to first print)
+  const closerNowcast = points.filter((p) =>
+    p.nowcast !== null && p.kalshi !== null && p.firstPrint !== null &&
+    Math.abs(p.nowcast - p.firstPrint) < Math.abs(p.kalshi - p.firstPrint)
+  );
+  const closerKalshi = points.filter((p) =>
+    p.nowcast !== null && p.kalshi !== null && p.firstPrint !== null &&
+    Math.abs(p.kalshi - p.firstPrint) < Math.abs(p.nowcast - p.firstPrint)
+  );
+
   return (
     <ResponsiveContainer width="100%" height="100%">
       <ScatterChart data={points}>
-        <CartesianGrid stroke="#1e293b" />
         <XAxis dataKey="month" stroke="#64748b" fontSize={11} tick={{ fill: "#94a3b8" }} />
         <YAxis stroke="#64748b" fontSize={11} tick={{ fill: "#94a3b8" }} />
-        {/* Our nowcast as dots */}
+        {/* Our nowcast dots */}
         <Scatter
           data={points.filter((p) => p.nowcast !== null)}
           dataKey="nowcast"
           name="Our nowcast"
           fill="#10b981"
         />
-        {/* Kalshi's implied as dots */}
+        {/* Kalshi's implied dots */}
         <Scatter
           data={points.filter((p) => p.kalshi !== null)}
           dataKey="kalshi"
           name="Kalshi implied"
           fill="#f59e0b"
         />
-        {/* First BLS print as dots */}
+        {/* First BLS print dots */}
         <Scatter
           data={points.filter((p) => p.firstPrint !== null)}
           dataKey="firstPrint"
           name="First BLS print"
           fill="#f8fafc"
+        />
+        {/* Ring around the closer estimate (drawn on top) */}
+        <Scatter
+          data={closerNowcast}
+          dataKey="nowcast"
+          name="Closer: Our nowcast"
+          fill="none"
+          stroke="#10b981"
+          strokeWidth={2.5}
+        />
+        <Scatter
+          data={closerKalshi}
+          dataKey="kalshi"
+          name="Closer: Kalshi implied"
+          fill="none"
+          stroke="#f59e0b"
+          strokeWidth={2.5}
         />
       </ScatterChart>
     </ResponsiveContainer>
