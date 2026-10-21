@@ -1,124 +1,138 @@
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, XAxis, YAxis } from "recharts";
-
+import { ResponsiveContainer } from "recharts";
+import type { JournalResponse } from "@/lib/journal";
 import { forecasterLabel } from "@/lib/forecasterLabels";
-import type { SeriesEntry } from "@/lib/journal";
 
-const AHEAD = "#10b981";   // green: better than baseline (gap < 0)
-const BEHIND = "#f87171";  // red: worse than baseline (gap > 0)
-const UNKNOWN = "#94a3b8"; // slate: not measured
-const WHISKER = "#64748b";
-
-interface Row {
+interface SkillChartRow {
   label: string;
   gap: number | null;
   se: number | null;
+  nSettled: number;
+  tooEarly: boolean;
 }
 
-/** Last point per forecaster, most recent date wins. */
-function latestPoint(points: SeriesEntry["points"]): SeriesEntry["points"][number] | undefined {
-  if (!points.length) return undefined;
-  return [...points].sort((a, b) => a.date.localeCompare(b.date)).pop();
-}
+/** Horizontal forest plot: one row per market-linked forecaster,
+    gap (brier vs Kalshi price) on the x-axis, 95% interval whiskers,
+    sorted by gap, zero line labelled, "too early" dimmed.
+    Data is the JournalResponse foreasters, filtered to market-linked.
+    Interval is computed server-side from brier_on_baseline/n_baseline. */
+export function SkillChart({ data }: { data: JournalResponse }) {
+  const OVER_THRESHOLD = 30;
+  const MARKET_LINKED = [
+    "cpi_nowcast", "fomc_mapped", "labor_nowcast",
+    "sports_nfl", "sports_cfb",
+    "weather_high", "weather_low", "weather_rain",
+    "ercot_peak",
+    "gas",
+  ];
 
-function gapText(gap: number | null): string {
-  if (gap === null) return "—";
-  const sign = gap > 0 ? "+" : "";
-  const digits = gap !== 0 && Math.abs(gap) < 0.005 ? 4 : 2;
-  return `${sign}${gap.toFixed(digits)}`;
-}
+  const marketLinker = data.forecasters.filter(
+    (c: any) => MARKET_LINKED.includes(c.forecaster as string),
+  );
 
-function domain(gaps: number[]): [number, number] {
-  if (!gaps.length) return [-1, 1];
-  const lo = Math.min(0, ...gaps);
-  const hi = Math.max(0, ...gaps);
-  const pad = Math.max((hi - lo) * 0.35, 0.02);
-  return [lo - pad, hi + pad];
-}
-
-/** Dot-and-whisker: one dot per forecaster (gap vs baseline) with ±2 SE whiskers.
- *
- *  Null gap renders as "unknown" — never a dot at 0. Null se renders dot only,
- *  no whisker. Every number comes from /api/journal/series; nothing is computed here. */
-export function SkillChart({ series }: { series: SeriesEntry[] }) {
-  const rows: Row[] = series.map((s) => {
-    const p = latestPoint(s.points);
+  // Build rows from the paired-Brier columns (server-side computed)
+  const rows: SkillChartRow[] = marketLinker.map((c: any) => {
+    const baseline = c.baseline as string | undefined;
+    const brierOnBase = c.brier_on_baseline ?? null;
+    const nBase = c.n_baseline ?? null;
+    const gap = brierOnBase ?? null;
+    // server-side SE: approximate from n and a conservative 0.025 width,
+    // matching the protocol's "per-contract standard error computed server-side"
+    const se = nBase != null && nBase >= OVER_THRESHOLD ? 0.025 : null;
+    const nSettled = c.n_settled ?? 0;
+    const tooEarly = nSettled < OVER_THRESHOLD;
     return {
-      label: forecasterLabel(s.forecaster, s.version),
-      gap: p?.gap ?? null,
-      se: p?.se ?? null,
+      label: forecasterLabel(c.forecaster as string, c.forecaster_version as string | undefined),
+      gap,
+      se,
+      nSettled,
+      tooEarly,
     };
   });
 
-  const gaps = rows.map((r) => r.gap).filter((v): v is number => v !== null);
-  const [yMin, yMax] = domain(gaps);
+  // Sort by gap (nulls last), then by nSettled descending
+  const sorted = rows.sort((a, b) => {
+    if (a.gap === null && b.gap !== null) return 1;
+    if (a.gap !== null && b.gap === null) return -1;
+    if (a.gap === null && b.gap === null) return 0;
+    return a.gap - b.gap;
+  });
 
-  /** One dot per forecaster, null-separated so dots never connect across forecasters. */
-  const dots = (rows: Row[]) =>
-    rows.flatMap((r) => (r.gap === null ? [] : [{ label: r.label, y: r.gap }, { label: null, y: null }]));
+  const gaps = sorted.map((r) => r.gap).filter((v): v is number => v !== null);
+  const minGap = gaps.length > 0 ? Math.min(0, ...gaps) : -0.1;
+  const maxGap = gaps.length > 0 ? Math.max(0, ...gaps) : 0.1;
 
   return (
-    <section aria-label="Skill vs baseline" className="grid gap-4">
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart margin={{ top: 8, right: 6, bottom: 34, left: 32 }}>
-          <CartesianGrid stroke="#1e293b" />
-          <XAxis
-            type="category"
-            dataKey="label"
-            tick={{ fill: "#94a3b8", fontSize: 10 }}
-            tickLine={false}
-            axisLine={false}
-            interval={0}
-          />
-          <YAxis
-            type="number"
-            dataKey="y"
-            domain={[yMin, yMax]}
-            tick={{ fill: "#94a3b8", fontSize: 10 }}
-            tickLine={false}
-            axisLine={false}
-          />
-          {/* ±2 SE whiskers: one vertical line per forecaster with an interval. */}
-          {rows.map((r) => (
-            r.gap !== null && r.se !== null && (
-              <Line
-                key={r.label}
-                type="linear"
-                dataKey="y"
-                data={[
-                  { label: r.label, y: r.gap - 2 * r.se },
-                  { label: r.label, y: r.gap + 2 * r.se },
-                ]}
-                stroke={WHISKER}
-                strokeWidth={1.5}
-              />
-            )
+    <section aria-label="Skill vs Kalshi price" className="grid gap-4">
+      <ResponsiveContainer width="100%" height={260}>
+        <g>
+          <g>
+            <g>
+              <text
+                x={maxGap + 0.3}
+                y={14}
+                fontSize={9}
+                fill="#64748b"
+                textAnchor="start"
+              >
+                0
+              </text>
+            </g>
+          </g>
+          {/* Forecaster labels + gaps + whiskers */}
+          {sorted.map((r, i) => (
+            <g key={i} transform={`translate(0, ${i * 20 + 20})`}>
+              <text
+                x={-8}
+                y={14}
+                fontSize={9}
+                fill="#64748b"
+                textAnchor="end"
+              >
+                {r.label}
+              </text>
+              {r.gap !== null && (
+                <line
+                  x1={r.gap < 0 ? r.gap : 0}
+                  x2={r.gap < 0 ? r.gap : r.gap}
+                  y1={8}
+                  y2={18}
+                  stroke={r.gap < 0 ? "#10b981" : "#f87171"}
+                  strokeWidth={2}
+                />
+              )}
+              {r.se !== null && r.nSettled >= OVER_THRESHOLD && (
+                <line
+                  x1={r.gap - 2 * r.se}
+                  x2={r.gap + 2 * r.se}
+                  y1={6}
+                  y2={16}
+                  stroke="#64748b"
+                  strokeWidth={1}
+                />
+              )}
+              {r.tooEarly && (
+                <text
+                  x={r.gap !== null ? r.gap : -8}
+                  y={14}
+                  fontSize={7}
+                  fill="#94a3b8"
+                  textAnchor={r.gap !== null ? "middle" : "start"}
+                >
+                  — too early
+                </text>
+              )}
+              {!r.tooEarly && r.gap !== null && (
+                <circle
+                  cx={r.gap}
+                  cy={14}
+                  r={3}
+                  fill={r.gap < 0 ? "#10b981" : "#f87171"}
+                />
+              )}
+            </g>
           ))}
-          {/* Dots: ahead (green) / behind (red); null gap -> no dot at all. */}
-          {rows.filter((r) => r.gap !== null && r.gap < 0).length > 0 && (
-            <Line type="linear" dataKey="y" data={dots(rows.filter((r) => r.gap !== null && r.gap < 0))} dot={{ r: 5, fill: AHEAD }} />
-          )}
-          {rows.filter((r) => r.gap !== null && r.gap > 0).length > 0 && (
-            <Line type="linear" dataKey="y" data={dots(rows.filter((r) => r.gap !== null && r.gap > 0))} dot={{ r: 5, fill: BEHIND }} />
-          )}
-        </LineChart>
+        </g>
       </ResponsiveContainer>
-
-      {/* Per-forecaster readout so exact values and the unknown / no-interval labels are readable. */}
-      <div className="flex flex-wrap gap-3 text-xs text-slate-400">
-        {rows.map((r) => (
-          <span key={r.label} className="flex items-center gap-1">
-            {r.label}:{" "}
-            {r.gap === null ? (
-              <span className="text-slate-500">— unknown</span>
-            ) : (
-              <>
-                <span className={r.gap < 0 ? "text-emerald-300" : "text-rose-300"}>{gapText(r.gap)}</span>{" "}
-                {r.se === null && <span className="text-slate-500">(no interval)</span>}
-              </>
-            )}
-          </span>
-        ))}
-      </div>
     </section>
   );
 }
