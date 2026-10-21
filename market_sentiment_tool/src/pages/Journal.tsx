@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 
 import { Chip, type Tone } from "@/components/Chip";
 import { JournalDetail } from "@/components/JournalDetail";
-import { SkillChart } from "@/components/SkillChart";
+import { LiveSkill } from "@/components/LiveSkill";
 import { SkillOverTime } from "@/components/SkillOverTime";
 import { Stat } from "@/components/Stat";
 import { getJson } from "@/lib/getJson";
@@ -73,7 +73,11 @@ export default function Journal() {
         <Stat value={h.promoted} label="promoted" hint="Needs 200 scored (daily) or 50 (monthly)." />
       </section>
 
-      <SkillChart series={series?.series ?? []} />
+      <section aria-label="Skill against the Kalshi price">
+        <h2 className="mb-1 text-lg font-semibold text-slate-200">Skill vs the Kalshi price</h2>
+        <div className="mb-3 text-xs text-slate-500">Left of zero beats the market. Bars are 95% intervals.</div>
+        <LiveSkill scores={data.forecasters} />
+      </section>
 
       {results.length > 0 && (
         <section aria-label="Results">
