@@ -11,6 +11,7 @@ from tradehub.core.supabase_client import get_client
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.journal.contract import Forecaster
 from tradehub.journal.forecasters.baselines import build_baselines
+from tradehub.journal.forecasters.calibrated import CalibratedForecaster
 from tradehub.journal.forecasters.cpi import CpiForecaster
 from tradehub.journal.forecasters.daily_direction import build_wave2, wave2_closes
 from tradehub.journal.forecasters.ercot import build_ercot
@@ -20,7 +21,7 @@ from tradehub.journal.forecasters.housing import HousingForecaster
 from tradehub.journal.forecasters.labor import LaborData, PayrollsForecaster, QuitsDirection, UnrateDirection
 from tradehub.journal.forecasters.sentiment import SentimentMeter
 from tradehub.journal.forecasters.shrunk import MarketShrunk
-from tradehub.journal.forecasters.sports import build_sports
+from tradehub.journal.forecasters.sports import SportsFeedForecaster, build_sports
 from tradehub.journal.forecasters.spy_quant import SpyQuant
 from tradehub.journal.forecasters.weather import build_weather
 from tradehub.journal.kalshi_linked import KalshiImplied
@@ -76,3 +77,9 @@ _SHRINKABLE = {"cpi_nowcast", "fomc_mapped", "labor_nowcast"}
 # because this module is imported with no credentials in hand.
 FORECASTERS += [MarketShrunk(f, get_client) for f in list(FORECASTERS)
                 if f.name in _SHRINKABLE or f.name.startswith("sports_")]
+
+# Model-improvement plan: calibrated versions of sports forecasters beside the originals.
+# Wraps the raw sports forecaster (not the MarketShrunk copy) and applies post-hoc calibration
+# fitted walk-forward on settled journal rows with earlier cutoffs. No change to scan.py.
+FORECASTERS += [CalibratedForecaster(f, get_client) for f in list(FORECASTERS)
+                if isinstance(f, SportsFeedForecaster)]

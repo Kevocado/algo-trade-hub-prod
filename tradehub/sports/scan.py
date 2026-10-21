@@ -30,10 +30,6 @@ from tradehub.sports.kalshi import SportsKalshi, SportsMarket, team_code
 from tradehub.sports.kinds import KINDS
 from tradehub.sports.mapping import MatchedGame, load_aliases, match_games
 from tradehub.sports.pricing import price_market
-from tradehub.sports.calibration import (
-    _apply_isotonic, _apply_linear_shrinkage, _apply_platt,
-    CalibrationFit, calibrate_engine, load_settled_pairs,
-)
 from tradehub.sports.reviewer import (
     MemoryReviewStore, OpenRouterReviewer, Review, ReviewRequest, SupabaseReviewStore, cache_key, price_bucket,
     review_candidates, tier,
@@ -218,8 +214,7 @@ def edge_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s: EdgeSuggestion,
-              check: CandidateCheck, now: datetime,
-              engine: str | None = None) -> dict[str, Any]:
+              check: CandidateCheck, now: datetime) -> dict[str, Any]:
     series = cfg.series[kind]
     g = mg.game
     return {
@@ -229,7 +224,7 @@ def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s:
         "model_probability": s.our_prob,
         "edge": s.net_edge_pct / 100.0,
         "edge_type": "SPORTS",
-        "engine": engine or cfg.engine,
+        "engine": cfg.engine,
         # Same key the ledger row uses, so the (engine, engine_version) promotion gate can
         # actually match this edge instead of falling back to a placeholder.
         "engine_version": f"feed:{mg.game.model_version or 'unknown'}",
@@ -326,8 +321,7 @@ def _hub_calibration(
 
 def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]], feed: Feed,
                now: datetime, *,
-               hub_pairs: Mapping[str, list[tuple[float, bool]]] | None = None,
-               calibration_params: Mapping[str, CalibrationFit | None] | None = None) -> SportScan:
+               hub_pairs: Mapping[str, list[tuple[float, bool]]] | None = None) -> SportScan:
     aliases = load_aliases(cfg.sport)
     hub_calibration = _hub_calibration(feed, hub_pairs)
     bucket_cents = load_reviewer_config().price_bucket_cents
@@ -336,7 +330,6 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
     priced = 0
     skipped = 0
     started = 0
-    cal_priced = 0
     for mg in match.matched:
         # A game that has kicked off is not tradeable and must not be written: its market stays
         # open on Kalshi for days afterwards (expires_at is the close time, ~2 days after
@@ -424,58 +417,10 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
                     row["review_key"] = req.key
                     out.review_requests.append(req)
                 out.edges.append(row)
-
-                # Calibrated version: `<engine>_cal` beside the original, using the fitted
-                # post-hoc calibration for this kind. Only written when calibration params
-                # are available (i.e., the hub has enough settled results to fit).
-                cal_fit = None
-                if calibration_params is not None:
-                    cal_fit = calibration_params.get(kind)
-                if cal_fit is not None and cal_fit.params is not None:
-                    params = cal_fit.params
-                    name = cal_fit.name
-                    if name == "platt":
-                        cal_prob = _apply_platt(prob, params)
-                    elif name == "isotonic":
-                        cal_prob = _apply_isotonic(prob, params)
-                    elif name == "shrinkage":
-                        cal_prob = _apply_linear_shrinkage(prob, params)
-                    else:
-                        cal_prob = prob
-                    if cal_prob != prob:
-                        cal_priced += 1
-                        if q.yes_bid is not None and q.yes_ask is not None:
-                            out.predictions.append(build_prediction_row(
-                                market_ticker=sm.market.ticker, our_prob=cal_prob,
-                                market_prob=(q.yes_bid + q.yes_ask) / 2.0,
-                                engine=cfg.engine + "_cal", as_of=now,
-                                engine_version=f"feed:{mg.game.model_version or 'unknown'}",
-                                raw_payload={"sport": cfg.sport, "game_id": mg.game.game_id,
-                                             "kind": kind, "calibrated": True,
-                                             "calibration_variant": name,
-                                             "start_utc": mg.game.start_utc.isoformat(),
-                                             "snapshotted_at": mg.game.snapshotted_at.isoformat(),
-                                             "alias_version": aliases.version,
-                                             "date_shift_days": mg.date_shift_days,
-                                             "yes_bid": q.yes_bid, "yes_ask": q.yes_ask,
-                                             "model_version": mg.game.model_version,
-                                             **_orientation(sm, mg)},
-                            ))
-                        s_cal = evaluate_edge(sm.market.ticker, cal_prob, q,
-                                              min_edge_pct=cfg.edge.min_edge_pct,
-                                              prefer_maker=cfg.edge.prefer_maker)
-                        if s_cal is not None:
-                            check_cal = check_candidate(kind, sm, mg, s_cal,
-                                                        feed.calibration, cfg.edge.params, now,
-                                                        hub_calibration=hub_calibration)
-                            row_cal = _edge_row(cfg, kind, sm, mg, s_cal, check_cal, now,
-                                                engine=cfg.engine + "_cal")
-                            out.edges.append(row_cal)
     out.report = {
         "feed_games": len(feed.games), "feed_rejected": feed.rejected, "matched": len(match.matched),
         "unmatched_games": match.unmatched_games, "unmatched_events": match.unmatched_events,
         "markets_priced": priced, "markets_skipped": skipped, "games_started": started,
-        "markets_calibrated": cal_priced,
         "predictions": len(out.predictions), "edges": len(out.edges),
         "candidates": len(out.review_requests), "alias_version": aliases.version,
     }
@@ -770,32 +715,9 @@ def run_sports_scan(now: datetime, kalshi, *, fetch: Callable[..., Feed] = fetch
         # unrecognised-kind tally is split the same way, for the same reason: an NFL row the build
         # cannot place is an NFL fact, and reporting it under CFB would make the one sport that has
         # a gap look like both do.
-        # Load calibration params for this sport's engine from settled journal results.
-        # Fitted walk-forward on earlier 70%, judged on later 30% (protocol, improve-the-models.md).
-        cal_params: dict[str, CalibrationFit | None] = {}
-        try:
-            pairs_by_kind = load_settled_pairs(supa, engine)
-            for kind, pairs in pairs_by_kind.items():
-                result = calibrate_engine(engine, kind, pairs)
-                if result is not None and not result["stop"]:
-                    cal_params[kind] = CalibrationFit(
-                        name=result["best_variant"],
-                        params=result["params"],
-                        train_brier=result["train_brier"],
-                        test_brier=result["test_brier"],
-                        test_n=result["test_n"],
-                        test_se=result["test_se"],
-                    )
-                else:
-                    log.info("sports calibration %s/%s: %s", engine, kind,
-                             result["stop_reason"] if result else "insufficient data")
-        except Exception:
-            log.exception("sports calibration load failed sport=%s", sport)
-
         result = scan_sport(cfg, markets, feed, now,
                             hub_pairs=(hub_ledger.pairs_by_engine if hub_ledger else {})
-                            .get(SPORTS_ENGINES.get(sport, "")),
-                            calibration_params=cal_params)
+                            .get(SPORTS_ENGINES.get(sport, "")))
         predictions += result.predictions
         edges += result.edges
         requests += result.review_requests

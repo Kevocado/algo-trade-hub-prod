@@ -10,6 +10,11 @@ Protocol (docs/superpowers/plans/2026-10-18-improve-the-models.md):
 
 Metric: Brier gap vs the Kalshi price on the same contracts, with a standard error.
 NEGATIVE gap = better than baseline (our squared error < baseline's).
+
+This module is PURE: no database access. It fits calibration variants on (cutoff_time,
+probability, hit) triples and returns fit results. The journal forecaster
+(`tradehub.journal.forecasters.calibrated.CalibratedForecaster`) loads settled pairs
+from the database and calls into this module.
 """
 
 from __future__ import annotations
@@ -17,18 +22,22 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from datetime import datetime
 
 from scipy.optimize import minimize_scalar
-
-from tradehub.journal.store import FORECASTS, fetch_settlements, select_all
 
 log = logging.getLogger(__name__)
 
 # How many calibration variants we attempt. Reported alongside the result.
 N_VARIANTS_TRIED = 4
 
-# Time split: earlier 70% for fitting, later 30% for judgement.
+# Time split: earlier 70% for fitting + validation, later 30% for judgement.
 TRAIN_FRACTION = 0.70
+# Within training, earlier 80% for fitting, later 20% for variant selection (validation).
+VALIDATION_FRACTION = 0.20
+
+# Minimum settled results per engine and kind. Below this, noise dominates and we do not ship.
+MIN_SETTLED = 100
 
 # Two standard errors is the stop rule threshold.
 DISTINCT_SE = 2.0
@@ -274,71 +283,105 @@ def evaluate_fit(fit: CalibrationFit, test: list[tuple[float, bool]]) -> Calibra
     )
 
 
-def time_split(pairs: list[tuple[float, bool]], ids: list[int]) -> tuple[list[tuple[float, bool]], list[tuple[float, bool]]]:
-    """Split pairs into train (earlier 70%) and test (later 30%) by id order.
+def time_split_by_cutoff(
+    pairs_with_cutoff: list[tuple[datetime, float, bool]],
+) -> tuple[
+    list[tuple[float, bool]],  # train-fit pairs
+    list[tuple[float, bool]],  # validation pairs
+    list[tuple[float, bool]],  # test pairs
+]:
+    """Split (cutoff_time, probability, hit) triples into train-fit / validation / test.
 
-    `ids` are database ids used as a time proxy. Pairs are sorted by id ascending
-    before splitting."""
-    combined = sorted(zip(ids, pairs), key=lambda x: x[0])
-    split_idx = int(len(combined) * TRAIN_FRACTION)
-    train_pairs = [p for _, p in combined[:split_idx]]
-    test_pairs = [p for _, p in combined[split_idx:]]
-    return train_pairs, test_pairs
+    Splits by cutoff time (not database id): earlier 70% is train, later 30% is test.
+    Within train, earlier 80% is fit subset, later 20% is validation for variant selection.
+    Returns (fit_pairs, validation_pairs, test_pairs).
+    """
+    if len(pairs_with_cutoff) < MIN_SETTLED:
+        return [], [], []
+
+    sorted_pairs = sorted(pairs_with_cutoff, key=lambda x: x[0])
+    n = len(sorted_pairs)
+
+    # Train = earlier 70%, test = later 30%
+    train_end = int(n * TRAIN_FRACTION)
+    train = sorted_pairs[:train_end]
+    test = sorted_pairs[train_end:]
+
+    # Within train: fit subset = earlier 80%, validation = later 20%
+    fit_end = int(len(train) * (1 - VALIDATION_FRACTION))
+    fit_subset = train[:fit_end]
+    validation = train[fit_end:]
+
+    # Extract just (probability, hit) pairs
+    fit_pairs = [(p, h) for _, p, h in fit_subset]
+    validation_pairs = [(p, h) for _, p, h in validation]
+    test_pairs = [(p, h) for _, p, h in test]
+
+    return fit_pairs, validation_pairs, test_pairs
 
 
-def calibrate_engine(engine: str, kind: str, pairs_with_ids: list[tuple[int, float, bool]]) -> dict | None:
+def calibrate_engine(
+    engine: str, kind: str, pairs_with_cutoff: list[tuple[datetime, float, bool]],
+) -> dict | None:
     """Run the full calibration protocol for one engine+kind.
 
-    `pairs_with_ids` is a list of (id, probability, hit) tuples, one per settled result.
+    `pairs_with_cutoff` is a list of (cutoff_time, probability, hit) tuples, one per settled
+    result, sorted or unsorted (sorted internally by cutoff time).
 
     Returns a dict with the best variant, its test Brier score, SE, and the gap
     vs identity (no calibration) on the test set. Returns None if there are
-    insufficient results (< 10 total, or < 5 in either split).
+    insufficient results (< MIN_SETTLED total).
     """
-    if len(pairs_with_ids) < 10:
+    if len(pairs_with_cutoff) < MIN_SETTLED:
         return None
 
-    ids = [pid for pid, _, _ in pairs_with_ids]
-    pairs = [(p, h) for _, p, h in pairs_with_ids]
+    fit_pairs, validation_pairs, test_pairs = time_split_by_cutoff(pairs_with_cutoff)
 
-    train_pairs, test_pairs = time_split(pairs, ids)
-    if len(train_pairs) < 5 or len(test_pairs) < 3:
+    if len(fit_pairs) < 5 or len(validation_pairs) < 3 or len(test_pairs) < 3:
         return None
 
-    # Fit all variants on training data
-    fits = fit_all_variants(train_pairs)
+    # Fit all variants on the fit subset of training data
+    fits = fit_all_variants(fit_pairs)
 
-    # Evaluate each on test data
-    evaluated = [evaluate_fit(f, test_pairs) for f in fits]
+    # Evaluate each variant on the validation slice to choose the best
+    validation_eval = [evaluate_fit(f, validation_pairs) for f in fits]
 
-    # Pick best variant by test Brier (None sorts last)
-    best = min(
-        (f for f in evaluated if f.test_brier is not None),
+    # Pick best variant by validation Brier (None sorts last)
+    best_on_validation = min(
+        (f for f in validation_eval if f.test_brier is not None),
         key=lambda f: f.test_brier,
         default=None,
     )
-    if best is None:
+    if best_on_validation is None:
         return None
 
-    # Identity fit for gap comparison
-    identity = next((f for f in evaluated if f.name == "identity"), None)
+    # Evaluate the chosen variant ONCE on the test slice (judgement)
+    best_on_test = evaluate_fit(best_on_validation, test_pairs)
+
+    # Identity fit for gap comparison on test
+    identity_on_test = evaluate_fit(
+        CalibrationFit("identity", (), brier_score(test_pairs), None, 0, None),
+        test_pairs,
+    )
 
     # Brier gap: calibrated - identity (negative = calibration is better)
     gap = None
     gap_se = None
-    if best.test_brier is not None and identity is not None and identity.test_brier is not None:
-        gap = best.test_brier - identity.test_brier
-        if best.test_se is not None and identity.test_se is not None:
-            gap_se = math.sqrt(best.test_se ** 2 + identity.test_se ** 2)
+    if best_on_test.test_brier is not None and identity_on_test.test_brier is not None:
+        gap = best_on_test.test_brier - identity_on_test.test_brier
+        if best_on_test.test_se is not None and identity_on_test.test_se is not None:
+            gap_se = math.sqrt(best_on_test.test_se ** 2 + identity_on_test.test_se ** 2)
 
-    # Stop rule: does the best variant clear 2 SE better than identity on test?
+    # Stop rule: does the calibrated variant clear 2 SE better than identity on test?
     stop = False
     stop_reason = ""
     if gap is not None and gap_se is not None and gap_se > 0:
         se_clear = abs(gap) / gap_se
         if se_clear < DISTINCT_SE:
             stop = True
-            stop_reason = f"gap {gap:+.4f} is {se_clear:.1f} SE, below {DISTINCT_SE} SE threshold"
+            stop_reason = (
+                f"gap {gap:+.4f} is {se_clear:.1f} SE, below {DISTINCT_SE} SE threshold"
+            )
         else:
             direction = "better" if gap < 0 else "worse"
             stop_reason = f"gap {gap:+.4f} is {se_clear:.1f} SE ({direction})"
@@ -349,48 +392,18 @@ def calibrate_engine(engine: str, kind: str, pairs_with_ids: list[tuple[int, flo
         "engine": engine,
         "kind": kind,
         "n_variants_tried": N_VARIANTS_TRIED,
-        "train_n": len(train_pairs),
+        "train_n": len(fit_pairs),
+        "validation_n": len(validation_pairs),
         "test_n": len(test_pairs),
-        "best_variant": best.name,
-        "train_brier": best.train_brier,
-        "test_brier": best.test_brier,
-        "test_se": best.test_se,
-        "identity_test_brier": identity.test_brier if identity else None,
+        "best_variant": best_on_validation.name,
+        "train_brier": best_on_validation.train_brier,
+        "test_brier": best_on_test.test_brier,
+        "test_se": best_on_test.test_se,
+        "identity_test_brier": identity_on_test.test_brier,
         "gap": gap,
         "gap_se": gap_se,
         "stop": stop,
         "stop_reason": stop_reason,
-        "params": best.params,
+        "params": best_on_validation.params,
+        "ship": not stop,
     }
-
-
-def load_settled_pairs(supa, engine: str) -> dict[str, list[tuple[int, float, bool]]]:
-    """Load settled (id, probability, hit) pairs per kind for one engine.
-
-    Reads from journal_forecasts + journal_settlements, ordered by id (time proxy).
-    Returns {kind: [(id, probability, hit), ...]}."""
-    from tradehub.sports.journal_ledger import _forecaster, HUB_FEED_VERSION
-
-    result: dict[str, list[tuple[int, float, bool]]] = {}
-    for kind in ("winner", "spread", "total"):
-        sport = engine.replace("sports_", "")
-        name = _forecaster(sport, kind)
-        forecasts = select_all(
-            supa, FORECASTS,
-            lambda q, n=name: q.eq("forecaster", n).eq("forecaster_version", HUB_FEED_VERSION),
-            ("id", "target", "probability",))
-        if not forecasts:
-            continue
-        outcomes = fetch_settlements(supa, [f["target"] for f in forecasts])
-        rows = []
-        for f in forecasts:
-            target = f["target"]
-            if target not in outcomes:
-                continue
-            prob = f.get("probability")
-            if prob is None:
-                continue
-            rows.append((int(f["id"]), float(prob), bool(outcomes[target])))
-        if rows:
-            result[kind] = rows
-    return result

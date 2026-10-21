@@ -13,6 +13,7 @@ from tradehub.sports.calibration import (
     N_VARIANTS_TRIED,
     TRAIN_FRACTION,
     DISTINCT_SE,
+    MIN_SETTLED,
     brier_score,
     brier_se,
     _fit_platt,
@@ -23,10 +24,12 @@ from tradehub.sports.calibration import (
     _apply_linear_shrinkage,
     fit_all_variants,
     evaluate_fit,
-    time_split,
+    time_split_by_cutoff,
     calibrate_engine,
     CalibrationFit,
 )
+
+T0 = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 
 
 # ── Brier score ──────────────────────────────────────────────────────────────
@@ -152,79 +155,95 @@ def test_fit_all_variants_insufficient():
 # ── Time split ───────────────────────────────────────────────────────────────
 
 def test_time_split_order():
-    pairs = [(0.1, False), (0.2, False), (0.7, True), (0.8, True)]
-    ids = [4, 1, 3, 2]  # unsorted ids
-    train, test = time_split(pairs, ids)
-    # Sorted by id: (1,0.2,F), (2,0.8,T), (3,0.7,T), (4,0.1,F)
-    # 70% train = first 2, 30% test = last 2
-    assert len(train) == 2
-    assert len(test) == 2
-    assert train == [(0.2, False), (0.8, True)]
-    assert test == [(0.7, True), (0.1, False)]
+    """Split by cutoff time: earlier 70% train, later 30% test."""
+    now = T0
+    pairs_with_cutoff = [
+        (now, 0.1, False),
+        (now, 0.2, False),
+        (now, 0.7, True),
+        (now, 0.8, True),
+    ]
+    # All same time - order is preserved as-is
+    fit, val, test = time_split_by_cutoff(pairs_with_cutoff)
+    # With MIN_SETTLED=100, 4 pairs returns empty
+    assert fit == []
+    assert val == []
+    assert test == []
 
 
-def test_time_split_small():
-    pairs = [(0.5, True)]
-    ids = [1]
-    train, test = time_split(pairs, ids)
-    # int(1 * 0.7) = 0, so train gets 0, test gets 1
-    assert len(train) == 0
-    assert len(test) == 1
-    assert test == [(0.5, True)]
+def test_time_split_min_settled():
+    """Below MIN_SETTLED (100), returns empty splits."""
+    pairs_with_cutoff = [
+        (T0, 0.5, True) for _ in range(50)
+    ]
+    fit, val, test = time_split_by_cutoff(pairs_with_cutoff)
+    assert fit == []
+    assert val == []
+    assert test == []
+
+
+def test_time_split_sufficient():
+    """With >= MIN_SETTLED, splits into fit / validation / test."""
+    pairs_with_cutoff = [
+        (T0, 0.5, True) for _ in range(100)
+    ]
+    fit, val, test = time_split_by_cutoff(pairs_with_cutoff)
+    assert len(fit) + len(val) + len(test) == 100
+    assert len(fit) > 0
+    assert len(val) > 0
+    assert len(test) > 0
 
 
 # ── calibrate_engine ─────────────────────────────────────────────────────────
 
-def _make_pairs(n: int, base_prob: float = 0.5, base_hit: float = 0.5) -> list[tuple[int, float, bool]]:
-    """Generate n synthetic (id, prob, hit) pairs with a slight skill signal."""
+def _make_pairs(n: int, base_prob: float = 0.5) -> list[tuple[datetime, float, bool]]:
+    """Generate n synthetic (cutoff_time, prob, hit) pairs with a slight skill signal."""
     pairs = []
     for i in range(n):
         p = min(max(base_prob + (i % 5) * 0.05, 0.05), 0.95)
-        # hit rate slightly correlated with p
-        h = (p > 0.5) == (base_hit > 0.5)
-        pairs.append((i + 1, p, h))
+        h = (p > 0.5)
+        pairs.append((T0, p, h))
     return pairs
 
 
 def test_calibrate_engine_insufficient():
-    pairs = _make_pairs(5)
+    pairs = _make_pairs(50)
     result = calibrate_engine("sports_nfl", "winner", pairs)
     assert result is None
 
 
 def test_calibrate_engine_structure():
-    pairs = _make_pairs(50)
+    pairs = _make_pairs(150)
     result = calibrate_engine("sports_nfl", "winner", pairs)
     assert result is not None
     assert result["engine"] == "sports_nfl"
     assert result["kind"] == "winner"
     assert result["n_variants_tried"] == N_VARIANTS_TRIED
-    assert result["train_n"] + result["test_n"] == 50
-    assert result["train_n"] == int(50 * TRAIN_FRACTION)
+    assert result["train_n"] + result["validation_n"] + result["test_n"] == 150
     assert result["best_variant"] in ("identity", "platt", "isotonic", "shrinkage")
     assert "stop" in result
     assert "stop_reason" in result
+    assert "ship" in result
 
 
 def test_calibrate_engine_stop_rule_with_strong_signal():
     """With a very strong signal, calibration should clear 2 SE."""
     # Create pairs where p is strongly predictive of h
     pairs = []
-    for i in range(100):
+    for i in range(150):
         if i % 2 == 0:
-            pairs.append((i + 1, 0.8, True))   # high p, always hit
+            pairs.append((T0, 0.8, True))   # high p, always hit
         else:
-            pairs.append((i + 1, 0.2, False))  # low p, never hit
+            pairs.append((T0, 0.2, False))  # low p, never hit
     result = calibrate_engine("sports_cfb", "winner", pairs)
     assert result is not None
-    # With perfect separation, calibration should help
     assert result["gap"] is not None or result["stop_reason"] is not None
 
 
 # ── Integration: no database needed, pure functions ──────────────────────────
 
 def test_calibrate_engine_returns_stop_reason():
-    pairs = _make_pairs(30)
+    pairs = _make_pairs(150)
     result = calibrate_engine("sports_nfl", "spread", pairs)
     assert result is not None
     assert isinstance(result["stop_reason"], str)
