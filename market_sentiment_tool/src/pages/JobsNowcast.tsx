@@ -1,8 +1,6 @@
 import { Fragment, useMemo, useState } from "react";
-import { ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis, ReferenceLine, Line } from "recharts";
+import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, XAxis, YAxis } from "recharts";
 
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { GateBadge } from "@/components/GateBadge";
 import { useJobsScorecard } from "@/hooks/useJobsScorecard";
 import { formatValue, summarizeScorecard, toChartPoints, type JobsSeries } from "@/lib/jobsScorecard";
 
@@ -19,11 +17,6 @@ const sigmaDisplay = (series: JobsSeries, sigma: number | null) => {
   return ` ±${formatted}`;
 };
 
-const gateStatusClass = (status: string) => {
-  if (status === "PROMOTED") return "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30";
-  return "bg-amber-500/10 text-amber-300 border border-amber-500/20";
-};
-
 const seriesButtonClass = (isActive: boolean) => {
   if (isActive) return "border-emerald-500/40 bg-emerald-500/10 text-emerald-300";
   return "border-slate-800 bg-slate-900/50 text-slate-400 hover:text-slate-200 hover:border-slate-700";
@@ -35,7 +28,6 @@ export default function JobsNowcast() {
   const points = useMemo(() => toChartPoints(rows), [rows]);
   const summary = useMemo(() => summarizeScorecard(rows), [rows]);
   const errDigits = series === "payrolls" ? 1 : 2;
-  const newest = rows[rows.length - 1];
 
   return (
     <div className="mx-auto max-w-[1200px] space-y-8 p-6 md:p-10">
@@ -141,7 +133,7 @@ export default function JobsNowcast() {
               <summary className="cursor-pointer px-5 py-3 text-sm font-medium text-slate-300 hover:text-white select-none">Internals</summary>
               <div className="border-t border-slate-800/40 px-5 py-4 space-y-1 text-xs text-slate-400">
                 <p>Built out of band by `/api/jobs-scorecard`. Rows from the server.</p>
-                <p>Engine &amp; gate behind disclosure.</p>
+                <p>Engine version and gate status are per-report internals, shown only on request.</p>
               </div>
             </details>
           </section>
@@ -166,27 +158,12 @@ function JobsChart({
 }: {
   points: { month: string; nowcast: number | null; kalshi: number | null; firstPrint: number | null; latest: number | null }[];
 }) {
-  // Determine which estimator was closer for each month
-  const closer = (p: { nowcast: number | null; kalshi: number | null; firstPrint: number | null }) => {
-    if (p.nowcast === null || p.kalshi === null || p.firstPrint === null) return "none";
-    const nowcastErr = Math.abs(p.nowcast - p.firstPrint);
-    const kalshiErr = Math.abs(p.kalshi - p.firstPrint);
-    return nowcastErr < kalshiErr ? "nowcast" : nowcastErr > kalshiErr ? "kalshi" : "tie";
-  };
-
   return (
     <ResponsiveContainer width="100%" height="100%">
       <ScatterChart data={points}>
+        <CartesianGrid stroke="#1e293b" />
         <XAxis dataKey="month" stroke="#64748b" fontSize={11} tick={{ fill: "#94a3b8" }} />
         <YAxis stroke="#64748b" fontSize={11} tick={{ fill: "#94a3b8" }} />
-        <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #334155", fontSize: 12 }} />
-        {/* First print as dots */}
-        <Scatter
-          data={points.filter((p) => p.firstPrint !== null)}
-          dataKey="firstPrint"
-          name="First BLS print"
-          fill="#f8fafc"
-        />
         {/* Our nowcast as dots */}
         <Scatter
           data={points.filter((p) => p.nowcast !== null)}
@@ -200,6 +177,13 @@ function JobsChart({
           dataKey="kalshi"
           name="Kalshi implied"
           fill="#f59e0b"
+        />
+        {/* First BLS print as dots */}
+        <Scatter
+          data={points.filter((p) => p.firstPrint !== null)}
+          dataKey="firstPrint"
+          name="First BLS print"
+          fill="#f8fafc"
         />
       </ScatterChart>
     </ResponsiveContainer>
