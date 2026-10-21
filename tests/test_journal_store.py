@@ -314,6 +314,62 @@ def test_upsert_score_still_writes_when_the_paired_brier_columns_are_not_deploye
     assert rows[-1]["brier_on_baseline"] == 0.2 and rows[-1]["n_baseline"] == 40
 
 
+def test_upsert_score_still_writes_when_gap_columns_are_not_deployed_yet(monkeypatch):
+    """The same deploy-order hazard, now for the gap/gap_se columns added by
+    migration 20260428000022. A card carrying `gap`/`gap_se` names columns that
+    do not exist until that migration is applied, so PostgREST rejects the
+    whole upsert (PGRST204). `upsert_score` must degrade to "gap not recorded",
+    never to "scorecard not written".
+
+    A strict fake rejects unknown columns: the first write fails, the retry
+    without gap/gap_se succeeds, and the negative answer is cached per process.
+    """
+    from tradehub.journal import store
+
+    paired = ("gap", "gap_se")
+    deployed = {"value": False}
+    rows: list[dict] = []
+
+    class Q:
+        def upsert(self, row, **_kw):
+            # PostgREST rejects the whole payload when it names an unknown column.
+            if any(k in row for k in paired) and not deployed["value"]:
+                raise RuntimeError(
+                    '{"code":"PGRST204","message":"Could not find the gap'
+                    ' column of journal_scores in the schema cache"}')
+            rows.append({k: v for k, v in row.items()
+                         if deployed["value"] or k not in paired})
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": rows})()
+
+    class S:
+        def table(self, _n):
+            return Q()
+
+    monkeypatch.setattr(store, "_PAIRED_BRIER_DEPLOYED", None)
+    card = {"n_settled": 100, "brier": 0.2, "brier_baseline": 0.25,
+            "brier_on_baseline": 0.2, "n_baseline": 40,
+            "gap": -0.05, "gap_se": 0.01}
+    now = datetime(2026, 10, 4, tzinfo=UTC)
+
+    store.upsert_score(S(), "f", "v1", card, now)
+    assert len(rows) == 1, "the scorecard was lost because new columns were not deployed yet"
+    assert not any(k in rows[0] for k in paired)
+    assert "gap" not in rows[0] and "gap_se" not in rows[0]
+
+    # The negative answer is cached for the REST OF THE PROCESS so one run does
+    # not pay for a rejected write on every forecaster. `journal_run` is a fresh
+    # process each hour, so the next run probes again and the gap/gap_se columns
+    # start being written as soon as the migration is applied -- no redeploy.
+    assert store._PAIRED_BRIER_DEPLOYED is False
+    deployed["value"] = True
+    store._PAIRED_BRIER_DEPLOYED = None
+    store.upsert_score(S(), "f", "v1", card, now)
+    assert rows[-1]["gap"] == -0.05 and rows[-1]["gap_se"] == 0.01
+
+
 def test_an_unrelated_schema_error_is_not_cached_as_the_paired_columns_being_absent(monkeypatch):
     """The guard on the guard, matching the one added for `_missing_horizon_column`.
 
