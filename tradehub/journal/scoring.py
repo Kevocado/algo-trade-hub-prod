@@ -149,6 +149,16 @@ def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
                            f"{costs['n_traded']} trades, not positive")
     if not calibration_ready:
         reasons.append(f"a calibration bucket has fewer than {MIN_BUCKET_TARGETS} settled targets")
+    # Paired Brier gap vs baseline on the same contracts: negative = better than baseline.
+    gap = (round(ours_b, 6) - round(brier_base, 6)) if (ours_b is not None and brier_base is not None) else None
+    # Standard error of the paired gap from per-contract squared-error differences.
+    gap_se = None
+    if ours_on_base and theirs and len(ours_on_base) == len(theirs) and len(ours_on_base) > 1:
+        diffs = [o - t for o, t in zip(ours_on_base, theirs)]
+        mean_d = sum(diffs) / len(diffs)
+        var_d = sum((d - mean_d) ** 2 for d in diffs) / (len(diffs) - 1)
+        gap_se = round((var_d / len(diffs)) ** 0.5, 6)
+
     return {
         "cadence": cadence,
         "baseline": baseline,
@@ -162,6 +172,8 @@ def score(forecasts: list[dict[str, Any]], settlements: dict[str, int],
         # be wrong. `brier_on_baseline`/`n_baseline` are the matched pair `brier_baseline` belongs to.
         "brier_on_baseline": round(ours_b, 6) if ours_b is not None else None,
         "n_baseline": len(ours_on_base),
+        "gap": gap,
+        "gap_se": gap_se,
         "bss": round(bss, 6) if bss is not None else None,
         "reliability": buckets,
         "murphy": murphy(pairs) or {},

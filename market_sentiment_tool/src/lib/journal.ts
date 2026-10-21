@@ -25,6 +25,10 @@ export interface JournalScore {
   brier: number | null;
   brier_baseline: number | null;
   bss: number | null;
+  /** Paired Brier gap vs baseline on the same contracts: negative = better than baseline. */
+  gap?: number | null;
+  /** Standard error of the paired gap, computed server-side from per-contract squared-error differences. */
+  gap_se?: number | null;
   reliability: ReliabilityBucket[];
   murphy: { reliability?: number; resolution?: number; uncertainty?: number };
   /** Simulated one-contract taker P&L after Kalshi's fee and the spread; {} unless graded vs a market. */

@@ -208,11 +208,11 @@ def settle(supa, settlement: Settlement) -> bool:
         log.warning("journal: settlement refused for %s: %s", settlement.target, exc)
         return False
 
-
-# Columns added by migration 20260428000020, and whether they are deployed. `None` = not asked yet.
+# Columns added by migration 20260428000020 (paired Brier) and 20260428000022 (gap / gap_se),
+# and whether they are deployed. `None` = not asked yet.
 # Same reasoning as `_HORIZON_DEPLOYED`, and the same reason it exists: `upsert_score` spreads the whole
 # card into one PostgREST upsert, so a single unknown column name rejects the ENTIRE write.
-_PAIRED_BRIER_COLUMNS = ("brier_on_baseline", "n_baseline")
+_PAIRED_BRIER_COLUMNS = ("brier_on_baseline", "n_baseline", "gap", "gap_se")
 _PAIRED_BRIER_DEPLOYED: bool | None = None
 
 
