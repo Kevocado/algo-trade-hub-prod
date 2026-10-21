@@ -218,7 +218,8 @@ def edge_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s: EdgeSuggestion,
-              check: CandidateCheck, now: datetime) -> dict[str, Any]:
+              check: CandidateCheck, now: datetime,
+              engine: str | None = None) -> dict[str, Any]:
     series = cfg.series[kind]
     g = mg.game
     return {
@@ -228,7 +229,7 @@ def _edge_row(cfg: SportConfig, kind: str, sm: SportsMarket, mg: MatchedGame, s:
         "model_probability": s.our_prob,
         "edge": s.net_edge_pct / 100.0,
         "edge_type": "SPORTS",
-        "engine": cfg.engine,
+        "engine": engine or cfg.engine,
         # Same key the ledger row uses, so the (engine, engine_version) promotion gate can
         # actually match this edge instead of falling back to a placeholder.
         "engine_version": f"feed:{mg.game.model_version or 'unknown'}",
@@ -467,7 +468,8 @@ def scan_sport(cfg: SportConfig, markets_by_series: dict[str, list[SportsMarket]
                             check_cal = check_candidate(kind, sm, mg, s_cal,
                                                         feed.calibration, cfg.edge.params, now,
                                                         hub_calibration=hub_calibration)
-                            row_cal = _edge_row(cfg, kind, sm, mg, s_cal, check_cal, now)
+                            row_cal = _edge_row(cfg, kind, sm, mg, s_cal, check_cal, now,
+                                                engine=cfg.engine + "_cal")
                             out.edges.append(row_cal)
     out.report = {
         "feed_games": len(feed.games), "feed_rejected": feed.rejected, "matched": len(match.matched),
