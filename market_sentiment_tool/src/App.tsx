@@ -10,6 +10,7 @@ import Cpi from "@/pages/Cpi";
 import Journal from "@/pages/Journal";
 import Health from "@/pages/Health";
 import Weather from "@/pages/Weather";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { NoOrdersBanner } from "@/components/NoOrdersBanner";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
