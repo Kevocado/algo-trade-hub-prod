@@ -569,6 +569,90 @@ def get_journal_series(supabase=Depends(get_supabase)):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/journal/weather-panel", tags=["Journal"])
+def get_weather_panel(supabase=Depends(get_supabase)):
+    """Latest settled day's weather/ERCOT contracts: our probability vs Kalshi's, with outcome.
+
+    Read-only: no new forecasting, no migration. Reads journal_forecasts + journal_settlements for
+    weather_* and ercot_peak forecasters, groups by target, and returns only the latest settled day's
+    contracts. Each contract carries our probability, Kalshi's implied probability, and the outcome.
+    Missing figures are null, never 0.0.
+    """
+    if supabase is None:
+        raise HTTPException(status_code=503, detail="Supabase is not configured")
+    try:
+        forecasts = _fetch_all(supabase, "journal_forecasts", lambda q: q.select("*"),
+                               order=("frozen_at",))
+    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
+        if table_missing(exc, "journal_forecasts"):
+            forecasts = []
+        else:
+            raise _table_fault("journal_forecasts", exc) from exc
+    try:
+        settlements = _fetch_all(supabase, "journal_settlements", lambda q: q.select("*"),
+                                 order=("settled_at",))
+    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
+        if table_missing(exc, "journal_settlements"):
+            settlements = []
+        else:
+            raise _table_fault("journal_settlements", exc) from exc
+
+    # Weather/ERCOT forecaster families
+    weather_forecasters = {"weather_high", "weather_low", "weather_rain", "ercot_peak"}
+
+    # Group forecasts by target, keeping only weather/ERCOT forecasters
+    by_target: dict[str, dict[str, Any]] = {}
+    for row in forecasts:
+        forecaster = row.get("forecaster", "")
+        if forecaster not in weather_forecasters:
+            continue
+        target = row.get("target", "")
+        prob = row.get("probability")
+        if prob is None or not target:
+            continue
+        if target not in by_target:
+            by_target[target] = {"target": target, "forecaster": forecaster}
+        by_target[target]["our_prob"] = float(prob)
+        by_target[target]["market_prob"] = row.get("market_prob")
+
+    # Join settlements
+    outcome_by_target: dict[str, int] = {}
+    for s in settlements:
+        outcome_by_target[s["target"]] = int(s["outcome"])
+
+    settled_contracts: list[dict[str, Any]] = []
+    for target, row in by_target.items():
+        outcome = outcome_by_target.get(target)
+        if outcome is None:
+            continue  # only settled contracts
+        row["outcome"] = outcome
+        settled_contracts.append(row)
+
+    if not settled_contracts:
+        return {"as_of": datetime.now(timezone.utc).isoformat(), "contracts": []}
+
+    # Find the latest settled day: group by date from target (T-KXHIGHNY-26OCT18 -> 26OCT18)
+    from collections import defaultdict
+    by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for c in settled_contracts:
+        parts = c["target"].rsplit("-", 1)
+        date_str = parts[1] if len(parts) == 2 else ""
+        if date_str:
+            by_date[date_str].append(c)
+
+    if not by_date:
+        return {"as_of": datetime.now(timezone.utc).isoformat(), "contracts": []}
+
+    latest_date = max(by_date.keys())
+    latest_contracts = by_date[latest_date]
+
+    return {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "settled_date": latest_date,
+        "contracts": latest_contracts,
+    }
+
 # Sports edges (rollout step 7): candidate edges with review verdicts and links
 # ════════════════════════════════════════════════════════════════════════════
 _TIER_ORDER = {"top_pick": 0, "flagged": 1, "unreviewed": 2, "filtered": 3}
