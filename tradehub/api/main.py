@@ -540,7 +540,8 @@ def get_journal_backtests(supabase=Depends(get_supabase)):
 
 @app.get("/api/journal/series", tags=["Journal"])
 def get_journal_series(supabase=Depends(get_supabase)):
-    """Per-forecaster skill series over time: one point per replay row, gap = brier_diff ± se.
+    """Per-forecaster skill series over time: one entry per (forecaster, version) with a `points` list, one point per
+    replay row (gap = brier_diff, se = its standard error), oldest first.
 
     Mirrors `/api/journal/backtests`: a missing `journal_backtests` table degrades to an empty
     answer (200), not a 500, and `brier_diff`/`brier_diff_se` arrive with migration 017 so they are
@@ -557,19 +558,14 @@ def get_journal_series(supabase=Depends(get_supabase)):
             rows = []
         else:
             raise _table_fault("journal_backtests", exc) from exc
-    points = [
-        {
-            "forecaster": r.get("forecaster"),
-            "forecaster_version": r.get("forecaster_version"),
-            "date_from": r.get("date_from"),
-            "gap": r.get("brier_diff"),
-            "se": r.get("brier_diff_se"),
-            "n": r.get("n"),
-        }
-        for r in rows
-    ]
-    points.sort(key=lambda p: p["date_from"])
-    return {"series": points}
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for r in rows:
+        key = (r.get("forecaster"), r.get("forecaster_version"))
+        grouped.setdefault(key, []).append({"date": r.get("date_from"), "gap": r.get("brier_diff"),
+                                            "se": r.get("brier_diff_se"), "n": r.get("n")})
+    series = [{"forecaster": f, "version": v, "points": sorted(pts, key=lambda p: str(p["date"]))}
+              for (f, v), pts in sorted(grouped.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1])))]
+    return {"series": series}
 
 
 # ════════════════════════════════════════════════════════════════════════════
