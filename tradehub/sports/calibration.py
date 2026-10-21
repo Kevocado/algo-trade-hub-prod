@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from scipy.optimize import minimize_scalar
 
 from tradehub.journal.store import FORECASTS, fetch_settlements, select_all
-from tradehub.sports.journal_ledger import _forecaster, HUB_FEED_VERSION
 
 log = logging.getLogger(__name__)
 
@@ -370,6 +369,8 @@ def load_settled_pairs(supa, engine: str) -> dict[str, list[tuple[int, float, bo
 
     Reads from journal_forecasts + journal_settlements, ordered by id (time proxy).
     Returns {kind: [(id, probability, hit), ...]}."""
+    from tradehub.sports.journal_ledger import _forecaster, HUB_FEED_VERSION
+
     result: dict[str, list[tuple[int, float, bool]]] = {}
     for kind in ("winner", "spread", "total"):
         sport = engine.replace("sports_", "")
