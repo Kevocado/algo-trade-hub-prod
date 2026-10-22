@@ -7,7 +7,7 @@ import { SkillOverTime } from "@/components/SkillOverTime";
 import { Stat } from "@/components/Stat";
 import { getJson } from "@/lib/getJson";
 import { PreJournalContext } from "@/components/PreJournalContext";
-import type { JournalResponse, SeriesResponse } from "@/lib/journal";
+import type { JournalResponse, SeriesResponse, JournalScore, SeriesEntry, SeriesPoint } from "@/lib/journal";
 import { STATUS_WORDS, skillText, split, viewRows, type Status, type ViewRow } from "@/lib/journalView";
 import { tileNote } from "@/lib/forecasterLabels";
 
@@ -73,7 +73,7 @@ export default function Journal() {
         <Stat value={h.promoted} label="promoted" hint="Needs 200 scored (daily) or 50 (monthly)." />
       </section>
 
-      <SkillChart data={data} series={series?.series ?? []} />
+      <SkillChart data={data} />
 
       {results.length > 0 && (
         <section aria-label="Results">
@@ -144,18 +144,18 @@ export default function Journal() {
       )}
 
       {/* Weather/ERCOT panel: per-contract probability vs Kalshi, coloured by outcome */}
-      {data && series && data.forecasters.some((f: any) => /weather/i.test(f.forecaster)) && (
+      {data && series && data.forecasters.some((f: JournalScore) => /weather/i.test(f.forecaster)) && (
         <section aria-label="Weather/ERCOT" className="border-t border-slate-800/40 pt-6">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400 mb-3">Weather & ERCOT</h2>
           <div className="space-y-4 text-sm text-slate-300">
             {series.series
-              .filter((s: any) => /weather/i.test(s.forecaster))
+              .filter((s: SeriesEntry) => /weather/i.test(s.forecaster))
               .slice(0, 3)
-              .map((s: any) => (
+              .map((s: SeriesEntry) => (
                 <div key={s.forecaster} className="flex items-baseline gap-2">
                   <span className="font-medium text-slate-100">{s.forecaster} v{s.version}</span>
                   <div className="flex gap-1">
-                    {s.points.map((p: any, i: number) => (
+                    {s.points.map((p: SeriesPoint, i: number) => (
                       <span
                         key={i}
                         className={p.gap > 0
@@ -172,7 +172,7 @@ export default function Journal() {
                   <span className="text-xs text-slate-500">n={s.n ?? null}</span>
                 </div>
               ))}
-            {data.forecasters.some((f: any) => /weather/i.test(f.forecaster)) ? null : (
+            {data.forecasters.some((f: JournalScore) => /weather/i.test(f.forecaster)) ? null : (
               <p className="text-slate-500/60">No weather forecasters active</p>
             )}
           </div>
