@@ -4,6 +4,8 @@ Strategy: Fetch events (have categories) → then fetch markets per event_ticker
 This bypasses the 15k sports parlay flood in the raw /markets endpoint.
 """
 
+from __future__ import annotations
+
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,34 +21,44 @@ KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 KALSHI_API_URL = f"{KALSHI_BASE_URL}/markets"
 KALSHI_EVENTS_URL = f"{KALSHI_BASE_URL}/events"
 
-# Categories we care about (skip Sports, Entertainment, Social, Mentions)
-TARGET_CATEGORIES = {
-    'Climate and Weather',    # → Weather
-    'Economics',              # → Economics
-    'Financials',             # → Financials
-    'Politics',               # → Politics
-    'Elections',              # → Politics
-    'Companies',              # → Companies
-    'Science and Technology', # → Science
-    'Health',                 # → Health
-    'World',                  # → World
-    'Transportation',         # → World
-    'Crypto',                 # → Financials
-}
-
-# How to normalize/display categories
-CATEGORY_NORMALIZE = {
-    'Climate and Weather': 'Weather',
-    'Science and Technology': 'Science',
-    'Elections': 'Politics',
-    'Transportation': 'World',
-    'Crypto': 'Financials',
-}
-
 
 def api_key() -> str | None:
     """KALSHI_API_KEY, read now rather than bound at import time."""
     return os.getenv("KALSHI_API_KEY")
+
+
+# ─── Circuit breaker state (module-level, per-process) ──────────────────
+# After 3 consecutive fetch failures (5xx/network), we stop trying for the
+# remainder of the journal run to protect the 20-minute budget.
+_FETCH_FAILURE_STRIKES = 0
+_CIRCUIT_BREAKER_OPEN = False
+_MAX_STRIKES = 3
+
+
+def _reset_circuit_breaker():
+    """Reset circuit breaker state (called at start of each journal run)."""
+    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN
+    _FETCH_FAILURE_STRIKES = 0
+    _CIRCUIT_BREAKER_OPEN = False
+
+
+def _record_fetch_failure():
+    """Record a fetch failure; open circuit breaker after 3 strikes."""
+    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN
+    _FETCH_FAILURE_STRIKES += 1
+    if _FETCH_FAILURE_STRIKES >= _MAX_STRIKES:
+        _CIRCUIT_BREAKER_OPEN = True
+
+
+def _record_fetch_success():
+    """Record a successful fetch; reset strike counter."""
+    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN
+    _FETCH_FAILURE_STRIKES = 0
+    _CIRCUIT_BREAKER_OPEN = False
+
+
+def _circuit_open() -> bool:
+    return _CIRCUIT_BREAKER_OPEN
 
 
 # ─── HEADERS HELPER ──────────────────────────────────────────────────
@@ -562,57 +574,99 @@ def get_kalshi_event_url(event_ticker):
 def fetch_market(ticker: str, *, get: callable | None = None) -> dict:
     """Fetch the public market snapshot for a ticker (`GET /markets/{ticker}`).
 
-    Reuses this module's KALSHI_API_URL so the fetch base always agrees with
-    the base the market tickers were listed from. The endpoint is public;
-    no auth header needed.
+    Primary: GET /markets/{ticker} with retries on 5xx/network errors.
+    Fallback: GET /markets?event_ticker=<event>&limit=200 (NOT tickers=).
+    Derives event_ticker by stripping the last "-" segment from the market ticker.
+    Does NOT hardcode status=open in fallback (hides settled markets).
+    Re-wraps fallback response: finds matching ticker in markets list and returns {"market": markets[i]}.
 
-    Retries with exponential backoff on 503. If the single-market endpoint
-    continues to 503 after retries, falls back to the list endpoint
-    `GET /markets?tickers=<ticker>` which remains available.
+    Retries only on 5xx/network errors; 4xx are NOT retried.
+    Honors Retry-After header if present.
+    Circuit breaker: 3-strike module-level state stops retries/fallback after 3 consecutive failures
+    within the current journal run (call _reset_circuit_breaker() at start of each run).
 
     Args:
         ticker: The market ticker to fetch.
         get: Optional callable for dependency injection (testing). Signature:
              get(url, headers=None, timeout=30, params=None) -> response-like object.
              If not provided, uses `requests.get`.
+
+    Returns:
+        Dict with shape {"market": {...}} compatible with tradehub.settlement.parse_market_result.
     """
     if get is None:
         get = requests.get
+
+    # Check circuit breaker first
+    if _circuit_open():
+        raise RuntimeError(f"Kalshi fetch circuit breaker open (3 consecutive failures); aborting fetch for {ticker}")
 
     headers = _headers()
     max_retries = 3
     base_delay = 1.0  # seconds
 
-    # Try single-market endpoint with retries
+    # Derive event_ticker by stripping last "-" segment (e.g., KXHIGHNY-26OCT20-T70 -> KXHIGHNY-26OCT20)
+    event_ticker = ticker.rsplit("-", 1)[0]
+
+    # Try single-market endpoint with retries on 5xx/network errors only
     single_url = f"{KALSHI_API_URL}/{ticker}"
     for attempt in range(max_retries):
         try:
-            resp = get(single_url, headers=headers, timeout=30)
+            resp = get(f"{KALSHI_API_URL}/{ticker}", headers=headers, timeout=30)
             if resp.status_code == 200:
+                _record_fetch_success()
                 return resp.json()
-            elif resp.status_code == 503:
+            elif 500 <= resp.status_code < 600:
+                # 5xx: retry with backoff, honor Retry-After
                 if attempt < max_retries - 1:
-                    time.sleep(base_delay * (2 ** attempt))
+                    retry_after = resp.headers.get("Retry-After")
+                    delay = int(retry_after) if retry_after and retry_after.isdigit() else base_delay * (2 ** attempt)
+                    time.sleep(delay)
                     continue
-                # Last 503 attempt - break to fallback
+                # Last 5xx attempt - break to fallback
                 break
-            resp.raise_for_status()
-        except requests.exceptions.RequestException:
+            else:
+                # 4xx: do NOT retry - fail immediately
+                _record_fetch_failure()
+                resp.raise_for_status()
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            # Only network errors retry
             if attempt < max_retries - 1:
                 time.sleep(base_delay * (2 ** attempt))
                 continue
             raise
+        except requests.exceptions.RequestException:
+            # Other request exceptions (including HTTPError from raise_for_status) - don't retry
+            _record_fetch_failure()
+            raise
 
-    # Fallback: list endpoint with tickers filter
+    # Fallback: event_ticker list endpoint (NOT tickers=)
     try:
-        resp = get(KALSHI_API_URL, params={"tickers": ticker, "limit": 1, "status": "open"}, headers=headers, timeout=30)
-        resp.raise_for_status()
-        markets = resp.json().get('markets', [])
-        if markets:
-            return markets[0]
+        resp = get(
+            KALSHI_API_URL,
+            params={"event_ticker": event_ticker, "limit": 200},
+            headers=headers,
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            markets = data.get("markets", [])
+            for m in markets:
+                if m.get("ticker") == ticker:
+                    _record_fetch_success()
+                    return {"market": m}
+            raise RuntimeError(f"Ticker {ticker} not found in event_ticker {event_ticker} markets")
+        elif 500 <= resp.status_code < 600:
+            _record_fetch_failure()
+            raise RuntimeError(f"Fallback event_ticker fetch failed with {resp.status_code}")
+        else:
+            _record_fetch_failure()
+            resp.raise_for_status()
     except requests.exceptions.RequestException:
-        pass
+        _record_fetch_failure()
+        raise
 
-    # If all attempts fail, raise the last error
+    # If we reach here, all attempts failed
+    _record_fetch_failure()
     raise RuntimeError(f"Kalshi market fetch failed for {ticker} after retries and fallback")
 
