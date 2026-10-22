@@ -559,14 +559,60 @@ def get_kalshi_event_url(event_ticker):
     return f"https://kalshi.com/markets/{series}/{event_lower}"
 
 
-def fetch_market(ticker: str) -> dict:
+def fetch_market(ticker: str, *, get: callable | None = None) -> dict:
     """Fetch the public market snapshot for a ticker (`GET /markets/{ticker}`).
 
     Reuses this module's KALSHI_API_URL so the fetch base always agrees with
     the base the market tickers were listed from. The endpoint is public;
     no auth header needed.
+
+    Retries with exponential backoff on 503. If the single-market endpoint
+    continues to 503 after retries, falls back to the list endpoint
+    `GET /markets?tickers=<ticker>` which remains available.
+
+    Args:
+        ticker: The market ticker to fetch.
+        get: Optional callable for dependency injection (testing). Signature:
+             get(url, headers=None, timeout=30, params=None) -> response-like object.
+             If not provided, uses `requests.get`.
     """
-    resp = requests.get(f"{KALSHI_API_URL}/{ticker}", timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+    if get is None:
+        get = requests.get
+
+    headers = _headers()
+    max_retries = 3
+    base_delay = 1.0  # seconds
+
+    # Try single-market endpoint with retries
+    single_url = f"{KALSHI_API_URL}/{ticker}"
+    for attempt in range(max_retries):
+        try:
+            resp = get(single_url, headers=headers, timeout=30)
+            if resp.status_code == 200:
+                return resp.json()
+            elif resp.status_code == 503:
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+                    continue
+                # Last 503 attempt - break to fallback
+                break
+            resp.raise_for_status()
+        except requests.exceptions.RequestException:
+            if attempt < max_retries - 1:
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            raise
+
+    # Fallback: list endpoint with tickers filter
+    try:
+        resp = get(KALSHI_API_URL, params={"tickers": ticker, "limit": 1, "status": "open"}, headers=headers, timeout=30)
+        resp.raise_for_status()
+        markets = resp.json().get('markets', [])
+        if markets:
+            return markets[0]
+    except requests.exceptions.RequestException:
+        pass
+
+    # If all attempts fail, raise the last error
+    raise RuntimeError(f"Kalshi market fetch failed for {ticker} after retries and fallback")
 
