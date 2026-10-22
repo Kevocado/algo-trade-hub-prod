@@ -5,7 +5,7 @@ Read from journal tables via the API. No new forecasting.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from journal_fakes import FakeJournalDB
@@ -14,6 +14,21 @@ from tradehub.api.dependencies import get_supabase
 from tradehub.api.main import app
 
 T0 = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+
+
+def _weather_target(day: datetime) -> str:
+    """A weather contract target for `day`, e.g. 'T-KXHIGHNY-26OCT18'.
+
+    The target date suffix is the day in Kalshi's own format (`%y%b%d` = year, month, day), and the
+    /api/weather endpoint compares it to the live clock, so the fixtures must be built from the real
+    now instead of hardcoding one date.
+    """
+    return f"T-KXHIGHNY-{day.strftime('%y%b%d').upper()}"
+
+
+# Relative to the real clock: never a hardcoded date, or the test goes stale the day it runs.
+_TODAY = _weather_target(datetime.now(UTC))
+_YESTERDAY = _weather_target(datetime.now(UTC) - timedelta(days=1))
 
 
 def _client(db):
@@ -43,8 +58,8 @@ def _weather_forecast(forecaster, target, prob, market_prob=None, **over):
 
 def test_weather_api_returns_today_and_settled():
     db = FakeJournalDB(lambda: T0)
-    today = "T-KXHIGHNY-26OCT18"
-    yesterday = "T-KXHIGHNY-26OCT17"
+    today = _TODAY
+    yesterday = _YESTERDAY
     db.tables["journal_forecasts"] += [
         _weather_forecast("weather_high", today, 0.65, 0.60),
         _weather_forecast("baseline_climatology_weather_high", today, 0.55, 0.60),
@@ -65,7 +80,7 @@ def test_weather_api_returns_today_and_settled():
 
 def test_weather_api_today_has_all_three_probabilities():
     db = FakeJournalDB(lambda: T0)
-    today = "T-KXHIGHNY-26OCT18"
+    today = _TODAY
     db.tables["journal_forecasts"] += [
         _weather_forecast("weather_high", today, 0.65, 0.60),
         _weather_forecast("baseline_climatology_weather_high", today, 0.55, 0.60),
@@ -83,7 +98,7 @@ def test_weather_api_today_has_all_three_probabilities():
 
 def test_weather_api_settled_includes_outcome():
     db = FakeJournalDB(lambda: T0)
-    yesterday = "T-KXHIGHNY-26OCT17"
+    yesterday = _YESTERDAY
     db.tables["journal_forecasts"] += [
         _weather_forecast("weather_high", yesterday, 0.70, 0.72),
         _weather_forecast("baseline_climatology_weather_high", yesterday, 0.60, 0.72),
@@ -102,7 +117,7 @@ def test_weather_api_settled_includes_outcome():
 
 def test_weather_api_excludes_non_weather_forecasters():
     db = FakeJournalDB(lambda: T0)
-    today = "T-KXHIGHNY-26OCT18"
+    today = _TODAY
     db.tables["journal_forecasts"] += [
         _weather_forecast("weather_high", today, 0.65, 0.60),
         _weather_forecast("gas", today, 0.50, 0.50),  # not weather
