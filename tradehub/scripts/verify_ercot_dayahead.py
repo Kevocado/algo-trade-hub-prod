@@ -1,5 +1,9 @@
 """Verify ERCOT's published day-ahead load forecast against ERCOT's own published numbers.
 
+Run it as a module, from the repo root:
+
+    python3 -m tradehub.scripts.verify_ercot_dayahead
+
 Every number below comes from ERCOT:
 
   * DAY-AHEAD FORECAST: the `forecast` array of ERCOT's Supply & Demand dashboard
@@ -32,8 +36,7 @@ from pathlib import Path
 
 import requests
 
-if __package__ in (None, ""):  # run as `python3 tradehub/scripts/verify_ercot_dayahead.py`
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from tradehub.data.ercot import parse_daily_peak
 
 SUPPLY_DEMAND = "https://www.ercot.com/api/1/services/read/dashboards/supply-demand.json"
 ZONE_URL = "https://www.ercot.com/content/cdr/html/{ymd}_actual_loads_of_forecast_zones.html"
@@ -44,8 +47,6 @@ ACTUAL_DAYS_SHOWN = 10
 
 def actual_peak(day: date) -> float | None:
     """The actual peak hourly TOTAL MW from ERCOT's daily zone report."""
-    from tradehub.data.ercot import parse_daily_peak
-
     url = ZONE_URL.format(ymd=day.strftime("%Y%m%d"))
     resp = requests.get(url, timeout=30)
     if resp.status_code != 200:
