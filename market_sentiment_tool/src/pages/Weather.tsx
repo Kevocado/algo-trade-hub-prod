@@ -6,6 +6,8 @@ import {
   formatOutcome,
   formatProb,
   weatherStats,
+  parseWeatherTarget,
+  weatherLabel,
   type Chip,
 } from "@/lib/weather";
 
@@ -34,22 +36,6 @@ function Stat({ label, value, sub }: { label: string; value: string | number; su
       {sub ? <div className="mt-1 text-xs text-slate-500">{sub}</div> : null}
     </div>
   );
-}
-
-function extractCity(target: string): string {
-  // T-KXHIGHNY-26OCT18 -> KXHIGHNY
-  const parts = target.split("-");
-  if (parts.length >= 3) return parts.slice(1, -1).join("-");
-  return target;
-}
-
-function extractKind(target: string): string {
-  // T-KXHIGHNY-26OCT18 -> HIGH
-  const city = extractCity(target);
-  if (city.includes("HIGH")) return "High";
-  if (city.includes("LOW")) return "Low";
-  if (city.includes("RAIN")) return "Rain";
-  return "?";
 }
 
 export default function Weather() {
@@ -97,24 +83,27 @@ export default function Weather() {
                       Today's forecast
                     </h2>
                     <div className="flex flex-col gap-2">
-                      {today.map((row) => (
-                        <div
-                          key={row.target}
-                          className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
-                        >
-                          <div>
-                            <div className="text-sm font-semibold text-slate-200">
-                              {extractCity(row.target)}
+                      {today.map((row) => {
+                        const { city, kind, strike } = parseWeatherTarget(row.target);
+                        return (
+                          <div
+                            key={row.target}
+                            className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
+                          >
+                            <div>
+                              <div className="text-sm font-semibold text-slate-200">
+                                {weatherLabel(row.target)}
+                              </div>
+                              <div className="text-xs text-slate-500">{city} · {kind}</div>
                             </div>
-                            <div className="text-xs text-slate-500">{extractKind(row.target)}</div>
+                            <div className="flex items-center gap-4 text-sm tabular-nums">
+                              <span className="text-slate-300">ens {formatProb(row.ensemble)}</span>
+                              <span className="text-slate-300">kalshi {formatProb(row.kalshi)}</span>
+                              <span className="text-slate-300">clim {formatProb(row.climatology)}</span>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-4 text-sm tabular-nums">
-                            <span className="text-slate-300">ens {formatProb(row.ensemble)}</span>
-                            <span className="text-slate-300">kalshi {formatProb(row.kalshi)}</span>
-                            <span className="text-slate-300">clim {formatProb(row.climatology)}</span>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </section>
                 ) : null}
@@ -125,32 +114,35 @@ export default function Weather() {
                       Settled history
                     </h2>
                     <div className="flex flex-col gap-2">
-                      {settled.map((row) => (
-                        <div
-                          key={row.target}
-                          className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
-                        >
-                          <div>
-                            <div className="text-sm font-semibold text-slate-200">
-                              {extractCity(row.target)}
+                      {settled.map((row) => {
+                        const { city, kind, strike } = parseWeatherTarget(row.target);
+                        return (
+                          <div
+                            key={row.target}
+                            className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
+                          >
+                            <div>
+                              <div className="text-sm font-semibold text-slate-200">
+                                {weatherLabel(row.target)}
+                              </div>
+                              <div className="text-xs text-slate-500">{city} · {kind}</div>
                             </div>
-                            <div className="text-xs text-slate-500">{extractKind(row.target)}</div>
+                            <div className="flex items-center gap-4 text-sm tabular-nums">
+                              <span className="text-slate-300">ens {formatProb(row.ensemble)}</span>
+                              <span className="text-slate-300">kalshi {formatProb(row.kalshi)}</span>
+                              <ChipBadge
+                                chip={{
+                                  label: formatOutcome(row.outcome),
+                                  tone: row.outcome === 1 ? "ok" : row.outcome === 0 ? "bad" : "flat",
+                                }}
+                              />
+                              {row.realized_value !== null && row.realized_value !== undefined ? (
+                                <span className="text-slate-400">{row.realized_value}°F</span>
+                              ) : null}
+                            </div>
                           </div>
-                          <div className="flex items-center gap-4 text-sm tabular-nums">
-                            <span className="text-slate-300">ens {formatProb(row.ensemble)}</span>
-                            <span className="text-slate-300">kalshi {formatProb(row.kalshi)}</span>
-                            <ChipBadge
-                              chip={{
-                                label: formatOutcome(row.outcome),
-                                tone: row.outcome === 1 ? "ok" : row.outcome === 0 ? "bad" : "flat",
-                              }}
-                            />
-                            {row.realized_value !== null && row.realized_value !== undefined ? (
-                              <span className="text-slate-400">{row.realized_value}°F</span>
-                            ) : null}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </section>
                 ) : null}

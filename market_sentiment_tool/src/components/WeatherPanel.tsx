@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, ReferenceLine, XAxis, YAxis } from "recharts";
 import { getJson } from "@/lib/getJson";
+<<<<<<< HEAD
+=======
+import { parseWeatherTarget, weatherChip } from "@/lib/weather";
+>>>>>>> 532e510 (fix(weather): parse city/strike from ticker for /weather page labels)
 
 const CORRECT = "#10b981";   // green: our prediction matched the outcome
 const WRONG = "#f87171";     // red: our prediction was wrong

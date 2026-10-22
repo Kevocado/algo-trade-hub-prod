@@ -61,3 +61,61 @@ export function weatherStats(today: WeatherTodayRow[], settled: WeatherSettledRo
     cities,
   };
 }
+
+/** Map Kalshi series prefix to city/region label. */
+const CITY_MAP: Record<string, string> = {
+  KXHIGHNY: "NYC",
+  KXHIGHLAX: "Los Angeles",
+  KXHIGHPHIL: "Philadelphia",
+  KXHIGHTNOLA: "New Orleans",
+  KXLOWNY: "NYC",
+  KXLOWLAX: "Los Angeles",
+  KXLOWPHIL: "Philadelphia",
+  KXLOWTNOLA: "New Orleans",
+  KXRAINNY: "NYC",
+  KXRAINCHI: "Chicago",
+  KXRAINMIA: "Miami",
+};
+
+/** Parse the target ticker into {city, kind, strike}. */
+export function parseWeatherTarget(target: string): { city: string; kind: "high" | "low" | "rain"; strike: number | null } {
+  // target format: kalshi:KXHIGHNY-26OCT16-T75 or KXHIGHNY-26OCT16-T75
+  const clean = target.replace(/^kalshi:/, "");
+  const parts = clean.split("-");
+  if (parts.length < 2) return { city: "?", kind: "high", strike: null };
+  const series = parts[0];
+  // city from series
+  const city = CITY_MAP[series] ?? "?";
+  // kind from series
+  let kind: "high" | "low" | "rain" = "high";
+  if (series.startsWith("KXHIGH")) kind = "high";
+  else if (series.startsWith("KXLOW")) kind = "low";
+  else if (series.startsWith("KXRAIN")) kind = "rain";
+  // strike from last part (e.g., T75 -> 75)
+  let strike: number | null = null;
+  const last = parts[parts.length - 1];
+  if (last.startsWith("T")) {
+    const n = parseInt(last.slice(1), 10);
+    if (!isNaN(n)) strike = n;
+  }
+  return { city, kind, strike };
+}
+
+/** Human-readable label for a weather target: "NYC high above 70°F" */
+export function weatherLabel(target: string): string {
+  const { city, kind, strike } = parseWeatherTarget(target);
+  if (kind === "rain") {
+    return `${city} rain`;
+  }
+  if (strike !== null) {
+    return `${city} ${kind} above ${strike}°F`;
+  }
+  return `${city} ${kind}`;
+}
+
+/** Short chip label: "NYC H70" / "LA L65" / "NOLA rain" */
+export function weatherChip(target: string): string {
+  const { city, kind, strike } = parseWeatherTarget(target);
+  if (kind === "rain") return `${city} rain`;
+  return `${city} ${kind[0].toUpperCase()}${strike ?? ""}`;
+}
