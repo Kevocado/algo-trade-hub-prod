@@ -617,9 +617,10 @@ def get_weather(supabase=Depends(get_supabase)):
         raise _table_fault("journal_settlements", exc) from exc
 
     # Group by target, keep only weather forecasters
-    # Also track the payload from kalshi_implied for market metadata
+    # Also track the payload from kalshi_implied for market metadata (fallback to ensemble if needed)
     by_target: dict[str, dict[str, float]] = {}
     target_metadata: dict[str, dict[str, Any]] = {}
+    # First pass: collect all forecasts and capture metadata from kalshi_implied
     for row in forecasts:
         target = row.get("target", "")
         forecaster = row.get("forecaster", "")
@@ -641,9 +642,29 @@ def get_weather(supabase=Depends(get_supabase)):
             if forecaster in names:
                 by_target[target][kind] = float(prob)
                 break
-        # Capture market metadata from kalshi_implied payload
+        # Capture market metadata from kalshi_implied payload (primary source)
         if forecaster.startswith("kalshi_implied_") and row.get("payload"):
             payload = row["payload"]
+            target_metadata[target] = {
+                "strike_type": payload.get("strike_type"),
+                "floor_strike": payload.get("floor_strike"),
+                "cap_strike": payload.get("cap_strike"),
+                "yes_sub_title": payload.get("yes_sub_title"),
+                "no_sub_title": payload.get("no_sub_title"),
+            }
+    # Second pass: for targets without metadata, try to get from ensemble forecaster payload
+    for row in forecasts:
+        target = row.get("target", "")
+        forecaster = row.get("forecaster", "")
+        if target in target_metadata:
+            continue  # already have metadata
+        if not forecaster.startswith("weather_") or forecaster.startswith("baseline_") or forecaster.startswith("kalshi_"):
+            continue
+        if not row.get("payload"):
+            continue
+        payload = row["payload"]
+        # Only set if we actually have the fields
+        if any(k in payload for k in ("strike_type", "floor_strike", "cap_strike", "yes_sub_title", "no_sub_title")):
             target_metadata[target] = {
                 "strike_type": payload.get("strike_type"),
                 "floor_strike": payload.get("floor_strike"),
