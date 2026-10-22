@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { BrowserRouter, Routes, Route, NavLink, Navigate, useLocation } from "react-router-dom";
 // Pages
 import Home from "@/pages/Home";
@@ -14,17 +15,23 @@ import Weather from "@/pages/Weather";
 import { NoOrdersBanner } from "@/components/NoOrdersBanner";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
-import { LayoutDashboard, Activity, Wallet, Cpu, LineChart, Scale, Trophy, Briefcase, BarChart3, BookOpen, HeartPulse } from "lucide-react";
+import { LayoutDashboard, Activity, Wallet, Cpu, LineChart, Scale, Trophy, Briefcase, BarChart3, BookOpen, HeartPulse, Menu, X } from "lucide-react";
 
-const Sidebar = () => {
+/**
+ * The nav itself, written once and shared by the desktop rail and the phone overlay.
+ *
+ * `onNavigate` is the overlay's way of saying "the reader picked a page": the drawer closes, so a
+ * new page is never read through it. The rail passes nothing, because the rail is always there.
+ */
+const SidebarBody = ({ onNavigate }: { onNavigate?: () => void }) => {
   const { portfolio } = usePortfolio();
   // The sidebar used to render "LIVE BALANCE $0.00" from an empty table, which reads as a flat
   // book. This product places no orders, so it says that instead of showing a number nobody can act
   // on -- and an unreadable payload reads as unknown, never as zero.
   const headline = portfolioHeadline(portfolio);
-  
+
   return (
-    <div className="w-64 bg-slate-950 text-slate-200 border-r border-slate-900 h-screen sticky top-0 flex flex-col">
+    <>
       <div className="p-6">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center border border-emerald-500/40">
@@ -34,7 +41,7 @@ const Sidebar = () => {
         </div>
       </div>
       
-      <nav className="flex-1 px-4 space-y-2 mt-4">
+      <nav onClick={onNavigate} className="flex-1 px-4 space-y-2 mt-4">
         <NavLink 
           to="/" 
           className={({isActive}) => `flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${isActive ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'hover:bg-slate-900 text-slate-400 hover:text-slate-200'}`}
@@ -131,14 +138,114 @@ const Sidebar = () => {
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 };
 
-const AppShell = ({ children }: { children: React.ReactNode }) => {
+/**
+ * The rail: the sidebar as it has always been, from 768px up.
+ *
+ * Below that it is display:none, because on a 375px phone a 256px rail took two thirds of the
+ * screen and left every page squeezed into what was left. `hidden md:flex` is the whole of that
+ * decision: the breakpoint is CSS, so there is no width check in JavaScript to fall out of step
+ * with the stylesheet, and at 768px and up this is byte-for-byte the sidebar it was.
+ */
+const SidebarRail = () => (
+  <div
+    data-testid="sidebar-rail"
+    className="hidden md:flex flex-col w-64 bg-slate-950 text-slate-200 border-r border-slate-900 h-screen sticky top-0"
+  >
+    <SidebarBody />
+  </div>
+);
+
+/**
+ * The shell: the rail beside the page, and -- on a phone -- a menu button that opens the same nav
+ * over the page.
+ *
+ * On a 375px screen the rail was two thirds of the viewport, so every page was cramped. Below
+ * 768px the rail is hidden and the button opens the nav as an overlay instead; from 768px up
+ * nothing changes at all, and the button is not even on the screen.
+ *
+ * The overlay closes on a route change (the reader asked for a page, not for a page behind a
+ * drawer), on Escape and on a click on the backdrop. It is a real `<button>`, so it is reachable
+ * by keyboard, and it carries `aria-expanded`, so a screen reader says whether the menu is open.
+ */
+export const AppShell = ({ children }: { children: React.ReactNode }) => {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const { pathname } = useLocation();
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
+  // A route change closes the menu.
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [pathname]);
+
+  // Escape closes it, and hands the keyboard back to the button that opened it.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setMenuOpen(false);
+      buttonRef.current?.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
+
+  // The panel takes focus when it opens, so the next Tab lands on the first link inside it.
+  useEffect(() => {
+    if (menuOpen) overlayRef.current?.focus();
+  }, [menuOpen]);
+
+  const closeMenu = () => setMenuOpen(false);
+
   return (
-    <div className="flex min-h-screen bg-slate-950">
-      <Sidebar />
+    // Column on a phone (the menu bar sits above the page), row from 768px up (the rail sits
+    // beside the page, as it always has).
+    <div className="flex min-h-screen flex-col bg-slate-950 md:flex-row">
+      <SidebarRail />
+      {menuOpen && (
+        <>
+          <div
+            data-testid="sidebar-backdrop"
+            aria-hidden="true"
+            onClick={closeMenu}
+            className="md:hidden fixed inset-0 z-40 bg-slate-950/70"
+          />
+          <div
+            id="site-menu"
+            data-testid="sidebar-overlay"
+            role="dialog"
+            aria-label="Site menu"
+            tabIndex={-1}
+            ref={overlayRef}
+            className="md:hidden fixed inset-y-0 left-0 z-50 flex flex-col w-64 bg-slate-950 text-slate-200 border-r border-slate-900 h-screen shadow-2xl"
+          >
+            <SidebarBody onNavigate={closeMenu} />
+          </div>
+        </>
+      )}
+      {/* The phone's way into the nav. md:hidden, so from 768px up the page starts at the top
+          exactly as it always did. */}
+      <div className="md:hidden sticky top-0 z-30 flex items-center gap-3 border-b border-slate-900 bg-slate-950/95 px-4 py-3">
+        <button
+          ref={buttonRef}
+          type="button"
+          onClick={() => setMenuOpen((open) => !open)}
+          aria-expanded={menuOpen}
+          aria-label={menuOpen ? "Close menu" : "Open menu"}
+          className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-800 text-slate-300 hover:bg-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+        >
+          {menuOpen ? (
+            <X className="w-5 h-5" aria-hidden="true" />
+          ) : (
+            <Menu className="w-5 h-5" aria-hidden="true" />
+          )}
+        </button>
+        <span className="text-sm font-bold uppercase italic tracking-tight text-white">Algo Trade Hub</span>
+      </div>
       <main className="flex-1 min-h-screen overflow-auto bg-slate-950 text-slate-100">
         <NoOrdersBanner />
         {children}
