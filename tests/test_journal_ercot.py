@@ -62,8 +62,8 @@ def _history(n=60, temp=None, peak=None):
 class Inputs:
     """A fake ErcotInputs: `history()` returns past (peak, temp) pairs, `temp()` the target's feature."""
 
-    def __init__(self, history, target_temp):
-        self._history, self._target_temp, self.calls = history, target_temp, []
+    def __init__(self, history, target_temp, target_dahead=None):
+        self._history, self._target_temp, self._target_dahead, self.calls = history, target_temp, target_dahead, []
 
     def history(self, day, now):
         self.calls.append(("history", day))
@@ -75,6 +75,9 @@ class Inputs:
     def temp(self, day, now):
         self.calls.append(("temp", day))
         return self._target_temp
+
+    def dahead(self, day):
+        return self._target_dahead
 
 
 ZONE_HTML = """

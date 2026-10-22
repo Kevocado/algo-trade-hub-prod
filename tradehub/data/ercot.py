@@ -37,6 +37,7 @@ from tradehub.backtest.http import default_get_json, default_get_text
 ZONE_URL = "https://www.ercot.com/content/cdr/html/{ymd}_actual_loads_of_forecast_zones.html"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 HISTORY_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
+DAHEAD_URL = "https://www.ercot.com/api/1/services/read/dashboards/day-ahead-load-forecast.json"
 FIRST_DAY = date(2024, 5, 7)
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "tradehub" / "ercot"
 CACHE_ENV = "TRADEHUB_ERCOT_CACHE_DIR"
@@ -167,6 +168,35 @@ def load_peaks(first: date, last: date, *, get_text: Callable[..., Any] = defaul
         cache.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({d.isoformat(): v for d, v in sorted(peaks.items())}))
     return {d: v for d, v in peaks.items() if first <= d <= last}
+
+
+def fetch_day_ahead_forecast(*, get_json: Callable[..., Any] = default_get_json,
+                             get_text: Callable[..., Any] = default_get_text) -> dict[date, float]:
+    """ERCOT day-ahead load forecast (system-wide peak MW) for the next few days.
+
+    The ERCOT day-ahead load forecast dashboard publishes the forecasted system peak
+    for each operating day. We fetch and return {operating_day: forecast_peak_mw}.
+    """
+    today = central_today()
+    last_full = today - timedelta(days=2)
+    forecast: dict[date, float] = {}
+    try:
+        payload = get_json(DAHEAD_URL)
+        rows = payload.get("rows") or payload.get("data") or []
+        for row in rows:
+            # Expected fields: "oper_day", "system_peak" (or similar)
+            day_str = row.get("oper_day") or row.get("date") or row.get("operating_day")
+            peak_val = row.get("system_peak") or row.get("peak") or row.get("total_peak")
+            if day_str and peak_val is not None:
+                try:
+                    day = date.fromisoformat(day_str)
+                    if day <= last_full:
+                        forecast[day] = float(peak_val)
+                except (ValueError, TypeError):
+                    continue
+    except (requests.HTTPError, requests.RequestException, ValueError, KeyError):
+        pass
+    return forecast
 
 
 def weighted_temp(by_city: dict[str, float]) -> float:
