@@ -213,59 +213,59 @@ def _weather_settlement(target, outcome):
 def test_weather_panel_returns_latest_settled_day_contracts():
     """Only the latest settled day's contracts are returned; earlier days are excluded."""
     db = FakeJournalDB(lambda: T0)
-    day1 = "26OCT17"
-    day2 = "26OCT18"  # latest
+    day1 = "26SEP30"
+    day2 = "26OCT18"  # latest; and 'OCT' sorts before 'SEP' as text, so only a real date gets this right
     db.tables["journal_forecasts"] += [
-        _weather_forecast("weather_high", f"KXHIGHNY-{day1}", 0.6, 0.55, f"2026-10-{day1[4:6]}-{day1[6:8]}T10:00:00+00:00"),
-        _weather_forecast("weather_high", f"KXHIGHNY-{day2}", 0.7, 0.65, f"2026-10-{day2[4:6]}-{day2[6:8]}T10:00:00+00:00"),
-        _weather_forecast("weather_low", f"KXLOWNY-{day2}", 0.4, 0.45, f"2026-10-{day2[4:6]}-{day2[6:8]}T10:00:00+00:00"),
+        _weather_forecast("weather_high", f"kalshi:KXHIGHNY-{day1}-T76", 0.6, 0.55, "2026-09-30T10:00:00+00:00"),
+        _weather_forecast("weather_high", f"kalshi:KXHIGHNY-{day2}-T76", 0.7, 0.65, "2026-10-18T10:00:00+00:00"),
+        _weather_forecast("weather_low", f"kalshi:KXLOWNY-{day2}-T60", 0.4, 0.45, "2026-10-18T10:00:00+00:00"),
     ]
     db.tables["journal_settlements"] += [
-        _weather_settlement(f"KXHIGHNY-{day1}", 1),
-        _weather_settlement(f"KXHIGHNY-{day2}", 1),
-        _weather_settlement(f"KXLOWNY-{day2}", 0),
+        _weather_settlement(f"kalshi:KXHIGHNY-{day1}-T76", 1),
+        _weather_settlement(f"kalshi:KXHIGHNY-{day2}-T76", 1),
+        _weather_settlement(f"kalshi:KXLOWNY-{day2}-T60", 0),
     ]
     body = _client(db).get("/api/journal/weather-panel").json()
     contracts = body["contracts"]
     assert len(contracts) == 2, contracts
     targets = {c["target"] for c in contracts}
-    assert targets == {f"KXHIGHNY-{day2}", f"KXLOWNY-{day2}"}, targets
-    assert body["settled_date"] == day2
+    assert targets == {f"kalshi:KXHIGHNY-{day2}-T76", f"kalshi:KXLOWNY-{day2}-T60"}, targets
+    assert body["settled_date"] == "2026-10-18"
 
 
 def test_weather_panel_excludes_unsettled_contracts():
     """Contracts without a settlement are excluded."""
     db = FakeJournalDB(lambda: T0)
     db.tables["journal_forecasts"] += [
-        _weather_forecast("weather_high", "KXHIGHNY-26OCT18", 0.7, 0.65, "2026-10-18T10:00:00+00:00"),
-        _weather_forecast("weather_rain", "KXRAINNY-26OCT18", 0.3, 0.35, "2026-10-18T10:00:00+00:00"),
+        _weather_forecast("weather_high", "kalshi:KXHIGHNY-26OCT18-T76", 0.7, 0.65, "2026-10-18T10:00:00+00:00"),
+        _weather_forecast("weather_rain", "kalshi:KXRAIN-26OCT18-NYC", 0.3, 0.35, "2026-10-18T10:00:00+00:00"),
     ]
     db.tables["journal_settlements"] += [
-        _weather_settlement("KXHIGHNY-26OCT18", 1),
+        _weather_settlement("kalshi:KXHIGHNY-26OCT18-T76", 1),
     ]
     body = _client(db).get("/api/journal/weather-panel").json()
     contracts = body["contracts"]
     assert len(contracts) == 1
-    assert contracts[0]["target"] == "KXHIGHNY-26OCT18"
+    assert contracts[0]["target"] == "kalshi:KXHIGHNY-26OCT18-T76"
 
 
 def test_weather_panel_filters_forecasters_in_query():
     """Only weather_* and ercot_peak forecasters are fetched; non-weather forecasters are ignored."""
     db = FakeJournalDB(lambda: T0)
     db.tables["journal_forecasts"] += [
-        _weather_forecast("weather_high", "KXHIGHNY-26OCT18", 0.7, 0.65, "2026-10-18T10:00:00+00:00"),
+        _weather_forecast("weather_high", "kalshi:KXHIGHNY-26OCT18-T76", 0.7, 0.65, "2026-10-18T10:00:00+00:00"),
         _weather_forecast("gas", "GASNY-26OCT18", 0.6, 0.55, "2026-10-18T10:00:00+00:00"),
         _weather_forecast("spy_quant", "SPY-26OCT18", 0.55, 0.5, "2026-10-18T10:00:00+00:00"),
     ]
     db.tables["journal_settlements"] += [
-        _weather_settlement("KXHIGHNY-26OCT18", 1),
+        _weather_settlement("kalshi:KXHIGHNY-26OCT18-T76", 1),
         _weather_settlement("GASNY-26OCT18", 1),
         _weather_settlement("SPY-26OCT18", 1),
     ]
     body = _client(db).get("/api/journal/weather-panel").json()
     contracts = body["contracts"]
     assert len(contracts) == 1
-    assert contracts[0]["target"] == "KXHIGHNY-26OCT18"
+    assert contracts[0]["target"] == "kalshi:KXHIGHNY-26OCT18-T76"
     assert contracts[0]["forecaster"] == "weather_high"
 
 
@@ -273,17 +273,17 @@ def test_weather_panel_missing_figures_are_null_never_zero():
     """Missing figures render as null, never 0.0."""
     db = FakeJournalDB(lambda: T0)
     db.tables["journal_forecasts"] += [
-        _weather_forecast("weather_high", "KXHIGHNY-26OCT18", None, 0.65, "2026-10-18T10:00:00+00:00"),
+        _weather_forecast("weather_high", "kalshi:KXHIGHNY-26OCT18-T76", None, 0.65, "2026-10-18T10:00:00+00:00"),
         _weather_forecast("weather_low", "KXLOWNY-26OCT18", 0.4, None, "2026-10-18T10:00:00+00:00"),
     ]
     db.tables["journal_settlements"] += [
-        _weather_settlement("KXHIGHNY-26OCT18", 1),
+        _weather_settlement("kalshi:KXHIGHNY-26OCT18-T76", 1),
         _weather_settlement("KXLOWNY-26OCT18", 0),
     ]
     body = _client(db).get("/api/journal/weather-panel").json()
     contracts = body["contracts"]
     assert len(contracts) == 2
-    high = next(c for c in contracts if c["target"] == "KXHIGHNY-26OCT18")
+    high = next(c for c in contracts if c["target"] == "kalshi:KXHIGHNY-26OCT18-T76")
     low = next(c for c in contracts if c["target"] == "KXLOWNY-26OCT18")
     assert high["our_prob"] is None
     assert low["market_prob"] is None

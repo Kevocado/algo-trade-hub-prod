@@ -6,6 +6,7 @@ Read from journal tables via the API. No new forecasting.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from journal_fakes import FakeJournalDB
@@ -16,19 +17,20 @@ from tradehub.api.main import app
 T0 = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 
 
-def _weather_target(day: datetime) -> str:
-    """A weather contract target for `day`, e.g. 'T-KXHIGHNY-26OCT18'.
+def _weather_target(day, strike="T76") -> str:
+    """A journal target as it really looks: 'kalshi:KXHIGHNY-26OCT18-T76' (series, event day, strike).
 
-    The target date suffix is the day in Kalshi's own format (`%y%b%d` = year, month, day), and the
-    /api/weather endpoint compares it to the live clock, so the fixtures must be built from the real
-    now instead of hardcoding one date.
+    The endpoint decides 'today' from the Eastern-time clock, so fixtures are built from the real now in
+    that zone and never from a hardcoded date.
     """
-    return f"T-KXHIGHNY-{day.strftime('%y%b%d').upper()}"
+    return f"kalshi:KXHIGHNY-{day.strftime('%y%b%d').upper()}-{strike}"
 
 
+_NOW_ET = datetime.now(ZoneInfo("America/New_York"))
 # Relative to the real clock: never a hardcoded date, or the test goes stale the day it runs.
-_TODAY = _weather_target(datetime.now(UTC))
-_YESTERDAY = _weather_target(datetime.now(UTC) - timedelta(days=1))
+_TODAY = _weather_target(_NOW_ET)
+_YESTERDAY = _weather_target(_NOW_ET - timedelta(days=1))
+_LAST_MONTH = _weather_target(_NOW_ET - timedelta(days=40))
 
 
 def _client(db):
@@ -140,3 +142,23 @@ def test_weather_api_empty_tables_returns_empty_lists():
     body = _client(db).get("/api/weather").json()
     assert body["today"] == []
     assert body["settled"] == []
+
+
+def test_the_date_is_the_events_day_not_the_strike_and_history_is_newest_first_across_months():
+    """Regression: the day was read from the LAST ticker part, so 'T75' was the date and months sorted as text."""
+    db = FakeJournalDB(lambda: T0)
+    for target in (_YESTERDAY, _LAST_MONTH):
+        db.tables["journal_forecasts"].append(_weather_forecast("kalshi_implied_weather_high", target, 0.5, 0.5))
+        db.tables["journal_settlements"].append(
+            {"target": target, "outcome": 1, "realized_value": 70.0, "source": "kalshi", "settled_at": T0.isoformat()})
+    settled = _client(db).get("/api/weather").json()["settled"]
+    assert [r["target"] for r in settled] == [_YESTERDAY, _LAST_MONTH]
+    assert all(len(r["date"]) == 10 and r["date"][4] == "-" for r in settled)        # an ISO date, never 'T76'
+    assert settled[0]["date"] > settled[1]["date"]
+
+
+def test_a_past_contract_with_no_settlement_is_not_history():
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_forecasts"].append(_weather_forecast("weather_high", _YESTERDAY, 0.7, 0.7))
+    body = _client(db).get("/api/weather").json()
+    assert body["settled"] == [] and body["today"] == []
