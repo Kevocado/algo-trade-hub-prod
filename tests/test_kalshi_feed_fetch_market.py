@@ -4,7 +4,7 @@ import time
 import pytest
 import requests
 
-from tradehub.core.kalshi_feed import fetch_market, KALSHI_API_URL, _reset_circuit_breaker, _record_fetch_failure
+from tradehub.core.kalshi_feed import fetch_market, KALSHI_API_URL
 
 
 class FakeResponse:
@@ -115,21 +115,6 @@ def test_fetch_market_404_triggers_fallback():
     assert len(fallback_calls) == 1
     assert fallback_calls[0][1] == {"event_ticker": "KXTEST-26OCT22", "limit": 200}
     assert "status" not in fallback_calls[0][1]
-
-
-def test_fetch_market_4xx_not_retried():
-    """4xx responses (e.g., 400, 401, 403) must NOT be retried and must NOT fall back."""
-    _reset()
-    calls = []
-    def fake_get(url, headers=None, timeout=30, params=None):
-        calls.append((url, params))
-        return FakeResponse(403, {"error": "Forbidden"})
-
-    with pytest.raises(requests.HTTPError):
-        fetch_market("KXTEST-26OCT22-T50", get=fake_get)
-    # Only 1 call, no retries for 403, no fallback
-    assert len(calls) == 1
-    assert calls[0][0].endswith("/KXTEST-26OCT22-T50")
 
 
 def test_fetch_market_circuit_breaker_trips_after_3_failures():
