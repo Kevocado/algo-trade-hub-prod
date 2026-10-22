@@ -8,6 +8,7 @@ import {
   weatherLabel,
   weatherChip,
   parseWeatherTarget,
+  bracketFromTicker,
   type WeatherTodayRow,
   type WeatherSettledRow,
 } from "@/lib/weather";
@@ -178,7 +179,7 @@ describe("weatherChip", () => {
 
   it("handles missing (undefined) fields the same as null", () => {
     const row = { ...base, strike_type: undefined, cap_strike: undefined };
-    expect(weatherChip(row)).toBe("NYC H");
+    expect(weatherChip(row)).toBe("NYC high");
   });
 
   it("never renders the literal string 'undefined'", () => {
@@ -199,5 +200,20 @@ describe("city names from real tickers", () => {
   it("shows an unknown code as itself, never as a question mark", () => {
     expect(parseWeatherTarget("kalshi:KXRAIN-26OCT20-ZZZ").city).toBe("ZZZ");
     expect(parseWeatherTarget("kalshi:KXHIGHNEW-26OCT20-T50").city).toBe("KXHIGHNEW");
+  });
+});
+
+
+describe("rows frozen before market details were recorded still read sensibly", () => {
+  const old = (target: string) => ({ target, date: "2026-10-20", ensemble: 0.1, kalshi: 0.1, climatology: 0.1 }) as never;
+  it("reads a bracket ticker as its 1-degree range and never invents a direction for a tail", () => {
+    expect(bracketFromTicker("kalshi:KXHIGHNY-26OCT20-B65.5")).toEqual([65, 66]);
+    expect(bracketFromTicker("kalshi:KXLOWTAUS-26OCT20-B61.5")).toEqual([61, 62]);
+    expect(bracketFromTicker("kalshi:KXHIGHNY-26OCT20-T65")).toBeNull();
+    expect(weatherLabel(old("kalshi:KXHIGHNY-26OCT20-B65.5"))).toBe("NYC high 65-66°F");
+    expect(weatherChip(old("kalshi:KXHIGHNY-26OCT20-B65.5"))).toBe("NYC 65-66°F");
+    expect(weatherLabel(old("kalshi:KXHIGHNY-26OCT20-T65"))).toBe("NYC high tail at 65°F");
+    expect(weatherChip(old("kalshi:KXHIGHNY-26OCT20-T65"))).toBe("NYC high 65");
+    expect(weatherChip(old("kalshi:KXHIGHNY-26OCT20-T65"))).not.toMatch(/[≤≥]/);
   });
 });
