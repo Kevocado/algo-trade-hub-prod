@@ -27,6 +27,31 @@ def api_key() -> str | None:
     return os.getenv("KALSHI_API_KEY")
 
 
+# Categories we care about (skip Sports, Entertainment, Social, Mentions)
+TARGET_CATEGORIES = {
+    'Climate and Weather',    # → Weather
+    'Economics',              # → Economics
+    'Financials',             # → Financials
+    'Politics',               # → Politics
+    'Elections',              # → Politics
+    'Companies',              # → Companies
+    'Science and Technology', # → Science
+    'Health',                 # → Health
+    'World',                  # → World
+    'Transportation',         # → World
+    'Crypto',                 # → Financials
+}
+
+# How to normalize/display categories
+CATEGORY_NORMALIZE = {
+    'Climate and Weather': 'Weather',
+    'Science and Technology': 'Science',
+    'Elections': 'Politics',
+    'Transportation': 'World',
+    'Crypto': 'Financials',
+}
+
+
 # ─── Circuit breaker state (module-level, per-process) ──────────────────
 # After 3 consecutive fetch failures (5xx/network), we stop trying for the
 # remainder of the journal run to protect the 20-minute budget.
@@ -609,7 +634,6 @@ def fetch_market(ticker: str, *, get: callable | None = None) -> dict:
     event_ticker = ticker.rsplit("-", 1)[0]
 
     # Try single-market endpoint with retries on 5xx/network errors only
-    single_url = f"{KALSHI_API_URL}/{ticker}"
     for attempt in range(max_retries):
         try:
             resp = get(f"{KALSHI_API_URL}/{ticker}", headers=headers, timeout=30)
