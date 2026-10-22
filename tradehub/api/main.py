@@ -568,6 +568,22 @@ def get_journal_series(supabase=Depends(get_supabase)):
     return {"series": series}
 
 
+def _target_day(target: str):
+    """The operating day of a Kalshi journal target: 'kalshi:KXHIGHNY-26OCT16-T75' -> 2026-10-16.
+
+    The date is the SECOND dash-separated part of the ticker (`%y%b%d`); the last part is the strike or
+    city. Parsed to a real date so days compare chronologically across months (as text, '26OCT' sorts
+    after '26NOV').
+    """
+    parts = target.removeprefix("kalshi:").split("-")
+    if len(parts) < 2:
+        return None
+    try:
+        return datetime.strptime(parts[1], "%y%b%d").date()
+    except ValueError:
+        return None
+
+
 @app.get("/api/weather", tags=["Weather"])
 def get_weather(supabase=Depends(get_supabase)):
     """Today's weather forecast vs Kalshi vs climatology, plus settled history.
@@ -579,17 +595,6 @@ def get_weather(supabase=Depends(get_supabase)):
     """
     if supabase is None:
         raise HTTPException(status_code=503, detail="Supabase is not configured")
-    try:
-        forecasts = _fetch_all(supabase, "journal_forecasts", lambda q: q.select("*"),
-                               order=("frozen_at",))
-    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
-        raise _table_fault("journal_forecasts", exc) from exc
-    try:
-        settlements = _fetch_all(supabase, "journal_settlements", lambda q: q.select("*"),
-                                 order=("settled_at",))
-    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
-        raise _table_fault("journal_settlements", exc) from exc
-
     # Weather forecaster patterns
     weather_forecasters = {
         "ensemble": ("weather_high", "weather_low", "weather_rain"),
@@ -598,6 +603,18 @@ def get_weather(supabase=Depends(get_supabase)):
         "kalshi": ("kalshi_implied_weather_high", "kalshi_implied_weather_low",
                    "kalshi_implied_weather_rain"),
     }
+
+    names = [n for group in weather_forecasters.values() for n in group]
+    try:
+        forecasts = _fetch_all(supabase, "journal_forecasts",
+                               lambda q: q.select("*").in_("forecaster", names), order=("frozen_at",))
+    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
+        raise _table_fault("journal_forecasts", exc) from exc
+    try:
+        settlements = _fetch_all(supabase, "journal_settlements", lambda q: q.select("*"),
+                                 order=("settled_at",))
+    except Exception as exc:  # noqa: BLE001 - classified by _table_fault
+        raise _table_fault("journal_settlements", exc) from exc
 
     # Group by target, keep only weather forecasters
     by_target: dict[str, dict[str, float]] = {}
@@ -623,34 +640,34 @@ def get_weather(supabase=Depends(get_supabase)):
                 by_target[target][kind] = float(prob)
                 break
 
-    # Split into today and settled
-    today_str = datetime.now(timezone.utc).strftime("%y%b%d").upper()
+    # Split into today (the operating day is today or later in Eastern time) and settled history
+    from zoneinfo import ZoneInfo
+    today_day = datetime.now(ZoneInfo("America/New_York")).date()
+    outcome_by_target = {st.get("target"): st for st in settlements}
     today = []
     settled = []
     for target, probs in by_target.items():
-        # Extract date from target: T-KXHIGHNY-26OCT18 -> 26OCT18
-        parts = target.rsplit("-", 1)
-        if len(parts) != 2:
+        day = _target_day(target)
+        if day is None:
             continue
-        date_str = parts[1]
         row = {
             "target": target,
-            "date": date_str,
+            "date": day.isoformat(),
             "ensemble": probs.get("ensemble"),
             "kalshi": probs.get("kalshi"),
             "climatology": probs.get("climatology"),
         }
-        if date_str == today_str:
+        if day >= today_day:
             today.append(row)
-        else:
-            # Check if settled
-            for s in settlements:
-                if s.get("target") == target:
-                    row["outcome"] = s.get("outcome")
-                    row["realized_value"] = s.get("realized_value")
-                    row["settled_at"] = s.get("settled_at")
-                    break
-            settled.append(row)
+            continue
+        st = outcome_by_target.get(target)
+        if st is None:
+            continue                       # a past day not settled yet is not history
+        row["outcome"] = st.get("outcome")
+        row["realized_value"] = st.get("realized_value")
+        row["settled_at"] = st.get("settled_at")
+        settled.append(row)
+    settled.sort(key=lambda r: (r["date"], r["target"]), reverse=True)
 
     return {
         "as_of": datetime.now(timezone.utc).isoformat(),
@@ -722,24 +739,23 @@ def get_weather_panel(supabase=Depends(get_supabase)):
     if not settled_contracts:
         return {"as_of": datetime.now(timezone.utc).isoformat(), "contracts": []}
 
-    # Find the latest settled day: group by date from target (T-KXHIGHNY-26OCT18 -> 26OCT18)
+    # Find the latest settled day: group by the operating day parsed from the target
     from collections import defaultdict
-    by_date: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_date: dict = defaultdict(list)
     for c in settled_contracts:
-        parts = c["target"].rsplit("-", 1)
-        date_str = parts[1] if len(parts) == 2 else ""
-        if date_str:
-            by_date[date_str].append(c)
+        day = _target_day(c["target"])
+        if day is not None:
+            by_date[day].append(c)
 
     if not by_date:
         return {"as_of": datetime.now(timezone.utc).isoformat(), "contracts": []}
 
-    latest_date = max(by_date.keys())
+    latest_date = max(by_date)                # a real date, so the latest is chronological
     latest_contracts = by_date[latest_date]
 
     return {
         "as_of": datetime.now(timezone.utc).isoformat(),
-        "settled_date": latest_date,
+        "settled_date": latest_date.isoformat(),
         "contracts": latest_contracts,
     }
 
