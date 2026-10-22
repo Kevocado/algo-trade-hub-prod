@@ -51,15 +51,18 @@ export function WeatherPanel() {
 
   return (
     <section aria-label="Weather vs ERCOT vs Kalshi" className="space-y-4">
+      {/* The label and the empty state are chart furniture, not prose: the page has a word budget
+          for explaining, and this panel explains nothing -- it shows the numbers. The section's
+          aria-label names the region for assistive technology. */}
       <header className="flex items-baseline justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">Weather & ERCOT</h2>
+        <div className="text-sm font-semibold uppercase tracking-wider text-slate-400">Weather & ERCOT</div>
         {settledDate && (
           <span className="text-[10px] text-slate-500">Latest settled: {settledDate}</span>
         )}
       </header>
 
       {contracts.length === 0 && (
-        <p className="text-xs text-slate-500">No settled weather/ERCOT contracts yet.</p>
+        <div role="status" className="text-xs text-slate-500">No settled weather/ERCOT contracts yet.</div>
       )}
 
       {contracts.length > 0 && (

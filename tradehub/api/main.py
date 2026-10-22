@@ -16,7 +16,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -605,12 +605,14 @@ def get_weather_panel(supabase=Depends(get_supabase)):
     by_target: dict[str, dict[str, Any]] = {}
     for row in forecasts:
         target = row.get("target", "")
-        prob = row.get("probability")
-        if prob is None or not target:
+        if not target:
             continue
         if target not in by_target:
             by_target[target] = {"target": target, "forecaster": row.get("forecaster")}
-        by_target[target]["our_prob"] = float(prob)
+        # A missing figure is None, never 0.0, and the contract is still listed: dropping it
+        # would hide a contract the market settled.
+        prob = row.get("probability")
+        by_target[target]["our_prob"] = float(prob) if prob is not None else None
         by_target[target]["market_prob"] = row.get("market_prob")
 
     # Join settlements
