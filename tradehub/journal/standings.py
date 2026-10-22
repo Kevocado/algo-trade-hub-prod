@@ -63,6 +63,11 @@ LIVE_MARKET_LINKED = frozenset({
     "gas",
 })
 
+# Retired from the headline (plan `2026-10-18-improve-the-models.md` task 4): the S&P 500 sentiment
+# meter and the S&P 500 quant model are worse than the usual rate over three years, so they are no
+# longer ranked on the front page. They keep recording and keep scoring as baselines.
+RETIRED_FROM_HEADLINE = frozenset({"sentiment_meter", "spy_quant"})
+
 
 def _is_live_market_linked(card: dict[str, Any]) -> bool:
     """True if this forecaster is a live market-linked one (graded against Kalshi price)."""
@@ -125,6 +130,8 @@ def standings(cards: list[dict[str, Any]], backtests: list[dict[str, Any]]) -> d
     # Split into market-linked and climatology-baseline
     market_linked_entries = [e for e in measured if _is_live_market_linked(e)]
     climatology_entries = [e for e in measured if not _is_live_market_linked(e) and e["baseline"] == "climatology"]
+    # Retired from the headline: still recorded and scored, never ranked on the front page.
+    climatology_entries = [e for e in climatology_entries if e["forecaster"] not in RETIRED_FROM_HEADLINE]
 
     market_ranked = _ranked_entries(market_linked_entries)
     climato_ranked = _ranked_entries(climatology_entries)

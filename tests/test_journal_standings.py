@@ -150,15 +150,35 @@ def test_only_market_linked_baselines_can_support_a_beating_the_market_claim():
 
 def test_climatology_section_ranks_separately_and_reports_vs_climatology():
     rows = standings(
-        [_card("unrate_direction", baseline="climatology"), _card("spy_quant", baseline="climatology")],
-        [_bt("unrate_direction", diff=-0.040, se=0.005), _bt("spy_quant", diff=+0.020, se=0.004)],
+        [_card("unrate_direction", baseline="climatology"), _card("quits_direction", baseline="climatology")],
+        [_bt("unrate_direction", diff=-0.040, se=0.005), _bt("quits_direction", diff=+0.020, se=0.004)],
     )
     assert rows["climatology_best"]["forecaster"] == "unrate_direction"
     assert rows["climatology_best"]["verdict"] == "beats"
-    assert rows["climatology_worst"]["forecaster"] == "spy_quant"
+    assert rows["climatology_worst"]["forecaster"] == "quits_direction"
     assert rows["climatology_worst"]["verdict"] == "loses to"
     # Market-linked section is empty
     assert rows["market_linked_best"] is None
+
+
+def test_the_sp500_sentiment_and_quant_models_are_retired_from_the_headline():
+    # Plan `2026-10-18-improve-the-models.md` task 4: they are worse than the usual rate over three
+    # years, so they are not ranked on the front page any more. They keep recording and scoring.
+    rows = standings(
+        [_card("sentiment_meter", baseline="climatology"), _card("spy_quant", baseline="climatology"),
+         _card("unrate_direction", baseline="climatology"), _card("quits_direction", baseline="climatology")],
+        [_bt("sentiment_meter", diff=+0.020, se=0.004), _bt("spy_quant", diff=+0.030, se=0.004),
+         _bt("unrate_direction", diff=-0.040, se=0.005), _bt("quits_direction", diff=+0.010, se=0.004)],
+    )
+    assert "sentiment_meter" not in rows["climatology"]
+    assert "spy_quant" not in rows["climatology"]
+    # The remaining climatology models are still ranked, on both ends.
+    assert rows["climatology"] == ["unrate_direction", "quits_direction"]
+    assert rows["climatology_best"]["forecaster"] == "unrate_direction"
+    assert rows["climatology_worst"]["forecaster"] == "quits_direction"
+    # They are still counted as forecasters with settled results: retired, not deleted.
+    assert rows["forecasters"] == 4
+    assert rows["n_settled"] == 360
 
 
 # ── the verdict sentence: assembled from the numbers, never typed ──────────────
