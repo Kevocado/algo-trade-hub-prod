@@ -20,6 +20,7 @@ from tradehub.journal.forecasters.ercot import (
     VERSION,
     ErcotClimatology,
     ErcotPeak,
+    ErcotPeakV2,
     build_ercot,
     fit,
     operating_day,
@@ -62,8 +63,9 @@ def _history(n=60, temp=None, peak=None):
 class Inputs:
     """A fake ErcotInputs: `history()` returns past (peak, temp) pairs, `temp()` the target's feature."""
 
-    def __init__(self, history, target_temp):
+    def __init__(self, history, target_temp, target_dahead=None, daheads=None):
         self._history, self._target_temp, self.calls = history, target_temp, []
+        self._target_dahead, self._daheads = target_dahead, daheads or {}
 
     def history(self, day, now):
         self.calls.append(("history", day))
@@ -75,6 +77,15 @@ class Inputs:
     def temp(self, day, now):
         self.calls.append(("temp", day))
         return self._target_temp
+
+    def dahead(self, day):
+        self.calls.append(("dahead", day))
+        return self._daheads.get(day, self._target_dahead)
+
+    def history_v2(self, day, now):
+        self.calls.append(("history_v2", day))
+        return {d: (v[0], v[1], self._daheads.get(d, self._target_dahead))
+                for d, v in self._history.items() if d < day and d in self._daheads}
 
 
 ZONE_HTML = """
@@ -207,10 +218,13 @@ def test_end_to_end_the_model_baseline_and_market_are_scored_on_the_same_contrac
     clock[0] = CLOSE + timedelta(hours=1)
     out = run_journal(db, fcs, clock[0])
     assert not out["failures"]
-    cards = {r["forecaster"]: r for r in db.tables["journal_scores"]}
-    assert cards["ercot_peak"]["n_settled"] == 2 and cards["ercot_peak"]["baseline"] == "market"
-    assert cards["baseline_climatology_ercot_peak"]["n_settled"] == 2
-    assert cards["kalshi_implied_ercot_peak"]["bss"] == pytest.approx(0.0)
+    cards = {(r["forecaster"], r.get("forecaster_version", "")): r for r in db.tables["journal_scores"]}
+    # ls-v1 should have 2 settled contracts
+    assert cards[("ercot_peak", "ls-v1")]["n_settled"] == 2 and cards[("ercot_peak", "ls-v1")]["baseline"] == "market"
+    # ls-v2 returns None until >=20 recorded days (returns no forecast, so no score)
+    assert cards.get(("ercot_peak", "ls-v2")) is None or cards[("ercot_peak", "ls-v2")]["n_settled"] == 0
+    assert cards[("baseline_climatology_ercot_peak", "v1")]["n_settled"] == 2
+    assert cards[("kalshi_implied_ercot_peak", "v1")]["bss"] == pytest.approx(0.0)
 
 
 def test_the_registry_runs_the_ercot_family_with_unique_keys():

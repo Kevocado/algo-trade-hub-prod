@@ -37,6 +37,10 @@ from tradehub.backtest.http import default_get_json, default_get_text
 ZONE_URL = "https://www.ercot.com/content/cdr/html/{ymd}_actual_loads_of_forecast_zones.html"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 HISTORY_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
+# ERCOT's Supply & Demand dashboard publishes the day-ahead load forecast in its `forecast` array:
+# 24 hourly rows per operating day, each with `deliveryDate` (operating day), `hourEnding` (1-24),
+# and `forecastedDemand` (MW). The day's forecast peak is the largest `forecastedDemand`.
+DAHEAD_URL = "https://www.ercot.com/api/1/services/read/dashboards/supply-demand.json"
 FIRST_DAY = date(2024, 5, 7)
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "tradehub" / "ercot"
 CACHE_ENV = "TRADEHUB_ERCOT_CACHE_DIR"
@@ -207,3 +211,68 @@ def fetch_historical_temps(first: date, last: date, *, get_json: Callable[..., A
     params = {"start_date": first.isoformat(), "end_date": last.isoformat()}
     return _merge_cities({name: _city_daily(HISTORY_URL, lat, lon, params, get_json)
                           for name, (lat, lon, _w) in CITIES.items()})
+
+
+def _day_ahead_peak_from_payload(payload: dict[str, Any]) -> dict[date, float]:
+    """Extract {operating day: forecast peak MW} from ERCOT's supply-demand.json `forecast` array."""
+    out: dict[date, float] = {}
+    for row in payload.get("forecast") or []:
+        day_text = row.get("deliveryDate")
+        demand = row.get("forecastedDemand")
+        if not day_text or demand is None:
+            continue
+        try:
+            day = date.fromisoformat(str(day_text))
+            value = float(demand)
+        except (TypeError, ValueError):
+            continue
+        if day not in out or value > out[day]:
+            out[day] = value
+    return out
+
+
+def fetch_day_ahead_forecast(*, get_json: Callable[..., Any] = default_get_json) -> dict[date, float]:
+    """Today's published day-ahead load forecast {operating day: forecast peak MW}.
+
+    ERCOT publishes no archive of past day-ahead forecasts: this API carries only the days it
+    currently forecasts. The result is cached (first value wins, frozen) so that over time we build
+    a training set. See `load_day_ahead_forecast`.
+    """
+    try:
+        payload = get_json(DAHEAD_URL)
+        return _day_ahead_peak_from_payload(payload)
+    except (requests.HTTPError, requests.RequestException, ValueError, KeyError, TypeError):
+        return {}
+
+
+def load_day_ahead_forecast(*, get_json: Callable[..., Any] = default_get_json,
+                            cache_dir: Path | None = None) -> dict[date, float]:
+    """{operating day: frozen day-ahead forecast peak MW} built up day by day.
+
+    The ERCOT day-ahead forecast is published each morning for the next ~6 operating days.
+    ERCOT provides NO historical archive, so we must record each day's forecast ourselves.
+    This function loads the cached record (first value wins — never overwrites) and appends
+    any new days from today's live API. The cache grows monotonically.
+    """
+    cache = cache_dir or cache_dir_from_env()
+    path = cache / "day_ahead_forecast.json"
+    cached: dict[date, float] = {}
+    if path.exists():
+        try:
+            cached = {date.fromisoformat(k): float(v) for k, v in json.loads(path.read_text()).items()}
+        except (ValueError, OSError, TypeError):
+            cached = {}
+    # Fetch today's live forecast
+    live = fetch_day_ahead_forecast(get_json=get_json)
+    # First value wins: only add days we don't already have
+    for day, peak in live.items():
+        if day not in cached:
+            cached[day] = peak
+    if cached:
+        cache.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({d.isoformat(): v for d, v in sorted(cached.items())}))
+    return cached
+
+
+# Minimum recorded days before ls-v2 is usable (avoids a constant-zero dahead column)
+MIN_DAHEAD_TRAIN = 20
