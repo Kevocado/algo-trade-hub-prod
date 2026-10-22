@@ -78,38 +78,88 @@ def test_fetch_market_fallback_on_503_via_event_ticker():
 
 
 def test_fetch_market_4xx_not_retried():
-    """4xx responses (e.g., 404) must NOT be retried."""
+    """4xx responses (e.g., 400, 401, 403) must NOT be retried and must NOT fall back."""
     _reset()
     calls = []
     def fake_get(url, headers=None, timeout=30, params=None):
-        calls.append(url)
-        return FakeResponse(404, {"error": "Not found"})
+        calls.append((url, params))
+        return FakeResponse(403, {"error": "Forbidden"})
 
     with pytest.raises(requests.HTTPError):
         fetch_market("KXTEST-26OCT22-T50", get=fake_get)
-    # Only 1 call, no retries for 4xx
+    # Only 1 call, no retries for 403, no fallback
     assert len(calls) == 1
+    assert calls[0][0].endswith("/KXTEST-26OCT22-T50")
+
+
+def test_fetch_market_404_triggers_fallback():
+    """404 on single-market endpoint triggers fallback to event_ticker."""
+    _reset()
+    calls = []
+    def fake_get(url, headers=None, timeout=30, params=None):
+        calls.append((url, params))
+        if url.endswith("/KXTEST-26OCT22-T50"):
+            return FakeResponse(404, {"error": "Not found"})
+        # Fallback: event_ticker list endpoint
+        if params and params.get("event_ticker") == "KXTEST-26OCT22":
+            return FakeResponse(200, {"markets": [{"ticker": "KXTEST-26OCT22-T50", "status": "finalized"}]})
+        return FakeResponse(404, {})
+
+    market = fetch_market("KXTEST-26OCT22-T50", get=fake_get)
+    assert market["market"]["ticker"] == "KXTEST-26OCT22-T50"
+    assert market["market"]["status"] == "finalized"
+    # Should have called primary once, fallback once
+    single_calls = [c for c in calls if c[0].endswith("/KXTEST-26OCT22-T50")]
+    fallback_calls = [c for c in calls if "event_ticker" in (c[1] or {})]
+    assert len(single_calls) == 1
+    assert len(fallback_calls) == 1
+    assert fallback_calls[0][1] == {"event_ticker": "KXTEST-26OCT22", "limit": 200}
+    assert "status" not in fallback_calls[0][1]
+
+
+def test_fetch_market_4xx_not_retried():
+    """4xx responses (e.g., 400, 401, 403) must NOT be retried and must NOT fall back."""
+    _reset()
+    calls = []
+    def fake_get(url, headers=None, timeout=30, params=None):
+        calls.append((url, params))
+        return FakeResponse(403, {"error": "Forbidden"})
+
+    with pytest.raises(requests.HTTPError):
+        fetch_market("KXTEST-26OCT22-T50", get=fake_get)
+    # Only 1 call, no retries for 403, no fallback
+    assert len(calls) == 1
+    assert calls[0][0].endswith("/KXTEST-26OCT22-T50")
 
 
 def test_fetch_market_circuit_breaker_trips_after_3_failures():
-    """Circuit breaker: after 3 consecutive failures, subsequent calls fail fast."""
+    """Circuit breaker: after 3 consecutive RETRYABLE failures, subsequent calls skip to fallback."""
     _reset()
-    # Record 3 failures manually to open the circuit breaker
+    # Record 3 retryable failures manually to open the circuit breaker
     from tradehub.core import kalshi_feed
-    kalshi_feed._record_fetch_failure()
-    kalshi_feed._record_fetch_failure()
-    kalshi_feed._record_fetch_failure()
+    kalshi_feed._record_fetch_failure(is_retryable=True)
+    kalshi_feed._record_fetch_failure(is_retryable=True)
+    kalshi_feed._record_fetch_failure(is_retryable=True)
     assert kalshi_feed._circuit_open()
 
-    # Now fetch should fail immediately without calling the API
+    # Now fetch should skip single-market and go straight to fallback
     calls = []
     def fake_get(url, headers=None, timeout=30, params=None):
-        calls.append(url)
+        calls.append((url, params))
+        # Fallback: event_ticker list endpoint
+        if params and params.get("event_ticker") == "KXTEST-26OCT22":
+            return FakeResponse(200, {"markets": [{"ticker": "KXTEST-26OCT22-T50", "status": "open"}]})
         return FakeResponse(200, {"market": {"ticker": "KXTEST-26OCT22-T50"}})
 
-    with pytest.raises(RuntimeError, match="circuit breaker open"):
-        fetch_market("KXTEST-26OCT22-T50", get=fake_get)
-    assert len(calls) == 0  # No API call made
+    market = fetch_market("KXTEST-26OCT22-T50", get=fake_get)
+    # Should go straight to fallback and succeed
+    assert market["market"]["ticker"] == "KXTEST-26OCT22-T50"
+    assert market["market"]["status"] == "open"
+    # Should have made ZERO calls to single-market endpoint
+    single_calls = [c for c in calls if c[0].endswith("/KXTEST-26OCT22-T50")]
+    fallback_calls = [c for c in calls if "event_ticker" in (c[1] or {})]
+    assert len(single_calls) == 0  # No single-market calls when breaker open
+    assert len(fallback_calls) == 1  # Straight to fallback
 
 
 def test_fetch_market_503_then_success_with_backoff():

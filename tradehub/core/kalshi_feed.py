@@ -53,37 +53,59 @@ CATEGORY_NORMALIZE = {
 
 
 # ─── Circuit breaker state (module-level, per-process) ──────────────────
-# After 3 consecutive fetch failures (5xx/network), we stop trying for the
-# remainder of the journal run to protect the 20-minute budget.
+# After 3 consecutive fetch failures (5xx/network), we stop trying the
+# single-market endpoint and go straight to the event_ticker fallback.
+# Half-open after 60 seconds: breaker closes automatically after 60s of
+# being open, allowing a single probe request to test if the endpoint recovered.
 _FETCH_FAILURE_STRIKES = 0
 _CIRCUIT_BREAKER_OPEN = False
+_CIRCUIT_OPENED_AT = 0.0  # epoch seconds when breaker opened
 _MAX_STRIKES = 3
+_CIRCUIT_RESET_SECONDS = 60.0  # half-open after 60s
 
 
 def _reset_circuit_breaker():
     """Reset circuit breaker state (called at start of each journal run)."""
-    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN
+    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN, _CIRCUIT_OPENED_AT
     _FETCH_FAILURE_STRIKES = 0
     _CIRCUIT_BREAKER_OPEN = False
+    _CIRCUIT_OPENED_AT = 0.0
 
 
-def _record_fetch_failure():
-    """Record a fetch failure; open circuit breaker after 3 strikes."""
-    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN
-    _FETCH_FAILURE_STRIKES += 1
-    if _FETCH_FAILURE_STRIKES >= _MAX_STRIKES:
-        _CIRCUIT_BREAKER_OPEN = True
-
-
-def _record_fetch_success():
-    """Record a successful fetch; reset strike counter."""
-    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN
-    _FETCH_FAILURE_STRIKES = 0
-    _CIRCUIT_BREAKER_OPEN = False
+def _maybe_reset_circuit_breaker():
+    """Auto-reset circuit breaker to half-open after 60 seconds."""
+    global _CIRCUIT_BREAKER_OPEN
+    if _CIRCUIT_BREAKER_OPEN and (time.time() - _CIRCUIT_OPENED_AT) >= _CIRCUIT_RESET_SECONDS:
+        _CIRCUIT_BREAKER_OPEN = False
+        _FETCH_FAILURE_STRIKES = 0
 
 
 def _circuit_open() -> bool:
+    _maybe_reset_circuit_breaker()
     return _CIRCUIT_BREAKER_OPEN
+
+
+def _record_fetch_failure(is_retryable: bool):
+    """Record a fetch failure; open circuit breaker after 3 retryable strikes.
+
+    Only retryable failures (5xx, network errors) count toward the strike count.
+    Non-retryable failures (4xx except 404) do NOT increment the strike counter.
+    """
+    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN, _CIRCUIT_OPENED_AT
+    if not is_retryable:
+        return
+    _FETCH_FAILURE_STRIKES += 1
+    if _FETCH_FAILURE_STRIKES >= _MAX_STRIKES and not _CIRCUIT_BREAKER_OPEN:
+        _CIRCUIT_BREAKER_OPEN = True
+        _CIRCUIT_OPENED_AT = time.time()
+
+
+def _record_fetch_success():
+    """Record a successful fetch; reset strike counter and close breaker."""
+    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN, _CIRCUIT_OPENED_AT
+    _FETCH_FAILURE_STRIKES = 0
+    _CIRCUIT_BREAKER_OPEN = False
+    _CIRCUIT_OPENED_AT = 0.0
 
 
 # ─── HEADERS HELPER ──────────────────────────────────────────────────
@@ -605,10 +627,13 @@ def fetch_market(ticker: str, *, get: callable | None = None) -> dict:
     Does NOT hardcode status=open in fallback (hides settled markets).
     Re-wraps fallback response: finds matching ticker in markets list and returns {"market": markets[i]}.
 
-    Retries only on 5xx/network errors; 4xx are NOT retried.
+    Retries only on 5xx/network errors; 4xx (except 404) are NOT retried and do NOT fall back.
+    404 on single-market endpoint DOES trigger fallback to event_ticker list.
     Honors Retry-After header if present.
-    Circuit breaker: 3-strike module-level state stops retries/fallback after 3 consecutive failures
-    within the current journal run (call _reset_circuit_breaker() at start of each run).
+    Circuit breaker: 3-strike module-level state (only retryable failures count).
+    Open breaker skips single-market entirely and goes straight to fallback.
+    Half-open after 60 seconds: breaker auto-closes to allow probe.
+    Call _reset_circuit_breaker() at start of each journal run.
 
     Args:
         ticker: The market ticker to fetch.
@@ -622,10 +647,6 @@ def fetch_market(ticker: str, *, get: callable | None = None) -> dict:
     if get is None:
         get = requests.get
 
-    # Check circuit breaker first
-    if _circuit_open():
-        raise RuntimeError(f"Kalshi fetch circuit breaker open (3 consecutive failures); aborting fetch for {ticker}")
-
     headers = _headers()
     max_retries = 3
     base_delay = 1.0  # seconds
@@ -633,36 +654,46 @@ def fetch_market(ticker: str, *, get: callable | None = None) -> dict:
     # Derive event_ticker by stripping last "-" segment (e.g., KXHIGHNY-26OCT20-T70 -> KXHIGHNY-26OCT20)
     event_ticker = ticker.rsplit("-", 1)[0]
 
-    # Try single-market endpoint with retries on 5xx/network errors only
-    for attempt in range(max_retries):
-        try:
-            resp = get(f"{KALSHI_API_URL}/{ticker}", headers=headers, timeout=30)
-            if resp.status_code == 200:
-                _record_fetch_success()
-                return resp.json()
-            elif 500 <= resp.status_code < 600:
-                # 5xx: retry with backoff, honor Retry-After
+    # Check circuit breaker: if open, skip single-market entirely and go straight to fallback
+    if _circuit_open():
+        pass  # skip single-market, go straight to fallback
+    else:
+        # Try single-market endpoint with retries on 5xx/network errors only
+        for attempt in range(max_retries):
+            try:
+                resp = get(f"{KALSHI_API_URL}/{ticker}", headers=headers, timeout=30)
+                if resp.status_code == 200:
+                    _record_fetch_success()
+                    return resp.json()
+                elif 500 <= resp.status_code < 600:
+                    # 5xx: retry with backoff, honor Retry-After
+                    _record_fetch_failure(is_retryable=True)
+                    if attempt < max_retries - 1:
+                        retry_after = resp.headers.get("Retry-After")
+                        delay = int(retry_after) if retry_after and retry_after.isdigit() else base_delay * (2 ** attempt)
+                        time.sleep(delay)
+                        continue
+                    # Last 5xx attempt - break to fallback
+                    break
+                elif resp.status_code == 404:
+                    # 404: finalized market no longer on single endpoint; fall back to event_ticker
+                    # Do NOT count as retryable strike
+                    break
+                else:
+                    # Other 4xx (400, 401, 403, etc.): do NOT retry, do NOT fall back
+                    _record_fetch_failure(is_retryable=False)
+                    resp.raise_for_status()
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+                # Only network errors retry
+                _record_fetch_failure(is_retryable=True)
                 if attempt < max_retries - 1:
-                    retry_after = resp.headers.get("Retry-After")
-                    delay = int(retry_after) if retry_after and retry_after.isdigit() else base_delay * (2 ** attempt)
-                    time.sleep(delay)
+                    time.sleep(base_delay * (2 ** attempt))
                     continue
-                # Last 5xx attempt - break to fallback
-                break
-            else:
-                # 4xx: do NOT retry - fail immediately
-                _record_fetch_failure()
-                resp.raise_for_status()
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            # Only network errors retry
-            if attempt < max_retries - 1:
-                time.sleep(base_delay * (2 ** attempt))
-                continue
-            raise
-        except requests.exceptions.RequestException:
-            # Other request exceptions (including HTTPError from raise_for_status) - don't retry
-            _record_fetch_failure()
-            raise
+                raise
+            except requests.exceptions.RequestException:
+                # Other request exceptions (including HTTPError from raise_for_status) - don't retry
+                _record_fetch_failure(is_retryable=False)
+                raise
 
     # Fallback: event_ticker list endpoint (NOT tickers=)
     try:
@@ -681,16 +712,17 @@ def fetch_market(ticker: str, *, get: callable | None = None) -> dict:
                     return {"market": m}
             raise RuntimeError(f"Ticker {ticker} not found in event_ticker {event_ticker} markets")
         elif 500 <= resp.status_code < 600:
-            _record_fetch_failure()
+            _record_fetch_failure(is_retryable=True)
             raise RuntimeError(f"Fallback event_ticker fetch failed with {resp.status_code}")
         else:
-            _record_fetch_failure()
+            _record_fetch_failure(is_retryable=False)
             resp.raise_for_status()
     except requests.exceptions.RequestException:
-        _record_fetch_failure()
+        _record_fetch_failure(is_retryable=True)
         raise
 
     # If we reach here, all attempts failed
-    _record_fetch_failure()
+    _record_fetch_failure(is_retryable=False)
     raise RuntimeError(f"Kalshi market fetch failed for {ticker} after retries and fallback")
+
 

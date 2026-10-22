@@ -59,7 +59,7 @@ OFFENDING_READS = {
     "tradehub/engines/weather_engine.py:220": "market.get('yes_ask', 0)",
     "tradehub/engines/macro_engine.py:459": "market.get('yes_ask', 0)",
     "tradehub/engines/weather_maker.py:258": 'market.get("price", 50)',
-    "tradehub/core/kalshi_feed.py:284": "m.get('yes_ask', 0)",
+    "tradehub/core/kalshi_feed.py:321": "m.get('yes_ask', 0)",
 }
 
 # The read each REPAIRED site now contains, keyed the same way. The counterpart to the map above,
