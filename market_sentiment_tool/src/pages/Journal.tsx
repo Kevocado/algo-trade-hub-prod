@@ -169,7 +169,7 @@ export default function Journal() {
                       </span>
                     ))}
                   </div>
-                  <span className="text-xs text-slate-500">n={s.n ?? null}</span>
+                  <span className="text-xs text-slate-500">n={s.points.reduce((sum, p) => sum + p.n, 0)}</span>
                 </div>
               ))}
             {data.forecasters.some((f: JournalScore) => /weather/i.test(f.forecaster)) ? null : (
