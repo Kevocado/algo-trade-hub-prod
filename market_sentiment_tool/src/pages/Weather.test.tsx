@@ -6,13 +6,13 @@ import Weather from "@/pages/Weather";
 import type { WeatherTodayRow, WeatherSettledRow } from "@/lib/weather";
 
 const TODAY: WeatherTodayRow[] = [
-  { target: "T-KXHIGHNY-26OCT18", date: "26OCT18", ensemble: 0.65, kalshi: 0.6, climatology: 0.55 },
-  { target: "T-KXHIGHLAX-26OCT18", date: "26OCT18", ensemble: 0.45, kalshi: 0.5, climatology: 0.52 },
+  { target: "kalshi:KXHIGHNY-26OCT18-T75", date: "26OCT18", ensemble: 0.65, kalshi: 0.6, climatology: 0.55 },
+  { target: "kalshi:KXHIGHLAX-26OCT18-T80", date: "26OCT18", ensemble: 0.45, kalshi: 0.5, climatology: 0.52 },
 ];
 
 const SETTLED: WeatherSettledRow[] = [
   {
-    target: "T-KXHIGHNY-26OCT17",
+    target: "kalshi:KXHIGHNY-26OCT17-T70",
     date: "26OCT17",
     ensemble: 0.7,
     kalshi: 0.72,
@@ -50,9 +50,9 @@ describe("weather page", () => {
     );
     expect(screen.getByText(/kalshi 60%/)).toBeTruthy();
     expect(screen.getByText(/clim 55%/)).toBeTruthy();
-    // Both cities appear
-    expect(screen.getAllByText("KXHIGHNY").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("KXHIGHLAX").length).toBeGreaterThan(0);
+    // Both cities appear with parsed labels
+    expect(screen.getByText(/NYC high above 75°F/)).toBeTruthy();
+    expect(screen.getByText(/Los Angeles high above 80°F/)).toBeTruthy();
   });
 
   it("shows settled history with outcome", async () => {
@@ -64,7 +64,7 @@ describe("weather page", () => {
 
   it("renders dashes for missing probabilities", async () => {
     const incomplete: WeatherTodayRow[] = [
-      { target: "T-KXHIGHNY-26OCT18", date: "26OCT18", ensemble: null, kalshi: 0.6, climatology: null },
+      { target: "kalshi:KXHIGHNY-26OCT18-T75", date: "26OCT18", ensemble: null, kalshi: 0.6, climatology: null },
     ];
     vi.stubGlobal("fetch", mockWeather(incomplete, []));
     renderWeather();
