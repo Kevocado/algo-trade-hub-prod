@@ -225,7 +225,7 @@ STOPPED_SITES: tuple[StoppedSite, ...] = (
     StoppedSite(
         name="clean_market_data",
         module="tradehub/core/kalshi_feed.py",
-        site="tradehub/core/kalshi_feed.py:284",
+        site="tradehub/core/kalshi_feed.py:343",
         # No edge type: this is a helper in the shared feed, not an engine, and it belongs to no
         # board. Saying it feeds the Macro tab would be inventing a caller.
         edge_type=None,

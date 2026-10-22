@@ -55,10 +55,12 @@ CATEGORY_NORMALIZE = {
 # ─── Circuit breaker state (module-level, per-process) ──────────────────
 # After 3 consecutive fetch failures (5xx/network), we stop trying the
 # single-market endpoint and go straight to the event_ticker fallback.
-# Half-open after 60 seconds: breaker closes automatically after 60s of
-# being open, allowing a single probe request to test if the endpoint recovered.
+# Half-open after 60 seconds: breaker allows ONE probe request to test
+# if the endpoint recovered. If probe succeeds, breaker closes.
+# If probe fails, breaker re-opens.
 _FETCH_FAILURE_STRIKES = 0
 _CIRCUIT_BREAKER_OPEN = False
+_CIRCUIT_HALF_OPEN = False
 _CIRCUIT_OPENED_AT = 0.0  # epoch seconds when breaker opened
 _MAX_STRIKES = 3
 _CIRCUIT_RESET_SECONDS = 60.0  # half-open after 60s
@@ -66,17 +68,19 @@ _CIRCUIT_RESET_SECONDS = 60.0  # half-open after 60s
 
 def _reset_circuit_breaker():
     """Reset circuit breaker state (called at start of each journal run)."""
-    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN, _CIRCUIT_OPENED_AT
+    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN, _CIRCUIT_HALF_OPEN, _CIRCUIT_OPENED_AT
     _FETCH_FAILURE_STRIKES = 0
     _CIRCUIT_BREAKER_OPEN = False
+    _CIRCUIT_HALF_OPEN = False
     _CIRCUIT_OPENED_AT = 0.0
 
 
 def _maybe_reset_circuit_breaker():
     """Auto-reset circuit breaker to half-open after 60 seconds."""
-    global _CIRCUIT_BREAKER_OPEN
+    global _CIRCUIT_BREAKER_OPEN, _CIRCUIT_HALF_OPEN
     if _CIRCUIT_BREAKER_OPEN and (time.time() - _CIRCUIT_OPENED_AT) >= _CIRCUIT_RESET_SECONDS:
         _CIRCUIT_BREAKER_OPEN = False
+        _CIRCUIT_HALF_OPEN = True
         _FETCH_FAILURE_STRIKES = 0
 
 
@@ -85,27 +89,42 @@ def _circuit_open() -> bool:
     return _CIRCUIT_BREAKER_OPEN
 
 
+def _circuit_half_open() -> bool:
+    _maybe_reset_circuit_breaker()
+    return _CIRCUIT_HALF_OPEN
+
+
 def _record_fetch_failure(is_retryable: bool):
     """Record a fetch failure; open circuit breaker after 3 retryable strikes.
 
     Only retryable failures (5xx, network errors) count toward the strike count.
     Non-retryable failures (4xx except 404) do NOT increment the strike counter.
     """
-    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN, _CIRCUIT_OPENED_AT
+    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN, _CIRCUIT_HALF_OPEN, _CIRCUIT_OPENED_AT
     if not is_retryable:
         return
     _FETCH_FAILURE_STRIKES += 1
-    if _FETCH_FAILURE_STRIKES >= _MAX_STRIKES and not _CIRCUIT_BREAKER_OPEN:
+    if _FETCH_FAILURE_STRIKES >= _MAX_STRIKES and not _CIRCUIT_BREAKER_OPEN and not _CIRCUIT_HALF_OPEN:
         _CIRCUIT_BREAKER_OPEN = True
+        _CIRCUIT_HALF_OPEN = False
         _CIRCUIT_OPENED_AT = time.time()
 
 
 def _record_fetch_success():
     """Record a successful fetch; reset strike counter and close breaker."""
-    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN, _CIRCUIT_OPENED_AT
+    global _FETCH_FAILURE_STRIKES, _CIRCUIT_BREAKER_OPEN, _CIRCUIT_HALF_OPEN, _CIRCUIT_OPENED_AT
     _FETCH_FAILURE_STRIKES = 0
     _CIRCUIT_BREAKER_OPEN = False
+    _CIRCUIT_HALF_OPEN = False
     _CIRCUIT_OPENED_AT = 0.0
+
+
+def _record_probe_failure():
+    """Record a failed probe in half-open mode: re-open the breaker."""
+    global _CIRCUIT_BREAKER_OPEN, _CIRCUIT_HALF_OPEN, _CIRCUIT_OPENED_AT
+    _CIRCUIT_HALF_OPEN = False
+    _CIRCUIT_BREAKER_OPEN = True
+    _CIRCUIT_OPENED_AT = time.time()
 
 
 # ─── HEADERS HELPER ──────────────────────────────────────────────────
@@ -632,7 +651,8 @@ def fetch_market(ticker: str, *, get: callable | None = None) -> dict:
     Honors Retry-After header if present.
     Circuit breaker: 3-strike module-level state (only retryable failures count).
     Open breaker skips single-market entirely and goes straight to fallback.
-    Half-open after 60 seconds: breaker auto-closes to allow probe.
+    Half-open after 60 seconds: allows ONE probe (no retries); if probe succeeds, closes breaker;
+    if probe fails, re-opens breaker.
     Call _reset_circuit_breaker() at start of each journal run.
 
     Args:
@@ -654,11 +674,26 @@ def fetch_market(ticker: str, *, get: callable | None = None) -> dict:
     # Derive event_ticker by stripping last "-" segment (e.g., KXHIGHNY-26OCT20-T70 -> KXHIGHNY-26OCT20)
     event_ticker = ticker.rsplit("-", 1)[0]
 
-    # Check circuit breaker: if open, skip single-market entirely and go straight to fallback
+    # Check circuit breaker state
     if _circuit_open():
-        pass  # skip single-market, go straight to fallback
+        # Open breaker: skip single-market entirely, go straight to fallback
+        pass
+    elif _circuit_half_open():
+        # Half-open: exactly ONE probe attempt (no retries)
+        try:
+            resp = get(f"{KALSHI_API_URL}/{ticker}", headers=headers, timeout=30)
+            if resp.status_code == 200:
+                _record_fetch_success()
+                return resp.json()
+            else:
+                # Probe failed: re-open breaker
+                _record_probe_failure()
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            _record_probe_failure()
+        except requests.exceptions.RequestException:
+            _record_probe_failure()
     else:
-        # Try single-market endpoint with retries on 5xx/network errors only
+        # Normal mode: try single-market endpoint with retries on 5xx/network errors only
         for attempt in range(max_retries):
             try:
                 resp = get(f"{KALSHI_API_URL}/{ticker}", headers=headers, timeout=30)
@@ -708,7 +743,8 @@ def fetch_market(ticker: str, *, get: callable | None = None) -> dict:
             markets = data.get("markets", [])
             for m in markets:
                 if m.get("ticker") == ticker:
-                    _record_fetch_success()
+                    # Fallback success: do NOT reset circuit breaker.
+                    # Only a successful SINGLE-market endpoint call may close the breaker.
                     return {"market": m}
             raise RuntimeError(f"Ticker {ticker} not found in event_ticker {event_ticker} markets")
         elif 500 <= resp.status_code < 600:

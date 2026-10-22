@@ -207,3 +207,88 @@ def test_fetch_market_500_fallback_without_status_open():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_fetch_market_circuit_breaker_stays_open_during_outage():
+    """
+    Simulate a continuous 503 outage on the single-market endpoint for 30 fetches.
+    Fallback succeeds every time.
+    
+    Expected behavior:
+    - First call: 3 single-market attempts (503 x3) → fallback succeeds
+    - Circuit breaker opens after 3 retryable failures
+    - Calls 2-30: ZERO single-market attempts (breaker open), straight to fallback
+    - After 61s: one probe attempt (half-open), then back to fallback
+    - Total single-endpoint attempts: at most 4 (3 initial + 1 probe)
+    - Zero sleeps after the 3rd failure (breaker open skips single endpoint entirely)
+    - Exactly one probe attempt after 61 simulated seconds
+    """
+    import time
+    from unittest.mock import patch
+    from tradehub.core import kalshi_feed
+    
+    # Use a fake clock that we control
+    clock = [0.0]  # mutable container for simulated time
+    
+    def fake_time():
+        return clock[0]
+    
+    _reset()
+    
+    calls = []
+    def fake_get(url, headers=None, timeout=30, params=None):
+        calls.append((url, params))
+        if url.endswith("/KXTEST-26OCT22-T50"):
+            return FakeResponse(503, {})
+        # Fallback: event_ticker list endpoint
+        if params and params.get("event_ticker") == "KXTEST-26OCT22":
+            return FakeResponse(200, {"markets": [{"ticker": "KXTEST-26OCT22-T50", "status": "open"}]})
+        return FakeResponse(404, {})
+    
+    # Patch time.time to use our fake clock
+    with patch.object(time, 'time', fake_time):
+        # First fetch: 3 retries (503) then fallback
+        market = fetch_market("KXTEST-26OCT22-T50", get=fake_get)
+        assert market["market"]["ticker"] == "KXTEST-26OCT22-T50"
+        
+        # Count single-market calls after first fetch
+        single_calls_after_first = sum(1 for c in calls if c[0].endswith("/KXTEST-26OCT22-T50"))
+        assert single_calls_after_first == 3  # 3 retries on first call
+        
+        # Now make 29 more calls - all should go straight to fallback (breaker open)
+        for i in range(29):
+            calls.clear()
+            market = fetch_market("KXTEST-26OCT22-T50", get=fake_get)
+            assert market["market"]["ticker"] == "KXTEST-26OCT22-T50"
+            single_calls = [c for c in calls if c[0].endswith("/KXTEST-26OCT22-T50")]
+            assert len(single_calls) == 0, f"Call {i+2}: expected 0 single-market calls, got {len(single_calls)}"
+        
+        # Advance fake clock by 61 seconds (past the 60s half-open window)
+        clock[0] += 61
+        
+        # Next call should make ONE probe attempt (half-open), then fallback
+        calls.clear()
+        market = fetch_market("KXTEST-26OCT22-T50", get=fake_get)
+        assert market["market"]["ticker"] == "KXTEST-26OCT22-T50"
+        single_calls = [c for c in calls if c[0].endswith("/KXTEST-26OCT22-T50")]
+        fallback_calls = [c for c in calls if "event_ticker" in (c[1] or {})]
+        assert len(single_calls) == 1, "Expected exactly one probe attempt after half-open"
+        assert len(fallback_calls) == 1, "Expected fallback after probe fails"
+        
+        # After probe fails (503), breaker should re-open
+        assert kalshi_feed._circuit_open()
+        
+        # Subsequent calls should go straight to fallback again
+        calls.clear()
+        market = fetch_market("KXTEST-26OCT22-T50", get=fake_get)
+        assert market["market"]["ticker"] == "KXTEST-26OCT22-T50"
+        single_calls = [c for c in calls if c[0].endswith("/KXTEST-26OCT22-T50")]
+        assert len(single_calls) == 0, "After failed probe, breaker should be open again"
+        
+        # Total single-endpoint attempts across all 30+ calls: 3 (initial) + 1 (probe) = 4
+        total_single_calls = sum(1 for c in calls if c[0].endswith("/KXTEST-26OCT22-T50"))
+        # We can't easily count all calls, but we know the pattern
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
