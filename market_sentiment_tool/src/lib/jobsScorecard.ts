@@ -8,8 +8,6 @@ export type JobsScorecardRow = {
   nowcast_mu: number | null;
   nowcast_sigma: number | null;
   engine_version: string | null;
-  // Added by GET /api/jobs-scorecard, not stored on the row: the scorecard is built out of band,
-  // so the promotion gate has to be looked up per (engine, engine_version) at read time.
   engine?: string | null;
   gate_status?: string | null;
   kalshi_mean_1h: number | null;
@@ -53,16 +51,13 @@ const toNumber = (value: unknown): number | null => {
 const mean = (values: number[]): number | null =>
   values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
 
-export function toChartPoints(rows: JobsScorecardRow[]): ScorecardChartPoint[] {
-  return [...rows]
-    .sort((a, b) => a.reference_month.localeCompare(b.reference_month))
-    .map((row) => ({
-      month: row.reference_month.slice(0, 7),
-      nowcast: toNumber(row.nowcast_mu),
-      kalshi: toNumber(row.kalshi_mean_1h),
-      firstPrint: toNumber(row.first_print),
-      latest: toNumber(row.latest),
-    }));
+export function formatValue(series: JobsSeries, value: number | null, digits = 3): string {
+  if (value === null) return "—";
+  if (series === "payrolls") {
+    return `${value > 0 ? "+" : ""}${Math.round(value)}k`;
+  }
+  if (series === "unemployment") return `${value.toFixed(1)}%`;
+  return `${value > 0 ? "+" : ""}${value.toFixed(digits)}`;
 }
 
 export function summarizeScorecard(rows: JobsScorecardRow[]): ScorecardSummary {
@@ -86,10 +81,14 @@ export function summarizeScorecard(rows: JobsScorecardRow[]): ScorecardSummary {
   };
 }
 
-export function formatValue(series: JobsSeries, value: number | string | null | undefined): string {
-  const n = toNumber(value);
-  if (n === null) return "—";
-  if (series === "unemployment") return `${n.toFixed(1)}%`;
-  const rounded = Math.round(n);
-  return `${rounded > 0 ? "+" : ""}${rounded}k`;
+export function toChartPoints(rows: JobsScorecardRow[]): ScorecardChartPoint[] {
+  return [...rows]
+    .sort((a, b) => a.reference_month.localeCompare(b.reference_month))
+    .map((row) => ({
+      month: row.reference_month.slice(0, 7),
+      nowcast: toNumber(row.nowcast_mu),
+      kalshi: toNumber(row.kalshi_mean_1h),
+      firstPrint: toNumber(row.first_print),
+      latest: toNumber(row.latest),
+    }));
 }
