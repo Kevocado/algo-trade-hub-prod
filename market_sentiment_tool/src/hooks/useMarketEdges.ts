@@ -32,7 +32,7 @@ export interface KalshiEdge {
    */
   edge_pct: number | null;
   discovered_at: string;
-  raw_payload: any;
+  raw_payload: Record<string, unknown> | null;
   ui_reasoning?: boolean;
   ai_summary?: string;
 }
