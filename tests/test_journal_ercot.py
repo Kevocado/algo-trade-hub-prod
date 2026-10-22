@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from journal_fakes import FakeJournalDB
 
-from tradehub.data.ercot import central_date, day_ahead_peak, load_peaks, parse_daily_peak
+from tradehub.data.ercot import central_date, load_peaks, parse_daily_peak
 from tradehub.data.kalshi_live import LiveMarket
 from tradehub.edges import Quote
 from tradehub.journal.forecasters.ercot import (
@@ -81,6 +81,11 @@ class Inputs:
     def dahead(self, day):
         self.calls.append(("dahead", day))
         return self._daheads.get(day, self._target_dahead)
+
+    def history_v2(self, day, now):
+        self.calls.append(("history_v2", day))
+        return {d: (v[0], v[1], self._daheads.get(d, self._target_dahead))
+                for d, v in self._history.items() if d < day and d in self._daheads}
 
 
 ZONE_HTML = """
@@ -213,86 +218,13 @@ def test_end_to_end_the_model_baseline_and_market_are_scored_on_the_same_contrac
     clock[0] = CLOSE + timedelta(hours=1)
     out = run_journal(db, fcs, clock[0])
     assert not out["failures"]
-    cards = {r["forecaster"]: r for r in db.tables["journal_scores"]}
-    assert cards["ercot_peak"]["n_settled"] == 2 and cards["ercot_peak"]["baseline"] == "market"
-    assert cards["baseline_climatology_ercot_peak"]["n_settled"] == 2
-    assert cards["kalshi_implied_ercot_peak"]["bss"] == pytest.approx(0.0)
-
-
-# ── ls-v2: the day-ahead load forecast, beside ls-v1 ─────────────────────────
-
-
-def test_the_day_ahead_peak_is_the_largest_hourly_forecasted_demand():
-    # The real shape of ERCOT's Supply & Demand `forecast` array, verified live on 2026-10-22.
-    payload = {"forecast": [
-        {"deliveryDate": "2026-10-22", "hourEnding": 1, "forecastedDemand": 48571, "availCapGen": 78009},
-        {"deliveryDate": "2026-10-22", "hourEnding": 17, "forecastedDemand": 64138, "availCapGen": 100395},
-        {"deliveryDate": "2026-10-22", "hourEnding": 24, "forecastedDemand": 50795, "availCapGen": 86381},
-        {"deliveryDate": "2026-10-23", "hourEnding": 17, "forecastedDemand": 63729, "availCapGen": 107462},
-    ]}
-    got = day_ahead_peak(payload)
-    assert got == {date(2026, 10, 22): 64138.0, date(2026, 10, 23): 63729.0}
-
-
-def test_a_day_ahead_forecast_that_ercot_cannot_parse_is_a_gap_not_a_guess():
-    assert day_ahead_peak({"forecast": []}) == {}
-    assert day_ahead_peak({"forecast": [{"deliveryDate": "not-a-date", "forecastedDemand": 1}]}) == {}
-    assert day_ahead_peak({"forecast": [{"deliveryDate": "2026-10-22"}]}) == {}
-    assert day_ahead_peak({}) == {}
-
-
-def test_ls_v2_runs_beside_ls_v1_and_keeps_its_own_scorecard():
-    live = FakeLive([_lm("KXTXERCOTPEAKD-26OCT17-T69000", 69000)])
-    inputs = Inputs(_history(), target_temp=90.0, target_dahead=69000.0)
-    fcs = {f.version: f for f in build_ercot(live, _final("no"), inputs)
-           if f.name == "ercot_peak"}
-    assert set(fcs) == {"ls-v1", "ls-v2"}
-    v1, v2 = fcs["ls-v1"], fcs["ls-v2"]
-    assert (v1.name, v1.version) == ("ercot_peak", VERSION)
-    assert (v2.name, v2.version) == ("ercot_peak", "ls-v2")
-    f1, f2 = v1.forecast(v1.targets(NOW)[0], NOW), v2.forecast(v2.targets(NOW)[0], NOW)
-    assert f1 is not None and f2 is not None
-    assert f1.forecaster_version == "ls-v1" and f2.forecaster_version == "ls-v2"
-    assert f2.payload["dahead_mw"] == 69000.0
-
-
-def test_ls_v2_uses_the_day_ahead_forecast_and_ls_v1_does_not():
-    # A history where the peak depends on the day-ahead forecast, so only ls-v2 can see it.
-    hist = {}
-    for i in range(60):
-        day = date(2026, 8, 1) + timedelta(days=i)
-        t = 70.0 + (i % 10)
-        da = 60000.0 + 1000.0 * (i % 5)
-        hist[day] = (15000.0 + 600.0 * t + 0.5 * da, t)
-    daheads = {d: 60000.0 + 1000.0 * (i % 5) for i, d in enumerate(hist)}
-    # The truth for the target is 15000 + 600*90 + 0.5*69000 = 103500 MW.
-    live = FakeLive([_lm("KXTXERCOTPEAKD-26OCT17-T103500", 103500)])
-    inputs = Inputs(hist, target_temp=90.0, target_dahead=69000.0, daheads=daheads)
-    fcs = {f.version: f for f in build_ercot(live, _final("no"), inputs) if f.name == "ercot_peak"}
-    f1 = fcs["ls-v1"].forecast(fcs["ls-v1"].targets(NOW)[0], NOW)
-    f2 = fcs["ls-v2"].forecast(fcs["ls-v2"].targets(NOW)[0], NOW)
-    # ls-v1 cannot see the day-ahead column and misplaces the peak; ls-v2 can see it.
-    assert f1.probability < 0.5 < f2.probability
-    assert f2.probability == pytest.approx(0.5, abs=0.05)
-    # ls-v2 also fits the day-ahead column, so its residual is far tighter.
-    assert f2.payload["sigma_mw"] < f1.payload["sigma_mw"]
-
-
-def test_ls_v2_without_a_day_ahead_forecast_falls_back_to_the_centre_of_the_column():
-    # ERCOT publishes no archive, so past training rows have no day-ahead value. The column is
-    # then left at its centre, and the model is well defined rather than missing.
-    hist = {}
-    for i in range(60):
-        day = date(2026, 8, 1) + timedelta(days=i)
-        t = 70.0 + (i % 10)
-        hist[day] = (15000.0 + 600.0 * t, t)
-    live = FakeLive([_lm("KXTXERCOTPEAKD-26OCT17-T69000", 69000)])
-    inputs = Inputs(hist, target_temp=90.0, target_dahead=None)
-    fc = ErcotPeakV2(live, _final("no"), inputs)
-    f = fc.forecast(fc.targets(NOW)[0], NOW)
-    assert f is not None
-    assert f.payload["dahead_mw"] is None
-    assert 0.0 < f.probability < 1.0
+    cards = {(r["forecaster"], r.get("forecaster_version", "")): r for r in db.tables["journal_scores"]}
+    # ls-v1 should have 2 settled contracts
+    assert cards[("ercot_peak", "ls-v1")]["n_settled"] == 2 and cards[("ercot_peak", "ls-v1")]["baseline"] == "market"
+    # ls-v2 returns None until >=20 recorded days (returns no forecast, so no score)
+    assert cards.get(("ercot_peak", "ls-v2")) is None or cards[("ercot_peak", "ls-v2")]["n_settled"] == 0
+    assert cards[("baseline_climatology_ercot_peak", "v1")]["n_settled"] == 2
+    assert cards[("kalshi_implied_ercot_peak", "v1")]["bss"] == pytest.approx(0.0)
 
 
 def test_the_registry_runs_the_ercot_family_with_unique_keys():

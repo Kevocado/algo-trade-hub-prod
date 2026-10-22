@@ -29,10 +29,11 @@ from tradehub.backtest.http import default_get_json, default_get_text
 from tradehub.core.kalshi_feed import fetch_market
 from tradehub.data.ercot import (
     FIRST_DAY,
+    MIN_DAHEAD_TRAIN,
     central_today,
-    fetch_day_ahead_forecast,
     fetch_forecast_temps,
     fetch_historical_temps,
+    load_day_ahead_forecast,
     load_peaks,
 )
 from tradehub.journal.contract import CalendarEntry, Forecast, Settlement
@@ -60,6 +61,10 @@ TEMP_CENTER = 70.0       # conditioning: center and scale the temperature featur
 TEMP_SCALE = 20.0
 EPOCH = date(2024, 1, 1)
 BASELINE_WEEKS = 4
+
+# Day-ahead forecast feature (ls-v2): ERCOT's published day-ahead load forecast peak MW
+DAHEAD_CENTER = 70000.0   # MW; the centre of ERCOT's day-ahead forecast range
+DAHEAD_SCALE = 10000.0    # MW; its scale, so the column is O(1)
 
 
 def operating_day(market: KalshiMarket) -> date:
@@ -102,20 +107,15 @@ def prob_for(market: KalshiMarket, temp: float, day: date, beta: list[float], si
     return prob_in_interval(mean_load(beta, temp, day), sigma, yes_interval(market, MW_RESOLUTION))
 
 
-# ── ls-v2: the same regression plus ERCOT's own published day-ahead load forecast ───
-#
-# A separate feature set and fit, so `ls-v1` stays byte-for-byte what it always was: its journal
-# scorecard keeps meaning what it meant. The day-ahead feature is the extra column.
-DAHEAD_CENTER = 70000.0   # MW; the centre of ERCOT's day-ahead forecast range
-DAHEAD_SCALE = 10000.0    # MW; its scale, so the column is O(1)
-
-
+# ── ls-v2: ls-v1's regression plus ERCOT's own published day-ahead load forecast ───
+# A separate feature set and fit, so ls-v1 stays byte-for-byte what it always was.
+# The day-ahead column is only trained on days where we have a recorded (cached) value.
 def features_v2(temp: float, day: date, dahead: float | None) -> list[float]:
     """ls-v1's features plus the day-ahead forecast peak, centred and scaled.
 
-    `dahead` is ERCOT's published day-ahead forecast peak MW for the operating day. It is
-    None when ERCOT does not publish one for that day, and then the column is left at the
-    centre, so the model is exactly ls-v1 for that row.
+    `dahead` is ERCOT's recorded day-ahead forecast peak MW for the operating day.
+    It is None when no cached value exists for that day; the column is left at the
+    centre (dahead_z = 0), so the model is exactly ls-v1 for that row.
     """
     z = (temp - TEMP_CENTER) / TEMP_SCALE
     dahead_z = 0.0 if dahead is None else (dahead - DAHEAD_CENTER) / DAHEAD_SCALE
@@ -149,7 +149,7 @@ def prob_for_v2(market: KalshiMarket, temp: float, day: date, beta: list[float],
 
 
 class ErcotInputs:
-    """ERCOT peaks and Open-Meteo temperatures, each loaded at most once per process (one run)."""
+    """ERCOT peaks, Open-Meteo temperatures, and cached day-ahead forecasts."""
 
     def __init__(self, *, get_json: Callable[..., Any] = default_get_json,
                  get_text: Callable[..., Any] = default_get_text, cache_dir=None):
@@ -177,20 +177,35 @@ class ErcotInputs:
         return self._forecast.get(day, self._temps.get(day))
 
     def dahead(self, day: date) -> float | None:
-        """ERCOT's published day-ahead load forecast peak MW for the operating day, or None.
+        """Cached day-ahead forecast peak MW for `day`, or None if not yet recorded.
 
-        ERCOT publishes no archive of past day-ahead forecasts, so this is None for every day
-        that has already passed. ls-v2 therefore trains the day-ahead column as absent (the
-        column is left at its centre) and only uses it live, on the day it is published.
+        ERCOT publishes no archive of past day-ahead forecasts. We record each day's
+        forecast as it's published (first value wins, frozen). This returns the cached
+        value, or None if we haven't recorded that day yet.
         """
         if self._dahead is None:
-            self._dahead = fetch_day_ahead_forecast(get_json=self._get_json)
+            self._dahead = load_day_ahead_forecast(get_json=self._get_json, cache_dir=self._cache)
         return self._dahead.get(day)
 
     def history(self, day: date, now: datetime) -> dict[date, tuple[float, float]]:
         self._load()
         peaks = {d: v for d, v in self._peaks.items() if d < day}
         return {d: (p, self._temps[d]) for d, p in peaks.items() if d in self._temps}
+
+    def history_v2(self, day: date, now: datetime) -> dict[date, tuple[float, float, float | None]]:
+        """History including day-ahead forecast for ls-v2 training.
+
+        Only days where we have a cached day-ahead value are included (so the column
+        is never constant-zero). Returns {day: (peak, temp, dahead)}.
+        """
+        self._load()
+        dahead_map = self._dahead or load_day_ahead_forecast(get_json=self._get_json, cache_dir=self._cache)
+        peaks = {d: v for d, v in self._peaks.items() if d < day}
+        out: dict[date, tuple[float, float, float | None]] = {}
+        for d, p in peaks.items():
+            if d in self._temps and d in dahead_map:
+                out[d] = (p, self._temps[d], dahead_map[d])
+        return out
 
 
 class _ErcotBase:
@@ -231,11 +246,11 @@ class ErcotPeak(_ErcotBase):
 
 
 class ErcotPeakV2(_ErcotBase):
-    """`ercot_peak` version `ls-v2`: ls-v1's regression plus ERCOT's day-ahead load forecast.
+    """`ercot_peak` version `ls-v2`: ls-v1's regression plus ERCOT's cached day-ahead load forecast.
 
-    Ships BESIDE ls-v1, never replacing it. The live journal is the verdict, and ERCOT publishes
-    no archive of past day-ahead forecasts, so this cannot be judged on history: it is prospective
-    until enough live contracts have settled.
+    Ships BESIDE ls-v1, never replacing it. The day-ahead feature is only trained on days
+    where we have a recorded (cached) day-ahead value. Returns None until >= MIN_DAHEAD_TRAIN
+    recorded days exist. ERCOT publishes no archive, so the cache builds prospectively.
     """
     name, version = FAMILY, "ls-v2"
 
@@ -246,9 +261,10 @@ class ErcotPeakV2(_ErcotBase):
         day = operating_day(lm.market)
         target_temp = self._inputs.temp(day, now)
         target_dahead = self._inputs.dahead(day)
-        samples = [(d, p, t, self._inputs.dahead(d)) for d, (p, t) in self._inputs.history(day, now).items()
+        # Only train on days where we have a recorded day-ahead value
+        samples = [(d, p, t, da) for d, (p, t, da) in self._inputs.history_v2(day, now).items()
                    if d < day.replace(day=1)]   # monthly refit: strictly before the target's month
-        if target_temp is None or len(samples) < MIN_TRAIN:
+        if target_temp is None or len(samples) < MIN_DAHEAD_TRAIN:
             return None
         beta, sigma = fit_v2(samples)
         return Forecast(self.name, self.version, entry.target,
@@ -258,7 +274,7 @@ class ErcotPeakV2(_ErcotBase):
                                  "target_temp_f": round(target_temp, 2), "n_train": len(samples),
                                  "sigma_mw": round(sigma, 1),
                                  "dahead_mw": round(target_dahead, 1) if target_dahead is not None else None,
-                                 "basis": "ls-v1 regression plus ERCOT day-ahead load forecast"})
+                                 "basis": "ls-v1 regression plus ERCOT cached day-ahead load forecast"})
 
 
 class ErcotClimatology(_ErcotBase):
