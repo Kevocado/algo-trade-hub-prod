@@ -126,6 +126,10 @@ def standings(cards: list[dict[str, Any]], backtests: list[dict[str, Any]]) -> d
     market_linked_entries = [e for e in measured if _is_live_market_linked(e)]
     climatology_entries = [e for e in measured if not _is_live_market_linked(e) and e["baseline"] == "climatology"]
 
+    # Retire S&P 500 sentiment and quant models from the headline (keep recording as baselines)
+    RETIRED_FROM_HEADLINE = frozenset({"sentiment_meter", "spy_quant"})
+    climatology_entries = [e for e in climatology_entries if e["forecaster"] not in RETIRED_FROM_HEADLINE]
+
     market_ranked = _ranked_entries(market_linked_entries)
     climato_ranked = _ranked_entries(climatology_entries)
 

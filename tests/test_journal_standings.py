@@ -150,12 +150,12 @@ def test_only_market_linked_baselines_can_support_a_beating_the_market_claim():
 
 def test_climatology_section_ranks_separately_and_reports_vs_climatology():
     rows = standings(
-        [_card("unrate_direction", baseline="climatology"), _card("spy_quant", baseline="climatology")],
-        [_bt("unrate_direction", diff=-0.040, se=0.005), _bt("spy_quant", diff=+0.020, se=0.004)],
+        [_card("unrate_direction", baseline="climatology"), _card("quits_direction", baseline="climatology")],
+        [_bt("unrate_direction", diff=-0.040, se=0.005), _bt("quits_direction", diff=+0.020, se=0.004)],
     )
     assert rows["climatology_best"]["forecaster"] == "unrate_direction"
     assert rows["climatology_best"]["verdict"] == "beats"
-    assert rows["climatology_worst"]["forecaster"] == "spy_quant"
+    assert rows["climatology_worst"]["forecaster"] == "quits_direction"
     assert rows["climatology_worst"]["verdict"] == "loses to"
     # Market-linked section is empty
     assert rows["market_linked_best"] is None
