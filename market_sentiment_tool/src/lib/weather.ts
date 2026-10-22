@@ -155,11 +155,22 @@ function isDefined<T>(v: T | null | undefined): v is T {
 }
 
 /** Fallback label using only the ticker (neutral, no direction claimed). */
+/** A bracket ticker 'B65.5' is Kalshi's 1-degree range 65 to 66 (the number is the midpoint). Null if not a bracket. */
+export function bracketFromTicker(target: string): [number, number] | null {
+  const last = target.replace(/^kalshi:/, "").split("-").pop() ?? "";
+  const m = /^B(-?\d+(?:\.\d+)?)$/.exec(last);
+  if (!m) return null;
+  const mid = parseFloat(m[1]);
+  return Number.isInteger(mid - 0.5) ? [mid - 0.5, mid + 0.5] : null;
+}
+
 export function weatherLabelFallback(target: string): string {
   const { city, kind, strike } = parseWeatherTarget(target);
   if (kind === "rain") {
     return `${city} rain`;
   }
+  const bracket = bracketFromTicker(target);
+  if (bracket) return `${city} ${kind} ${bracket[0]}-${bracket[1]}°F`;
   if (strike !== null) {
     return `${city} ${kind} tail at ${strike}°F`;
   }
@@ -211,6 +222,9 @@ export function weatherChip(row: WeatherTodayRow | WeatherSettledRow): string {
   if (isDefined(row.cap_strike)) return `${city} ≤${row.cap_strike}`;
   if (isDefined(row.floor_strike)) return `${city} ≥${row.floor_strike}`;
   
-  // Fallback
-  return `${city} ${kind[0].toUpperCase()}`;
+  // Fallback: the ticker alone (a bracket is a known range; a tail has no known direction)
+  const bracket = bracketFromTicker(row.target);
+  if (bracket) return `${city} ${bracket[0]}-${bracket[1]}°F`;
+  const { strike } = parseWeatherTarget(row.target);
+  return strike !== null ? `${city} ${kind} ${strike}` : `${city} ${kind}`;
 }
