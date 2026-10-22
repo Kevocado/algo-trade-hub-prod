@@ -10,6 +10,7 @@ import Cpi from "@/pages/Cpi";
 import Journal from "@/pages/Journal";
 import Health from "@/pages/Health";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import Weather from "@/pages/Weather";
 import { NoOrdersBanner } from "@/components/NoOrdersBanner";
 import { usePortfolio } from "@/hooks/usePortfolio";
 import { portfolioHeadline } from "@/lib/portfolioTruth";
@@ -190,6 +191,7 @@ function App() {
           <Route path="/jobs" element={<JobsNowcast />} />
           <Route path="/cpi" element={<Cpi />} />
           <Route path="/health" element={<Health />} />
+          <Route path="/weather" element={<Weather />} />
         </Routes>
         </Guarded>
       </AppShell>
