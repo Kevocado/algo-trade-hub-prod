@@ -5,6 +5,7 @@ import { JournalDetail } from "@/components/JournalDetail";
 import { LiveSkill } from "@/components/LiveSkill";
 import { SkillOverTime } from "@/components/SkillOverTime";
 import { Stat } from "@/components/Stat";
+import { WeatherPanel } from "@/components/WeatherPanel";
 import { getJson } from "@/lib/getJson";
 import { PreJournalContext } from "@/components/PreJournalContext";
 import type { JournalResponse, SeriesResponse } from "@/lib/journal";
@@ -129,6 +130,8 @@ export default function Journal() {
       )}
 
       <SkillOverTime series={series?.series ?? []} />
+
+      <WeatherPanel />
 
       {waiting.length > 0 && (
         <section aria-label="Waiting">

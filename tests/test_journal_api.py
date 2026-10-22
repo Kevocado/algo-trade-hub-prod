@@ -196,3 +196,111 @@ def test_a_non_missing_table_error_on_backtests_is_still_an_error():
     db.table = _broken
     res = _client(db).get("/api/journal")
     assert res.status_code != 200
+
+
+# ── Weather/ERCOT panel endpoint ────────────────────────────────────────────
+
+def _weather_forecast(forecaster, target, probability, market_prob, frozen_at=None):
+    return {"forecaster": forecaster, "forecaster_version": "v1", "target": target,
+            "probability": probability, "market_prob": market_prob,
+            "frozen_at": frozen_at or T0.isoformat(), "rebuilt": False, "source_hash": "h"}
+
+
+def _weather_settlement(target, outcome):
+    return {"target": target, "outcome": outcome}
+
+
+def test_weather_panel_returns_latest_settled_day_contracts():
+    """Only the latest settled day's contracts are returned; earlier days are excluded."""
+    db = FakeJournalDB(lambda: T0)
+    day1 = "26OCT17"
+    day2 = "26OCT18"  # latest
+    db.tables["journal_forecasts"] += [
+        _weather_forecast("weather_high", f"KXHIGHNY-{day1}", 0.6, 0.55, f"2026-10-{day1[4:6]}-{day1[6:8]}T10:00:00+00:00"),
+        _weather_forecast("weather_high", f"KXHIGHNY-{day2}", 0.7, 0.65, f"2026-10-{day2[4:6]}-{day2[6:8]}T10:00:00+00:00"),
+        _weather_forecast("weather_low", f"KXLOWNY-{day2}", 0.4, 0.45, f"2026-10-{day2[4:6]}-{day2[6:8]}T10:00:00+00:00"),
+    ]
+    db.tables["journal_settlements"] += [
+        _weather_settlement(f"KXHIGHNY-{day1}", 1),
+        _weather_settlement(f"KXHIGHNY-{day2}", 1),
+        _weather_settlement(f"KXLOWNY-{day2}", 0),
+    ]
+    body = _client(db).get("/api/journal/weather-panel").json()
+    contracts = body["contracts"]
+    assert len(contracts) == 2, contracts
+    targets = {c["target"] for c in contracts}
+    assert targets == {f"KXHIGHNY-{day2}", f"KXLOWNY-{day2}"}, targets
+    assert body["settled_date"] == day2
+
+
+def test_weather_panel_excludes_unsettled_contracts():
+    """Contracts without a settlement are excluded."""
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_forecasts"] += [
+        _weather_forecast("weather_high", "KXHIGHNY-26OCT18", 0.7, 0.65, "2026-10-18T10:00:00+00:00"),
+        _weather_forecast("weather_rain", "KXRAINNY-26OCT18", 0.3, 0.35, "2026-10-18T10:00:00+00:00"),
+    ]
+    db.tables["journal_settlements"] += [
+        _weather_settlement("KXHIGHNY-26OCT18", 1),
+    ]
+    body = _client(db).get("/api/journal/weather-panel").json()
+    contracts = body["contracts"]
+    assert len(contracts) == 1
+    assert contracts[0]["target"] == "KXHIGHNY-26OCT18"
+
+
+def test_weather_panel_filters_forecasters_in_query():
+    """Only weather_* and ercot_peak forecasters are fetched; non-weather forecasters are ignored."""
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_forecasts"] += [
+        _weather_forecast("weather_high", "KXHIGHNY-26OCT18", 0.7, 0.65, "2026-10-18T10:00:00+00:00"),
+        _weather_forecast("gas", "GASNY-26OCT18", 0.6, 0.55, "2026-10-18T10:00:00+00:00"),
+        _weather_forecast("spy_quant", "SPY-26OCT18", 0.55, 0.5, "2026-10-18T10:00:00+00:00"),
+    ]
+    db.tables["journal_settlements"] += [
+        _weather_settlement("KXHIGHNY-26OCT18", 1),
+        _weather_settlement("GASNY-26OCT18", 1),
+        _weather_settlement("SPY-26OCT18", 1),
+    ]
+    body = _client(db).get("/api/journal/weather-panel").json()
+    contracts = body["contracts"]
+    assert len(contracts) == 1
+    assert contracts[0]["target"] == "KXHIGHNY-26OCT18"
+    assert contracts[0]["forecaster"] == "weather_high"
+
+
+def test_weather_panel_missing_figures_are_null_never_zero():
+    """Missing figures render as null, never 0.0."""
+    db = FakeJournalDB(lambda: T0)
+    db.tables["journal_forecasts"] += [
+        _weather_forecast("weather_high", "KXHIGHNY-26OCT18", None, 0.65, "2026-10-18T10:00:00+00:00"),
+        _weather_forecast("weather_low", "KXLOWNY-26OCT18", 0.4, None, "2026-10-18T10:00:00+00:00"),
+    ]
+    db.tables["journal_settlements"] += [
+        _weather_settlement("KXHIGHNY-26OCT18", 1),
+        _weather_settlement("KXLOWNY-26OCT18", 0),
+    ]
+    body = _client(db).get("/api/journal/weather-panel").json()
+    contracts = body["contracts"]
+    assert len(contracts) == 2
+    high = next(c for c in contracts if c["target"] == "KXHIGHNY-26OCT18")
+    low = next(c for c in contracts if c["target"] == "KXLOWNY-26OCT18")
+    assert high["our_prob"] is None
+    assert low["market_prob"] is None
+    assert high["outcome"] == 1
+    assert low["outcome"] == 0
+
+
+def test_weather_panel_degrades_when_tables_missing():
+    """A missing journal_forecasts table degrades to empty contracts, not a 500."""
+    db = FakeJournalDB(lambda: T0)
+
+    def _missing(name):
+        if name == "journal_forecasts":
+            raise RuntimeError("Could not find the table 'public.journal_forecasts' in the schema cache (PGRST205)")
+        return FakeJournalDB.table(db, name)
+
+    db.table = _missing
+    res = _client(db).get("/api/journal/weather-panel")
+    assert res.status_code == 200
+    assert res.json()["contracts"] == []
