@@ -6,6 +6,8 @@ import {
   formatOutcome,
   formatProb,
   weatherStats,
+  weatherLabel,
+  weatherChip,
   type Chip,
 } from "@/lib/weather";
 
@@ -34,22 +36,6 @@ function Stat({ label, value, sub }: { label: string; value: string | number; su
       {sub ? <div className="mt-1 text-xs text-slate-500">{sub}</div> : null}
     </div>
   );
-}
-
-function extractCity(target: string): string {
-  // T-KXHIGHNY-26OCT18 -> KXHIGHNY
-  const parts = target.split("-");
-  if (parts.length >= 3) return parts.slice(1, -1).join("-");
-  return target;
-}
-
-function extractKind(target: string): string {
-  // T-KXHIGHNY-26OCT18 -> HIGH
-  const city = extractCity(target);
-  if (city.includes("HIGH")) return "High";
-  if (city.includes("LOW")) return "Low";
-  if (city.includes("RAIN")) return "Rain";
-  return "?";
 }
 
 export default function Weather() {
@@ -104,9 +90,9 @@ export default function Weather() {
                         >
                           <div>
                             <div className="text-sm font-semibold text-slate-200">
-                              {extractCity(row.target)}
+                              {weatherLabel(row)}
                             </div>
-                            <div className="text-xs text-slate-500">{extractKind(row.target)}</div>
+                            <div className="text-xs text-slate-500">{weatherChip(row)}</div>
                           </div>
                           <div className="flex items-center gap-4 text-sm tabular-nums">
                             <span className="text-slate-300">ens {formatProb(row.ensemble)}</span>
@@ -132,9 +118,9 @@ export default function Weather() {
                         >
                           <div>
                             <div className="text-sm font-semibold text-slate-200">
-                              {extractCity(row.target)}
+                              {weatherLabel(row)}
                             </div>
-                            <div className="text-xs text-slate-500">{extractKind(row.target)}</div>
+                            <div className="text-xs text-slate-500">{weatherChip(row)}</div>
                           </div>
                           <div className="flex items-center gap-4 text-sm tabular-nums">
                             <span className="text-slate-300">ens {formatProb(row.ensemble)}</span>

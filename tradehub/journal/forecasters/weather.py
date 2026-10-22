@@ -170,11 +170,17 @@ class WeatherEnsemble(_WeatherBase):
         values = day_members(self._inputs.members(sid, now.date()), lm.market.close_time, self.kind)
         if not values:
             return None
+        mkt = lm.market
         return Forecast(self.name, self.version, entry.target, ensemble_prob(lm.market, self.kind, values),
                         market_prob=quote_mid(lm),
                         payload={**quote_payload(lm), "station": sid, "n_members": len(values),
                                  "ensemble_mean": round(statistics.fmean(values), 3), "models": list(MODELS),
-                                 "kernel_sigma": KERNEL_SIGMA})
+                                 "kernel_sigma": KERNEL_SIGMA,
+                                 "strike_type": mkt.strike_type,
+                                 "floor_strike": mkt.floor_strike,
+                                 "cap_strike": mkt.cap_strike,
+                                 "yes_sub_title": mkt.yes_sub_title,
+                                 "no_sub_title": mkt.no_sub_title})
 
 
 class WeatherClimatology(_WeatherBase):
@@ -193,9 +199,15 @@ class WeatherClimatology(_WeatherBase):
         prob = climatology_prob(lm.market, self.kind, days, target_day(lm.market))
         if prob is None:
             return None
+        mkt = lm.market
         return Forecast(self.name, self.version, entry.target, prob, market_prob=quote_mid(lm),
                         payload={**quote_payload(lm), "station": sid, "years": CLIMATOLOGY_YEARS,
-                                 "window_days": CLIMATOLOGY_WINDOW})
+                                 "window_days": CLIMATOLOGY_WINDOW,
+                                 "strike_type": mkt.strike_type,
+                                 "floor_strike": mkt.floor_strike,
+                                 "cap_strike": mkt.cap_strike,
+                                 "yes_sub_title": mkt.yes_sub_title,
+                                 "no_sub_title": mkt.no_sub_title})
 
 
 def build_weather(live, fetch: Callable[[str], Any] = fetch_market, inputs: WeatherInputs | None = None) -> list:
