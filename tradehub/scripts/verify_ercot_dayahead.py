@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Verify ERCOT's published day-ahead load forecast against ERCOT's own published numbers.
 
 Every number below comes from ERCOT:
@@ -32,6 +31,9 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import requests
+
+if __package__ in (None, ""):  # run as `python3 tradehub/scripts/verify_ercot_dayahead.py`
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 SUPPLY_DEMAND = "https://www.ercot.com/api/1/services/read/dashboards/supply-demand.json"
 ZONE_URL = "https://www.ercot.com/content/cdr/html/{ymd}_actual_loads_of_forecast_zones.html"
@@ -99,10 +101,8 @@ def main() -> int:
         # actual peak so far today, from ERCOT's published 5-minute actual rows
         actual_today = max(x["demand"] for x in elapsed)
         # ERCOT's own published forecast for the hours still ahead of today
-        fc_hours = {x["hourEnding"]: x["demand"] for x in ahead}
-        # today's peak hour from the day-ahead series, for the same hours
         dmap = {x["hourEnding"]: x["demand"] for x in ahead}
-        nxt = sorted(by_day)[0]
+        nxt = min(by_day)
         fmap = {x["hourEnding"]: x["forecastedDemand"] for x in by_day[nxt]}
         common = sorted(set(dmap) & set(fmap))
         print(f"  today (Central) = {tday}")
