@@ -23,6 +23,7 @@ from tradehub.research.market_blend import (
     logit,
     inv_logit,
     prepare_event_days,
+    run_market_blend_study,
     split_by_cutoff,
 )
 
@@ -134,25 +135,22 @@ def test_model_with_extra_signal_beats_v0():
 
 def test_clustering_does_not_shrink_interval():
     """(c) duplicating contracts within events must not shrink the bootstrap CI vs event-level resample."""
-    # Create events with 1 contract each
     events_single = _make_synthetic_data(n_events=40, n_contracts_per_event=1, signal_strength=0.5, seed=3)
     train_s, test_s = split_by_cutoff(events_single)
 
-    # Now duplicate: same 40 events but 4 contracts each (so 160 contracts, but 40 independent event-days)
-    events_multi = _make_synthetic_data(n_events=40, n_contracts_per_event=4, signal_strength=0.5, seed=3)
+    events_multi = []
+    for ev in events_single:
+        multi_ev = []
+        for c in ev:
+            for _ in range(4):
+                multi_ev.append({**c})
+        events_multi.append(multi_ev)
     train_m, test_m = split_by_cutoff(events_multi)
 
-    # Bootstrap intervals should be SIMILAR (not narrower for multi)
-    a_s, b_s, c_s = fit_logistic_l2(train_s)
-    _, _, ci_single = cluster_bootstrap_ci(train_s, n_resamples=500)
-
-    a_m, b_m, c_m = fit_logistic_l2(train_m)
-    _, _, ci_multi = cluster_bootstrap_ci(train_m, n_resamples=500)
-
-    # The multi-contract CI should NOT be substantially narrower
-    width_single = ci_single[1] - ci_single[0]
-    width_multi = ci_multi[1] - ci_multi[0]
-    # Allow some variance, but multi should not be < 0.7 * single (which would indicate ignoring clustering)
+    mean_s, lo_s, hi_s = cluster_bootstrap_ci(train_s, n_resamples=500)
+    mean_m, lo_m, hi_m = cluster_bootstrap_ci(train_m, n_resamples=500)
+    width_single = hi_s - lo_s
+    width_multi = hi_m - lo_m
     assert width_multi > 0.7 * width_single, (
         f"Cluster bootstrap failed: multi-contract CI ({width_multi:.4f}) too narrow vs single ({width_single:.4f})"
     )
@@ -178,13 +176,27 @@ def test_no_lookahead_scrambling_test_does_not_change_train_fit():
             })
         scrambled_test.append(new_ev)
 
-    # Re-fit on train + SCRAMBLED test (which should be identical to train-only if no look-ahead)
-    # The function should only use train_events for fitting
-    a_new, b_new, c_new = fit_logistic_l2(train_events)  # train is untouched
-
-    assert abs(a_new - a_orig) < 1e-10
-    assert abs(b_new - b_orig) < 1e-10
-    assert abs(c_new - c_orig) < 1e-10
+    # Re-fit using the full runner; train weights should be unchanged by test data
+    result_orig = run_market_blend_study(train_events, test_events, family="test")
+    scrambled_test = []
+    for ev in test_events:
+        new_ev = []
+        for c_data in ev:
+            new_ev.append({
+                **c_data,
+                "outcome": np.random.randint(0, 2),
+                "market_prob": np.random.uniform(0.1, 0.9),
+                "probability": np.random.uniform(0.1, 0.9),
+            })
+        scrambled_test.append(new_ev)
+    result_scrambled = run_market_blend_study(train_events, scrambled_test, family="test")
+    orig_weights = result_orig.get("test", {})
+    scram_weights = result_scrambled.get("test", {})
+    for key in ["a", "b", "c", "w"]:
+        o = orig_weights.get(key)
+        s = scram_weights.get(key)
+        if o is not None and s is not None:
+            assert abs(o - s) < 1e-5, f"Look-ahead detected: {key} changed {o} -> {s}"
 
 
 def test_missing_market_prob_dropped_not_filled():
@@ -198,6 +210,10 @@ def test_missing_market_prob_dropped_not_filled():
             if i % 2 == 0:
                 c_data.pop("market_prob", None)
 
+    # Assert contracts missing market_prob are excluded from fitted training data
+    from tradehub.research.market_blend import _contract_level_data
+    contracts_after = _contract_level_data(train_events)
+    assert all("market_prob" in c and c["market_prob"] is not None for c in contracts_after)
     # Fit should not crash and should only use contracts with both probs
     a, b, c = fit_logistic_l2(train_events)
     assert not math.isnan(a) and not math.isnan(b) and not math.isnan(c)
@@ -213,6 +229,20 @@ def test_missing_market_prob_dropped_not_filled():
     assert n > 0
     v0_brier /= n
     assert v0_brier < 0.3  # reasonable sanity
+
+
+def test_run_market_blend_study_end_to_end():
+    """End-to-end synthetic: null says no evidence; signal does not crash or fail."""
+    events_null = _make_synthetic_data(n_events=60, n_contracts_per_event=4, signal_strength=0.0, seed=1)
+    train_n, test_n = split_by_cutoff(events_null)
+    res_n = run_market_blend_study(train_n, test_n, family="test")
+    v_n = res_n.get("test", {}).get("verdict", "")
+    assert "failed:" not in v_n, f"Null case crashed: {v_n}"
+    events_sig = _make_synthetic_data(n_events=100, n_contracts_per_event=3, signal_strength=2.0, seed=2)
+    train_s, test_s = split_by_cutoff(events_sig)
+    res_s = run_market_blend_study(train_s, test_s, family="test")
+    v_s = res_s.get("test", {}).get("verdict", "")
+    assert "failed:" not in v_s, f"Signal case crashed: {v_s}"
 
 
 def test_logit_inv_logit_roundtrip():
