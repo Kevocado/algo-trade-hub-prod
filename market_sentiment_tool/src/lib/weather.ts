@@ -67,19 +67,28 @@ export function weatherStats(today: WeatherTodayRow[], settled: WeatherSettledRo
   };
 }
 
-/** Map Kalshi series prefix to city/region label. */
+/** Map Kalshi series (highs and lows) to a city label. Rain is one series per all cities: see RAIN_CITY. */
 const CITY_MAP: Record<string, string> = {
   KXHIGHNY: "NYC",
   KXHIGHLAX: "Los Angeles",
   KXHIGHPHIL: "Philadelphia",
   KXHIGHTNOLA: "New Orleans",
-  KXLOWNY: "NYC",
-  KXLOWLAX: "Los Angeles",
-  KXLOWPHIL: "Philadelphia",
-  KXLOWTNOLA: "New Orleans",
-  KXRAINNY: "NYC",
-  KXRAINCHI: "Chicago",
-  KXRAINMIA: "Miami",
+  KXLOWTATL: "Atlanta",
+  KXLOWTAUS: "Austin",
+  KXLOWTDEN: "Denver",
+  KXLOWTEWR: "Newark",
+  KXLOWTOKC: "Oklahoma City",
+  KXLOWTSDF: "Louisville",
+};
+
+/** KXRAIN-<code>: the city code is the LAST part of the ticker (e.g. kalshi:KXRAIN-26OCT20-NYC). */
+const RAIN_CITY: Record<string, string> = {
+  ABQ: "Albuquerque", ATL: "Atlanta", AUS: "Austin", BOS: "Boston", CHI: "Chicago", CLL: "College Station",
+  CMH: "Columbus", DAL: "Dallas", DC: "Washington DC", DEN: "Denver", EWR: "Newark", HOU: "Houston",
+  LAX: "Los Angeles", LEX: "Lexington", LV: "Las Vegas", MIA: "Miami", MIN: "Minneapolis", MKE: "Milwaukee",
+  NOLA: "New Orleans", NYC: "NYC", OKC: "Oklahoma City", PHIL: "Philadelphia", PHX: "Phoenix", PIT: "Pittsburgh",
+  PVD: "Providence", SATX: "San Antonio", SEA: "Seattle", SFO: "San Francisco", SGF: "Springfield",
+  STL: "St. Louis", TPA: "Tampa", TTN: "Trenton", WPB: "West Palm Beach",
 };
 
 /** Parse the target ticker into {city, kind, strike} (fallback when API fields missing). */
@@ -90,7 +99,9 @@ export function parseWeatherTarget(target: string): { city: string; kind: "high"
   if (parts.length < 2) return { city: "?", kind: "high", strike: null };
   const series = parts[0];
   // city from series
-  const city = CITY_MAP[series] ?? "?";
+  const last0 = parts[parts.length - 1];
+  // a code we do not know is shown as itself, never as "?", so the row is still identifiable
+  const city = series === "KXRAIN" ? (RAIN_CITY[last0] ?? last0) : (CITY_MAP[series] ?? series);
   // kind from series
   let kind: "high" | "low" | "rain" = "high";
   if (series.startsWith("KXHIGH")) kind = "high";

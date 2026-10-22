@@ -7,6 +7,7 @@ import {
   weatherStats,
   weatherLabel,
   weatherChip,
+  parseWeatherTarget,
   type WeatherTodayRow,
   type WeatherSettledRow,
 } from "@/lib/weather";
@@ -184,5 +185,19 @@ describe("weatherChip", () => {
     const row = { ...base, strike_type: "greater", yes_sub_title: "73° or above" };
     const chip = weatherChip(row);
     expect(chip).not.toContain("undefined");
+  });
+});
+
+describe("city names from real tickers", () => {
+  it("names every rain city and every low-temperature series that is traded", () => {
+    expect(parseWeatherTarget("kalshi:KXRAIN-26OCT20-NYC").city).toBe("NYC");
+    expect(parseWeatherTarget("kalshi:KXRAIN-26OCT20-SATX").city).toBe("San Antonio");
+    expect(parseWeatherTarget("kalshi:KXRAIN-26OCT20-DC").city).toBe("Washington DC");
+    expect(parseWeatherTarget("kalshi:KXLOWTAUS-26OCT20-B61.5")).toMatchObject({ city: "Austin", kind: "low" });
+    expect(parseWeatherTarget("kalshi:KXLOWTSDF-26OCT20-T40").city).toBe("Louisville");
+  });
+  it("shows an unknown code as itself, never as a question mark", () => {
+    expect(parseWeatherTarget("kalshi:KXRAIN-26OCT20-ZZZ").city).toBe("ZZZ");
+    expect(parseWeatherTarget("kalshi:KXHIGHNEW-26OCT20-T50").city).toBe("KXHIGHNEW");
   });
 });
