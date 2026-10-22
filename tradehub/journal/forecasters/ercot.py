@@ -30,6 +30,7 @@ from tradehub.core.kalshi_feed import fetch_market
 from tradehub.data.ercot import (
     FIRST_DAY,
     central_today,
+    fetch_day_ahead_forecast,
     fetch_forecast_temps,
     fetch_historical_temps,
     load_peaks,
@@ -101,6 +102,52 @@ def prob_for(market: KalshiMarket, temp: float, day: date, beta: list[float], si
     return prob_in_interval(mean_load(beta, temp, day), sigma, yes_interval(market, MW_RESOLUTION))
 
 
+# ── ls-v2: the same regression plus ERCOT's own published day-ahead load forecast ───
+#
+# A separate feature set and fit, so `ls-v1` stays byte-for-byte what it always was: its journal
+# scorecard keeps meaning what it meant. The day-ahead feature is the extra column.
+DAHEAD_CENTER = 70000.0   # MW; the centre of ERCOT's day-ahead forecast range
+DAHEAD_SCALE = 10000.0    # MW; its scale, so the column is O(1)
+
+
+def features_v2(temp: float, day: date, dahead: float | None) -> list[float]:
+    """ls-v1's features plus the day-ahead forecast peak, centred and scaled.
+
+    `dahead` is ERCOT's published day-ahead forecast peak MW for the operating day. It is
+    None when ERCOT does not publish one for that day, and then the column is left at the
+    centre, so the model is exactly ls-v1 for that row.
+    """
+    z = (temp - TEMP_CENTER) / TEMP_SCALE
+    dahead_z = 0.0 if dahead is None else (dahead - DAHEAD_CENTER) / DAHEAD_SCALE
+    return [1.0, z, z * z, 1.0 if day.weekday() >= 5 else 0.0, 1.0 if is_holiday(day) else 0.0,
+            (day - EPOCH).days / 365.25, dahead_z]
+
+
+def fit_v2(samples: Iterable[tuple[date, float, float, float | None]]) -> tuple[list[float], float]:
+    """Least squares over (day, peak MW, max-temp F, day-ahead MW or None) rows."""
+    rows = [(d, float(p), float(t), da) for d, p, t, da in samples]
+    if len(rows) < MIN_TRAIN:
+        raise ValueError(f"need at least {MIN_TRAIN} training days, got {len(rows)}")
+    matrix = np.array([features_v2(t, d, da) for d, _p, t, da in rows], dtype=float)
+    target = np.array([p for _d, p, _t, _da in rows], dtype=float)
+    beta, *_ = np.linalg.lstsq(matrix, target, rcond=None)
+    residual = target - matrix @ beta
+    dof = max(len(rows) - matrix.shape[1], 1)
+    sigma = math.sqrt(float(residual @ residual) / dof)
+    return beta.tolist(), max(sigma, SIGMA_FLOOR)
+
+
+def mean_load_v2(beta: list[float], temp: float, day: date, dahead: float | None) -> float:
+    return float(sum(b * x for b, x in zip(beta, features_v2(temp, day, dahead), strict=True)))
+
+
+def prob_for_v2(market: KalshiMarket, temp: float, day: date, beta: list[float], sigma: float,
+                 dahead: float | None) -> float:
+    """P(peak > the market's strike) under ls-v2."""
+    return prob_in_interval(mean_load_v2(beta, temp, day, dahead), sigma,
+                            yes_interval(market, MW_RESOLUTION))
+
+
 class ErcotInputs:
     """ERCOT peaks and Open-Meteo temperatures, each loaded at most once per process (one run)."""
 
@@ -110,6 +157,7 @@ class ErcotInputs:
         self._peaks: dict[date, float] | None = None
         self._temps: dict[date, float] | None = None
         self._forecast: dict[date, float] | None = None
+        self._dahead: dict[date, float] | None = None
 
     def _load(self) -> None:
         today = central_today()
@@ -127,6 +175,17 @@ class ErcotInputs:
         if self._forecast is None:
             self._forecast = fetch_forecast_temps(get_json=self._get_json)
         return self._forecast.get(day, self._temps.get(day))
+
+    def dahead(self, day: date) -> float | None:
+        """ERCOT's published day-ahead load forecast peak MW for the operating day, or None.
+
+        ERCOT publishes no archive of past day-ahead forecasts, so this is None for every day
+        that has already passed. ls-v2 therefore trains the day-ahead column as absent (the
+        column is left at its centre) and only uses it live, on the day it is published.
+        """
+        if self._dahead is None:
+            self._dahead = fetch_day_ahead_forecast(get_json=self._get_json)
+        return self._dahead.get(day)
 
     def history(self, day: date, now: datetime) -> dict[date, tuple[float, float]]:
         self._load()
@@ -171,6 +230,37 @@ class ErcotPeak(_ErcotBase):
                                  "sigma_mw": round(sigma, 1)})
 
 
+class ErcotPeakV2(_ErcotBase):
+    """`ercot_peak` version `ls-v2`: ls-v1's regression plus ERCOT's day-ahead load forecast.
+
+    Ships BESIDE ls-v1, never replacing it. The live journal is the verdict, and ERCOT publishes
+    no archive of past day-ahead forecasts, so this cannot be judged on history: it is prospective
+    until enough live contracts have settled.
+    """
+    name, version = FAMILY, "ls-v2"
+
+    def forecast(self, entry: CalendarEntry, now: datetime) -> Forecast | None:
+        lm = self._open.get(entry.target)
+        if lm is None:
+            return None
+        day = operating_day(lm.market)
+        target_temp = self._inputs.temp(day, now)
+        target_dahead = self._inputs.dahead(day)
+        samples = [(d, p, t, self._inputs.dahead(d)) for d, (p, t) in self._inputs.history(day, now).items()
+                   if d < day.replace(day=1)]   # monthly refit: strictly before the target's month
+        if target_temp is None or len(samples) < MIN_TRAIN:
+            return None
+        beta, sigma = fit_v2(samples)
+        return Forecast(self.name, self.version, entry.target,
+                        prob_for_v2(lm.market, target_temp, day, beta, sigma, target_dahead),
+                        market_prob=quote_mid(lm),
+                        payload={**quote_payload(lm), "operating_day": day.isoformat(),
+                                 "target_temp_f": round(target_temp, 2), "n_train": len(samples),
+                                 "sigma_mw": round(sigma, 1),
+                                 "dahead_mw": round(target_dahead, 1) if target_dahead is not None else None,
+                                 "basis": "ls-v1 regression plus ERCOT day-ahead load forecast"})
+
+
 class ErcotClimatology(_ErcotBase):
     version = "v1"
 
@@ -197,5 +287,6 @@ class ErcotClimatology(_ErcotBase):
 def build_ercot(live, fetch: Callable[[str], Any] = fetch_market, inputs: ErcotInputs | None = None) -> list:
     inputs = inputs or ErcotInputs()
     return [ErcotPeak(live, fetch, inputs),
+            ErcotPeakV2(live, fetch, inputs),
             KalshiImplied(FAMILY, (SERIES,), "daily", live, fetch),
             ErcotClimatology(live, fetch, inputs)]

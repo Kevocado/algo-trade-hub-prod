@@ -37,6 +37,9 @@ from tradehub.backtest.http import default_get_json, default_get_text
 ZONE_URL = "https://www.ercot.com/content/cdr/html/{ymd}_actual_loads_of_forecast_zones.html"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 HISTORY_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
+# ERCOT's Supply & Demand dashboard. Its `forecast` array is ERCOT's own published day-ahead
+# load forecast: 24 hourly rows per operating day, `forecastedDemand` in MW.
+DAHEAD_URL = "https://www.ercot.com/api/1/services/read/dashboards/supply-demand.json"
 FIRST_DAY = date(2024, 5, 7)
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "tradehub" / "ercot"
 CACHE_ENV = "TRADEHUB_ERCOT_CACHE_DIR"
@@ -167,6 +170,45 @@ def load_peaks(first: date, last: date, *, get_text: Callable[..., Any] = defaul
         cache.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({d.isoformat(): v for d, v in sorted(peaks.items())}))
     return {d: v for d, v in peaks.items() if first <= d <= last}
+
+
+def day_ahead_peak(payload: dict[str, Any]) -> dict[date, float]:
+    """{operating day: forecast peak MW} from ERCOT's Supply & Demand `forecast` array.
+
+    ERCOT publishes its day-ahead load forecast there: 24 hourly rows per operating day, each with
+    `deliveryDate` (the operating day), `hourEnding` (1-24) and `forecastedDemand` (the forecast
+    system load in MW). The day's forecast peak is the largest `forecastedDemand` of the 24 hours.
+
+    Rows that are not hourly forecasts for a real operating day are ignored, so a shape ERCOT
+    changes yields an empty map rather than a wrong number.
+    """
+    out: dict[date, float] = {}
+    for row in payload.get("forecast") or []:
+        day_text, demand = row.get("deliveryDate"), row.get("forecastedDemand")
+        if not day_text or demand is None:
+            continue
+        try:
+            day = date.fromisoformat(str(day_text))
+            value = float(demand)
+        except (TypeError, ValueError):
+            continue
+        if day not in out or value > out[day]:
+            out[day] = value
+    return out
+
+
+def fetch_day_ahead_forecast(*, get_json: Callable[..., Any] = default_get_json) -> dict[date, float]:
+    """ERCOT's published day-ahead load forecast, {operating day: forecast peak MW}.
+
+    ERCOT publishes no archive of past day-ahead forecasts: this API carries only the days it
+    currently forecasts. So the feature can be used live but cannot be back-tested; see
+    `tradehub/scripts/verify_ercot_dayahead.py`, which compares the forecast against ERCOT's own
+    published actual peak as the days settle.
+    """
+    try:
+        return day_ahead_peak(get_json(DAHEAD_URL))
+    except (requests.HTTPError, requests.RequestException, ValueError, KeyError, TypeError):
+        return {}
 
 
 def weighted_temp(by_city: dict[str, float]) -> float:
