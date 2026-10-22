@@ -26,6 +26,8 @@ class KalshiMarket:
     close_time: datetime
     title: str
     settlement_ts: datetime | None = None
+    yes_sub_title: str | None = None
+    no_sub_title: str | None = None
 
 
 def _opt_float(value: Any) -> float | None:
@@ -45,6 +47,8 @@ def parse_market(raw: dict[str, Any]) -> KalshiMarket:
         close_time=parse_ts(raw["close_time"]),
         title=raw.get("title", ""),
         settlement_ts=parse_ts(raw["settlement_ts"]) if raw.get("settlement_ts") else None,
+        yes_sub_title=raw.get("yes_sub_title"),
+        no_sub_title=raw.get("no_sub_title"),
     )
 
 

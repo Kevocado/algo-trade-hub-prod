@@ -15,6 +15,11 @@ const TODAY_ROW: WeatherTodayRow = {
   ensemble: 0.65,
   kalshi: 0.6,
   climatology: 0.55,
+  strike_type: null,
+  floor_strike: null,
+  cap_strike: null,
+  yes_sub_title: null,
+  no_sub_title: null,
 };
 
 const SETTLED_ROW: WeatherSettledRow = {
@@ -26,6 +31,11 @@ const SETTLED_ROW: WeatherSettledRow = {
   outcome: 1,
   realized_value: 92.0,
   settled_at: "2026-10-18T00:00:00+00:00",
+  strike_type: null,
+  floor_strike: null,
+  cap_strike: null,
+  yes_sub_title: null,
+  no_sub_title: null,
 };
 
 const words = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;

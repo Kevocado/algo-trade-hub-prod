@@ -89,8 +89,14 @@ class KalshiImplied:
         mid = quote_mid(lm) if lm else None
         if mid is None:
             return None
+        mkt = lm.market
         return Forecast(self.name, self.version, entry.target, mid, market_prob=mid,
-                        payload=quote_payload(lm))
+                        payload={**quote_payload(lm),
+                                 "strike_type": mkt.strike_type,
+                                 "floor_strike": mkt.floor_strike,
+                                 "cap_strike": mkt.cap_strike,
+                                 "yes_sub_title": mkt.yes_sub_title,
+                                 "no_sub_title": mkt.no_sub_title})
 
     def settle(self, target: str, now: datetime) -> Settlement | None:
         return settle_on_kalshi(target, self._fetch_market)
