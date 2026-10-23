@@ -207,7 +207,7 @@ class TestTheJoin:
     def test_an_empty_ledger_still_returns_every_engine(self):
         """The realistic first-run state, and the one this page exists for: the board is empty and
         the page must still answer the question. `runs_read: 0` and seven engines, none measured."""
-        catalogue = engine_catalogue([])
+        catalogue = engine_catalogue([], tombstones=[])
 
         assert catalogue["engines_total"] == len(CATALOGUE_ENGINES)
         assert catalogue["engines_measured"] == 0
@@ -232,7 +232,7 @@ class TestTheJoin:
 
     def test_the_counts_conserve(self):
         rows = [_row("gas"), _row("weather", version="weather-v1", ratio=1.2)]
-        catalogue = engine_catalogue(rows)
+        catalogue = engine_catalogue(rows, tombstones=[])
 
         assert catalogue["engines_measured"] + catalogue["engines_not_measured"] == (
             catalogue["engines_total"]
@@ -264,7 +264,7 @@ class TestTheJoin:
     def test_a_declared_engine_keeps_its_catalogue_order(self):
         """Stable order, so a reader who comes back to the page finds gas in the same place and
         an engine cannot be quietly reshuffled by an unrelated edit to the board."""
-        entries = engine_catalogue([_row("labor_nowcast", version="labor-v1")])["entries"]
+        entries = engine_catalogue([_row("labor_nowcast", version="labor-v1")], tombstones=[])["entries"]
         assert [e["engine"] for e in entries] == [e["engine"] for e in ENGINE_CATALOGUE]
 
     def test_a_row_with_no_engine_name_is_skipped_rather_than_raising(self):
@@ -303,17 +303,17 @@ class TestTheStatusRollUp:
         choosing which row to lead with, and the choice would be made in a component, silently,
         in whichever direction its author preferred."""
         rows = [
-            _row("weather", mode="taker", ratio=1.0954),
-            _row("weather", mode="maker", ratio=1.2787),
+            _row("gas", mode="taker", ratio=1.0954),
+            _row("gas", mode="maker", ratio=1.2787),
         ]
 
-        entry = engine_catalogue(rows)["entries"]
-        weather = next(e for e in entry if e["engine"] == "weather")
+        entry = engine_catalogue(rows, tombstones=[])["entries"]
+        gas = next(e for e in entry if e["engine"] == "gas")
 
-        assert weather["status"] == VERDICT_BEHIND
-        assert weather["worst_brier_ratio"] == 1.2787
+        assert gas["status"] == VERDICT_BEHIND
+        assert gas["worst_brier_ratio"] == 1.2787
         # And both rows still ride along, so the worst is never the only figure on offer.
-        assert len(weather["rows"]) == 2
+        assert len(gas["rows"]) == 2
 
     def test_gas_is_reported_at_four_point_two_nine_and_not_at_its_better_run(self):
         """The concrete case this product is about: 4.29x at the production 2h and 2.16x at the
@@ -333,9 +333,10 @@ class TestTheStatusRollUp:
     def test_a_row_with_no_ratio_is_not_comparable_and_not_a_loss(self):
         entry = next(
             e for e in engine_catalogue(
-                [_row("weather", ratio=None, verdict=VERDICT_NOT_COMPARABLE, brier_market=None)]
+                [_row("gas", ratio=None, verdict=VERDICT_NOT_COMPARABLE, brier_market=None)],
+                tombstones=[]
             )["entries"]
-            if e["engine"] == "weather"
+            if e["engine"] == "gas"
         )
 
         assert entry["status"] == VERDICT_NOT_COMPARABLE
@@ -346,9 +347,10 @@ class TestTheStatusRollUp:
     def test_an_engine_ahead_of_the_market_says_ahead(self):
         entry = next(
             e for e in engine_catalogue(
-                [_row("weather", ratio=0.5, verdict=VERDICT_AHEAD)]
+                [_row("gas", ratio=0.5, verdict=VERDICT_AHEAD)],
+                tombstones=[]
             )["entries"]
-            if e["engine"] == "weather"
+            if e["engine"] == "gas"
         )
 
         assert entry["status"] == VERDICT_AHEAD
@@ -357,17 +359,18 @@ class TestTheStatusRollUp:
     def test_a_tie_is_level_and_not_a_loss(self):
         entry = next(
             e for e in engine_catalogue(
-                [_row("weather", ratio=1.0, verdict=VERDICT_LEVEL)]
+                [_row("gas", ratio=1.0, verdict=VERDICT_LEVEL)],
+                tombstones=[]
             )["entries"]
-            if e["engine"] == "weather"
+            if e["engine"] == "gas"
         )
 
         assert entry["status"] == VERDICT_LEVEL
 
     def test_a_mixed_engine_is_reported_behind_not_ahead(self):
         rows = [
-            _row("weather", mode="taker", ratio=0.5, verdict=VERDICT_AHEAD),
-            _row("weather", mode="maker", ratio=3.0, verdict=VERDICT_BEHIND),
+            _row("gas", mode="taker", ratio=0.5, verdict=VERDICT_AHEAD),
+            _row("gas", mode="maker", ratio=3.0, verdict=VERDICT_BEHIND),
         ]
         assert engine_status(rows) == VERDICT_BEHIND
 
@@ -465,9 +468,16 @@ _GONE = {"engine": "macro_engine", "label": "Macro engine (retired)", "removed":
 class TestRetiredEnginesLeaveATombstone:
     """Deleted engines do not vanish (v2 spec §9): they stay on the page as `retired`."""
 
-    def test_no_engine_is_retired_until_a_pr_deletes_one(self):
-        assert ENGINE_TOMBSTONES == ()
-        assert engine_catalogue([_row("gas")])["engines_retired"] == 0
+    def test_weather_is_retired_in_this_pr(self):
+        """The weather engine was retired in this PR; its tombstone is in ENGINE_TOMBSTONES."""
+        assert len(ENGINE_TOMBSTONES) == 1
+        assert ENGINE_TOMBSTONES[0]["engine"] == "weather"
+        # With no backtest rows, the retired engine still appears but carries no rows
+        catalogue = engine_catalogue([_row("gas")])
+        assert catalogue["engines_retired"] == 1
+        retired = next(e for e in catalogue["entries"] if e["engine"] == "weather")
+        assert retired["status"] == STATUS_RETIRED
+        assert retired["retired"]["removed"] == "2026-10-16"
 
     def test_a_tombstone_is_a_retired_entry_with_what_happened_and_what_replaced_it(self):
         catalogue = engine_catalogue([_row("gas")], tombstones=[_GONE])
@@ -479,15 +489,19 @@ class TestRetiredEnginesLeaveATombstone:
         assert entry["measured"] is False and entry["rows"] == []
 
     def test_retired_engines_are_not_live_engines_in_the_counts(self):
-        live = engine_catalogue([_row("gas")])
-        with_ts = engine_catalogue([_row("gas")], tombstones=[_GONE])
+        """A retired engine does not affect live engine counts."""
+        # Use the real tombstone (weather) instead of the test one
+        live = engine_catalogue([_row("gas")], tombstones=[])
+        with_ts = engine_catalogue([_row("gas")])  # uses real ENGINE_TOMBSTONES
         for key in ("engines_total", "engines_measured", "engines_not_measured", "engines_unlisted"):
             assert with_ts[key] == live[key], key
-        assert with_ts["engines_retired"] == 1 and len(with_ts["entries"]) == len(live["entries"]) + 1
+        # The retired entry adds one to entries but not to live counts
+        assert with_ts["engines_retired"] == 1
+        assert len(with_ts["entries"]) == len(live["entries"]) + 1
 
     def test_a_retired_engine_keeps_its_backtest_history_and_is_never_also_unlisted(self):
-        catalogue = engine_catalogue([_row("gas"), _row("macro_engine", version="m-v1")], tombstones=[_GONE])
-        retired = [e for e in catalogue["entries"] if e["engine"] == "macro_engine"]
+        catalogue = engine_catalogue([_row("gas"), _row("weather", version="weather-v1", ratio=1.2787)])
+        retired = [e for e in catalogue["entries"] if e["engine"] == "weather"]
         assert len(retired) == 1 and retired[0]["status"] == STATUS_RETIRED
-        assert retired[0]["measured"] is True and retired[0]["worst_brier_ratio"] == 4.29
+        assert retired[0]["measured"] is True and retired[0]["worst_brier_ratio"] == 1.2787
         assert catalogue["engines_unlisted"] == 0

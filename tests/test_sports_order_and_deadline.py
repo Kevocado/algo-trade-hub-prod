@@ -26,7 +26,6 @@ def _base(monkeypatch, *, sports_due=True, sports_hook=None):
 
     calls: list[str] = []
     monkeypatch.setattr(scan_mod, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan_mod, "scan_weather", lambda *a, **k: (calls.append("weather_scan") or [], []))
     monkeypatch.setattr(scan_mod, "scan_gas", lambda *a, **k: (calls.append("gas_scan") or [], []))
     # labor_nowcast runs at 07/12/17 ET, so a suite that executes in one of
     # those hours would otherwise drive the real scan against the stub client.
@@ -94,7 +93,6 @@ def test_a_slow_sports_run_does_not_delay_the_other_writes(monkeypatch):
 
     writes: list[str] = []
     monkeypatch.setattr(scan_mod, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan_mod, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "scan_gas", lambda *a, **k: ([], []))
     # labor_nowcast runs at 07/12/17 ET, so a suite that executes in one of
     # those hours would otherwise drive the real scan against the stub client.
@@ -166,7 +164,7 @@ def test_a_deadline_exhausted_sports_step_reports_and_does_not_raise(monkeypatch
     assert any("deadline" in f.lower() for f in summary["failures"]), summary["failures"]
     # The point of moving sports last: the engine writes already landed.
     assert "edge_write" in calls, calls
-    assert summary["writes"]["edges"]["weather"] == "ok", summary["writes"]
+    assert summary["writes"]["edges"]["gas"] == "ok", summary["writes"]
     assert rc == 1, "an exhausted deadline must be visible in the exit code"
 
 

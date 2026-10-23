@@ -8,7 +8,7 @@ from tradehub.data.kalshi_live import LiveMarket
 from tradehub.edges import EdgeSuggestion, Quote
 from tradehub.engine_config import EngineConfig
 from tradehub.markets import parse_market
-from tradehub.scripts import backtest_engines, scan
+from tradehub.scripts import scan
 
 NOW = datetime(2026, 9, 24, 18, 0, tzinfo=timezone.utc)  # 13:00 LST NYC -> "today" = Sep 24
 
@@ -177,13 +177,12 @@ def test_apply_gate_statuses_keys_on_engine_version_pair():
 
 
 def test_remove_stale_edges_is_engine_scoped_and_uses_truncated_upsert_key():
-    long_market_id = "W" * 60
+    long_market_id = "G" * 60
     rows = [
-        {"market_id": "weather-new", "engine": "weather"},
-        {"market_id": long_market_id[:50], "engine": "weather"},
-        {"market_id": "weather-old", "engine": "weather"},
+        {"market_id": "gas-new", "engine": "gas"},
+        {"market_id": long_market_id[:50], "engine": "gas"},
         {"market_id": "gas-old", "engine": "gas"},
-        {"market_id": "weather-old", "engine": "crypto"},
+        {"market_id": "gas-old", "engine": "crypto"},
         {"market_id": "other-writer", "engine": None, "edge_type": "MACRO"},
     ]
     deleted = []
@@ -221,280 +220,16 @@ def test_remove_stale_edges_is_engine_scoped_and_uses_truncated_upsert_key():
 
     scan.remove_stale_edges(
         Client(),
-        {"weather": {"weather-new", long_market_id}, "gas": set()},
+        {"gas": {"gas-new", long_market_id}},
     )
 
-    assert set(deleted) == {("weather", "weather-old"), ("gas", "gas-old")}
+    assert set(deleted) == {("gas", "gas-old")}
     assert {(row.get("engine"), row["market_id"]) for row in rows} == {
-        ("weather", "weather-new"),
-        ("weather", long_market_id[:50]),
-        ("crypto", "weather-old"),
+        ("gas", "gas-new"),
+        ("gas", long_market_id[:50]),
+        ("crypto", "gas-old"),
         (None, "other-writer"),
     }
-
-
-def test_scan_weather_predicts_only_strictly_future_lst_climate_days():
-    today = _m("KXHIGHNY-26SEP24-T74", "KXHIGHNY-26SEP24", close="2026-09-25T05:00:00Z")
-    tomorrow = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
-    past = _m("KXHIGHNY-26SEP23-T74", "KXHIGHNY-26SEP23", close="2026-09-24T05:00:00Z")
-    live = FakeLive([LiveMarket(today, GOOD_QUOTE), LiveMarket(tomorrow, GOOD_QUOTE), LiveMarket(past, GOOD_QUOTE)])
-    calls = []
-
-    def forecast_fn(city, target, now):
-        calls.append(target)
-        return [Observation(f"f:{target}", 77.0, now)]
-
-    preds, edges = scan.scan_weather(live, NOW, CFG, forecast_fn=forecast_fn,
-                                     cities={"KXHIGHNY": scan.WEATHER_CITIES["KXHIGHNY"]})
-    assert calls == [date(2026, 9, 25)]
-    assert {p["market_ticker"] for p in preds} == {tomorrow.ticker}
-    assert all(p["engine"] == "weather" for p in preds)
-    assert {e["market_ticker"] for e in edges} == {tomorrow.ticker}  # P(>=75 | mu 77) >> 0.34 ask
-    assert all(e["edge_type"] == "WEATHER" for e in edges)
-
-
-def test_scan_weather_predicts_all_three_cities():
-    markets = [
-        _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25"),
-        _m("KXHIGHCHI-26SEP25-T74", "KXHIGHCHI-26SEP25"),
-        _m("KXHIGHMIA-26SEP25-T84", "KXHIGHMIA-26SEP25", floor=84),
-    ]
-    live = FakeLive([LiveMarket(market, GOOD_QUOTE) for market in markets])
-
-    def forecast_fn(city, target, now):
-        return [Observation(f"forecast:{city.name}:{target}", 77.0, now)]
-
-    predictions, edges = scan.scan_weather(
-        live,
-        NOW,
-        CFG,
-        forecast_fn=forecast_fn,
-        historical_forecast_range_fn=lambda *args: [],
-    )
-
-    assert {row["market_ticker"] for row in predictions} == {market.ticker for market in markets}
-    assert {row["market_ticker"] for row in edges} == {market.ticker for market in markets}
-
-
-def test_scan_and_backtest_share_walk_forward_weather_error_model():
-    city = scan.WEATHER_CITIES["KXHIGHNY"]
-    target = date(2026, 9, 25)
-    now = backtest_engines.weather_decision_time(target, 1, city)
-    training_days = [target - timedelta(days=i) for i in range(25, 4, -1)]
-    actuals = [
-        Observation(f"KXHIGHNY-{day.strftime('%y%b%d').upper()}", 77.0, now - timedelta(hours=1))
-        for day in training_days
-    ]
-    historical = {
-        day: [Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 75.0,
-                          backtest_engines.weather_decision_time(day, 1, city) - timedelta(hours=2))]
-        for day in training_days
-    }
-    current = [Observation("openmeteo:gfs_seamless:high:2026-09-25:live", 75.0, now)]
-    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
-    live = FakeLive([LiveMarket(market, GOOD_QUOTE)], actuals)
-
-    predictions, _ = scan.scan_weather(
-        live,
-        now,
-        CFG,
-        forecast_fn=lambda city, day, as_of: current,
-        historical_forecast_range_fn=lambda _city, start, end: [
-            observation
-            for day, observations in historical.items()
-            if start <= day <= end
-            for observation in observations
-        ],
-        cities={"KXHIGHNY": city},
-    )
-    decision = backtest_engines.build_weather_decisions(
-        [market], {**historical, target: current}, actuals, city
-    )[0]
-
-    # The ledger contract stores probabilities to four decimals; the fitted
-    # engine probability is the same before that serialization rounding.
-    assert predictions[0]["our_prob"] == pytest.approx(decision.our_prob, abs=1e-4)
-
-
-def test_scan_and_backtest_use_all_available_calibration_pairs():
-    city = scan.WEATHER_CITIES["KXHIGHNY"]
-    target = date(2026, 9, 25)
-    now = backtest_engines.weather_decision_time(target, 1, city)
-    training_days = [target - timedelta(days=i) for i in range(30, 5, -1)]
-    actuals = [
-        Observation(
-            f"KXHIGHNY-{day.strftime('%y%b%d').upper()}",
-            85.0 if index < 5 else 75.0,
-            now - timedelta(hours=1),
-        )
-        for index, day in enumerate(training_days)
-    ]
-    historical = {
-        day: [Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 75.0,
-                          backtest_engines.weather_decision_time(day, 1, city) - timedelta(hours=2))]
-        for day in training_days
-    }
-    current = [Observation("current", 75.0, now)]
-    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
-    live = FakeLive([LiveMarket(market, GOOD_QUOTE)], actuals)
-
-    predictions, _ = scan.scan_weather(
-        live,
-        now,
-        CFG,
-        forecast_fn=lambda city, day, as_of: current,
-        historical_forecast_range_fn=lambda _city, start, end: [
-            observation
-            for day, observations in historical.items()
-            if start <= day <= end
-            for observation in observations
-        ],
-        cities={"KXHIGHNY": city},
-    )
-    decision = backtest_engines.build_weather_decisions(
-        [market], {**historical, target: current}, actuals, city
-    )[0]
-
-    assert predictions[0]["our_prob"] == pytest.approx(decision.our_prob, abs=1e-4)
-
-
-def test_scan_calibration_uses_smallest_forecast_lead_published_by_as_of():
-    city = scan.WEATHER_CITIES["KXHIGHNY"]
-    target = date(2026, 9, 25)
-    now = backtest_engines.weather_decision_time(target, 1, city)
-    training_days = [target - timedelta(days=i) for i in range(25, 0, -1)]
-    actuals = [
-        Observation(
-            f"KXHIGHNY-{day.strftime('%y%b%d').upper()}",
-            77.0,
-            now - timedelta(hours=1),
-        )
-        for day in training_days
-    ]
-
-    def historical_forecast_range_fn(_city, start, end):
-        return [
-            observation
-            for day in training_days
-            if start <= day <= end
-            for observation in (
-                # lead 1 publishes after that day's own decision (D-1 23:30 LST): never used
-                Observation(f"openmeteo:gfs_seamless:high:{day}:lead1", 90.0,
-                            backtest_engines.weather_decision_time(day, 1, city) + timedelta(hours=1)),
-                Observation(f"openmeteo:gfs_seamless:high:{day}:lead2", 75.0,
-                            backtest_engines.weather_decision_time(day, 1, city) - timedelta(hours=1)),
-            )
-        ]
-
-    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
-    predictions, _ = scan.scan_weather(
-        FakeLive([LiveMarket(market, GOOD_QUOTE)], actuals),
-        now,
-        CFG,
-        forecast_fn=lambda _city, _day, as_of: [Observation("forecast:live", 75.0, as_of)],
-        historical_forecast_range_fn=historical_forecast_range_fn,
-        cities={"KXHIGHNY": city},
-    )
-
-    assert predictions[0]["raw_payload"]["bias"] == pytest.approx(2.0)
-    assert all(observation.published_at <= now for observation in actuals)
-
-
-def test_scan_weather_calibration_fetches_only_the_last_90_days_once_per_city():
-    city = scan.WEATHER_CITIES["KXHIGHNY"]
-    now = NOW
-    actuals = [
-        Observation(
-            f"KXHIGHNY-{(now.date() - timedelta(days=offset)).strftime('%y%b%d').upper()}",
-            77.0,
-            now - timedelta(hours=1),
-        )
-        for offset in range(1, 101)
-    ]
-    range_calls = []
-
-    def historical_forecast_range_fn(requested_city, start, end):
-        range_calls.append((requested_city, start, end))
-        return [
-            Observation(
-                f"openmeteo:gfs_seamless:high:{day.isoformat()}:lead1",
-                75.0,
-                backtest_engines.weather_decision_time(day, 1, requested_city) - timedelta(hours=1),
-            )
-            for day in (start + timedelta(days=offset) for offset in range((end - start).days + 1))
-        ]
-
-    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
-    predictions, _ = scan.scan_weather(
-        FakeLive([LiveMarket(market, GOOD_QUOTE)], actuals),
-        now,
-        CFG,
-        forecast_fn=lambda _city, _day, as_of: [Observation("forecast:live", 75.0, as_of)],
-        historical_forecast_range_fn=historical_forecast_range_fn,
-        cities={"KXHIGHNY": city},
-    )
-
-    assert range_calls == [(city, date(2026, 6, 26), date(2026, 9, 24))]
-    assert predictions[0]["raw_payload"]["bias"] == pytest.approx(2.0)
-
-
-def test_scan_and_backtest_share_yaml_fallback_below_minimum_samples():
-    city = scan.WEATHER_CITIES["KXHIGHNY"]
-    target = date(2026, 9, 25)
-    now = backtest_engines.weather_decision_time(target, 1, city)
-    actuals = [
-        Observation(f"KXHIGHNY-{(target - timedelta(days=i)).strftime('%y%b%d').upper()}", 77.0, now - timedelta(hours=1))
-        for i in range(1, 4)
-    ]
-    current = [Observation("current", 75.0, now)]
-    market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
-    live = FakeLive([LiveMarket(market, GOOD_QUOTE)], actuals)
-    cfg = EngineConfig(min_edge_pct=5.0, params={"error_bias": 2.0, "error_sigma": 1.0})
-
-    predictions, _ = scan.scan_weather(
-        live,
-        now,
-        cfg,
-        forecast_fn=lambda city, day, as_of: current,
-        historical_forecast_range_fn=lambda city, start, end: [],
-        cities={"KXHIGHNY": city},
-    )
-    decision = backtest_engines.build_weather_decisions(
-        [market], {target: current}, actuals, city,
-        fallback=scan.ErrorModel(2.0, 1.0),
-        min_pairs=20,
-    )[0]
-
-    assert predictions[0]["our_prob"] == pytest.approx(decision.our_prob, abs=1e-4)
-
-
-def test_scan_weather_isolates_city_failures_when_requested(caplog):
-    caplog.set_level(logging.INFO)
-    nyc = scan.WEATHER_CITIES["KXHIGHNY"]
-    chicago = scan.WEATHER_CITIES["KXHIGHCHI"]
-    ny_market = _m("KXHIGHNY-26SEP25-T74", "KXHIGHNY-26SEP25")
-    chi_market = _m("KXHIGHCHI-26SEP25-T74", "KXHIGHCHI-26SEP25")
-    live = FakeLive([LiveMarket(ny_market, GOOD_QUOTE), LiveMarket(chi_market, GOOD_QUOTE)])
-    failures = []
-
-    def forecast_fn(city, target, now):
-        if city == chicago:
-            raise RuntimeError("Chicago forecast unavailable")
-        return [Observation("nyc", 77.0, now)]
-
-    predictions, edges = scan.scan_weather(
-        live,
-        NOW,
-        CFG,
-        forecast_fn=forecast_fn,
-        cities={"KXHIGHNY": nyc, "KXHIGHCHI": chicago},
-        failures=failures,
-    )
-
-    assert {row["market_ticker"] for row in predictions} == {ny_market.ticker}
-    assert {row["market_ticker"] for row in edges} == {ny_market.ticker}
-    assert len(failures) == 1 and "KXHIGHCHI" in failures[0]
-    assert "scan engine=weather city=KXHIGHCHI predictions=0 edges=0" in caplog.text
 
 
 def test_scan_main_assigns_one_fifteen_minute_deadline_to_network_scan(monkeypatch):
@@ -506,7 +241,6 @@ def test_scan_main_assigns_one_fifteen_minute_deadline_to_network_scan(monkeypat
 
     monkeypatch.setattr(scan, "KalshiLive", FakeLive)
     monkeypatch.setattr(scan, "load_engine_config", lambda engine: EngineConfig(min_edge_pct=3.0))
-    monkeypatch.setattr(scan, "scan_weather", lambda *args, **kwargs: ([], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([], []))
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
@@ -531,26 +265,15 @@ def test_scan_main_assigns_one_fifteen_minute_deadline_to_network_scan(monkeypat
 
 def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, capsys, caplog):
     caplog.set_level(logging.INFO)
-    gas_prediction = {"market_ticker": "KXAAAGASD-26SEP25-4.5200", "our_prob": 0.9}
-    gas_edge = {
-        "market_ticker": "KXAAAGASD-26SEP25-4.5200",
-        "engine": "gas",
-        "edge_type": "ENERGY",
-        "gate_status": "SHADOW",
-    }
     recorded = []
     upserted = []
     pruned = []
 
     monkeypatch.setattr(scan, "load_engine_config", lambda engine: EngineConfig(min_edge_pct=3.0))
 
-    def weather(*args, **kwargs):
-        raise RuntimeError("weather source unavailable")
-
     def gas(*args, **kwargs):
-        return [gas_prediction], [gas_edge]
+        raise RuntimeError("gas source unavailable")
 
-    monkeypatch.setattr(scan, "scan_weather", weather)
     monkeypatch.setattr(scan, "scan_gas", gas)
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: pruned.append(produced))
@@ -567,54 +290,19 @@ def test_scan_main_isolates_engine_failure_and_returns_nonzero(monkeypatch, caps
 
     assert scan.main(now=NOW, live=object(), client=object()) == 1
     output = capsys.readouterr().out
-    assert recorded == [gas_prediction]
-    assert upserted == [gas_edge]
-    assert pruned == [{"gas": {gas_edge["market_ticker"]}}]
-    assert "scan engine=gas predictions=1 edges=1" in caplog.text
-    assert "scan engine=weather predictions=0 edges=0" in caplog.text
-    assert "partial_failure" in output and "weather source unavailable" in output
-
-
-def test_scan_main_persists_successful_rows_from_a_partial_weather_scan(monkeypatch):
-    prediction = {"market_ticker": "KXHIGHNY-26SEP25-T74", "our_prob": 0.9}
-    edge = {"market_ticker": "KXHIGHNY-26SEP25-T74", "engine": "weather", "edge_type": "WEATHER"}
-    recorded = []
-    upserted = []
-    pruned = []
-
-    monkeypatch.setattr(scan, "load_engine_config", lambda engine: EngineConfig(min_edge_pct=3.0))
-    monkeypatch.setattr(scan, "scan_weather", lambda *args, **kwargs: (
-        kwargs["failures"].append("weather/KXHIGHCHI: forecast unavailable") or ([prediction], [edge])
-    ))
-    monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([], []))
-    monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
-    monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: pruned.append(produced))
-    monkeypatch.setattr(scan, "sports_due", lambda now: False)
-    monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
-    monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *args, **kwargs: None)
-    monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *args, **kwargs: None)
-
-    from tradehub.core import supabase_client
-    import tradehub.predictions as predictions_module
-
-    monkeypatch.setattr(predictions_module, "record_predictions", lambda client, rows: recorded.extend(rows))
-    monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
-
-    assert scan.main(now=NOW, live=object(), client=object()) == 1
-    assert recorded == [prediction]
-    assert upserted == [edge]
-    assert pruned == [{"gas": set()}]
+    assert recorded == []
+    assert upserted == []
+    assert pruned == []
+    assert "scan engine=gas predictions=0 edges=0" in caplog.text
+    assert "partial_failure" in output and "gas source unavailable" in output
 
 
 def test_scan_main_writes_edges_for_engines_whose_gate_loses(monkeypatch):
-    weather_prediction = {"market_ticker": "KXHIGHNY-26SEP25-T74", "our_prob": 0.9}
-    weather_edge = {"market_ticker": "KXHIGHNY-26SEP25-T74", "engine": "weather", "edge_type": "WEATHER"}
     gas_prediction = {"market_ticker": "KXAAAGASD-26SEP25-4.5200", "our_prob": 0.9}
     gas_edge = {"market_ticker": "KXAAAGASD-26SEP25-4.5200", "engine": "gas", "edge_type": "ENERGY"}
     upserted = []
 
     monkeypatch.setattr(scan, "load_engine_config", lambda engine: EngineConfig(min_edge_pct=3.0))
-    monkeypatch.setattr(scan, "scan_weather", lambda *args, **kwargs: ([weather_prediction], [weather_edge]))
     monkeypatch.setattr(scan, "scan_gas", lambda *args, **kwargs: ([gas_prediction], [gas_edge]))
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {})
     monkeypatch.setattr(scan, "remove_stale_edges", lambda client, produced: None)
@@ -630,7 +318,7 @@ def test_scan_main_writes_edges_for_engines_whose_gate_loses(monkeypatch):
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
 
     assert scan.main(now=NOW, live=object(), client=object()) == 0
-    assert upserted == [weather_edge, gas_edge]
+    assert upserted == [gas_edge]
     assert all(row["gate_status"] == "SHADOW" for row in upserted)
 
 

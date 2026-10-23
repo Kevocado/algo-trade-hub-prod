@@ -227,7 +227,6 @@ def test_main_calls_the_tested_started_cleanup_and_reports_its_failures(monkeypa
 
     calls: list[str] = []
     monkeypatch.setattr(scan_mod, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan_mod, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "scan_gas", lambda *a, **k: ([], []))
     # labor_nowcast runs at 07/12/17 ET, so a suite that executes in one of
     # those hours would otherwise drive the real scan against the stub client.

@@ -12,7 +12,7 @@ def test_rewrites_all_import_forms():
         "from src.kalshi_feed import get_real_kalshi_markets\n"
         "from src import telegram_notifier\n"
         "import src.utils as u\n"
-        "from scripts.engines.weather_engine import WeatherEngine\n"
+        "from scripts.engines.gas import gas_prob\n"
         "from scripts.engines import quant_engine\n"
         "from scripts import shadow_performance\n"
         "from scripts.market_alerts import run_all_alerts\n"
@@ -24,7 +24,7 @@ def test_rewrites_all_import_forms():
         "from tradehub.core.kalshi_feed import get_real_kalshi_markets\n"
         "from tradehub.core import telegram_notifier\n"
         "import tradehub.core.utils as u\n"
-        "from tradehub.engines.weather_engine import WeatherEngine\n"
+        "from tradehub.engines.gas import gas_prob\n"
         "from tradehub.engines import quant_engine\n"
         "from tradehub.scripts import shadow_performance\n"
         "from tradehub.scripts.market_alerts import run_all_alerts\n"
@@ -37,14 +37,14 @@ def test_rewrites_all_import_forms():
 def test_rewrites_patch_targets_and_uvicorn_string_but_not_hostnames():
     src = (
         '@patch("src.microstructure_engine.requests.get")\n'
-        "@patch('scripts.engines.weather_maker.foo')\n"
+        "@patch('scripts.engines.weather.foo')\n"
         '@patch("scripts.shadow_performance.bar")\n'
         'uvicorn.run("api.main:app")\n'
         'host = "api.elections.kalshi.com"\n'
     )
     assert rewrite_imports.rewrite_source(src) == (
         '@patch("tradehub.core.microstructure_engine.requests.get")\n'
-        "@patch('tradehub.engines.weather_maker.foo')\n"
+        "@patch('tradehub.engines.weather.foo')\n"
         '@patch("tradehub.scripts.shadow_performance.bar")\n'
         'uvicorn.run("tradehub.api.main:app")\n'
         'host = "api.elections.kalshi.com"\n'

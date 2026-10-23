@@ -308,7 +308,6 @@ def test_main_passes_the_liveness_set_through_and_a_liveness_failure_does_not_fa
     monkeypatch.setattr(scan_mod, "fetch_market", fetch)
     monkeypatch.setattr(scan_mod, "remove_closed_cpi_edges", closed)
     monkeypatch.setattr(scan_mod, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan_mod, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "sports_due", lambda now: False)
     monkeypatch.setattr(scan_mod, "latest_gate_statuses", lambda client, pairs: {})

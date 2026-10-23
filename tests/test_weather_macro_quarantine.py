@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import inspect
 import json
-from datetime import datetime as _datetime
 from pathlib import Path
 
 import pytest
@@ -322,192 +321,12 @@ def test_no_source_path_leads_a_quarantined_row_to_the_trade_sink():
 
 
 # ── 2. the engines now MEASURE, and the numbers are pinned ──────────────────────────────────
-
-class _StubbedEngine:
-    """Runs a real engine's `find_opportunities` against a fixed market list.
-
-    Not a fake engine: the method under test is the real one, on a real class, with only its two
-    network dependencies replaced. A stub that returned a canned list would let the repair be reverted
-    and the measured counts would not move, which is the exact regression this file exists to catch.
-    """
-
-    def __init__(self, engine, markets, edge_type):
-        self._engine = engine
-        self._markets = markets
-        self._edge_type = edge_type
-
-    def find_opportunities(self, kalshi_markets=None):
-        return self._engine.find_opportunities(self._markets)
-
-
-class _FrozenDatetime(_datetime):
-    """The wall clock the fixtures were captured under: 2026-09-28, midday.
-
-    `weather_engine.find_opportunities` reads `datetime.now()` twice: once to
-    drop markets whose date has passed, once to drop same-day markets after
-    18:00 local time. Both are correct behaviour against live markets and both
-    make a frozen snapshot unusable the moment the wall clock moves past it --
-    the fixtures close 2026-09-29T05:00Z, so on 2026-09-29 every one of the 30
-    weather rows is "expired", and in CI (UTC) any run after 18:00 drops them
-    the same day. That is how this file's count test passed on 2026-09-28 and
-    failed the next day with `KeyError: 'Weather'`: not a product regression,
-    a snapshot outliving the clock it was taken against.
-
-    Freezing is honest here because the fixtures ARE that date: evaluating a
-    2026-09-28 snapshot "as of" 2026-09-28 is what the measurement means. What
-    would be dishonest is refreshing the fixtures to keep an unfrozen test
-    green -- that would move the pinned numbers without saying so.
-    """
-
-    @classmethod
-    def now(cls, tz=None):
-        base = cls(2026, 9, 28, 12, 0, 0)
-        return base.replace(tzinfo=tz) if tz is not None else base
-
-
-def _freeze_fixture_time(monkeypatch) -> None:
-    """Pin the engine's clock to the fixtures' date. See `_FrozenDatetime`."""
-    monkeypatch.setattr(
-        "tradehub.engines.weather_engine.datetime", _FrozenDatetime
-    )
-
-
-def _measure(monkeypatch, weather_markets) -> list[dict]:
-    """Run the weather engine against the recorded snapshot and return the marked rows.
-
-    Weather only: the macro engine and the daemon that ran both were deleted (v2 spec §9). The engine
-    class is the real one; only its NWS call is replaced.
-    """
-    from tradehub.engines.weather_engine import WeatherEngine
-
-    _freeze_fixture_time(monkeypatch)
-
-    engine = WeatherEngine()
-    engine.get_nws_forecast = lambda city: {"2026-09-28": 74, "2026-09-29": 76}
-    return mark_quarantine(_StubbedEngine(engine, weather_markets, "WEATHER").find_opportunities())
-
-
-class TestTheEnginesMeasureSomething:
-    def test_the_repaired_engine_returns_a_non_zero_count(self, monkeypatch, weather_markets):
-        """Not "more than zero" -- the exact figure this fixture produces, pinned.
-
-        Previously the engine returned 0 for every market it fetched: `market.get('yes_ask', 0)` read a
-        key Kalshi stopped sending, so every price came back 0 and `if yes_ask == 0: continue` skipped
-        all of them. Pinning the exact number means a regression to zero fails here, and a large drift
-        fails as a NUMBER somebody has to look at rather than as a quiet change. The weather fixture is
-        the complete live 30-market snapshot, so its count is the real one. (The macro half of this test
-        went with the macro engine.)
-        """
-        rows = _measure(monkeypatch, weather_markets)
-
-        assert len(rows) == FIXTURE_WEATHER_ROWS
-        assert all(row["engine"] == "Weather" for row in rows)
-        # Every row is measured, priced, and marked. The count going to zero is a regression to a
-        # known defect, not a quiet market.
-        assert all(row["market_price"] for row in rows)
-        assert all(row[QUARANTINE_FLAG] is True for row in rows)
-
-    def test_the_engine_applies_no_minimum_edge(self, monkeypatch, weather_markets):
-        """Sixteen of thirty rows come back under the 10 points the docstring used to promise.
-
-        The behavioural half of the stale-docstring pair: whatever the sentence says, this pins what
-        the engine does. `find_opportunities` used to end `if edge is not None and abs(edge) > 10:`;
-        a0fc404 ("remove math thresholds") dropped the second half and left the sentence describing
-        it, so 16 of the 30 fixture markets come back at or below a point the docstring said could
-        not appear -- the smallest at 1 point. Green before the docstring fix and green after it,
-        because the fix is text only; it is here so a threshold coming BACK fails as a moved number
-        rather than as a sentence that has quietly stopped being true again.
-        """
-        from tradehub.engines.weather_engine import WeatherEngine
-
-        _freeze_fixture_time(monkeypatch)
-        engine = WeatherEngine()
-        engine.get_nws_forecast = lambda city: {"2026-09-28": 74, "2026-09-29": 76}
-        rows = engine.find_opportunities(weather_markets)
-
-        at_or_below_ten = [r for r in rows if r["edge"] <= 10]
-        # Every priced market comes back, not just the ones past a floor: 30 in, 30 out.
-        assert len(rows) == len(weather_markets) == FIXTURE_WEATHER_ROWS == 30
-        assert len(at_or_below_ten) == 16, [r["edge"] for r in at_or_below_ten]
-        assert min(r["edge"] for r in at_or_below_ten) == pytest.approx(1.0)
-        # The other side, so the two numbers differ and the count above is not a tautology: the
-        # other 14 rows clear the old floor, so it was a filter and not a constant.
-        assert len(rows) - len(at_or_below_ten) == 14
-
-    def test_the_docstring_does_not_promise_an_edge_threshold_anymore(self):
-        """The sentence and the code, asserted to agree -- which they did not.
-
-        `find_opportunities` read "Returns list of opportunities with edge > 10%" for months after
-        a0fc404 removed the `abs(edge) > 10` test that sentence describes. It is a claim about the
-        engine's output sitting in the one place a caller reads before trusting the count, and the
-        test above is the evidence it was false. Asserted on the text because the fix is text: a
-        behaviour-only test cannot see this at all.
-        """
-        from tradehub.engines.weather_engine import WeatherEngine
-
-        doc = WeatherEngine.find_opportunities.__doc__
-        assert "edge > 10%" not in doc, doc
-        assert "no minimum edge" in doc, doc
-
-    def test_a_regression_to_the_pre_repair_state_fails_loudly(self):
-        """The failure the pinned counts exist for, asserted directly rather than left implicit.
-
-        A read of the moved field with a 0 default is the original defect. If a future edit restores
-        it, `find_opportunities` returns [] and the pinned counts above fail. This says so in words
-        where the next person will read it: the number going to zero is a REGRESSION to a known
-        defect, not a quiet market.
-        """
-        from tradehub.engines.weather_engine import WeatherEngine
-
-        engine = WeatherEngine()
-        engine.get_nws_forecast = lambda city: {"2026-09-28": 74}
-
-        # The pre-repair read, spelled out, against the same snapshot.
-        pre_repair_skip = [
-            market for market in _fixture("weather_markets.json")
-            if market.get("yes_ask", 0) == 0
-        ]
-        assert len(pre_repair_skip) == len(_fixture("weather_markets.json")), (
-            "the fixture must be shaped so the pre-repair read skips EVERY market -- that is the "
-            "defect. If this fails the fixture has grown a legacy key and would no longer reproduce it"
-        )
-        assert engine.find_opportunities([]) == []
-
-    def test_the_weather_fixtures_expire_like_real_markets_do(self, monkeypatch):
-        """Why `_measure` freezes time, pinned as behaviour rather than comment.
-
-        The weather fixtures close 2026-09-29T05:00Z, and the engine drops
-        markets whose date has passed -- correctly, against live markets. So
-        with the clock past the fixtures' close the engine returns nothing,
-        and the count test above would fail with `KeyError: 'Weather'`. That is
-        what happened the day after the fixtures were captured: green on
-        2026-09-28, red on 2026-09-29, with no product change in between.
-
-        This test runs the real engine with the clock past the close and
-        asserts the empty result, so the freeze in `_measure` is load-bearing
-        and documented: fixtures have a lifetime, and the measurement is taken
-        inside it.
-        """
-        from tradehub.engines import weather_engine
-
-        class _PastTheClose(_FrozenDatetime):
-            @classmethod
-            def now(cls, tz=None):
-                base = cls(2026, 10, 5, 12, 0, 0)
-                return base.replace(tzinfo=tz) if tz is not None else base
-
-        monkeypatch.setattr(weather_engine, "datetime", _PastTheClose)
-        engine = weather_engine.WeatherEngine()
-        engine.get_nws_forecast = lambda city: {"2026-09-28": 74, "2026-09-29": 76}
-        assert engine.find_opportunities(_fixture("weather_markets.json")) == []
-
+class TestTheMeasuredLiveRunIsPinned:
     def test_the_measured_live_run_is_pinned(self, live_rows):
         """The 2026-09-28 live measurement, as a recorded artefact, with the numbers this PR claims.
 
-        Separate from the test above on purpose. The test above runs the engines against a trimmed
-        snapshot, so it proves the repair works and is reproducible. This one pins what actually
-        happened against 441 live markets, which is the evidence for the report and for the decision
-        the quarantine exists to inform. It is a record of a DATE, not a live assertion -- if the
+        The engines that produced it have been retired, so this is the evidence for the decision the
+        quarantine exists to inform rather than a live assertion. It is a record of a DATE -- if the
         market moves on, the numbers here stay as they were and the drift is visible as a diff in
         this file rather than as a test that fails on a Tuesday for no reason anyone can act on.
         """
@@ -907,31 +726,29 @@ class TestQuarantineReadsAsItsOwnState:
         assert marked[0][QUARANTINE_FLAG] is True
 
     def test_the_ruling_does_not_join_on_the_engine_column(self):
-        """`WeatherEngine` writes `engine: "Weather"`, which the writer lower-cases to `weather` --
-        the same key the MEASURED, working `weather` engine writes from `tradehub/scripts/scan.py`.
+        """`WeatherEngine` wrote `engine: "Weather"`, which the writer lower-cases to `weather` --
+        the same key the MEASURED, working `weather` engine wrote from `tradehub/scripts/scan.py`.
         Joining these two on that column would put "quarantined" beside a real Brier on the Models
-        page, which is a false claim about an engine that demonstrably runs. Pinned at both ends, the
-        same collision `test_engine_health.py` pins, so nobody "tidies up" the ruling by joining on
-        the column that looks cleaner.
+        page, which is a false claim about an engine that demonstrably ran. The class is retired now,
+        but the column is still rewritten by the writer, so the reason the ruling never joins on it
+        remains true and is pinned here.
         """
         from tradehub.core.supabase_client import upsert_opportunities
-        from tradehub.engines.weather_engine import WeatherEngine
 
         quarantined = {s.name for s in STOPPED_SITES if s.disposition == "repaired_quarantined"}
         assert quarantined == {"WeatherEngine", "MacroEngine"}
         assert "WeatherEngine" in quarantined
         assert "weather" not in quarantined
 
-        assert "'engine': 'Weather'" in inspect.getsource(WeatherEngine.find_opportunities)
         assert 'str(op["engine"]).strip().lower()' in inspect.getsource(upsert_opportunities)
 
     def test_the_ruling_cannot_quote_a_quarantined_row_as_publishable(self):
         """The sink's refusal is on the FLAG and not the edge type, and this is why.
 
-        `tradehub/scripts/scan.py` publishes measured rows under both `WEATHER` and `MACRO` and must
-        keep doing so, so a sink that refused those edge types would refuse the product's working
-        engines to enforce a ruling about two other engines that share their boards. Asserted by
-        running the writer on a WEATHER row with no flag and watching it through.
+        `tradehub/scripts/scan.py` publishes measured rows under `GAS`, `LABOR`, `SPORTS` and the
+        journal publishes WEATHER, so a sink that refused those edge types would refuse the
+        product's working engines to enforce a ruling about two retired ones that shared their
+        boards. Asserted by running the writer on a WEATHER row with no flag and watching it through.
         """
         from tradehub.core import supabase_client
 
@@ -987,11 +804,13 @@ class TestTheRulingIsNotStale:
         Pinned to the exact offending read, which is `OFFENDING_READS` in
         `tests/test_engine_health.py` rather than a second copy of it. Two copies of the same pin is
         two things to update, and the one that gets missed is the one that stops noticing.
+
+        Retired sites are not checked here: they have no file to check.
         """
         from tests.test_engine_health import OFFENDING_READS
 
-        unrepaired = [s for s in STOPPED_SITES if s.disposition != "repaired_quarantined"]
-        assert len(unrepaired) == 2, "WeatherMaker and clean_market_data were not repaired"
+        unrepaired = [s for s in STOPPED_SITES if s.disposition != "repaired_quarantined" and not s.retired]
+        assert len(unrepaired) == 1, "only clean_market_data is unrepaired and not retired"
 
         for site in unrepaired:
             module, _, line = site.site.partition(":")

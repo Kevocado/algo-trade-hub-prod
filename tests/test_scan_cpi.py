@@ -39,9 +39,6 @@ def test_main_gates_edges_per_engine_version_pair(monkeypatch):
     monkeypatch.setattr(supabase_client, "upsert_opportunities", lambda rows: upserted.extend(rows))
     monkeypatch.setattr(predictions, "record_predictions", lambda *args: None)
     monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], [
-        {"market_ticker": "W", "engine": "weather", "engine_version": scan.WEATHER_ENGINE_VERSION},
-    ]))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], [
         {"market_ticker": "G", "engine": "gas", "engine_version": scan.GAS_ENGINE_VERSION},
     ]))
@@ -50,14 +47,14 @@ def test_main_gates_edges_per_engine_version_pair(monkeypatch):
     monkeypatch.setattr(scan, "remove_started_sports_edges", lambda *a, **k: [])
     monkeypatch.setattr(scan, "remove_closed_cpi_edges", lambda *a, **k: None)
     monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *a, **k: None)
-    # A PROMOTED verdict exists only for this exact pair, and the weather pair has none at all.
+    # A PROMOTED verdict exists only for this exact pair.
     monkeypatch.setattr(scan, "latest_gate_statuses", lambda client, pairs: {
         ("gas", scan.GAS_ENGINE_VERSION): "PROMOTED",
     })
 
     assert scan.main(now=datetime(2026, 9, 11, 12, 5, tzinfo=timezone.utc), live=object(), client=object()) == 0
     assert {row["engine"]: row["gate_status"] for row in upserted} == {
-        "gas": "PROMOTED", "weather": "SHADOW",
+        "gas": "PROMOTED",
     }
 
 

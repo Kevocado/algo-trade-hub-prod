@@ -24,7 +24,6 @@ def _run_main(monkeypatch, *, closed_raises=False):
     cleanups: list[dict] = []
 
     monkeypatch.setattr(scan_mod, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan_mod, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "sports_due", lambda now: False)
     monkeypatch.setattr(scan_mod, "latest_gate_statuses", lambda client, pairs: {})

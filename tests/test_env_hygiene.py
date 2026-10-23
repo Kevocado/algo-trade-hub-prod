@@ -180,10 +180,8 @@ def test_entrypoints_still_opt_into_the_local_env_file():
         "tradehub/scripts/scan.py": "load_local_env()",
         "tradehub/scripts/settle_predictions.py": "load_local_env()",
         "tradehub/scripts/market_alerts.py": "load_local_env()",
-        "tradehub/scripts/weather_auto_sell.py": "load_local_env()",
         "tradehub/scripts/auto_retrain_regime.py": "load_local_env()",
         "tradehub/scripts/force_demo_trade.py": "load_local_env()",
-        "tradehub/engines/weather_engine.py": "load_local_env()",
     }
     for rel, call in expected.items():
         assert call in (REPO / rel).read_text(encoding="utf-8"), f"{rel} no longer loads the local .env"

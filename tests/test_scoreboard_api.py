@@ -875,9 +875,9 @@ class TestTheCatalogue:
 
         assert catalogue["engines_measured"] == 1
         assert catalogue["engines_not_measured"] == catalogue["engines_total"] - 1
-        # And the number the page leads with is one the server computed, because it is a
-        # subtraction on a set and a page that does it at render time does it in a component.
-        assert catalogue["engines_total"] == len(catalogue["entries"])
+        # engines_total counts live engines; entries includes retired tombstones.
+        assert catalogue["engines_total"] < len(catalogue["entries"])
+        assert catalogue["engines_total"] == len([e for e in catalogue["entries"] if e["status"] != "retired"])
 
     def test_every_catalogue_entry_carries_its_own_rows_whole(self):
         """Self-contained, so the page reads a row's ratio, verdict and both bars off the entry
@@ -916,16 +916,16 @@ class TestTheCatalogue:
 
     def test_a_losing_engine_is_reported_at_its_worst_row(self):
         body = _get_body([
-            _run("weather", "weather-v1", mode="taker", brier_ours=0.1242, brier_market=0.09713),
-            _run("weather", "weather-v1", mode="maker", brier_ours=0.1347, brier_market=0.1124),
+            _run("gas", "gas-v1", mode="taker", brier_ours=0.1242, brier_market=0.09713),
+            _run("gas", "gas-v1", mode="maker", brier_ours=0.1347, brier_market=0.1124),
         ])
 
-        weather = next(e for e in body["catalogue"]["entries"] if e["engine"] == "weather")
+        gas = next(e for e in body["catalogue"]["entries"] if e["engine"] == "gas")
 
-        assert weather["status"] == "behind"
-        assert weather["worst_brier_ratio"] == pytest.approx(1.2787, abs=0.0001)
+        assert gas["status"] == "behind"
+        assert gas["worst_brier_ratio"] == pytest.approx(1.2787, abs=0.0001)
         # ...and the better row is still on the entry, so the worst is a summary and not a filter.
-        assert len(weather["rows"]) == 2
+        assert len(gas["rows"]) == 2
 
     def test_the_catalogue_costs_no_extra_reads(self):
         """It is a pure join over rows already in hand. A catalogue that had to read something --

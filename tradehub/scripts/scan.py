@@ -1,4 +1,4 @@
-"""One-shot scan (suggest-only): predict every open weather/gas market, flag trade-worthy edges.
+"""One-shot scan (suggest-only): predict every open gas/payrolls/sports market, flag trade-worthy edges.
 
 Writes every prediction to the predictions ledger and upserts edges (with Kalshi deep links)
 into kalshi_edges. Never places orders. Cron-ready: runs once and exits.
@@ -11,7 +11,7 @@ import logging
 import sys
 import time
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
@@ -19,14 +19,6 @@ from tradehub.core.kalshi_feed import fetch_market
 from tradehub.data.kalshi_live import KalshiLive
 from tradehub.data.labor_inputs import load_labor_inputs, payroll_nowcasts
 from tradehub.data.rbob import front_month_roll_dates, rbob_closes
-from tradehub.data.weather import (
-    WEATHER_CITIES,
-    weather_decision_time,
-    City,
-    forecast_target_date,
-    historical_forecast_highs_range,
-    live_forecast_highs,
-)
 from tradehub.edges import EdgeSuggestion, evaluate_edge
 from tradehub.engine_config import EngineConfig, load_engine_config
 from tradehub.gate_status import latest_gate_statuses
@@ -45,13 +37,6 @@ from tradehub.engines.labor import (
     TRAIN_START,
     month_end,
     payroll_prob,
-)
-from tradehub.engines.weather import (
-    MIN_ERROR_PAIRS,
-    WEATHER_ENGINE_VERSION,
-    ErrorModel,
-    walk_forward_error_model,
-    weather_prob,
 )
 from tradehub.markets import KalshiMarket, event_date, event_month, market_url
 from tradehub.predictions import build_prediction_row
@@ -241,7 +226,7 @@ def remove_closed_labor_edges(client, now: datetime) -> None:
 
 
 def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
-    """Delete stale rows only for the scan-owned weather/gas/payrolls engines.
+    """Delete stale rows only for the scan-owned gas/payrolls/sports engines.
 
     `cpi_nowcast` is deliberately NOT in the allowlist. CPI was approved display-only on 2026-09-27
     (spec 5a, section 9 approval 3, quoted verbatim from the spec: "DISPLAY ONLY. Show the nowcast
@@ -264,7 +249,7 @@ def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
     is not a permanent archive, and no copy on screen may say it is.
     """
     for engine, produced in produced_by_engine.items():
-        if engine not in {"weather", "gas", "labor_nowcast", "sports_nfl", "sports_cfb"}:
+        if engine not in {"gas", "labor_nowcast", "sports_nfl", "sports_cfb"}:
             continue
         current_market_ids = {str(market_id)[:50] for market_id in produced}
         result = client.table("kalshi_edges").select("market_id").eq("engine", engine).execute()
@@ -272,127 +257,6 @@ def remove_stale_edges(client, produced_by_engine: dict[str, set[str]]) -> None:
             market_id = row.get("market_id")
             if market_id and market_id not in current_market_ids:
                 client.table("kalshi_edges").delete().eq("engine", engine).eq("market_id", market_id).execute()
-
-
-def _scan_weather_city(
-    live,
-    now: datetime,
-    cfg: EngineConfig,
-    series: str,
-    city: City,
-    *,
-    forecast_fn: Callable[..., list],
-    historical_forecast_range_fn: Callable[..., list],
-    min_error_pairs: int,
-    train_days: int,
-) -> tuple[list[dict], list[dict]]:
-    fallback = ErrorModel(
-        bias=float(cfg.params.get("error_bias", 0.0)),
-        sigma=float(cfg.params.get("error_sigma", 2.5)),
-    )
-    predictions: list[dict] = []
-    edges: list[dict] = []
-    today = now.astimezone(ZoneInfo(city.lst_timezone)).date()
-    by_date = defaultdict(list)
-    for lm in live.open_markets(series):
-        target = event_date(lm.market.event_ticker)
-        if target > today:
-            by_date[target].append(lm)
-    if not by_date:
-        return predictions, edges
-
-    train_from = today - timedelta(days=train_days)
-    actuals = [
-        observation
-        for observation in (live.settled_values(series) or [])
-        if observation.published_at <= now
-        and train_from <= event_date(observation.name) <= today
-    ]
-    actuals.sort(key=lambda observation: event_date(observation.name))
-    calibration_forecasts = defaultdict(list)
-    if len(actuals) >= min_error_pairs:
-        for observation in historical_forecast_range_fn(city, train_from, today):
-            calibration_forecasts[forecast_target_date(observation)].append(observation)
-    error = walk_forward_error_model(
-        actuals,
-        calibration_forecasts,
-        now,
-        # Same rule as the backtest (lead 1 = decide at D-1 23:30 LST), so live and
-        # backtested probabilities come from the same error model.
-        decision_time_for=lambda day: weather_decision_time(day, 1, city),
-        fallback=fallback,
-        min_pairs=min_error_pairs,
-    )
-
-    for target, markets in sorted(by_date.items()):
-        highs = [
-            observation
-            for observation in forecast_fn(city, target, now)
-            if observation.published_at <= now
-        ]
-        if not highs:
-            continue
-        values = [o.value for o in highs]
-        for lm in markets:
-            prob = weather_prob(lm.market, values, error)
-            predictions.append(build_prediction_row(
-                market_ticker=lm.market.ticker, our_prob=prob, market_prob=_mid(lm.quote), engine="weather",
-                as_of=now, engine_version=WEATHER_ENGINE_VERSION,
-                raw_payload={"highs": {o.name: o.value for o in highs}, "bias": error.bias, "sigma": error.sigma},
-            ))
-            suggestion = evaluate_edge(lm.market.ticker, prob, lm.quote, min_edge_pct=cfg.min_edge_pct,
-                                       prefer_maker=cfg.prefer_maker)
-            if suggestion:
-                edges.append(edge_row(lm.market, suggestion, "WEATHER", engine="weather",
-                                      engine_version=WEATHER_ENGINE_VERSION, updated_at=now))
-    return predictions, edges
-
-
-def scan_weather(
-    live, now: datetime, cfg: EngineConfig, *,
-    forecast_fn: Callable[..., list] = live_forecast_highs,
-    historical_forecast_range_fn: Callable[..., list] = historical_forecast_highs_range,
-    cities: dict[str, City] = WEATHER_CITIES,
-    train_days: int = 90,
-    min_error_pairs: int = MIN_ERROR_PAIRS,
-    failures: list[str] | None = None,
-) -> tuple[list[dict], list[dict]]:
-    if min_error_pairs < 1:
-        raise ValueError(f"min_error_pairs must be >= 1, got {min_error_pairs!r}")
-    if train_days < 1:
-        raise ValueError(f"train_days must be >= 1, got {train_days!r}")
-    predictions: list[dict] = []
-    edges: list[dict] = []
-    for series, city in cities.items():
-        try:
-            city_predictions, city_edges = _scan_weather_city(
-                live,
-                now,
-                cfg,
-                series,
-                city,
-                forecast_fn=forecast_fn,
-                historical_forecast_range_fn=historical_forecast_range_fn,
-                min_error_pairs=min_error_pairs,
-                train_days=train_days,
-            )
-        except Exception as exc:
-            if failures is None:
-                raise
-            message = f"weather/{series}: {type(exc).__name__}: {exc}"
-            failures.append(message)
-            log.exception("scan engine=weather city=%s failed", series)
-            log.info("scan engine=weather city=%s predictions=0 edges=0 status=failed", series)
-            continue
-        predictions.extend(city_predictions)
-        edges.extend(city_edges)
-        log.info(
-            "scan engine=weather city=%s predictions=%d edges=%d",
-            series,
-            len(city_predictions),
-            len(city_edges),
-        )
-    return predictions, edges
 
 
 def scan_gas(
@@ -541,33 +405,16 @@ def main(
     if live is None:
         live = KalshiLive(deadline=deadline)
 
-    def forecast_with_deadline(city, target, as_of):
-        return live_forecast_highs(city, target, as_of, deadline=deadline)
-
-    def historical_forecast_with_deadline(city, start, end):
-        return historical_forecast_highs_range(city, start, end, deadline=deadline)
-
     def rbob_with_deadline():
         return rbob_closes(deadline=deadline)
 
     def run_engine(name: str) -> tuple[list[dict], list[dict]]:
         state = {"predictions": [], "edges": [], "errors": [], "complete": False, "ran": False}
         engine_states[name] = state
-        city_failures: list[str] = []
         try:
             _ensure_scan_deadline(deadline)
             cfg = load_engine_config(name)
-            if name == "weather":
-                predictions, edges = scan_weather(
-                    live,
-                    now,
-                    cfg,
-                    forecast_fn=forecast_with_deadline,
-                    historical_forecast_range_fn=historical_forecast_with_deadline,
-                    failures=city_failures,
-                )
-            else:
-                predictions, edges = scan_gas(live, now, cfg, rbob_fn=rbob_with_deadline)
+            predictions, edges = scan_gas(live, now, cfg, rbob_fn=rbob_with_deadline)
             _ensure_scan_deadline(deadline)
         except Exception as exc:
             message = f"{name}: {type(exc).__name__}: {exc}"
@@ -578,10 +425,8 @@ def main(
             return [], []
         state["predictions"] = predictions
         state["edges"] = edges
-        state["errors"].extend(city_failures)
-        state["complete"] = not city_failures
+        state["complete"] = True
         state["ran"] = True
-        failures.extend(city_failures)
         log.info(
             "scan engine=%s predictions=%d edges=%d",
             name,
@@ -590,10 +435,9 @@ def main(
         )
         return predictions, edges
 
-    weather_predictions, weather_edges = run_engine("weather")
     gas_predictions, gas_edges = run_engine("gas")
 
-    # labor_nowcast is declared here but RUNS LATER, after the weather/gas writes: its failure
+    # labor_nowcast is declared here but RUNS LATER, after the gas writes: its failure
     # mode is an ALFRED outage, and a hung predictor request must not delay or endanger another
     # engine's writes. Its own gated write and cleanup live in the labor block below, ahead of
     # sports (which still runs last of all).
@@ -624,8 +468,7 @@ def main(
         except Exception as exc:
             failures.append(f"cpi_nowcast.closed_cleanup: {type(exc).__name__}: {exc}")
             log.exception("scan closed CPI edge cleanup failed")
-        all_edges = weather_edges + gas_edges
-        pairs = {(row["engine"], row.get("engine_version", "v0")) for row in all_edges}
+        pairs = {(row["engine"], row.get("engine_version", "v0")) for row in gas_edges}
         try:
             statuses = latest_gate_statuses(client, pairs)
         except Exception as exc:
@@ -633,13 +476,11 @@ def main(
             failures.append(message)
             statuses = {}
             log.exception("scan gate-status lookup failed")
-        for edges in (weather_edges, gas_edges):
-            apply_gate_statuses(edges, statuses)
+        apply_gate_statuses(gas_edges, statuses)
 
         prediction_writes: dict[str, str] = {}
         edge_writes: dict[str, str] = {}
         for name, predictions, edges in (
-            ("weather", weather_predictions, weather_edges),
             ("gas", gas_predictions, gas_edges),
         ):
             if not engine_states[name]["ran"]:
@@ -664,7 +505,6 @@ def main(
                 log.exception("scan edge write failed engine=%s", name)
 
         for name, edges in (
-            ("weather", weather_edges),
             ("gas", gas_edges),
         ):
             if not engine_states[name]["complete"] or edge_writes.get(name) != "ok":
@@ -679,7 +519,7 @@ def main(
         writes = {"predictions": prediction_writes, "edges": edge_writes}
 
         # ── labor_nowcast ────────────────────────────────────────────────────────────────
-        # After the weather/gas gate lookup, upserts and cleanups, so an ALFRED hang cannot
+        # After the gas gate lookup, upserts and cleanups, so an ALFRED hang cannot
         # push those back; before sports, which still runs last. Gated and written separately
         # for the same reason sports is: its edges are keyed on their own (engine,
         # engine_version) pair, and its inputs are a third-party HTTP service.
@@ -758,7 +598,7 @@ def main(
 
 
         # ── Sports LAST ────────────────────────────────────────────────────────────────
-        # The weather/gas gate lookup, upserts and cleanups above are already done, so a
+        # The gas gate lookup, upserts and cleanups above are already done, so a
         # slow sports run can no longer delay them or put them at risk. Sports is gated and
         # written separately because its edges are keyed on their own (engine, engine_version)
         # pairs and it has its own pruning rules.
@@ -808,7 +648,7 @@ def main(
                 failures.extend(remove_started_sports_edges(client, now))
                 failures.extend(prune_sports_if_healthy(client, sports_per_sport,
                                                         remove=remove_stale_edges, now=now))
-            except Exception as exc:  # a predictor/Kalshi outage must not cost weather/gas
+            except Exception as exc:  # a predictor/Kalshi outage must not cost gas/labor
                 sports_summary = {"error": repr(exc)}
                 writes["predictions"]["sports"] = "failed"
                 writes["edges"]["sports"] = "failed"
@@ -825,15 +665,6 @@ def main(
     summary = {
         "as_of": now.isoformat(),
         "status": "partial_failure" if failures else "ok",
-        "weather": {
-            "status": (
-                "partial_failure" if engine_states["weather"]["ran"] and engine_states["weather"]["errors"]
-                else "failed" if not engine_states["weather"]["ran"] else "ok"
-            ),
-            "predictions": len(weather_predictions),
-            "edges": len(weather_edges),
-            "errors": engine_states["weather"]["errors"],
-        },
         "gas": {
             "status": (
                 "partial_failure" if engine_states["gas"]["ran"] and engine_states["gas"]["errors"]

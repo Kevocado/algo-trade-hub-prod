@@ -137,7 +137,6 @@ def _stub_everything(monkeypatch, calls, labor_scan=None, *, labor_due=True):
 
     mod = scan_mod
     monkeypatch.setattr(mod, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(mod, "scan_weather", lambda *a, **k: calls.append("weather") or ([], []))
     monkeypatch.setattr(mod, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(mod, "latest_gate_statuses", lambda *a: {})
     monkeypatch.setattr(mod, "remove_stale_edges", lambda *a, **k: None)
@@ -193,7 +192,7 @@ def test_an_exhausted_budget_skips_labor_without_failing_the_scan(monkeypatch, c
     assert summary["labor_nowcast"]["status"] == "skipped: scan deadline reached before the labor step", \
         summary["labor_nowcast"]
     assert summary["writes"]["edges"]["labor_nowcast"] == "skipped", summary["writes"]
-    assert summary["writes"]["edges"]["weather"] == "ok", summary["writes"]
+    assert summary["writes"]["edges"]["gas"] == "ok", summary["writes"]
     assert rc == 0, summary["failures"]
 
 

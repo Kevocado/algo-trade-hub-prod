@@ -28,7 +28,6 @@ class _FakeSupa:
 
 def test_engines_match_spec_engine_set_and_cadences():
     assert dict(settle_predictions.ENGINES) == {
-        "weather": "daily",
         "gas": "daily",
         "cpi_nowcast": "monthly",
         "labor_nowcast": "monthly",

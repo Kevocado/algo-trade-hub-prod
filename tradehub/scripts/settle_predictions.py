@@ -24,7 +24,6 @@ from tradehub.track_record import refresh_track_record
 # settled contracts, monthly-release engines 50. `engine` values must match
 # what each engine writes into predictions.engine.
 ENGINES = [
-    ("weather", "daily"),
     ("gas", "daily"),
     ("cpi_nowcast", "monthly"),
     ("labor_nowcast", "monthly"),
