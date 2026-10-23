@@ -349,7 +349,7 @@ describe("Journal tabs and empty states", () => {
       ok: true, status: 200, json: () => Promise.resolve(url.includes("/api/journal/series") ? { series: [] } : empty),
     })));
     render(<Journal />);
-    expect(await screen.findByText("No forecaster has a measured gap yet.")).toBeInTheDocument();
+    expect(await screen.findByText("Nothing has been scored yet.")).toBeInTheDocument();
     expect(screen.getByText("No scored forecasters yet.")).toBeInTheDocument();
     expect(screen.getByText("No forecasters waiting to be scored.")).toBeInTheDocument();
   });

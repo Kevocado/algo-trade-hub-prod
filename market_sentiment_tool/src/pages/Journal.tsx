@@ -93,7 +93,7 @@ export default function Journal() {
   const calls = liveRows(data.forecasters).map((r) => verdictOf(r.gap, r.se));
   const nCalls = (v: string) => calls.filter((c) => c === v).length;
   const verdict = calls.length === 0
-    ? "No forecaster has a measured gap yet."
+    ? "Nothing has been scored yet."
     : `${nCalls("ahead")} ahead · ${nCalls("behind")} behind · ${nCalls("none")} no signal`;
 
   const handleTabKeyDown = (e: React.KeyboardEvent<HTMLElement>, tabs: Tab[]) => {
