@@ -77,7 +77,7 @@ ENGINE_TOMBSTONES: tuple[dict[str, Any], ...] = (
         "engine": "weather",
         "label": "Daily high temperature — Chicago, New York, Miami",
         "removed": "2026-10-16",
-        "reason": "The three-city scan engine (tradehub/scripts/scan.py weather branch, tradehub/engines/weather_engine.py, tradehub/engines/weather_maker.py) scored 1.5-4x worse than the market. The journal's ensemble forecasters (tradehub/journal/forecasters/weather*.py) replace it.",
+        "reason": "The three-city scan engine (the weather branch of tradehub/scripts/scan.py) scored 1.5-4x worse than the market. Its helpers tradehub/engines/weather_engine.py and tradehub/engines/weather_maker.py were deleted with it: they were not separately measured and were not wired to a scanner. The journal's ensemble forecasters (tradehub/journal/forecasters/weather*.py) replace it.",
         "replaced_by": "journal ensemble forecasters (tradehub/journal/forecasters/weather*.py)",
     },
 )
