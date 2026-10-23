@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { forecasterLabel } from "@/lib/forecasterLabels";
 import { baselineName } from "@/lib/forecasterLabels";
+import { tileNote } from "@/lib/forecasterLabels";
 import type { JournalScore } from "@/lib/journal";
 import { EARLY_N, skillText, split, statusOf, totals, viewRows } from "@/lib/journalView";
 
@@ -38,6 +39,23 @@ describe("labels", () => {
     expect(forecasterLabel("cpi_nowcast", "cpi-v1")).toBe("Inflation (CPI)");
     expect(forecasterLabel("new_thing")).toBe("New thing");
     expect(baselineName("market")).toBe("the Kalshi price");
+  });
+
+  it("names a calibrated copy after its model with '(calibrated)' suffix", () => {
+    expect(forecasterLabel("sports_cfb_total_cal")).toBe("College football game totals (calibrated)");
+    expect(forecasterLabel("sports_cfb_spread_cal")).toBe("College football point spreads (calibrated)");
+    expect(forecasterLabel("sports_cfb_cal")).toBe("College football winners (calibrated)");
+    expect(forecasterLabel("sports_nfl_cal")).toBe("NFL winners (calibrated)");
+    // Version is passed through to the inner call
+    expect(forecasterLabel("sports_cfb_total_cal", "feed-v1+w10")).toBe("College football game totals (calibrated)");
+  });
+
+  it("a calibrated copy's tile note inherits from its model", () => {
+    // gold_direction and housing_direction have tile notes
+    expect(tileNote("gold_direction_cal")).toBe("GLD (gold ETF)");
+    expect(tileNote("housing_direction_cal")).toBe("two months behind");
+    // A forecaster without a note returns undefined
+    expect(tileNote("sports_cfb_total_cal")).toBeUndefined();
   });
 
   // Spec §8: a baseline "must not read as a prediction". The fallback would render
