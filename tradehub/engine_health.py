@@ -129,7 +129,8 @@ class StoppedSite:
     catalogue's `weather` entry "stopped" on the strength of a row that engine would one day
     publish would be a false claim about an engine that runs, so the two are never joined on that
     column. `module` and `site` are the unambiguous join, and a test pins that every module here
-    exists and still contains the line this ruling names.
+    that is not retired exists and still contains the line this ruling names. A retired entry keeps
+    its module as a historical record but pins no line, because the file is gone.
     """
 
     name: str
@@ -152,6 +153,10 @@ class StoppedSite:
     # remembers the present cannot explain why a board is empty, and dropping a fixed site would
     # erase the record of what the defect was.
     disposition: str = "unrepaired"
+    # True once the module itself has been deleted. A retired site stays on the ruling as a record
+    # of what it was and why it was ruled against, but it pins no line (`site` is "retired") and it
+    # can no longer be the reason a board is empty: there is no code left to run.
+    retired: bool = False
 
 
 # The ruling. Add to it only with a written reason -- the same terms as
@@ -190,36 +195,37 @@ STOPPED_SITES: tuple[StoppedSite, ...] = (
     StoppedSite(
         name="WeatherEngine",
         module="tradehub/engines/weather_engine.py",
-        site="tradehub/engines/weather_engine.py:220",
+        site="retired",
         edge_type="WEATHER",
-        # False since the legacy daemon (`background_scanner.py`) was deleted: the only scanner that ran
-        # this class is gone, so it cannot be the reason the Weather board is empty or quarantined. The
-        # board is fed by `tradehub/scripts/scan.py` (the pure `engines/weather.py`). The class is still
-        # listed because `scripts/weather_auto_sell.py` calls it and it still prices against `yes_ask`.
+        # False since the legacy daemon (`background_scanner.py`) was deleted, and the class itself
+        # is now gone too. Nothing can call it, so it cannot be the reason the Weather board is
+        # empty or quarantined.
         wired_to_a_scanner=False,
         disposition="repaired_quarantined",
+        retired=True,
         reason=(
-            "This is the Tier-1 real-edge weather engine, and it prices every market against "
-            "`yes_ask`. " + _THE_API_MOVED + _REPAIRED_AND_QUARANTINED
+            "RETIRED on 2026-10-16: `tradehub/engines/weather_engine.py` was deleted along with "
+            "the three-city weather branch of `tradehub/scripts/scan.py`. It priced every market "
+            "against `yes_ask`, and the API no longer sends that field. The ruling is kept as a "
+            "record of the defect, not as a claim that anything still runs: the journal's ensemble "
+            "forecasters are the weather model now."
         ),
     ),
     StoppedSite(
         name="WeatherMaker",
         module="tradehub/engines/weather_maker.py",
-        site="tradehub/engines/weather_maker.py:258",
+        site="retired",
         edge_type="WEATHER",
-        # Deliberately False. No scanner calls this class, so it is not why the Weather tab is
-        # empty, and an engine that is not on the scan path must not be reported as the reason a
-        # live board has nothing on it. It is on the ruling because it carries the same drift and a
-        # maintainer needs to see all four sites at once, not because it is holding up a board.
+        # Deliberately False, and now permanent: the class has been deleted.
         wired_to_a_scanner=False,
         disposition="unrepaired",
+        retired=True,
         reason=(
-            "Not running, and not wired to any scanner. It measures its edge as the distance between "
-            "its own fair value and `market.get('price', 50)` on dicts that carry no `price` key, "
-            "so its 'edge' is the distance from a hardcoded 50c default rather than from a quote. "
-            "It is listed because it is a fourth site of the same drift and a reader has to be able "
-            "to see it; it is not the reason any tab is empty, because nothing calls it."
+            "RETIRED on 2026-10-16: `tradehub/engines/weather_maker.py` was deleted. It measured "
+            "its edge as the distance between its own fair value and `market.get('price', 50)` on "
+            "dicts that carry no `price` key, so its 'edge' was the distance from a hardcoded 50c "
+            "default rather than from a quote. It is kept on the ruling as the record of that "
+            "defect and is not the reason any tab is empty."
         ),
     ),
     StoppedSite(
@@ -428,6 +434,9 @@ def _site_payload(site: StoppedSite) -> dict[str, Any]:
         # Whether the drift is still there. Travels for the same reason `wired_to_a_scanner` does: a
         # site with no disposition is indistinguishable from a live defect, and this list holds both.
         "disposition": site.disposition,
+        # A retired module is a record, not a live site. Travels so a reader is not told to go and
+        # grep a file that was deleted on purpose.
+        "retired": site.retired,
         "reason": site.reason,
     }
 

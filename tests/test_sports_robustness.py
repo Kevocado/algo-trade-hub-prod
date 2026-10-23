@@ -196,7 +196,6 @@ def test_a_feed_404_still_does_not_fail_the_scan(monkeypatch, capsys):
     from tradehub.sports.scan import SportsRun
 
     monkeypatch.setattr(scan_mod, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan_mod, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "scan_gas", lambda *a, **k: ([], []))
     # labor_nowcast runs at 07/12/17 ET, so a suite that executes in one of
     # those hours would otherwise drive the real scan against the stub client.

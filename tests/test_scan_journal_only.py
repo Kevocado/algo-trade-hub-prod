@@ -26,7 +26,6 @@ def _run(monkeypatch, recorded):
 
     _base(monkeypatch)
     monkeypatch.setattr(predictions, "record_predictions", lambda client, rows: recorded.extend(rows))
-    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([_pred("weather", "W")], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([_pred("gas", "G")], []))
     monkeypatch.setattr(scan, "scan_labor", lambda *a, **k: ([_pred("labor_nowcast", "L")], [], "ok", []))
     return scan.main(now=NOW, live=object(), client=object())
@@ -56,10 +55,10 @@ def test_the_shared_prediction_write_loop_has_no_journal_only_branch_left():
         "a set of journal-only engines that nothing reads is left behind in tradehub.scripts.scan")
 
 
-def test_labor_predictions_are_not_written_but_weather_and_gas_still_are(monkeypatch):
+def test_labor_predictions_are_not_written_but_gas_still_is(monkeypatch):
     recorded: list = []
     assert _run(monkeypatch, recorded) == 0
-    assert sorted(r["engine"] for r in recorded) == ["gas", "weather"]
+    assert sorted(r["engine"] for r in recorded) == ["gas"]
 
 
 def test_the_run_summary_says_where_the_labor_rows_went(monkeypatch, capsys):

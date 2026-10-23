@@ -70,9 +70,17 @@ STATUS_RETIRED = "retired"
 
 # One dict per deleted engine: {"engine", "label", "removed" (ISO date), "reason", "replaced_by"}.
 # `replaced_by` names what took over, or is None when nothing did. Add an entry in the SAME PR that
-# deletes the engine; `tests/test_engine_catalogue.py` checks the shape. Empty today: nothing with a
-# scoreboard row has been deleted yet (the wave-1 cuts removed a page and a helper, not an engine).
-ENGINE_TOMBSTONES: tuple[dict[str, Any], ...] = ()
+# deletes the engine; `tests/test_engine_catalogue.py` checks the shape. The three-city weather
+# engine was retired on 2026-10-16; the journal's ensemble forecasters take over.
+ENGINE_TOMBSTONES: tuple[dict[str, Any], ...] = (
+    {
+        "engine": "weather",
+        "label": "Daily high temperature — Chicago, New York, Miami",
+        "removed": "2026-10-16",
+        "reason": "The three-city scan engine (the weather branch of tradehub/scripts/scan.py) scored 1.5-4x worse than the market. Its helpers tradehub/engines/weather_engine.py and tradehub/engines/weather_maker.py were deleted with it: they were not separately measured and were not wired to a scanner. The journal's ensemble forecasters (tradehub/journal/forecasters/weather*.py) replace it.",
+        "replaced_by": "journal ensemble forecasters (tradehub/journal/forecasters/weather*.py)",
+    },
+)
 
 # The four words a row can carry, as a set, so a hand-built or older row whose `market_verdict` is
 # missing does not silently fall through to a verdict nobody resolved. `market_verdict()` is the
@@ -115,16 +123,6 @@ ENGINE_CATALOGUE: tuple[dict[str, Any], ...] = (
             "strike, on KXAAAGASD. It reads the last AAA print plus the change in front-month "
             "RBOB over the last five closes -- retail follows wholesale with a lag -- and is "
             "decided about two hours before the market closes."
-        ),
-    },
-    {
-        "engine": "weather",
-        "label": "Daily high temperature — Chicago, New York, Miami",
-        "cadence": "daily",
-        "claim": (
-            "Whether a city's daily high reaches a strike, on KXHIGHCHI, KXHIGHNY and KXHIGHMIA. "
-            "It blends the overnight model forecasts for the city, and is decided at 23:30 local "
-            "time the day before, against that city's settlement station."
         ),
     },
     {

@@ -136,14 +136,6 @@ def run_all_alerts():
     except Exception as e:
         print(f"  ⚠️ VIX alert check failed: {e}")
 
-    # 3. Weather Auto-Sell
-    try:
-        from tradehub.scripts.weather_auto_sell import run_auto_sell_check
-        wx_alerts = run_auto_sell_check()
-        alerts_sent.extend(wx_alerts)
-    except Exception as e:
-        print(f"  ⚠️ Weather auto-sell check failed: {e}")
-
     return alerts_sent
 
 

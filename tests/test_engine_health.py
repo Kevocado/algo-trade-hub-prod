@@ -40,8 +40,7 @@ from tradehub.engine_health import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _legacy_ruling(monkeypatch):
     """These tests pin the state machine; the live ruling has no wired site since the daemon was deleted."""
     legacy_ruling.install(monkeypatch)
@@ -73,6 +72,7 @@ REPAIRED_READS = {
 
 # ── a broken engine reads as broken, with a reason ────────────────────────────────────────
 
+@pytest.mark.usefixtures("_legacy_ruling")
 class TestStoppedEnginesReadAsBroken:
     """The two wired sites, and what they read as now.
 
@@ -185,6 +185,7 @@ class TestStoppedEnginesReadAsBroken:
 
 # ── the two states stay distinguishable ─────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("_legacy_ruling")
 class TestRanAndFoundNothingIsStillQuiet:
     """The other direction, and the one a fix that only ever renders the failure would break. An
     engine that ran, looked and found nothing really is quiet, and hiding that would be its own
@@ -241,6 +242,7 @@ class TestRanAndFoundNothingIsStillQuiet:
 
 # ── a missing figure is never a number ──────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("_legacy_ruling")
 class TestAMissingFigureIsNeverZero:
     def test_a_quarantined_edge_type_publishes_no_opportunity_count(self):
         """`0` here would read as "we looked and there was nothing here", which is the exact
@@ -322,6 +324,7 @@ class TestAMissingFigureIsNeverZero:
 
 # ── conservation: nothing is dropped ────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("_legacy_ruling")
 class TestConservation:
     def test_partition_keeps_every_input_exactly_once(self):
         names = [edge_type for edge_type, _label in EDGE_TYPES]
@@ -443,6 +446,7 @@ class TestConservation:
 
 # ── an unwired helper cannot be blamed for an empty board ───────────────────────────────────
 
+@pytest.mark.usefixtures("_legacy_ruling")
 class TestUnwiredSitesAreNotBlameable:
     def test_a_site_no_scanner_calls_does_not_set_the_state(self):
         """The question is not "is there unfixed code for this tab" but "did the thing that runs
@@ -483,31 +487,47 @@ class TestTheRulingIsAboutTheLivePath:
     def test_weather_the_measured_engine_is_not_the_ruled_against_site(self):
         """This is the tension, stated as a test rather than as a footnote.
 
-        `weather` is the catalogue's measured engine: 672 settled contracts, a real Brier, a real
-        verdict against the market, all produced by `tradehub/scripts/scan.py`. `WeatherEngine` is
-        the Tier-1 engine behind `background_scanner.py`, which is repaired and quarantined. They are
-        different engines that write the SAME `engine` key and the same WEATHER edge type, and the
-        product reports the first as measured-and-losing while the second's output is withheld.
+        `weather` was the catalogue's measured engine: 672 settled contracts, a real Brier, a real
+        verdict against the market, all produced by `tradehub/scripts/scan.py`. `WeatherEngine` was
+        the Tier-1 engine behind `background_scanner.py`, which was repaired and quarantined and is
+        now RETIRED. They were different engines that wrote the SAME `engine` key and the same
+        WEATHER edge type, and the product reported the first as measured-and-losing while the
+        second's output was withheld.
 
-        The quarantine made this sharper rather than softer, and that is why the test is here. When
-        the second engine emitted nothing, the two looked different. Now it produces 30 rows a scan
-        with the same `engine` key as a measured 1.45x-against-the-market engine, so a join on that
-        column would put "quarantined" beside a real Brier -- and would also make
-        `upsert_opportunities` unable to tell a quarantined row from a published one, which is the
-        mechanism the safety property rests on. The ruling names the CLASS and the MODULE, never the
-        `kalshi_edges.engine` value, for both reasons at once.
+        The retirement makes this sharper rather than softer, and that is why the test is here. The
+        ruling names the CLASS and the MODULE, never the `kalshi_edges.engine` value, because a
+        join on that column would put "quarantined" or "retired" beside a real Brier -- and would
+        also make `upsert_opportunities` unable to tell a quarantined row from a published one,
+        which is the mechanism the safety property rests on.
         """
         ruled = {s.name for s in STOPPED_SITES}
         assert "WeatherEngine" in ruled
         assert "weather" not in ruled
 
         from tradehub.core.supabase_client import upsert_opportunities
-        from tradehub.engines.weather_engine import WeatherEngine
 
-        # The collision itself, pinned at both ends so nobody "fixes" the ruling by joining on the
-        # `engine` column: the quarantined engine writes 'Weather', and the writer lower-cases it.
-        assert "'engine': 'Weather'" in inspect.getsource(WeatherEngine.find_opportunities)
+        # The collision is historical now: the class was deleted, so nothing writes 'Weather' any
+        # more. What remains true is the reason the ruling never joined on the `engine` column --
+        # the writer lower-cases it, which is what made two different engines collide in the first
+        # place. Pinning that end keeps a future engine from re-introducing the collision by
+        # "fixing" the ruling to join on a column the writer rewrites.
         assert 'str(op["engine"]).strip().lower()' in inspect.getsource(upsert_opportunities)
+
+    def test_the_retired_weather_sites_pin_no_line_in_a_deleted_file(self):
+        """A retired site is a record, not a claim that the code still exists.
+
+        The ruling must not send a reader to grep a file that was deleted on purpose, and a
+        file-evidence test must not fail on a tombstone. The module stays as history, the line pin
+        does not.
+        """
+        from tradehub import engine_health as live
+
+        weather = [s for s in live.STOPPED_SITES if s.edge_type == "WEATHER"]
+        assert {s.name for s in weather} == {"WeatherEngine", "WeatherMaker"}
+        for site in weather:
+            assert site.retired is True
+            assert site.site == "retired"
+            assert not (REPO_ROOT / site.module).exists()
 
     def test_the_note_says_an_empty_board_is_not_a_finding_on_either_state(self):
         """Covers both, because the note is the one sentence every reader of the board gets."""
@@ -521,6 +541,7 @@ class TestTheRulingIsAboutTheLivePath:
 
 # ── the endpoint ────────────────────────────────────────────────────────────────────────────
 
+@pytest.mark.usefixtures("_legacy_ruling")
 class TestEngineHealthEndpoint:
     def _client(self):
         from fastapi.testclient import TestClient

@@ -109,55 +109,6 @@ class TestFastAPIEndpoints:
         assert "Unsupported signal-event domain" in response.json()["detail"]
 
 
-# ════════════════════════════════════════════════════════════════════
-# Weather Maker Tests
-# ════════════════════════════════════════════════════════════════════
-
-class TestWeatherMaker:
-    """Tests the NWS-based fair-value probability model (pure math, no API needed)."""
-
-    def test_prob_above_high_confidence(self):
-        """Forecast 60°F, strike 45°F, direction=above → near certain YES."""
-        from tradehub.engines.weather_maker import WeatherMaker
-        maker = WeatherMaker()
-        prob = maker._bayes_prob(forecast_high_f=60.0, strike=45.0, direction="above")
-        assert prob > 90.0, f"Expected >90%, got {prob}"
-
-    def test_prob_below_high_confidence(self):
-        """Forecast 20°F, strike 40°F, direction=below → near certain YES."""
-        from tradehub.engines.weather_maker import WeatherMaker
-        maker = WeatherMaker()
-        prob = maker._bayes_prob(forecast_high_f=20.0, strike=40.0, direction="below")
-        assert prob > 90.0, f"Expected >90%, got {prob}"
-
-    def test_prob_near_strike_is_near_50(self):
-        """Forecast == strike → should be near 50% (uncertainty)."""
-        from tradehub.engines.weather_maker import WeatherMaker
-        maker = WeatherMaker()
-        prob = maker._bayes_prob(forecast_high_f=50.0, strike=50.0, direction="above")
-        assert 35.0 <= prob <= 65.0, f"Expected near 50%, got {prob}"
-
-    def test_prob_always_in_bounds(self):
-        """All probabilities must be clipped to [2, 98]."""
-        from tradehub.engines.weather_maker import WeatherMaker
-        maker = WeatherMaker()
-        for fcst in [0, 30, 70, 120]:
-            for strike in [20, 50, 80]:
-                for direction in ["above", "below"]:
-                    prob = maker._bayes_prob(fcst, strike, direction)
-                    assert 2.0 <= prob <= 98.0, f"Out of bounds: {prob}"
-
-    def test_maker_spread_symmetric(self):
-        """Bid should be 2¢ below fair value, ask 2¢ above."""
-        from tradehub.engines.weather_maker import WeatherMaker, MAKER_SPREAD_CENTS
-        maker = WeatherMaker()
-        fv = maker._bayes_prob(55.0, 50.0, "above")
-        bid = round(fv - MAKER_SPREAD_CENTS, 1)
-        ask = round(fv + MAKER_SPREAD_CENTS, 1)
-        assert ask - bid == MAKER_SPREAD_CENTS * 2
-
-
-# ════════════════════════════════════════════════════════════════════
 # Telegram Command Parser Tests
 # ════════════════════════════════════════════════════════════════════
 

@@ -125,7 +125,6 @@ def _base(monkeypatch, *, labor_due=True, labor_scan=None, upserted=None, cleane
                         lambda rows: upserted.extend(rows) if upserted is not None else None)
     monkeypatch.setattr(predictions, "record_predictions", lambda *a, **k: None)
     monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "remove_stale_edges",
                         lambda client, produced: cleaned.append(produced) if cleaned is not None else None)
@@ -154,7 +153,7 @@ def test_main_isolates_a_labor_failure(monkeypatch, capsys):
     summary = json.loads(capsys.readouterr().out)
     assert summary["labor_nowcast"]["status"].startswith("error: RuntimeError"), summary["labor_nowcast"]
     assert summary["labor_nowcast"]["predictions"] == 0
-    assert summary["writes"]["predictions"]["weather"] == "ok", summary["writes"]
+    assert summary["writes"]["predictions"]["gas"] == "ok", summary["writes"]
 
 
 def test_a_labor_failure_is_logged_with_a_traceback(monkeypatch, caplog):

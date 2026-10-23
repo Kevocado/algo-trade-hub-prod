@@ -162,7 +162,6 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
     prediction_writes = []
     edge_writes = []
     monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([{"engine": "weather"}], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "sports_due", lambda now: True)
     # scan.main() defaults to the wall clock, and labor_nowcast runs at 07/12/17 ET. Without
@@ -187,7 +186,7 @@ def test_scan_main_includes_sports_when_due(monkeypatch, capsys):
     monkeypatch.setattr(scan, "remove_closed_labor_edges", lambda *args, **kwargs: None)
 
     assert scan.main() == 0
-    assert [r["engine"] for rows in prediction_writes for r in rows] == ["weather", "sports_nfl"]
+    assert [r["engine"] for rows in prediction_writes for r in rows] == ["sports_nfl"]
     assert [row for rows in edge_writes for row in rows] == [
         {"edge_type": "SPORTS", "engine": "sports_nfl", "market_ticker": "T1", "gate_status": "SHADOW"}
     ]
@@ -207,7 +206,6 @@ def test_scan_main_survives_a_sports_crash(monkeypatch, capsys):
     import tradehub.predictions as predictions
 
     monkeypatch.setattr(scan, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "scan_gas", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan, "sports_due", lambda now: True)
     # labor_nowcast runs at 07/12/17 ET, so a suite that executes in one of
@@ -233,4 +231,4 @@ def test_scan_main_survives_a_sports_crash(monkeypatch, capsys):
     summary = json.loads(capsys.readouterr().out)
     assert "kalshi down" in summary["sports"]["error"]
     assert any("kalshi down" in f for f in summary["failures"]), summary["failures"]
-    assert summary["writes"]["edges"]["weather"] == "ok"
+    assert summary["writes"]["edges"]["gas"] == "ok"

@@ -52,7 +52,6 @@ def _run_main(monkeypatch, *, sports_due=True, sports_result=SPORT_RESULT,
 
     calls = []
     monkeypatch.setattr(scan_mod, "KalshiLive", lambda *a, **k: object())
-    monkeypatch.setattr(scan_mod, "scan_weather", lambda *a, **k: ([], []))
     monkeypatch.setattr(scan_mod, "scan_gas", lambda *a, **k: ([], []))
     # labor_nowcast runs at 07/12/17 ET, so a suite that executes in one of
     # those hours would otherwise drive the real scan against the stub client.
@@ -114,7 +113,7 @@ def test_sports_cleanup_is_skipped_when_the_sport_scan_crashed(monkeypatch, caps
     summary = json.loads(capsys.readouterr().out)
     assert "kalshi down" in str(summary["sports"])
     assert any("kalshi down" in f for f in summary["failures"]), summary["failures"]
-    assert summary["writes"]["edges"]["weather"] == "ok", "weather's write was affected"
+    assert summary["writes"]["edges"]["gas"] == "ok", "gas's write was affected"
 
 
 def test_sports_cleanup_is_skipped_on_a_not_due_hour(monkeypatch):

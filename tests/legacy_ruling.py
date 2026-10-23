@@ -13,8 +13,6 @@ a test that imports `STOPPED_SITES` sees whatever the autouse fixture (or its ow
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from tradehub import engine_health as health
 
 
@@ -47,7 +45,16 @@ UNWIRED_STOPPED_SITES = LiveTuple("UNWIRED_STOPPED_SITES")
 _REAL = {site.name: site for site in health.STOPPED_SITES}
 
 LEGACY_SITES = (
-    replace(_REAL["WeatherEngine"], wired_to_a_scanner=True),
+    health.StoppedSite(
+        name="WeatherEngine",
+        module="tradehub/engines/weather_engine.py",  # deleted: a tombstone, so file-evidence tests skip it
+        site="tradehub/engines/weather_engine.py:220",
+        edge_type="WEATHER",
+        wired_to_a_scanner=True,
+        disposition="repaired_quarantined",
+        reason=("This is the Tier-1 real-edge weather engine, and it prices every market against "
+                "`yes_ask`. " + health._THE_API_MOVED + health._REPAIRED_AND_QUARANTINED),
+    ),
     health.StoppedSite(
         name="MacroEngine",
         module="tradehub/engines/macro_engine.py",  # deleted: a tombstone, so file-evidence tests skip it
@@ -62,7 +69,11 @@ LEGACY_SITES = (
     _REAL["clean_market_data"],
 )
 
-DELETED_MODULES = frozenset({"tradehub/engines/macro_engine.py"})
+DELETED_MODULES = frozenset({
+    "tradehub/engines/macro_engine.py",
+    "tradehub/engines/weather_engine.py",
+    "tradehub/engines/weather_maker.py",
+})
 
 
 def install(monkeypatch) -> None:

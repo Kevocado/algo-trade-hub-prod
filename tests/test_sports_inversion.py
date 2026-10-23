@@ -1457,7 +1457,6 @@ def _cron_summary_for(monkeypatch, capsys, run):
     import tradehub.predictions as predictions_mod
 
     monkeypatch.setattr(cron, "KalshiLive", lambda *_a, **_k: object())
-    monkeypatch.setattr(cron, "scan_weather", lambda *_a, **_k: ([], []))
     monkeypatch.setattr(cron, "scan_gas", lambda *_a, **_k: ([], []))
     monkeypatch.setattr(cron, "labor_scan_due", lambda _now: False)
     monkeypatch.setattr(cron, "sports_due", lambda _now: True)
