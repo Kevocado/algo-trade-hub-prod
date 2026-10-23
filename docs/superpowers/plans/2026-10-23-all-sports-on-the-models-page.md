@@ -51,6 +51,13 @@ Shapes differ; do not assume. Capture each live response into a fixture file fir
 - Reviewer sets the three new env vars in `/opt/stack/compose.yml` on the VPS before merge (not the worker).
 - Full gate on the merged tree: pytest at monotonic 5.0 and 1e7, ruff --select F, vitest, tsc, eslint, vite build.
 
+### Task 5: A clear Kalshi comparison on every card
+Kevin asked for the market comparison to be clear on each sport. What is possible without touching a Predictor repo, and what is not:
+- **NFL and college football (now):** the journal already freezes the predictor's pre-game probability and the Kalshi price on the SAME contracts and serves `gap` and `gap_se` (negative = better than the price). The card shows one line from `/api/journal`: `vs Kalshi price: +0.008 +/- 0.016 (no signal)` using the same ahead/behind/no-signal rule as the Journal (`LiveSkill.verdict`), plus `n`. No new backend: pass the existing scores into the section.
+- **NBA, Premier League, F1: NOT honest from what exists.** The paper ledger (`predictor-hub/data/paper/ledger.jsonl`, 682 rows today: NBA 73, PL 7, F1 7) holds `model_p` and `market_price`, but ONLY for candidates that already passed an edge filter (edge >= 4 points). A comparison on those rows is selected on the very disagreement it would measure, so it will always flatter the model. Do not build it from the ledger; the card keeps "no market comparison" until the real feed exists.
+- **What the Predictor team owes (hub cannot do this itself):** a working `/api/kalshi-feed` on NBA, PL and F1 with the same shape NFL and CFB serve (every priced market: ticker, model probability, Kalshi price, kickoff). Today NBA returns the site page and PL/F1 return 404. Once it exists the hub's existing journal consumer (`tradehub/journal/forecasters/sports.py`) can freeze and score those sports against the price like NFL and CFB, and the cards light up automatically. Give this to the Predictor orchestrator as a request; the hub does not edit their repos.
+- Tests: the NFL/CFB comparison line renders from a real journal score (gap and gap_se from the live `/api/journal`), the three other sports render "no market comparison" and never a number.
+
 ## Out of scope (later)
 - A "Sports money record" number from the paper tracker (`predictor-hub/data/paper/report.json` on raw GitHub): a second small PR once this page exists.
 - Backfilling NBA/PL/F1 into the Kalshi-gap journal: blocked on their `/api/kalshi-feed` (NBA returns the SPA page, PL and F1 return 404), which the Predictor team owns.
