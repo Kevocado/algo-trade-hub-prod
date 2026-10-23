@@ -94,6 +94,7 @@ def build_health_report(
     orderbook_age_seconds: float | None,
     now: datetime,
     untracked: frozenset[str] | None = None,
+    calendar_by_family: Mapping[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the whole read-only report. Pure: `timers`/`frozen_by_family` are already fetched.
 
@@ -107,6 +108,13 @@ def build_health_report(
     `not_tracked` and raise no problem. It defaults to `None` meaning "track them all", deliberately:
     if a caller forgets to pass it, a timer with no marker is loudly `never` rather than quietly
     unmeasured. Opting out of tracking has to be explicit; opting in must not be.
+
+    `calendar_by_family` maps family -> list of calendar entries (each with at least "target",
+    "family", "cadence", "cutoff_at", "market_linked"). A daily family is only expected to freeze
+    when it has at least one calendar entry whose cutoff falls in the window [now-24h, now+24h].
+    If the calendar read fails (None), fall back to cadence-only expected_daily. If the calendar
+    returns entries but none fall in the window, the family is not expected to freeze that day
+    (expected_daily=False, silent=False, reason="no_game_window").
     """
     problems: list[str] = []
     untracked = untracked or frozenset()
@@ -141,6 +149,13 @@ def build_health_report(
     known_counts = frozen_by_family or {}
     counts_known = frozen_by_family is not None
     family_payload: dict[str, Any] = {}
+    # The window for checking calendar entries: a daily family is expected to freeze when it has
+    # at least one target whose cutoff falls in [now - FROZEN_WINDOW_HOURS, now + FROZEN_WINDOW_HOURS].
+    # This covers the freeze window (last 24h) plus the upcoming freeze window (next 24h) because
+    # a forecaster freezes *before* the cutoff.
+    calendar_window_start = now - timedelta(hours=FROZEN_WINDOW_HOURS)
+    calendar_window_end = now + timedelta(hours=FROZEN_WINDOW_HOURS)
+
     # The union: every family the registry knows, plus any only the count read saw.
     for family in sorted(set(cadences) | set(known_counts)):
         cadence = cadences.get(family)
@@ -148,13 +163,46 @@ def build_health_report(
             count: int | None = known_counts[family]
         else:
             count = 0 if counts_known else None
-        silent = expected_daily(cadence) and count == 0
+
+        # Determine if this daily family is expected to freeze today.
+        # A family is expected to freeze if:
+        # 1. It has a daily/hourly cadence, AND
+        # 2. Either calendar read failed (None) -> fall back to cadence, OR
+        #    calendar has entries in the window, OR
+        #    calendar has no entries in the window -> not expected (no_game_window)
+        base_expected = expected_daily(cadence)
+        has_calendar_in_window = False
+        reason: str | None = None
+        if base_expected:
+            cal = calendar_by_family
+            if cal is None:
+                # Calendar read failed: fall back to old behavior (cadence-based)
+                has_calendar_in_window = True  # treat as if it had entries
+            else:
+                entries = cal.get(family, [])
+                for entry in entries:
+                    cutoff_str = entry.get("cutoff_at")
+                    if not cutoff_str:
+                        continue
+                    try:
+                        cutoff = datetime.fromisoformat(cutoff_str.replace("Z", "+00:00"))
+                    except (TypeError, ValueError):
+                        continue
+                    if calendar_window_start <= cutoff <= calendar_window_end:
+                        has_calendar_in_window = True
+                        break
+                if not has_calendar_in_window:
+                    reason = "no_game_window"
+        expected = base_expected and has_calendar_in_window
+        silent = expected and count == 0
         family_payload[family] = {
             "frozen_24h": count,
             "cadence": cadence,
-            "expected_daily": expected_daily(cadence),
+            "expected_daily": expected,
             "silent": silent,
         }
+        if reason:
+            family_payload[family]["reason"] = reason
         if silent:
             problems.append(f"family {family} is daily but froze nothing in the last {FROZEN_WINDOW_HOURS}h")
 
@@ -304,6 +352,10 @@ def collect_health(supa, *, now: datetime | None = None, orderbook_dir: Path | N
     frozen = _frozen_counts(supa, since)
     cadences = _expected_cadences()
 
+    # Fetch all calendar entries to determine which daily families have targets in the window
+    # [now-24h, now+24h]. If the calendar read fails, fall back to cadence-only behavior.
+    calendar_by_family = _fetch_calendar_by_family(supa)
+
     return build_health_report(
         timers=timers,
         frozen_by_family=frozen,
@@ -311,4 +363,21 @@ def collect_health(supa, *, now: datetime | None = None, orderbook_dir: Path | N
         orderbook_age_seconds=orderbook_age,
         now=now,
         untracked=UNTRACKED_TIMERS,
+        calendar_by_family=calendar_by_family,
     )
+
+
+def _fetch_calendar_by_family(supa) -> dict[str, list[dict[str, Any]]] | None:
+    """Read all calendar entries and group by family. Returns None on failure."""
+    try:
+        # Use select_all pattern from journal/store.py to page through all entries
+        from tradehub.journal.store import select_all
+        rows = select_all(supa, "journal_calendars", lambda q: q.select("*"), ("target",))
+        by_family: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            family = row.get("family")
+            if family:
+                by_family.setdefault(family, []).append(row)
+        return by_family
+    except Exception:  # noqa: BLE001 - health must never 500 on a missing table
+        return None
