@@ -47,4 +47,4 @@ Without live DB access, the deliverable is the verified module + CLI + tests + t
 python -m tradehub.research.market_blend --from-json exported_rows.json
 ```
 
-Requires `PYTHONPATH` to include `tradehub/` (module imports). No secrets needed; no backend writes performed.
+Requires `PYTHONPATH` to include the repository root (`PYTHONPATH=/path/to/repo` or run from repo root). No secrets needed; no backend writes performed.

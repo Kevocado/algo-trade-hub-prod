@@ -213,6 +213,8 @@ def test_missing_market_prob_dropped_not_filled():
     # Assert contracts missing market_prob are excluded from fitted training data
     from tradehub.research.market_blend import _contract_level_data
     contracts_after = _contract_level_data(train_events)
+    total_train_contracts = sum(len(ev) for ev in train_events)
+    assert len(contracts_after) < total_train_contracts, "Dropped contracts must reduce fitted data count"
     assert all("market_prob" in c and c["market_prob"] is not None for c in contracts_after)
     # Fit should not crash and should only use contracts with both probs
     a, b, c = fit_logistic_l2(train_events)

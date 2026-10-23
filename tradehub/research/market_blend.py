@@ -280,7 +280,8 @@ def run_market_blend_study(
             for c in ev:
                 target = c.get("target", "")
                 ed = c.get("event_day", "")
-                if family in target or family in ed:
+                forecaster = c.get("forecaster", "")
+                if family in target or family in ed or family in forecaster:
                     matches.append(c)
             if matches:
                 filtered.append(matches)
@@ -346,6 +347,8 @@ def run_market_blend_study(
                 f_test, a, b, c_param, w_est, n_resamples=2000, seed=42
             )
             verdict_v1 = "adds information" if v1_hi < 0 else "no evidence yet (CI includes 0)"
+            verdict_v2 = "adds information" if v2_hi < 0 else "no evidence yet (CI includes 0)"
+            # Family verdict based on V1 (learned blend) as primary; V2 reported separately in table
             verdict = verdict_v1
             v1_gap_se = statistics.pstdev(v1_gaps) / (len(v1_gaps) ** 0.5) if v1_gaps else None
             v2_gap_se = statistics.pstdev(v2_gaps) / (len(v2_gaps) ** 0.5) if v2_gaps else None
@@ -359,7 +362,7 @@ def run_market_blend_study(
                 "v1_gap": round(gap_v1, 6), "v2_gap": round(gap_v2, 6),
                 "ci_95_v1": (round(v1_lo, 6), round(v1_hi, 6)),
                 "ci_95_v2": (round(v2_lo, 6), round(v2_hi, 6)),
-                "verdict": verdict, "variants_tried": 3,
+                "verdict": verdict, "verdict_v2": verdict_v2, "variants_tried": 3,
             }
         except Exception as exc:
             results[f] = {
