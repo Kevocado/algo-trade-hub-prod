@@ -92,7 +92,27 @@ export default function Journal() {
   const h = data.headline;
   const calls = liveRows(data.forecasters).map((r) => verdictOf(r.gap, r.se));
   const nCalls = (v: string) => calls.filter((c) => c === v).length;
-  const verdict = `${nCalls("ahead")} ahead · ${nCalls("behind")} behind · ${nCalls("none")} no signal`;
+  const verdict = calls.length === 0
+    ? "No forecaster has a measured gap yet."
+    : `${nCalls("ahead")} ahead · ${nCalls("behind")} behind · ${nCalls("none")} no signal`;
+
+  const handleTabKeyDown = (e: React.KeyboardEvent, tabs: Tab[]) => {
+    const idx = tabs.indexOf(tab);
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      setTab(tabs[(idx + 1) % tabs.length]);
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      setTab(tabs[(idx - 1 + tabs.length) % tabs.length]);
+    }
+  };
+
+  const tabs: [Tab, string][] = [
+    ["scored", "Scored"],
+    ["time", "Over time"],
+    ["weather", "Weather"],
+    ["waiting", `Waiting (${waiting.length})`],
+  ];
 
   return (
     <div className="mx-auto max-w-5xl space-y-10 p-6 md:p-8">
@@ -115,13 +135,15 @@ export default function Journal() {
       </section>
 
       <div role="tablist" aria-label="Journal views" className="-mb-6 flex gap-1 overflow-x-auto border-b border-slate-800">
-        {([["scored", "Scored"], ["time", "Over time"], ["weather", "Weather"], ["waiting", `Waiting (${waiting.length})`]] as [Tab, string][]).map(([id, text]) => (
+        {tabs.map(([id, text]) => (
           <button
             key={id}
             type="button"
             role="tab"
             aria-selected={tab === id}
+            tabIndex={tab === id ? 0 : -1}
             onClick={() => setTab(id)}
+            onKeyDown={(e) => handleTabKeyDown(e, tabs.map(([t]) => t))}
             className={`whitespace-nowrap border-b-2 px-4 py-2 text-sm ${tab === id ? "border-sky-400 text-white" : "border-transparent text-slate-400 hover:text-slate-200"}`}
           >
             {text}
@@ -129,9 +151,9 @@ export default function Journal() {
         ))}
       </div>
 
-      {results.length > 0 && (
+      {results.length > 0 ? (
         <section aria-label="Results" className={tab === "scored" ? "" : "hidden"}>
-                    <table className="w-full text-sm">
+          <table className="w-full text-sm">
             <thead className="text-xs uppercase tracking-normal text-slate-500 sm:tracking-wider">
               <tr>
                 <th className="py-2 text-left font-normal">Forecast</th>
@@ -162,8 +184,9 @@ export default function Journal() {
                       )}
                     </td>
                     <td className="py-3 text-right tabular-nums text-slate-300">
-                      {row.scored} <span className="hidden text-slate-600 sm:inline">of {row.needed}</span>
+                      {row.scored} <span className="hidden sm:inline">of {row.needed}</span>
                       <ProgressBar scored={row.scored} needed={row.needed} />
+                      <div className="sm:hidden text-xs text-slate-500 mt-1">of {row.needed} needed</div>
                     </td>
                     <td className="py-3 text-right text-base sm:text-lg tabular-nums text-slate-100">
                       {skillText(row.skill)}
@@ -184,13 +207,17 @@ export default function Journal() {
             </button>
           )}
         </section>
+      ) : (
+        <section aria-label="Results" className={tab === "scored" ? "" : "hidden"}>
+          <p className="text-slate-400 text-center py-8">No scored forecasters yet.</p>
+        </section>
       )}
 
       <div className={tab === "time" ? "" : "hidden"}><SkillOverTime series={series?.series ?? []} /></div>
 
       <div className={tab === "weather" ? "" : "hidden"}><WeatherPanel /></div>
 
-      {waiting.length > 0 && (
+      {waiting.length > 0 ? (
         <section aria-label="Waiting" className={tab === "waiting" ? "" : "hidden"}>
           <ul className="flex flex-wrap gap-2">
             {waiting.map((row) => (
@@ -203,6 +230,10 @@ export default function Journal() {
               </li>
             ))}
           </ul>
+        </section>
+      ) : (
+        <section aria-label="Waiting" className={tab === "waiting" ? "" : "hidden"}>
+          <p className="text-slate-400 text-center py-8">No forecasters waiting to be scored.</p>
         </section>
       )}
 
