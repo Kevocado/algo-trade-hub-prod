@@ -248,3 +248,217 @@ def test_the_untracked_set_is_exactly_the_two_jobs_with_no_marker():
     assert UNTRACKED_TIMERS == {"scan", "settle"}
     assert UNTRACKED_TIMERS < set(TIMERS)
     assert {"journal", "orderbooks"} & UNTRACKED_TIMERS == set()
+
+
+# ─── sports calendar: daily families only expected to freeze when calendar has targets ───────
+
+def test_a_daily_non_sports_family_with_calendar_entries_and_zero_frozen_is_silent():
+    """A daily family (weather, gas, ercot, etc.) that has calendar targets in the window but froze
+    nothing is still a problem. This is the regression guard: the fix for sports must not silence
+    real daily families that actually should freeze every day."""
+    # The calendar read returns targets with cutoffs inside [now-24h, now+24h] for this family
+    calendar_by_family = {
+        "weather_high": [
+            {"target": "KXHIGHNY-26OCT17-75", "family": "weather_high", "cadence": "daily",
+             "cutoff_at": "2026-10-17T05:30:00+00:00", "market_linked": True},
+        ],
+    }
+    # Build the report with calendar data
+    from tradehub.health import build_health_report
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"weather_high": 0},
+        cadences={"weather_high": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family=calendar_by_family,
+    )
+    fam = report["families"]["weather_high"]
+    assert fam["frozen_24h"] == 0
+    assert fam["expected_daily"] is True
+    assert fam["silent"] is True
+    assert fam.get("reason") is None  # no reason, it's genuinely silent
+    assert any("weather_high" in p for p in report["problems"])
+
+
+def test_a_daily_sports_family_with_no_calendar_entries_in_window_is_not_silent():
+    """A daily sports family (sports_nfl, sports_nfl_spread, etc.) with NO calendar entries whose
+    cutoff falls in [now-24h, now+24h] is NOT expected to freeze. It should report expected_daily=False,
+    silent=False, with reason='no_game_window', and NOT add a problem line."""
+    # Calendar returns empty for sports_nfl because no NFL games have cutoffs in the window
+    calendar_by_family = {
+        "sports_nfl": [],  # no targets with cutoffs in the window
+    }
+    from tradehub.health import build_health_report
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"sports_nfl": 0},
+        cadences={"sports_nfl": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family=calendar_by_family,
+    )
+    fam = report["families"]["sports_nfl"]
+    assert fam["frozen_24h"] == 0
+    assert fam["expected_daily"] is False  # not expected when no games
+    assert fam["silent"] is False
+    assert fam.get("reason") == "no_game_window"
+    # No problem should be added
+    assert not any("sports_nfl" in p for p in report["problems"])
+
+
+def test_a_daily_sports_family_with_calendar_entries_in_window_and_zero_frozen_is_silent():
+    """If a sports family DOES have calendar entries in the window (game day) but froze nothing,
+    it IS a problem - same as weather/gas."""
+    calendar_by_family = {
+        "sports_nfl": [
+            {"target": "KXNFLGAME-26OCT17PHIKC-PHI", "family": "sports_nfl", "cadence": "daily",
+             "cutoff_at": "2026-10-17T17:00:00+00:00", "market_linked": True},
+        ],
+    }
+    from tradehub.health import build_health_report
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"sports_nfl": 0},
+        cadences={"sports_nfl": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family=calendar_by_family,
+    )
+    fam = report["families"]["sports_nfl"]
+    assert fam["frozen_24h"] == 0
+    assert fam["expected_daily"] is True
+    assert fam["silent"] is True
+    assert fam.get("reason") is None
+    assert any("sports_nfl" in p for p in report["problems"])
+
+
+def test_calendar_read_failure_falls_back_to_cadence_based_expected_daily():
+    """If the calendar read fails (returns None), fall back to old behavior: daily cadence means
+    expected_daily=True, and zero frozen => silent=True."""
+    from tradehub.health import build_health_report
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"sports_nfl": 0},
+        cadences={"sports_nfl": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family=None,  # calendar read failed
+    )
+    fam = report["families"]["sports_nfl"]
+    assert fam["expected_daily"] is True
+    assert fam["silent"] is True
+    assert any("sports_nfl" in p for p in report["problems"])
+
+
+def test_a_daily_non_sports_family_with_no_calendar_entries_is_still_silent():
+    """If a weather family's calendar writer stops, the empty calendar is the failure, not a day off."""
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"weather_high": 0},
+        cadences={"weather_high": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family={"weather_high": []},
+    )
+    fam = report["families"]["weather_high"]
+    assert fam["expected_daily"] is True and fam["silent"] is True
+    assert any("weather_high" in p for p in report["problems"])
+
+
+def test_only_sports_families_are_game_driven():
+    from tradehub.health import is_game_driven
+
+    assert is_game_driven("sports_nfl_spread_cal") and is_game_driven("sports_cfb")
+    assert not any(is_game_driven(f) for f in ("weather_high", "gas_aaa", "ercot_peak", "eurusd", "gold"))
+
+
+def test_the_calendar_read_asks_the_database_for_the_window_only():
+    """1,871 calendar rows today and ~60 more a day: the health call must not page the whole table."""
+    from tradehub.health import _fetch_calendar_by_family
+
+    seen: list[tuple[str, str, str]] = []
+
+    class Query:
+        def select(self, *_):
+            return self
+
+        def gte(self, col, val):
+            seen.append(("gte", col, val))
+            return self
+
+        def lte(self, col, val):
+            seen.append(("lte", col, val))
+            return self
+
+        def order(self, *_):
+            return self
+
+        def range(self, *_):
+            return self
+
+        def execute(self):
+            class R:
+                data = [{"family": "sports_nfl", "cutoff_at": "2026-10-17T20:00:00+00:00"}]
+
+            return R()
+
+    class Supa:
+        def table(self, name):
+            assert name == "journal_calendars"
+            return Query()
+
+    out = _fetch_calendar_by_family(Supa(), NOW)
+    assert out == {"sports_nfl": [{"family": "sports_nfl", "cutoff_at": "2026-10-17T20:00:00+00:00"}]}
+    lo = NOW.isoformat()
+    hi = (NOW + timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
+    assert seen == [("gte", "cutoff_at", lo), ("lte", "cutoff_at", hi)]
+
+
+def test_a_calendar_cutoff_that_is_already_a_datetime_counts_as_upcoming():
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"sports_nfl": 0},
+        cadences={"sports_nfl": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family={"sports_nfl": [{"cutoff_at": NOW + timedelta(hours=3)}]},
+    )
+    fam = report["families"]["sports_nfl"]
+    assert fam["expected_daily"] is True and fam["silent"] is True
+
+
+def test_a_game_that_already_started_does_not_make_a_quiet_day_a_fault():
+    """Live 2026-10-23: Thursday's NFL game (cutoff 00:15 UTC) was inside the last 24h but was frozen
+    earlier, so counting it flagged sports_nfl as silent all day Friday."""
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"sports_nfl": 0},
+        cadences={"sports_nfl": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family={"sports_nfl": []},  # the read is (now, now+24h]: the started game is not in it
+    )
+    fam = report["families"]["sports_nfl"]
+    assert fam["silent"] is False and fam.get("reason") == "no_game_window"
+    assert not report["problems"] or not any("sports_nfl" in p for p in report["problems"])
+
+
+def test_an_entry_with_a_cutoff_in_the_past_is_not_upcoming_even_if_the_read_returns_it():
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"sports_nfl": 0},
+        cadences={"sports_nfl": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family={"sports_nfl": [{"cutoff_at": (NOW - timedelta(hours=12)).isoformat()}]},
+    )
+    assert report["families"]["sports_nfl"]["silent"] is False
