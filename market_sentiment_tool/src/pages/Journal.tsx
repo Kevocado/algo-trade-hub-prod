@@ -96,15 +96,14 @@ export default function Journal() {
     ? "No forecaster has a measured gap yet."
     : `${nCalls("ahead")} ahead · ${nCalls("behind")} behind · ${nCalls("none")} no signal`;
 
-  const handleTabKeyDown = (e: React.KeyboardEvent, tabs: Tab[]) => {
-    const idx = tabs.indexOf(tab);
-    if (e.key === "ArrowRight") {
-      e.preventDefault();
-      setTab(tabs[(idx + 1) % tabs.length]);
-    } else if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      setTab(tabs[(idx - 1 + tabs.length) % tabs.length]);
-    }
+  const handleTabKeyDown = (e: React.KeyboardEvent<HTMLElement>, tabs: Tab[]) => {
+    const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const next = (tabs.indexOf(tab) + step + tabs.length) % tabs.length;
+    setTab(tabs[next]);
+    // Selection moves with focus, or a keyboard user is left on a tab that is no longer the selected one.
+    (e.currentTarget.parentElement?.children[next] as HTMLElement | undefined)?.focus();
   };
 
   const tabs: [Tab, string][] = [

@@ -326,3 +326,31 @@ describe("Journal", () => {
     expect(rows[2]).toContain("Euro vs dollar tomorrow");
     expect(rows[3]).toContain("2025 -0.005");         // EUR/USD's years, immediately after it
   });
+
+describe("Journal tabs and empty states", () => {
+  it("moves selection and focus with the arrow keys", async () => {
+    stubFetch();
+    render(<Journal />);
+    const scored = await screen.findByRole("tab", { name: "Scored" });
+    scored.focus();
+    fireEvent.keyDown(scored, { key: "ArrowRight" });
+    const over = screen.getByRole("tab", { name: "Over time" });
+    expect(over).toHaveAttribute("aria-selected", "true");
+    expect(over).toHaveAttribute("tabindex", "0");
+    expect(scored).toHaveAttribute("tabindex", "-1");
+    expect(document.activeElement).toBe(over);
+    fireEvent.keyDown(over, { key: "ArrowLeft" });
+    expect(screen.getByRole("tab", { name: "Scored" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("says so in one sentence when nothing has been scored or is waiting", async () => {
+    const empty = { ...journal, forecasters: [] };
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve({
+      ok: true, status: 200, json: () => Promise.resolve(url.includes("/api/journal/series") ? { series: [] } : empty),
+    })));
+    render(<Journal />);
+    expect(await screen.findByText("No forecaster has a measured gap yet.")).toBeInTheDocument();
+    expect(screen.getByText("No scored forecasters yet.")).toBeInTheDocument();
+    expect(screen.getByText("No forecasters waiting to be scored.")).toBeInTheDocument();
+  });
+});
