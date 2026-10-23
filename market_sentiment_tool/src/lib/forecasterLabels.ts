@@ -50,10 +50,17 @@ const VERSIONED: Record<string, string> = {
 /** Plan 15: a market-anchored copy of a model, graded beside it. Named after the model it shadows. */
 export const CAUTIOUS_SUFFIX = "_cautious";
 
+/** A calibrated copy of a model (isotonic or platform scaling). Named after the model it calibrates. */
+export const CALIBRATED_SUFFIX = "_cal";
+
 export function forecasterLabel(forecaster: string, version?: string): string {
   if (forecaster.endsWith(CAUTIOUS_SUFFIX)) {
     const base = version?.replace(/\+w\d+$/, "");
     return `${forecasterLabel(forecaster.slice(0, -CAUTIOUS_SUFFIX.length), base)} (cautious)`;
+  }
+  if (forecaster.endsWith(CALIBRATED_SUFFIX)) {
+    const base = version?.replace(/\+w\d+$/, "");
+    return `${forecasterLabel(forecaster.slice(0, -CALIBRATED_SUFFIX.length), base)} (calibrated)`;
   }
   if (version && VERSIONED[`${forecaster}@${version}`]) return VERSIONED[`${forecaster}@${version}`];
   if (BASE[forecaster]) return BASE[forecaster];
@@ -79,10 +86,12 @@ const TILE_NOTE: Record<string, string> = {
   housing_direction: "two months behind",
 };
 
-/** The note for a forecaster, or `undefined` when it has none. Cautious copies inherit the inner's. */
+/** The note for a forecaster, or `undefined` when it has none. Cautious and calibrated copies inherit the inner's. */
 export function tileNote(forecaster: string): string | undefined {
   const base = forecaster.endsWith(CAUTIOUS_SUFFIX)
     ? forecaster.slice(0, -CAUTIOUS_SUFFIX.length)
+    : forecaster.endsWith(CALIBRATED_SUFFIX)
+    ? forecaster.slice(0, -CALIBRATED_SUFFIX.length)
     : forecaster;
   return TILE_NOTE[base];
 }
