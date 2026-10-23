@@ -61,23 +61,23 @@ export function LiveSkill({ scores }: { scores: JournalScore[] }) {
 
   return (
     <div role="list" aria-label="Skill against the Kalshi price" className="space-y-2">
-      <div className="grid grid-cols-[minmax(0,9rem)_1fr_7.5rem] items-end gap-3 text-[10px] text-slate-500 sm:grid-cols-[14rem_1fr_9rem]">
-        <span />
+      <div className="grid items-end gap-3 text-[10px] text-slate-500 sm:grid-cols-[14rem_1fr_9rem]">
+        <span className="hidden sm:block" />
         <div className="relative h-4">
           <span className="absolute left-0">{(-span).toFixed(2)} better</span>
           <span className="absolute -translate-x-1/2" style={{ left: "50%" }}>0</span>
           <span className="absolute right-0">worse {span.toFixed(2)}</span>
         </div>
-        <span />
+        <span className="hidden sm:block" />
       </div>
       {rows.map((r) => {
         const v = verdict(r.gap, r.se);
         const half = r.se === null ? 0 : Z95 * r.se;
         return (
           <div role="listitem" key={r.key}
-            className="grid grid-cols-[minmax(0,9rem)_1fr_7.5rem] items-center gap-3 text-xs sm:grid-cols-[14rem_1fr_9rem]">
+            className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-xs sm:grid-cols-[14rem_1fr_9rem]">
             <span className="truncate text-slate-200" title={r.label}>{r.label}</span>
-            <div className="relative h-5">
+            <div className="relative order-last col-span-2 h-5 sm:order-none sm:col-span-1">
               <div className="absolute inset-y-0 w-px bg-slate-500" style={{ left: "50%" }} />
               {half > 0 && (
                 <div className="absolute top-1/2 h-0.5 -translate-y-1/2 rounded"

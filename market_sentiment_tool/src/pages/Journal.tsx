@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 
 import { Chip, type Tone } from "@/components/Chip";
 import { JournalDetail } from "@/components/JournalDetail";
-import { LiveSkill } from "@/components/LiveSkill";
+import { LiveSkill, liveRows, verdict as verdictOf } from "@/components/LiveSkill";
 import { SkillOverTime } from "@/components/SkillOverTime";
 import { Stat } from "@/components/Stat";
 import { WeatherPanel } from "@/components/WeatherPanel";
@@ -23,12 +23,42 @@ import { tileNote } from "@/lib/forecasterLabels";
 
 const STATUS_TONE: Record<Status, Tone> = { waiting: "quiet", early: "quiet", ahead: "good", behind: "bad", promoted: "good" };
 
+type Tab = "scored" | "time" | "weather" | "waiting";
+
+/** Skill is a Brier skill score; +-0.25 fills the half-bar, past that it just clips. */
+const SKILL_FULL = 0.25;
+const SHOW_FIRST = 8;
+
+function SkillBar({ skill }: { skill: number | null }) {
+  if (skill === null) return null;
+  const pct = Math.min(Math.abs(skill) / SKILL_FULL, 1) * 50;
+  return (
+    <div aria-hidden className="relative mt-1 h-1.5 w-16 sm:w-24 rounded-full bg-slate-800 ml-auto">
+      <div className="absolute inset-y-0 left-1/2 w-px bg-slate-600" />
+      <div
+        className={`absolute inset-y-0 rounded-full ${skill >= 0 ? "bg-emerald-500" : "bg-rose-500"}`}
+        style={skill >= 0 ? { left: "50%", width: `${pct}%` } : { right: "50%", width: `${pct}%` }}
+      />
+    </div>
+  );
+}
+
+function ProgressBar({ scored, needed }: { scored: number; needed: number }) {
+  return (
+    <div aria-hidden className="mt-1 h-1.5 w-16 sm:w-24 rounded-full bg-slate-800 ml-auto">
+      <div className="h-full rounded-full bg-sky-500" style={{ width: `${Math.min(scored / needed, 1) * 100}%` }} />
+    </div>
+  );
+}
+
 export default function Journal() {
   const [data, setData] = useState<JournalResponse | null>(null);
   const [series, setSeries] = useState<SeriesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [backtests, setBacktests] = useState(false);
+  const [tab, setTab] = useState<Tab>("scored");
+  const [all, setAll] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -60,12 +90,16 @@ export default function Journal() {
   // and which this page ignored, because `totals(rows)` summed every card. `/cpi` filters to a
   // subset, so it still uses `totals()`; there the gate is applied in the same place.
   const h = data.headline;
+  const calls = liveRows(data.forecasters).map((r) => verdictOf(r.gap, r.se));
+  const nCalls = (v: string) => calls.filter((c) => c === v).length;
+  const verdict = `${nCalls("ahead")} ahead · ${nCalls("behind")} behind · ${nCalls("none")} no signal`;
 
   return (
     <div className="mx-auto max-w-5xl space-y-10 p-6 md:p-8">
       <header>
         <h1 className="text-3xl font-bold text-white">Prediction Journal</h1>
         <p className="mt-2 text-slate-400">Forecasts locked in before the event, scored after.</p>
+        <p className="mt-3 rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-2.5 text-sm text-slate-200" data-verdict="">{verdict}</p>
       </header>
 
       <section aria-label="Totals" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -80,20 +114,34 @@ export default function Journal() {
         <LiveSkill scores={data.forecasters} />
       </section>
 
+      <div role="tablist" aria-label="Journal views" className="-mb-6 flex gap-1 overflow-x-auto border-b border-slate-800">
+        {([["scored", "Scored"], ["time", "Over time"], ["weather", "Weather"], ["waiting", `Waiting (${waiting.length})`]] as [Tab, string][]).map(([id, text]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            onClick={() => setTab(id)}
+            className={`whitespace-nowrap border-b-2 px-4 py-2 text-sm ${tab === id ? "border-sky-400 text-white" : "border-transparent text-slate-400 hover:text-slate-200"}`}
+          >
+            {text}
+          </button>
+        ))}
+      </div>
+
       {results.length > 0 && (
-        <section aria-label="Results">
-          <h2 className="mb-3 text-lg font-semibold text-slate-200">Scored so far</h2>
-          <table className="w-full text-sm">
-            <thead className="text-xs uppercase tracking-wider text-slate-500">
+        <section aria-label="Results" className={tab === "scored" ? "" : "hidden"}>
+                    <table className="w-full text-sm">
+            <thead className="text-xs uppercase tracking-normal text-slate-500 sm:tracking-wider">
               <tr>
                 <th className="py-2 text-left font-normal">Forecast</th>
                 <th className="py-2 text-right font-normal">Scored</th>
                 <th className="py-2 text-right font-normal" title="Positive means better than the baseline">Skill</th>
-                <th className="py-2 pl-4 text-left font-normal">Status</th>
+                <th className="py-2 pl-2 sm:pl-4 text-left font-normal">Status</th>
               </tr>
             </thead>
             <tbody>
-              {results.map((row) => (
+              {(all ? results : results.slice(0, SHOW_FIRST)).map((row) => (
                 <Fragment key={row.key}>
                   <tr className="border-t border-slate-800">
                     <td className="py-3">
@@ -114,10 +162,14 @@ export default function Journal() {
                       )}
                     </td>
                     <td className="py-3 text-right tabular-nums text-slate-300">
-                      {row.scored} <span className="text-slate-600">of {row.needed}</span>
+                      {row.scored} <span className="hidden text-slate-600 sm:inline">of {row.needed}</span>
+                      <ProgressBar scored={row.scored} needed={row.needed} />
                     </td>
-                    <td className="py-3 text-right text-lg tabular-nums text-slate-100">{skillText(row.skill)}</td>
-                    <td className="py-3 pl-4"><Chip tone={STATUS_TONE[row.status]}>{STATUS_WORDS[row.status]}</Chip></td>
+                    <td className="py-3 text-right text-base sm:text-lg tabular-nums text-slate-100">
+                      {skillText(row.skill)}
+                      <SkillBar skill={row.skill} />
+                    </td>
+                    <td className="py-3 pl-2 sm:pl-4"><Chip tone={STATUS_TONE[row.status]}>{STATUS_WORDS[row.status]}</Chip></td>
                   </tr>
                   {open === row.key && (
                     <tr><td colSpan={4} className="border-t border-slate-800/60"><JournalDetail row={row} /></td></tr>
@@ -126,16 +178,20 @@ export default function Journal() {
               ))}
             </tbody>
           </table>
+          {results.length > SHOW_FIRST && (
+            <button type="button" onClick={() => setAll(!all)} className="mt-3 text-sm text-sky-400 hover:text-sky-300">
+              {all ? "Show fewer" : `Show all ${results.length}`}
+            </button>
+          )}
         </section>
       )}
 
-      <SkillOverTime series={series?.series ?? []} />
+      <div className={tab === "time" ? "" : "hidden"}><SkillOverTime series={series?.series ?? []} /></div>
 
-      <WeatherPanel />
+      <div className={tab === "weather" ? "" : "hidden"}><WeatherPanel /></div>
 
       {waiting.length > 0 && (
-        <section aria-label="Waiting">
-          <h2 className="mb-3 text-lg font-semibold text-slate-200">Waiting for results</h2>
+        <section aria-label="Waiting" className={tab === "waiting" ? "" : "hidden"}>
           <ul className="flex flex-wrap gap-2">
             {waiting.map((row) => (
               <li key={row.key} className="flex items-center gap-2">
