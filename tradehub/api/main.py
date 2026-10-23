@@ -848,6 +848,18 @@ def _fetch_all(supa, table: str, build, *, page: int = POSTGREST_CAP, cap: int |
             return rows[:cap]
 
 
+@app.get("/api/sports-record", tags=["Sports"])
+def get_sports_record() -> dict[str, Any]:
+    """Each sports predictor's own published record, normalised. Display only: nothing here is scored.
+
+    Synchronous on purpose, like `/api/health`: `collect` fetches the five sites in parallel with a 6 s
+    timeout and a five-minute cache, and one sport being down only marks that sport `unavailable`.
+    """
+    from tradehub.sports_record import collect
+
+    return collect()
+
+
 @app.get("/api/sports-edges", tags=["Sports"])
 def get_sports_edges(
     sport: str | None = None,
