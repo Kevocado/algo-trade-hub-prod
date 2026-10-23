@@ -120,7 +120,8 @@ def build_health_report(
 
     `calendar_by_family` maps family -> list of calendar entries (each with at least "target",
     "family", "cadence", "cutoff_at", "market_linked"). A daily family is only expected to freeze
-    when it has at least one calendar entry whose cutoff falls in the window [now-24h, now+24h].
+    when it has at least one calendar entry whose cutoff is still ahead, inside (now, now+24h]. A game
+    that already started was frozen before it started, usually more than 24h ago, so it says nothing about today.
     If the calendar read fails (None), fall back to cadence-only expected_daily. If the calendar
     returns entries but none fall in the window, the family is not expected to freeze that day
     (expected_daily=False, silent=False, reason="no_game_window").
@@ -158,11 +159,10 @@ def build_health_report(
     known_counts = frozen_by_family or {}
     counts_known = frozen_by_family is not None
     family_payload: dict[str, Any] = {}
-    # The window for checking calendar entries: a daily family is expected to freeze when it has
-    # at least one target whose cutoff falls in [now - FROZEN_WINDOW_HOURS, now + FROZEN_WINDOW_HOURS].
-    # This covers the freeze window (last 24h) plus the upcoming freeze window (next 24h) because
-    # a forecaster freezes *before* the cutoff.
-    calendar_window_start = now - timedelta(hours=FROZEN_WINDOW_HOURS)
+    # A daily game-driven family is expected to freeze when a game is still ahead: a cutoff in
+    # (now, now + FROZEN_WINDOW_HOURS]. A game that already started was frozen before it started,
+    # usually more than 24h ago, so counting it would flag a quiet day as a fault.
+    calendar_window_start = now
     calendar_window_end = now + timedelta(hours=FROZEN_WINDOW_HOURS)
 
     # The union: every family the registry knows, plus any only the count read saw.
@@ -358,7 +358,7 @@ def collect_health(supa, *, now: datetime | None = None, orderbook_dir: Path | N
     cadences = _expected_cadences()
 
     # Fetch all calendar entries to determine which daily families have targets in the window
-    # [now-24h, now+24h]. If the calendar read fails, fall back to cadence-only behavior.
+    # (now, now+24h]. If the calendar read fails, fall back to cadence-only behavior.
     calendar_by_family = _fetch_calendar_by_family(supa, now)
 
     return build_health_report(
@@ -373,12 +373,12 @@ def collect_health(supa, *, now: datetime | None = None, orderbook_dir: Path | N
 
 
 def _fetch_calendar_by_family(supa, now: datetime) -> dict[str, list[dict[str, Any]]] | None:
-    """Read all calendar entries and group by family, filtered to the [now-24h, now+24h] window.
+    """Read all calendar entries and group by family, filtered to the (now, now+24h] window.
     Returns None on failure."""
     try:
         # Use select_all pattern from journal/store.py to page through all entries
         from tradehub.journal.store import select_all
-        lo = (now - timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
+        lo = now.isoformat()
         hi = (now + timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
         rows = select_all(
             supa, "journal_calendars", lambda q: q.gte("cutoff_at", lo).lte("cutoff_at", hi), ("target",)
