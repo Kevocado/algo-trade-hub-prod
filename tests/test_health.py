@@ -353,3 +353,68 @@ def test_calendar_read_failure_falls_back_to_cadence_based_expected_daily():
     assert fam["expected_daily"] is True
     assert fam["silent"] is True
     assert any("sports_nfl" in p for p in report["problems"])
+
+
+def test_a_daily_non_sports_family_with_no_calendar_entries_is_still_silent():
+    """If a weather family's calendar writer stops, the empty calendar is the failure, not a day off."""
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"weather_high": 0},
+        cadences={"weather_high": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family={"weather_high": []},
+    )
+    fam = report["families"]["weather_high"]
+    assert fam["expected_daily"] is True and fam["silent"] is True
+    assert any("weather_high" in p for p in report["problems"])
+
+
+def test_only_sports_families_are_game_driven():
+    from tradehub.health import is_game_driven
+
+    assert is_game_driven("sports_nfl_spread_cal") and is_game_driven("sports_cfb")
+    assert not any(is_game_driven(f) for f in ("weather_high", "gas_aaa", "ercot_peak", "eurusd", "gold"))
+
+
+def test_the_calendar_read_asks_the_database_for_the_window_only():
+    """1,871 calendar rows today and ~60 more a day: the health call must not page the whole table."""
+    from tradehub.health import _fetch_calendar_by_family
+
+    seen: list[tuple[str, str, str]] = []
+
+    class Query:
+        def select(self, *_):
+            return self
+
+        def gte(self, col, val):
+            seen.append(("gte", col, val))
+            return self
+
+        def lte(self, col, val):
+            seen.append(("lte", col, val))
+            return self
+
+        def order(self, *_):
+            return self
+
+        def range(self, *_):
+            return self
+
+        def execute(self):
+            class R:
+                data = [{"family": "sports_nfl", "cutoff_at": "2026-10-17T20:00:00+00:00"}]
+
+            return R()
+
+    class Supa:
+        def table(self, name):
+            assert name == "journal_calendars"
+            return Query()
+
+    out = _fetch_calendar_by_family(Supa(), NOW)
+    assert out == {"sports_nfl": [{"family": "sports_nfl", "cutoff_at": "2026-10-17T20:00:00+00:00"}]}
+    lo = (NOW - timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
+    hi = (NOW + timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
+    assert seen == [("gte", "cutoff_at", lo), ("lte", "cutoff_at", hi)]

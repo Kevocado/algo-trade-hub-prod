@@ -65,6 +65,15 @@ ORDERBOOK_ROOT_ENV = "TRADEHUB_ORDERBOOK_DIR"
 DEFAULT_ORDERBOOK_ROOT = "/cache/orderbooks"
 
 
+def is_game_driven(family: str) -> bool:
+    """True for families that only freeze when a game is calendared (`sports_*`).
+
+    Only these may be quiet on a day with no game. Every other daily family (weather, gas, ERCOT, FX)
+    is expected every day, so a missing calendar entry there is the failure, not a day off.
+    """
+    return family.startswith("sports_")
+
+
 def expected_daily(cadence: str | None) -> bool:
     """True when a family of this cadence is expected to freeze on a given day."""
     return (cadence or "").strip().lower() in DAILY_CADENCES
@@ -169,11 +178,11 @@ def build_health_report(
         # 1. It has a daily/hourly cadence, AND
         # 2. Either calendar read failed (None) -> fall back to cadence, OR
         #    calendar has entries in the window, OR
-        #    calendar has no entries in the window -> not expected (no_game_window)
+        #    calendar has no entries in the window -> not expected (no_game_window) BUT ONLY FOR SPORTS_* FAMILIES
         base_expected = expected_daily(cadence)
         has_calendar_in_window = False
         reason: str | None = None
-        if base_expected:
+        if base_expected and is_game_driven(family):
             cal = calendar_by_family
             if cal is None:
                 # Calendar read failed: fall back to old behavior (cadence-based)
@@ -193,7 +202,7 @@ def build_health_report(
                         break
                 if not has_calendar_in_window:
                     reason = "no_game_window"
-        expected = base_expected and has_calendar_in_window
+        expected = base_expected and (not is_game_driven(family) or has_calendar_in_window)
         silent = expected and count == 0
         family_payload[family] = {
             "frozen_24h": count,
@@ -354,7 +363,7 @@ def collect_health(supa, *, now: datetime | None = None, orderbook_dir: Path | N
 
     # Fetch all calendar entries to determine which daily families have targets in the window
     # [now-24h, now+24h]. If the calendar read fails, fall back to cadence-only behavior.
-    calendar_by_family = _fetch_calendar_by_family(supa)
+    calendar_by_family = _fetch_calendar_by_family(supa, now)
 
     return build_health_report(
         timers=timers,
@@ -367,12 +376,17 @@ def collect_health(supa, *, now: datetime | None = None, orderbook_dir: Path | N
     )
 
 
-def _fetch_calendar_by_family(supa) -> dict[str, list[dict[str, Any]]] | None:
-    """Read all calendar entries and group by family. Returns None on failure."""
+def _fetch_calendar_by_family(supa, now: datetime) -> dict[str, list[dict[str, Any]]] | None:
+    """Read all calendar entries and group by family, filtered to the [now-24h, now+24h] window.
+    Returns None on failure."""
     try:
         # Use select_all pattern from journal/store.py to page through all entries
         from tradehub.journal.store import select_all
-        rows = select_all(supa, "journal_calendars", lambda q: q.select("*"), ("target",))
+        lo = (now - timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
+        hi = (now + timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
+        rows = select_all(
+            supa, "journal_calendars", lambda q: q.gte("cutoff_at", lo).lte("cutoff_at", hi), ("target",)
+        )
         by_family: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             family = row.get("family")
