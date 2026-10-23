@@ -99,16 +99,18 @@ def adapt_pl(body: Any) -> list[dict[str, Any]]:
 
 
 def adapt_f1(body: Any) -> list[dict[str, Any]]:
+    """One summary row. F1 publishes probabilities per market and tier, not picks: its `hit_rate` is how often a
+    rare event (pole 4.5%) happened, which is not accuracy, and its `by_market` repeats (tier, market) pairs with
+    nothing to tell the copies apart. So the hub shows the count and says so, and leaves the Brier to the F1 site.
+    """
     body = _dict(body)
-    pre = {(r.get("tier"), r.get("market")): _dict(r)
-           for r in _dict(body.get("pre_session")).get("by_market", []) if isinstance(r, dict)}
-    rows = []
-    for r in body.get("by_market", []) if isinstance(body.get("by_market"), list) else []:
-        r = _dict(r)
-        p = pre.get((r.get("tier"), r.get("market")), {})
-        rows.append(_row("f1", f"{r.get('market')}:{r.get('tier')}", f"{r.get('market')} ({r.get('tier')})",
-                         r.get("n"), r.get("hit_rate"), p.get("n"), p.get("hit_rate")))
-    return rows
+    row = _row("f1", "all", "All markets", body.get("n_resolved"), None, body.get("n_pre_session"), None)
+    row["note"] = "F1 scores probabilities (Brier), not picks: see the F1 site"
+    return [row]
+
+
+def row_list(row: dict[str, Any]) -> list[dict[str, Any]]:
+    return [row]
 
 
 ADAPTERS: dict[str, Callable[[Any], list[dict[str, Any]]]] = {

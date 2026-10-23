@@ -54,17 +54,17 @@ def test_pl_reads_the_summary_and_its_pre_kickoff_block():
     assert (res["label"], res["n"], res["hit_rate"], res["n_pre"], res["hit_rate_pre"]) == ("Result", 70, 0.5142857142857142, 20, 0.5)
 
 
-def test_f1_rows_pair_each_market_with_its_pre_session_row():
-    rows = sr.adapt_f1(body("f1"))
-    top10 = by(rows, "top_10:post_practice")
-    assert (top10["label"], top10["n"], top10["hit_rate"], top10["n_pre"]) == ("top_10 (post_practice)", 44, 0.45454545454545453, 44)
+def test_f1_is_one_honest_summary_row_not_a_hit_rate():
+    (row,) = sr.adapt_f1(body("f1"))
+    assert (row["label"], row["n"], row["n_pre"], row["hit_rate"]) == ("All markets", 2420, 1364, None)
+    assert "Brier" in row["note"]
 
 
 @pytest.mark.parametrize("sport", sr.SPORTS)
 def test_a_missing_key_is_none_never_zero_and_an_empty_body_is_no_rows(sport):
     rows = sr.ADAPTERS[sport]({})
     assert all(r["n"] is None and r["hit_rate"] is None and r["n_pre"] is None for r in rows)
-    assert (len(rows) == 3) == (sport in ("nfl", "cfb"))  # NFL/CFB always show their three markets, empty
+    assert len(rows) == {"nfl": 3, "cfb": 3, "f1": 1}.get(sport, 0)  # empty bodies: NFL/CFB show three empty markets, F1 one
 
 
 def test_one_sport_failing_marks_only_that_sport_unavailable():
