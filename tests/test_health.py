@@ -415,12 +415,12 @@ def test_the_calendar_read_asks_the_database_for_the_window_only():
 
     out = _fetch_calendar_by_family(Supa(), NOW)
     assert out == {"sports_nfl": [{"family": "sports_nfl", "cutoff_at": "2026-10-17T20:00:00+00:00"}]}
-    lo = (NOW - timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
+    lo = NOW.isoformat()
     hi = (NOW + timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
     assert seen == [("gte", "cutoff_at", lo), ("lte", "cutoff_at", hi)]
 
 
-def test_a_calendar_cutoff_that_is_already_a_datetime_counts_as_in_the_window():
+def test_a_calendar_cutoff_that_is_already_a_datetime_counts_as_upcoming():
     report = build_health_report(
         timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
                 "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
@@ -428,7 +428,37 @@ def test_a_calendar_cutoff_that_is_already_a_datetime_counts_as_in_the_window():
         cadences={"sports_nfl": "daily"},
         orderbook_age_seconds=600.0,
         now=NOW,
-        calendar_by_family={"sports_nfl": [{"cutoff_at": _ago(hours=3)}]},
+        calendar_by_family={"sports_nfl": [{"cutoff_at": NOW + timedelta(hours=3)}]},
     )
     fam = report["families"]["sports_nfl"]
     assert fam["expected_daily"] is True and fam["silent"] is True
+
+
+def test_a_game_that_already_started_does_not_make_a_quiet_day_a_fault():
+    """Live 2026-10-23: Thursday's NFL game (cutoff 00:15 UTC) was inside the last 24h but was frozen
+    earlier, so counting it flagged sports_nfl as silent all day Friday."""
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"sports_nfl": 0},
+        cadences={"sports_nfl": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family={"sports_nfl": []},  # the read is (now, now+24h]: the started game is not in it
+    )
+    fam = report["families"]["sports_nfl"]
+    assert fam["silent"] is False and fam.get("reason") == "no_game_window"
+    assert not report["problems"] or not any("sports_nfl" in p for p in report["problems"])
+
+
+def test_an_entry_with_a_cutoff_in_the_past_is_not_upcoming_even_if_the_read_returns_it():
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"sports_nfl": 0},
+        cadences={"sports_nfl": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family={"sports_nfl": [{"cutoff_at": (NOW - timedelta(hours=12)).isoformat()}]},
+    )
+    assert report["families"]["sports_nfl"]["silent"] is False
