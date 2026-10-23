@@ -418,3 +418,17 @@ def test_the_calendar_read_asks_the_database_for_the_window_only():
     lo = (NOW - timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
     hi = (NOW + timedelta(hours=FROZEN_WINDOW_HOURS)).isoformat()
     assert seen == [("gte", "cutoff_at", lo), ("lte", "cutoff_at", hi)]
+
+
+def test_a_calendar_cutoff_that_is_already_a_datetime_counts_as_in_the_window():
+    report = build_health_report(
+        timers={"scan": _ago(minutes=10), "settle": _ago(minutes=20),
+                "journal": _ago(minutes=30), "orderbooks": _ago(minutes=40)},
+        frozen_by_family={"sports_nfl": 0},
+        cadences={"sports_nfl": "daily"},
+        orderbook_age_seconds=600.0,
+        now=NOW,
+        calendar_by_family={"sports_nfl": [{"cutoff_at": _ago(hours=3)}]},
+    )
+    fam = report["families"]["sports_nfl"]
+    assert fam["expected_daily"] is True and fam["silent"] is True

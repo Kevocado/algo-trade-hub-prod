@@ -190,12 +190,8 @@ def build_health_report(
             else:
                 entries = cal.get(family, [])
                 for entry in entries:
-                    cutoff_str = entry.get("cutoff_at")
-                    if not cutoff_str:
-                        continue
-                    try:
-                        cutoff = datetime.fromisoformat(cutoff_str.replace("Z", "+00:00"))
-                    except (TypeError, ValueError):
+                    cutoff = _as_datetime(entry.get("cutoff_at"))
+                    if cutoff is None:
                         continue
                     if calendar_window_start <= cutoff <= calendar_window_end:
                         has_calendar_in_window = True
